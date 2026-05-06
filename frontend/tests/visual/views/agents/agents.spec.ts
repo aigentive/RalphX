@@ -590,8 +590,8 @@ test.describe("Agents View", () => {
 
     await expect(page.getByTestId("agents-show-archived-pill")).toHaveCount(0);
     await expect(page.getByTestId("agents-project-sort-pill")).toHaveCount(0);
-    await expect(page.getByTestId("agents-static-recent")).toBeVisible();
-    await expect(page.getByText("Add ranking to reefbot homepage")).toBeVisible();
+    // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
+    await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
     await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toHaveCount(0);
 
