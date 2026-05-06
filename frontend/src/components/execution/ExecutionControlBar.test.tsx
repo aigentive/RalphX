@@ -529,4 +529,28 @@ describe("ExecutionControlBar", () => {
       expect(screen.getByTestId("mock-running-popover")).toHaveAttribute("data-show-ideation", "false");
     });
   });
+
+  describe("responsive breakpoints", () => {
+    it("renders the wide layout when window width > 1200px", () => {
+      const original = window.innerWidth;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1400 });
+      try {
+        renderBar({ runningCount: 2 });
+        expect(screen.getByTestId("execution-control-bar")).toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: original });
+      }
+    });
+
+    it("renders the narrow layout when window width < 800px", () => {
+      const original = window.innerWidth;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+      try {
+        renderBar({ runningCount: 1 });
+        expect(screen.getByTestId("execution-control-bar")).toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: original });
+      }
+    });
+  });
 });
