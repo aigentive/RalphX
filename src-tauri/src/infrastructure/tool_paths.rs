@@ -129,13 +129,14 @@ pub(crate) fn find_claude_cli_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
-    find_cli_path(
+    find_cli_path_with_candidates(
         "codex",
         &[
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
             "/usr/bin/codex",
         ],
+        &javascript_tool_env_candidates("codex"),
     )
 }
 
@@ -173,7 +174,7 @@ fn find_node_cli_path() -> Option<PathBuf> {
         find_cli_path_with_candidates(
             "node",
             &["/opt/homebrew/bin/node", "/usr/local/bin/node"],
-            &node_env_candidates(),
+            &javascript_tool_env_candidates("node"),
         )
     })
 }
@@ -224,17 +225,88 @@ fn find_env_dir(env_var: &'static str) -> Option<PathBuf> {
     has_safe_absolute_shape(&path).then_some(path)
 }
 
-fn node_env_candidates() -> Vec<PathBuf> {
+fn javascript_tool_env_candidates(tool_name: &'static str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Some(nvm_bin) = find_env_dir("NVM_BIN") {
-        candidates.push(nvm_bin.join("node"));
+        candidates.push(nvm_bin.join(tool_name));
     }
     if let Some(volta_home) = find_env_dir("VOLTA_HOME") {
-        candidates.push(volta_home.join("bin").join("node"));
+        candidates.push(volta_home.join("bin").join(tool_name));
     }
+    candidates.extend(nvm_versioned_tool_candidates(tool_name));
 
     candidates
+}
+
+fn nvm_versioned_tool_candidates(tool_name: &'static str) -> Vec<PathBuf> {
+    let Some(home_dir) = dirs::home_dir().filter(|path| has_safe_absolute_shape(path)) else {
+        return Vec::new();
+    };
+
+    nvm_versioned_tool_candidates_from_home(tool_name, &home_dir)
+}
+
+fn nvm_versioned_tool_candidates_from_home(
+    tool_name: &'static str,
+    home_dir: &Path,
+) -> Vec<PathBuf> {
+    if !has_safe_absolute_shape(home_dir) {
+        return Vec::new();
+    }
+
+    let versions_root = home_dir.join(".nvm").join("versions").join("node");
+    if !has_safe_absolute_shape(&versions_root) {
+        return Vec::new();
+    }
+
+    // Fixed NVM root under the validated home directory; each accepted child
+    // directory must be a direct semver-shaped `vX.Y.Z` component.
+    // codeql[rust/path-injection]
+    let Ok(entries) = std::fs::read_dir(&versions_root) else {
+        return Vec::new();
+    };
+
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let version_dir = entry.path();
+            if !is_direct_child_of(&version_dir, &versions_root) {
+                return None;
+            }
+
+            let version_name = version_dir.file_name()?.to_str()?;
+            let version = parse_nvm_node_version_dir(version_name)?;
+            let candidate = version_dir.join("bin").join(tool_name);
+            if !matches_tool_path(tool_name, &candidate) {
+                return None;
+            }
+
+            // Candidate path is built from the fixed NVM root, a semver-shaped
+            // child directory, and fixed `bin/<tool>` components.
+            // codeql[rust/path-injection]
+            if !candidate.exists() {
+                return None;
+            }
+
+            Some((version, candidate))
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|(left_version, _), (right_version, _)| right_version.cmp(left_version));
+    candidates
+        .into_iter()
+        .map(|(_, candidate)| candidate)
+        .collect()
+}
+
+fn parse_nvm_node_version_dir(name: &str) -> Option<(u64, u64, u64)> {
+    let version = name.strip_prefix('v')?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch = parts.next()?.parse::<u64>().ok()?;
+    parts.next().is_none().then_some((major, minor, patch))
 }
 
 fn find_login_shell_cli(tool_name: &'static str) -> Option<PathBuf> {
@@ -276,6 +348,15 @@ fn matches_tool_path(tool_name: &str, path: &Path) -> bool {
     has_safe_absolute_shape(path) && path.file_name() == Some(OsStr::new(tool_name))
 }
 
+fn is_direct_child_of(path: &Path, parent: &Path) -> bool {
+    path.parent() == Some(parent)
+        && path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .map(|name| !name.is_empty())
+            .unwrap_or(false)
+}
+
 fn resolved_node_bin_dir() -> Option<PathBuf> {
     find_node_cli_path()?.parent().map(Path::to_path_buf)
 }
@@ -300,8 +381,9 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, prepend_resolved_node_bin_to_path,
-        resolve_node_cli_path, safe_cli_path_from_shell_output,
+        agent_subprocess_env_path_from_parts, find_codex_cli_path,
+        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
+        prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
     };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
@@ -402,6 +484,85 @@ mod tests {
         let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
 
         assert_eq!(resolve_node_cli_path(), volta_bin.join("node"));
+    }
+
+    #[test]
+    fn resolve_node_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let nvm_node_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.16.0")
+            .join("bin");
+        std::fs::create_dir_all(&nvm_node_bin).expect("create nvm node bin");
+        std::fs::write(nvm_node_bin.join("node"), "").expect("write fake node");
+
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _path = EnvGuard::set_os("PATH", "");
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+        assert_eq!(resolve_node_cli_path(), nvm_node_bin.join("node"));
+    }
+
+    #[test]
+    fn find_codex_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let older_codex_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v20.9.0")
+            .join("bin");
+        let newer_codex_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.16.0")
+            .join("bin");
+        std::fs::create_dir_all(&older_codex_bin).expect("create older nvm bin");
+        std::fs::create_dir_all(&newer_codex_bin).expect("create newer nvm bin");
+        std::fs::write(older_codex_bin.join("codex"), "").expect("write older codex");
+        std::fs::write(newer_codex_bin.join("codex"), "").expect("write newer codex");
+
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _path = EnvGuard::set_os("PATH", "");
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(find_codex_cli_path(), Some(newer_codex_bin.join("codex")));
+    }
+
+    #[test]
+    fn nvm_versioned_tool_candidates_rejects_non_semver_dirs() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let versions_root = temp_dir.path().join(".nvm").join("versions").join("node");
+        let valid_bin = versions_root.join("v20.10.0").join("bin");
+        let invalid_bin = versions_root.join("latest").join("bin");
+        std::fs::create_dir_all(&valid_bin).expect("create valid nvm bin");
+        std::fs::create_dir_all(&invalid_bin).expect("create invalid nvm bin");
+        std::fs::write(valid_bin.join("codex"), "").expect("write valid codex");
+        std::fs::write(invalid_bin.join("codex"), "").expect("write invalid codex");
+
+        assert_eq!(
+            nvm_versioned_tool_candidates_from_home("codex", temp_dir.path()),
+            vec![valid_bin.join("codex")]
+        );
+    }
+
+    #[test]
+    fn parse_nvm_node_version_dir_requires_three_numeric_components() {
+        assert_eq!(parse_nvm_node_version_dir("v22.16.0"), Some((22, 16, 0)));
+        assert_eq!(parse_nvm_node_version_dir("22.16.0"), None);
+        assert_eq!(parse_nvm_node_version_dir("v22.16"), None);
+        assert_eq!(parse_nvm_node_version_dir("v22.x.0"), None);
     }
 
     #[test]
