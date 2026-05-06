@@ -38,6 +38,7 @@ fn setup_remote_repo() -> (tempfile::TempDir, Project, String) {
         .args(["clone", remote.to_str().unwrap(), repo.to_str().unwrap()])
         .output()
         .expect("repo should clone");
+    git(&repo, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     git(&repo, &["config", "user.email", "test@example.com"]);
     git(&repo, &["config", "user.name", "Test User"]);
     std::fs::write(repo.join("README.md"), "base\n").expect("base file should be written");
