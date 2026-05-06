@@ -22,6 +22,9 @@ use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
 };
+use crate::application::agent_conversation_workspace_base::{
+    apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
+};
 use crate::application::agent_workspace_bridge::wake_agent_workspace_for_bridge_events;
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
 use crate::application::git_service::GitService;
@@ -275,6 +278,104 @@ pub(crate) async fn resolve_agent_workspace_publish_target(
     })
 }
 
+fn apply_base_resolution_to_publish_target(
+    target: &mut AgentConversationWorkspacePublishTarget,
+    resolution: &BaseResolutionResult,
+) -> Result<(), String> {
+    if matches!(resolution.status, BaseStatus::Blocked) {
+        return Err(resolution
+            .block_reason
+            .clone()
+            .unwrap_or_else(|| "Agent workspace base is blocked".to_string()));
+    }
+
+    if let Some(effective_base_ref) = resolution.effective_base_ref.clone() {
+        target.base_ref = effective_base_ref;
+    }
+    if resolution.status == BaseStatus::Retargeted {
+        target.base_display_name = resolution.display_name.clone();
+    }
+    Ok(())
+}
+
+async fn persist_workspace_base_resolution_if_retargeted(
+    state: &AppState,
+    workspace: &mut AgentConversationWorkspace,
+    resolution: &BaseResolutionResult,
+) -> Result<(), String> {
+    if apply_workspace_base_resolution(workspace, resolution).map_err(|e| e.to_string())? {
+        *workspace = state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+async fn retarget_existing_workspace_pr_base_if_needed(
+    state: &AppState,
+    target: &AgentConversationWorkspacePublishTarget,
+    workspace: &AgentConversationWorkspace,
+    resolution: &BaseResolutionResult,
+) -> Result<(), String> {
+    if resolution.status != BaseStatus::Retargeted {
+        return Ok(());
+    }
+
+    let pr_number = target
+        .plan_branch
+        .as_ref()
+        .and_then(|branch| branch.pr_number)
+        .or(workspace.publication_pr_number);
+    let Some(pr_number) = pr_number else {
+        return Ok(());
+    };
+    let Some(github) = state.github_service.as_ref() else {
+        return Err(existing_pr_retarget_block_reason(pr_number, resolution));
+    };
+    let effective_base = resolution
+        .effective_base_ref
+        .as_deref()
+        .ok_or_else(|| existing_pr_retarget_block_reason(pr_number, resolution))?;
+
+    AgentWorkspacePrPublisher::new(github)
+        .update_pr_base(&target.worktree_path, pr_number, effective_base)
+        .await
+        .map_err(|_| existing_pr_retarget_block_reason(pr_number, resolution))
+}
+
+fn existing_pr_retarget_block_reason(pr_number: i64, resolution: &BaseResolutionResult) -> String {
+    format!(
+        "Existing PR #{} targets the deleted branch '{}'. Close and recreate the PR, or manually retarget it on GitHub.",
+        pr_number, resolution.old_base_ref
+    )
+}
+
+struct WorkspaceChangedEventGuard {
+    app: tauri::AppHandle,
+    conversation_id: String,
+}
+
+impl Drop for WorkspaceChangedEventGuard {
+    fn drop(&mut self) {
+        let _ = self.app.emit(
+            "agent:workspace_changed",
+            serde_json::json!({ "conversation_id": self.conversation_id }),
+        );
+    }
+}
+
+fn emit_workspace_changed_when_done(
+    app: &tauri::AppHandle,
+    conversation_id: &ChatConversationId,
+) -> WorkspaceChangedEventGuard {
+    WorkspaceChangedEventGuard {
+        app: app.clone(),
+        conversation_id: conversation_id.as_str(),
+    }
+}
+
 async fn agent_workspace_response_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
@@ -348,33 +449,34 @@ pub struct AgentConversationWorkspaceFreshnessResponse {
     pub is_base_ahead: bool,
     pub has_uncommitted_changes: bool,
     pub unpublished_commit_count: Option<u32>,
+    pub base_status: String,
+    pub effective_base_ref: Option<String>,
+    pub effective_base_display_name: Option<String>,
+    pub base_block_reason: Option<String>,
 }
 
 impl AgentConversationWorkspaceFreshnessResponse {
-    fn from_workspace_status(
-        workspace: &AgentConversationWorkspace,
-        status: PublishBranchFreshnessStatus,
-        has_uncommitted_changes: bool,
-        unpublished_commit_count: Option<u32>,
-    ) -> Self {
-        Self::from_target_status(
-            workspace.conversation_id.as_str(),
-            workspace.base_ref.clone(),
-            workspace.base_display_name.clone(),
-            status,
-            has_uncommitted_changes,
-            unpublished_commit_count,
-        )
-    }
-
     fn from_target_status(
         conversation_id: String,
         base_ref: String,
         base_display_name: Option<String>,
+        base_resolution: Option<&BaseResolutionResult>,
         status: PublishBranchFreshnessStatus,
         has_uncommitted_changes: bool,
         unpublished_commit_count: Option<u32>,
     ) -> Self {
+        let base_status = base_resolution
+            .map(|resolution| resolution.status.as_str())
+            .unwrap_or(BaseStatus::Valid.as_str())
+            .to_string();
+        let effective_base_ref = base_resolution
+            .and_then(|resolution| resolution.effective_base_ref.clone())
+            .or_else(|| Some(base_ref.clone()));
+        let effective_base_display_name = base_resolution
+            .and_then(|resolution| resolution.display_name.clone())
+            .or_else(|| base_display_name.clone());
+        let base_block_reason =
+            base_resolution.and_then(|resolution| resolution.block_reason.clone());
         Self {
             conversation_id,
             base_ref,
@@ -385,6 +487,34 @@ impl AgentConversationWorkspaceFreshnessResponse {
             is_base_ahead: status.is_base_ahead,
             has_uncommitted_changes,
             unpublished_commit_count,
+            base_status,
+            effective_base_ref,
+            effective_base_display_name,
+            base_block_reason,
+        }
+    }
+
+    fn blocked(
+        conversation_id: String,
+        workspace: &AgentConversationWorkspace,
+        base_resolution: &BaseResolutionResult,
+        has_uncommitted_changes: bool,
+        unpublished_commit_count: Option<u32>,
+    ) -> Self {
+        Self {
+            conversation_id,
+            base_ref: workspace.base_ref.clone(),
+            base_display_name: workspace.base_display_name.clone(),
+            target_ref: String::new(),
+            captured_base_commit: workspace.base_commit.clone(),
+            target_base_commit: String::new(),
+            is_base_ahead: false,
+            has_uncommitted_changes,
+            unpublished_commit_count,
+            base_status: BaseStatus::Blocked.as_str().to_string(),
+            effective_base_ref: None,
+            effective_base_display_name: None,
+            base_block_reason: base_resolution.block_reason.clone(),
         }
     }
 }
@@ -396,6 +526,8 @@ pub struct UpdateAgentConversationWorkspaceFromBaseResponse {
     pub updated: bool,
     pub target_ref: String,
     pub base_commit: String,
+    pub base_status: String,
+    pub effective_base_display_name: Option<String>,
 }
 
 /// Durable publish operation event for an agent conversation workspace.
@@ -1945,8 +2077,21 @@ pub async fn get_agent_conversation_workspace_freshness(
     // For ideation workspaces linked to a plan branch, check freshness of the
     // plan branch against its base (the workspace's own branch has no commits).
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
-        let target =
+        let mut target =
             resolve_agent_workspace_publish_target(state.inner(), &project, &workspace).await?;
+        let base_resolution = resolve_workspace_base(&project, &workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+        if base_resolution.status == BaseStatus::Blocked {
+            return Ok(AgentConversationWorkspaceFreshnessResponse::blocked(
+                workspace.conversation_id.as_str(),
+                &workspace,
+                &base_resolution,
+                false,
+                Some(0),
+            ));
+        }
+        apply_base_resolution_to_publish_target(&mut target, &base_resolution)?;
         let status = inspect_publish_branch_freshness_for_source(
             &target.worktree_path,
             &target.base_ref,
@@ -1961,6 +2106,7 @@ pub async fn get_agent_conversation_workspace_freshness(
                 workspace.conversation_id.as_str(),
                 target.base_ref,
                 target.base_display_name,
+                Some(&base_resolution),
                 status,
                 false,
                 Some(0),
@@ -1977,9 +2123,31 @@ pub async fn get_agent_conversation_workspace_freshness(
     let worktree_path = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
         .await
         .map_err(|e| e.to_string())?;
+    let base_resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .map_err(|e| e.to_string())?;
+    if base_resolution.status == BaseStatus::Blocked {
+        let has_uncommitted_changes = GitService::has_uncommitted_changes(&worktree_path)
+            .await
+            .unwrap_or(false);
+        let unpublished_commit_count =
+            count_unpublished_publish_commits(&worktree_path, &workspace.branch_name)
+                .await
+                .unwrap_or(None);
+        return Ok(AgentConversationWorkspaceFreshnessResponse::blocked(
+            workspace.conversation_id.as_str(),
+            &workspace,
+            &base_resolution,
+            has_uncommitted_changes,
+            unpublished_commit_count,
+        ));
+    }
+    let effective_base_ref = base_resolution
+        .effective_checkout_ref()
+        .map_err(|e| e.to_string())?;
     let status = inspect_publish_branch_freshness_for_source(
         &worktree_path,
-        &workspace.base_ref,
+        effective_base_ref,
         &workspace.branch_name,
         workspace.base_commit.as_deref(),
     )
@@ -1993,6 +2161,7 @@ pub async fn get_agent_conversation_workspace_freshness(
     if workspace.publication_push_status.as_deref() == Some("needs_agent")
         && !status.is_base_ahead
         && captured_base_is_stale
+        && base_resolution.status == BaseStatus::Valid
     {
         workspace.base_commit = Some(status.target_base_commit.clone());
         workspace = state
@@ -2038,8 +2207,11 @@ pub async fn get_agent_conversation_workspace_freshness(
             .map_err(|e| e.to_string())?;
 
     Ok(
-        AgentConversationWorkspaceFreshnessResponse::from_workspace_status(
-            &workspace,
+        AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            workspace.conversation_id.as_str(),
+            workspace.base_ref.clone(),
+            workspace.base_display_name.clone(),
+            Some(&base_resolution),
             status,
             has_uncommitted_changes,
             unpublished_commit_count,
@@ -2057,6 +2229,7 @@ pub async fn update_agent_conversation_workspace_from_base(
     app: tauri::AppHandle,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
     let mut workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -2076,7 +2249,7 @@ pub async fn update_agent_conversation_workspace_from_base(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
 
-    let publish_target =
+    let mut publish_target =
         match resolve_agent_workspace_publish_target(state.inner(), &project, &workspace).await {
             Ok(target) => target,
             Err(error) => {
@@ -2099,6 +2272,46 @@ pub async fn update_agent_conversation_workspace_from_base(
         &execution_state,
         Some(team_service.inner().clone()),
     );
+
+    let base_resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .map_err(|e| e.to_string())?;
+    if base_resolution.status == BaseStatus::Blocked {
+        let message = base_resolution
+            .block_reason
+            .clone()
+            .unwrap_or_else(|| "Agent workspace base is blocked".to_string());
+        mark_agent_workspace_publish_failure_with_target(
+            &state,
+            &workspace,
+            &message,
+            None,
+            &repair_service,
+            &publish_target.repair_target(),
+        )
+        .await;
+        return Err(message);
+    }
+    apply_base_resolution_to_publish_target(&mut publish_target, &base_resolution)?;
+    if let Err(message) = retarget_existing_workspace_pr_base_if_needed(
+        state.inner(),
+        &publish_target,
+        &workspace,
+        &base_resolution,
+    )
+    .await
+    {
+        mark_agent_workspace_publish_failure_with_target(
+            &state,
+            &workspace,
+            &message,
+            None,
+            &repair_service,
+            &publish_target.repair_target(),
+        )
+        .await;
+        return Err(message);
+    }
 
     mark_agent_workspace_publish_status(&state, &workspace, "refreshing")
         .await
@@ -2190,6 +2403,8 @@ pub async fn update_agent_conversation_workspace_from_base(
         }
     }
 
+    persist_workspace_base_resolution_if_retargeted(&state, &mut workspace, &base_resolution)
+        .await?;
     workspace.base_commit = Some(base_commit.clone());
     workspace = state
         .agent_conversation_workspace_repo
@@ -2244,6 +2459,8 @@ pub async fn update_agent_conversation_workspace_from_base(
         updated,
         target_ref,
         base_commit,
+        base_status: base_resolution.status.as_str().to_string(),
+        effective_base_display_name: base_resolution.display_name.clone(),
     })
 }
 
@@ -2254,9 +2471,10 @@ pub async fn publish_agent_conversation_workspace(
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
     publish_agent_conversation_workspace_for_app_state(
         state.inner(),
         execution_state.inner(),
@@ -2274,8 +2492,10 @@ pub async fn publish_agent_conversation_workspace(
 pub async fn close_agent_workspace_pr(
     conversation_id: String,
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
     let workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -2437,7 +2657,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 return Err(error.to_string());
             }
         };
-    let repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+    let mut repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
 
     let github = match state.github_service.as_ref() {
         Some(github) => github,
@@ -2456,6 +2676,58 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             return Err(error);
         }
     };
+
+    let base_resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .map_err(|e| e.to_string())?;
+    if base_resolution.status == BaseStatus::Blocked {
+        let error = base_resolution
+            .block_reason
+            .clone()
+            .unwrap_or_else(|| "Agent workspace base is blocked".to_string());
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            route_fixable_failures_to_agent,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
+    let mut publish_target = AgentConversationWorkspacePublishTarget {
+        worktree_path: worktree_path.clone(),
+        branch_name: workspace.branch_name.clone(),
+        base_ref: workspace.base_ref.clone(),
+        base_display_name: workspace.base_display_name.clone(),
+        plan_branch: None,
+    };
+    apply_base_resolution_to_publish_target(&mut publish_target, &base_resolution)?;
+    if let Err(error) = retarget_existing_workspace_pr_base_if_needed(
+        state,
+        &publish_target,
+        &workspace,
+        &base_resolution,
+    )
+    .await
+    {
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            route_fixable_failures_to_agent,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
+    persist_workspace_base_resolution_if_retargeted(state, &mut workspace, &base_resolution)
+        .await?;
+    repair_target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
 
     mark_agent_workspace_publish_status(state, &workspace, "checking")
         .await

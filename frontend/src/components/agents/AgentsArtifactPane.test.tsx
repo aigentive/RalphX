@@ -1132,6 +1132,86 @@ describe("AgentsArtifactPane", () => {
     expect(openUrlMock).toHaveBeenCalledWith("https://github.com/mock/project/pull/78");
   });
 
+  it("renders the backend-provided retargeted base state in the publish pane", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "origin/main",
+      capturedBaseCommit: "base-sha",
+      targetBaseCommit: "base-sha",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "retargeted",
+      effectiveBaseRef: "main",
+      effectiveBaseDisplayName: "Project default (main)",
+      baseBlockReason: null,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      }),
+    );
+
+    expect(
+      await screen.findByTestId(
+        "agents-base-retargeted",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveTextContent("Base branch retargeted to Project default (main).");
+    expect(screen.getAllByText("Project default (main)").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled();
+  });
+
+  it("blocks publish actions when backend marks the saved base unsafe", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "blocked",
+      effectiveBaseRef: null,
+      effectiveBaseDisplayName: null,
+      baseBlockReason: "Saved base commit is not contained in the default branch",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      }),
+      publish,
+    );
+
+    expect(
+      await screen.findByTestId(
+        "agents-base-blocked",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveTextContent("Saved base commit is not contained in the default branch");
+    expect(screen.getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(screen.getByTestId("agents-review-changes")).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("uses Update from base as the primary action when the base branch moved", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({

@@ -1141,6 +1141,8 @@ export interface AgentConversationWorkspacePublicationEvent {
   createdAt: string;
 }
 
+export type AgentConversationWorkspaceBaseStatus = "valid" | "retargeted" | "blocked";
+
 export interface AgentConversationWorkspaceFreshness {
   conversationId: string;
   baseRef: string;
@@ -1151,6 +1153,10 @@ export interface AgentConversationWorkspaceFreshness {
   isBaseAhead: boolean;
   hasUncommittedChanges: boolean;
   unpublishedCommitCount: number | null;
+  baseStatus: AgentConversationWorkspaceBaseStatus;
+  effectiveBaseRef: string | null;
+  effectiveBaseDisplayName: string | null;
+  baseBlockReason: string | null;
 }
 
 export interface UpdateAgentConversationWorkspaceFromBaseResult {
@@ -1158,6 +1164,8 @@ export interface UpdateAgentConversationWorkspaceFromBaseResult {
   updated: boolean;
   targetRef: string;
   baseCommit: string;
+  baseStatus: AgentConversationWorkspaceBaseStatus;
+  effectiveBaseDisplayName: string | null;
 }
 
 const SendAgentMessageResponseSchema = z.object({
@@ -1216,6 +1224,10 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   is_base_ahead: z.boolean(),
   has_uncommitted_changes: z.boolean(),
   unpublished_commit_count: z.number().nullable(),
+  base_status: z.enum(["valid", "retargeted", "blocked"]).optional().default("valid"),
+  effective_base_ref: z.string().nullable().optional().default(null),
+  effective_base_display_name: z.string().nullable().optional().default(null),
+  base_block_reason: z.string().nullable().optional().default(null),
 });
 
 const StartAgentConversationResponseSchema = z.object({
@@ -1242,6 +1254,8 @@ const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
   updated: z.boolean(),
   target_ref: z.string(),
   base_commit: z.string(),
+  base_status: z.enum(["valid", "retargeted", "blocked"]).optional().default("valid"),
+  effective_base_display_name: z.string().nullable().optional().default(null),
 });
 
 type RawAgentConversationWorkspace = z.infer<
@@ -1361,6 +1375,10 @@ function transformAgentConversationWorkspaceFreshness(
     isBaseAhead: raw.is_base_ahead,
     hasUncommittedChanges: raw.has_uncommitted_changes,
     unpublishedCommitCount: raw.unpublished_commit_count,
+    baseStatus: raw.base_status,
+    effectiveBaseRef: raw.effective_base_ref,
+    effectiveBaseDisplayName: raw.effective_base_display_name,
+    baseBlockReason: raw.base_block_reason,
   };
 }
 
@@ -1372,6 +1390,8 @@ function transformUpdateAgentConversationWorkspaceFromBaseResponse(
     updated: raw.updated,
     targetRef: raw.target_ref,
     baseCommit: raw.base_commit,
+    baseStatus: raw.base_status,
+    effectiveBaseDisplayName: raw.effective_base_display_name,
   };
 }
 

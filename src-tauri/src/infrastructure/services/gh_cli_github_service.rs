@@ -289,6 +289,16 @@ fn build_update_pr_args(pr_number: i64, title: &str, body_file: &str) -> Vec<Str
     ]
 }
 
+fn build_update_pr_base_args(pr_number: i64, base: &str) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "edit".to_string(),
+        pr_number.to_string(),
+        "--base".to_string(),
+        base.to_string(),
+    ]
+}
+
 fn build_pr_review_decision_args(pr_number: i64) -> Vec<String> {
     vec![
         "pr".to_string(),
@@ -463,6 +473,17 @@ impl GithubServiceTrait for GhCliGithubService {
             })?
             .to_string();
         let args = build_update_pr_args(pr_number, title, &body_file_str);
+        self.runner.run_gh(working_dir, &args).await?;
+        Ok(())
+    }
+
+    async fn update_pr_base(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        base: &str,
+    ) -> AppResult<()> {
+        let args = build_update_pr_base_args(pr_number, base);
         self.runner.run_gh(working_dir, &args).await?;
         Ok(())
     }

@@ -223,6 +223,27 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       queryClient.invalidateQueries({
         queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
       });
+      queryClient.invalidateQueries({
+        queryKey: ["agents", "workspace-diff", conversationId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["agents", "workspace-commits", conversationId],
+      });
+    }
+
+    function workspaceChangedConversationId(payload: unknown): string | null {
+      if (!payload || typeof payload !== "object") {
+        return null;
+      }
+      const candidate =
+        "conversation_id" in payload
+          ? payload.conversation_id
+          : "conversationId" in payload
+            ? payload.conversationId
+            : null;
+      return typeof candidate === "string" && candidate.trim()
+        ? candidate
+        : null;
     }
 
     // Reverse lookup: when a child verification session terminates, find any parent that has
@@ -569,6 +590,15 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           payload.conversation_id
         );
         queueMessage(eventContextKey, content, message_id);
+      })
+    );
+
+    unsubscribes.push(
+      bus.subscribe<unknown>("agent:workspace_changed", (payload) => {
+        const conversationId = workspaceChangedConversationId(payload);
+        if (conversationId) {
+          invalidateAgentWorkspacePublishQueries(conversationId);
+        }
       })
     );
 
