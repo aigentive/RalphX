@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { PauseCircle, Sparkles } from "lucide-react";
 
 import type {
   AgentConversationBaseSelection,
@@ -25,6 +25,7 @@ import {
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
+import type { AgentQueueHaltState } from "./agentExecutionPause";
 import {
   AGENT_PROVIDER_OPTIONS,
   DEFAULT_AGENT_RUNTIME,
@@ -47,6 +48,7 @@ interface AgentsStartComposerProps {
   projects: Project[];
   defaultProjectId: string | null;
   defaultRuntime: AgentRuntimeSelection | null;
+  executionHaltState?: AgentQueueHaltState;
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   onCreateProject: () => void;
@@ -94,6 +96,7 @@ export function AgentsStartComposer({
   projects,
   defaultProjectId,
   defaultRuntime,
+  executionHaltState = null,
   isLoadingProjects,
   isSubmitting,
   onCreateProject,
@@ -153,6 +156,13 @@ export function AgentsStartComposer({
   const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
   const selectedStartFrom =
     startFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
+  const isExecutionHalted = executionHaltState !== null;
+  const executionHaltTitle =
+    executionHaltState === "stopped" ? "Execution is stopped" : "Execution is paused";
+  const executionHaltDescription =
+    executionHaltState === "stopped"
+      ? "New prompts will queue until execution starts."
+      : "New prompts will queue until execution resumes.";
   const fallbackStartFrom = useMemo<AgentConversationBaseSelection | null>(() => {
     if (!activeProject) {
       return null;
@@ -428,6 +438,31 @@ export function AgentsStartComposer({
         </div>
 
         <div className="mt-6 w-full">
+          {isExecutionHalted && (
+            <div
+              data-testid="agents-start-paused-banner"
+              className="mx-auto mb-3 flex max-w-[620px] items-start gap-3 rounded-md border px-3 py-2.5 text-left"
+              style={{
+                color: "var(--status-warning)",
+                background: "var(--status-warning-muted)",
+                borderColor: "var(--status-warning-border)",
+              }}
+            >
+              <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium leading-snug">
+                  {executionHaltTitle}
+                </p>
+                <p
+                  className="mt-0.5 text-xs leading-relaxed"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {executionHaltDescription}
+                </p>
+              </div>
+            </div>
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
@@ -443,8 +478,8 @@ export function AgentsStartComposer({
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}
             attachmentsUploading={isSubmitting && attachments.length > 0}
-            submitLabel="Start Agent"
-            submittingLabel="Starting..."
+            submitLabel={isExecutionHalted ? "Queue Prompt" : "Start Agent"}
+            submittingLabel={isExecutionHalted ? "Queuing..." : "Starting..."}
             mode={{
               value: mode,
               onValueChange: (value) => setMode(value as AgentConversationWorkspaceMode),

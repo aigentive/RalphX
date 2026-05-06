@@ -72,8 +72,27 @@ export function isAgentWorkspacePublishCurrent(
     hasPublishedWorkspacePr(workspace) &&
     workspace?.publicationPushStatus === "pushed" &&
     freshness !== undefined &&
+    freshness.baseStatus !== "blocked" &&
     !freshness.isBaseAhead &&
     !freshness.hasUncommittedChanges &&
     freshness.unpublishedCommitCount === 0
+  );
+}
+
+export function getAgentWorkspaceEffectiveBaseLabel(
+  workspace: AgentConversationWorkspace | null,
+  freshness: AgentConversationWorkspaceFreshness | undefined
+): string {
+  if (freshness?.baseStatus === "blocked") {
+    return "Base unavailable";
+  }
+  return (
+    freshness?.effectiveBaseDisplayName ??
+    freshness?.baseDisplayName ??
+    freshness?.effectiveBaseRef ??
+    freshness?.baseRef ??
+    workspace?.baseDisplayName ??
+    workspace?.baseRef ??
+    "Base branch"
   );
 }

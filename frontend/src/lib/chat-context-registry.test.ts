@@ -228,6 +228,11 @@ describe("getContextConfig", () => {
     expect(getContextConfig("merge").agentType).toBe("merger");
     expect(getContextConfig("delegation").storeKeyPrefix).toBe("delegation");
   });
+
+  it("keeps live streaming text enabled for chat contexts that can run agents", () => {
+    expect(getContextConfig("project").supportsStreamingText).toBe(true);
+    expect(getContextConfig("task").supportsStreamingText).toBe(true);
+  });
 });
 
 // ============================================================================

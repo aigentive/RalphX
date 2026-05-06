@@ -8,6 +8,10 @@ import userEvent from "@testing-library/user-event";
 import { PlanEditor } from "./PlanEditor";
 import type { Artifact } from "@/types/artifact";
 
+vi.mock("@/api/backend", () => ({
+  backendApiUrl: (endpoint: string) => `http://backend.test/api/${endpoint}`,
+}));
+
 // Mock fetch
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -130,7 +134,7 @@ describe("PlanEditor", () => {
     // Should call fetch with correct endpoint and data
     await waitFor(() => {
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:3847/api/update_plan_artifact",
+        "http://backend.test/api/update_plan_artifact",
         expect.objectContaining({
           method: "POST",
           headers: {
