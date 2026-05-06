@@ -466,5 +466,23 @@ describe("ExecutionTaskDetail", () => {
 
       expect(mockApiTasksStop).not.toHaveBeenCalled();
     });
+
+    it("renders an error paragraph when the stop mutation rejects", async () => {
+      const user = userEvent.setup();
+      const task = createTestTask({ internalStatus: "executing" });
+      mockConfirmation.confirm = vi.fn(async () => true);
+      mockApiTasksStop.mockRejectedValueOnce(new Error("backend offline"));
+
+      render(<ExecutionTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      await user.click(screen.getByTestId("action-dropdown-trigger"));
+      await user.click(screen.getByTestId("stop-action"));
+
+      // The mutation onError handler stores the message and renders the
+      // text-[0.75rem] error paragraph branch.
+      await waitFor(() => {
+        expect(screen.getByText("backend offline")).toBeInTheDocument();
+      });
+    });
   });
 });
