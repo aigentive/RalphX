@@ -226,7 +226,7 @@ export function AgentPublishPanel({
     (isPipelineOwnedWorkspace
       ? "Managed by Tasks"
       : isPublishCurrent
-        ? "Published"
+        ? "PR is up to date"
         : "Commit & Publish");
   const canClosePr =
     hasPublishedPr &&

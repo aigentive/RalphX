@@ -1019,7 +1019,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("disables publish once the workspace branch is pushed and current", async () => {
+  it("disables publish once the workspace branch is pushed and current with its PR", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -1046,13 +1046,54 @@ describe("AgentsArtifactPane", () => {
     );
 
     const publishButton = await screen.findByTestId("agents-publish-confirm");
-    await waitFor(() => expect(publishButton).toHaveTextContent("Published"));
+    await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
     expect(screen.getByText("1 changed file published for review.")).toBeInTheDocument();
 
     fireEvent.click(publishButton);
 
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("keeps publish enabled for a pushed current branch until a PR exists", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "base-sha",
+      targetBaseCommit: "base-sha",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: 0,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        publicationPushStatus: "pushed",
+      }),
+      publish,
+    );
+
+    const publishButton = await screen.findByTestId("agents-publish-confirm");
+    await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
+    expect(publishButton).toBeEnabled();
+    expect(publishButton).not.toHaveTextContent("PR is up to date");
+
+    fireEvent.click(publishButton);
+    expect(publish).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Commit & Publish",
+      })
+    );
+
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
   it("keeps publish enabled when a pushed workspace has new local commits", async () => {
