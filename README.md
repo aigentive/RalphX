@@ -229,7 +229,7 @@ For local development setup, see the [build from source guide](docs/development/
 
 RalphX began as a shell script for orchestrating AI coding sessions and grew into a native macOS desktop app for planning, running, reviewing, and merging AI-assisted software work.
 
-Built independently by [Laza Bogdan](https://www.linkedin.com/in/laza-bogdan/) and a fleet of AI agents.
+Built independently by [Laza Bogdan](https://www.linkedin.com/in/laza-bogdan/), [Adrian Demian](https://www.linkedin.com/in/adrian-demian/), and a fleet of AI agents.
 
 The tool was built by the thing it builds.
 
