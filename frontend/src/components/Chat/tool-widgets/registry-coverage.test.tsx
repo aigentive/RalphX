@@ -422,6 +422,26 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByText("codex-reviewer")).toBeInTheDocument();
   });
 
+  it("renders ReviewWidget complete-review in compact mode", () => {
+    render(
+      <ReviewWidget
+        compact
+        toolCall={makeToolCall("complete_review", {
+          arguments: {
+            decision: "approved",
+            feedback: "All good.",
+            issues: [],
+          },
+          result: {
+            success: true,
+            new_status: "review_passed",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByTestId("review-widget-complete")).toBeInTheDocument();
+  });
+
   it("renders SendMessageWidget plus step widgets", () => {
     render(
       <>
