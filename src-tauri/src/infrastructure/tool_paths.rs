@@ -118,13 +118,14 @@ pub(crate) fn resolve_tasklist_cli_path() -> PathBuf {
 }
 
 pub(crate) fn find_claude_cli_path() -> Option<PathBuf> {
-    find_cli_path(
+    find_cli_path_with_candidates(
         "claude",
         &[
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
             "/usr/bin/claude",
         ],
+        &javascript_tool_env_candidates("claude"),
     )
 }
 
@@ -189,7 +190,7 @@ fn find_cli_path_with_candidates(
     extra_candidates: &[PathBuf],
 ) -> Option<PathBuf> {
     if let Ok(path) = which::which(tool_name) {
-        if matches_tool_path(tool_name, &path) {
+        if is_launchable_tool_path(tool_name, &path) {
             return Some(path);
         }
     }
@@ -198,7 +199,7 @@ fn find_cli_path_with_candidates(
         // Extra candidates are derived from trusted env-path conventions such as NVM_BIN
         // and VOLTA_HOME/bin, then validated before probing.
         // codeql[rust/path-injection]
-        if matches_tool_path(tool_name, candidate) && candidate.exists() {
+        if is_launchable_tool_path(tool_name, candidate) {
             return Some(candidate.clone());
         }
     }
@@ -207,7 +208,7 @@ fn find_cli_path_with_candidates(
         let path = PathBuf::from(candidate);
         // Fixed, app-owned candidate list for GUI launches with stripped PATH.
         // codeql[rust/path-injection]
-        if matches_tool_path(tool_name, &path) && path.exists() {
+        if is_launchable_tool_path(tool_name, &path) {
             return Some(path);
         }
     }
@@ -285,7 +286,7 @@ fn nvm_versioned_tool_candidates_from_home(
             // Candidate path is built from the fixed NVM root, a semver-shaped
             // child directory, and fixed `bin/<tool>` components.
             // codeql[rust/path-injection]
-            if !candidate.exists() {
+            if !is_launchable_tool_path(tool_name, &candidate) {
                 return None;
             }
 
@@ -348,6 +349,30 @@ fn matches_tool_path(tool_name: &str, path: &Path) -> bool {
     has_safe_absolute_shape(path) && path.file_name() == Some(OsStr::new(tool_name))
 }
 
+fn is_launchable_tool_path(tool_name: &str, path: &Path) -> bool {
+    matches_tool_path(tool_name, path) && is_launchable_file(path)
+}
+
+fn is_launchable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn is_direct_child_of(path: &Path, parent: &Path) -> bool {
     path.parent() == Some(parent)
         && path
@@ -381,13 +406,26 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, find_codex_cli_path,
+        agent_subprocess_env_path_from_parts, find_claude_cli_path, find_codex_cli_path,
         nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
         prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
     };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
+
+    fn write_fake_tool(path: &Path) {
+        std::fs::write(path, "").expect("write fake tool");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path)
+                .expect("fake tool metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).expect("mark fake tool executable");
+        }
+    }
 
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -459,7 +497,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let nvm_bin = temp_dir.path().join("nvm-bin");
         std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
-        std::fs::write(nvm_bin.join("node"), "").expect("write fake node");
+        write_fake_tool(&nvm_bin.join("node"));
 
         let _path = EnvGuard::set_os("PATH", "");
         let _nvm_bin = EnvGuard::set_os("NVM_BIN", &nvm_bin);
@@ -476,7 +514,7 @@ mod tests {
         let volta_home = temp_dir.path().join("volta-home");
         let volta_bin = volta_home.join("bin");
         std::fs::create_dir_all(&volta_bin).expect("create volta bin");
-        std::fs::write(volta_bin.join("node"), "").expect("write fake node");
+        write_fake_tool(&volta_bin.join("node"));
 
         let _path = EnvGuard::set_os("PATH", "");
         let _volta_home = EnvGuard::set_os("VOLTA_HOME", &volta_home);
@@ -498,7 +536,7 @@ mod tests {
             .join("v22.16.0")
             .join("bin");
         std::fs::create_dir_all(&nvm_node_bin).expect("create nvm node bin");
-        std::fs::write(nvm_node_bin.join("node"), "").expect("write fake node");
+        write_fake_tool(&nvm_node_bin.join("node"));
 
         let _home = EnvGuard::set_os("HOME", temp_dir.path());
         let _path = EnvGuard::set_os("PATH", "");
@@ -529,8 +567,8 @@ mod tests {
             .join("bin");
         std::fs::create_dir_all(&older_codex_bin).expect("create older nvm bin");
         std::fs::create_dir_all(&newer_codex_bin).expect("create newer nvm bin");
-        std::fs::write(older_codex_bin.join("codex"), "").expect("write older codex");
-        std::fs::write(newer_codex_bin.join("codex"), "").expect("write newer codex");
+        write_fake_tool(&older_codex_bin.join("codex"));
+        write_fake_tool(&newer_codex_bin.join("codex"));
 
         let _home = EnvGuard::set_os("HOME", temp_dir.path());
         let _path = EnvGuard::set_os("PATH", "");
@@ -541,6 +579,45 @@ mod tests {
     }
 
     #[test]
+    fn find_claude_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let claude_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.16.0")
+            .join("bin");
+        std::fs::create_dir_all(&claude_bin).expect("create nvm bin");
+        write_fake_tool(&claude_bin.join("claude"));
+
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _path = EnvGuard::set_os("PATH", "");
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(find_claude_cli_path(), Some(claude_bin.join("claude")));
+    }
+
+    #[test]
+    fn nvm_versioned_tool_candidates_skip_non_executable_newer_tool() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let versions_root = temp_dir.path().join(".nvm").join("versions").join("node");
+        let older_bin = versions_root.join("v20.9.0").join("bin");
+        let newer_bin = versions_root.join("v22.16.0").join("bin");
+        std::fs::create_dir_all(&older_bin).expect("create older nvm bin");
+        std::fs::create_dir_all(&newer_bin).expect("create newer nvm bin");
+        write_fake_tool(&older_bin.join("codex"));
+        std::fs::write(newer_bin.join("codex"), "").expect("write non-executable codex");
+
+        assert_eq!(
+            nvm_versioned_tool_candidates_from_home("codex", temp_dir.path()),
+            vec![older_bin.join("codex")]
+        );
+    }
+
+    #[test]
     fn nvm_versioned_tool_candidates_rejects_non_semver_dirs() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let versions_root = temp_dir.path().join(".nvm").join("versions").join("node");
@@ -548,8 +625,8 @@ mod tests {
         let invalid_bin = versions_root.join("latest").join("bin");
         std::fs::create_dir_all(&valid_bin).expect("create valid nvm bin");
         std::fs::create_dir_all(&invalid_bin).expect("create invalid nvm bin");
-        std::fs::write(valid_bin.join("codex"), "").expect("write valid codex");
-        std::fs::write(invalid_bin.join("codex"), "").expect("write invalid codex");
+        write_fake_tool(&valid_bin.join("codex"));
+        write_fake_tool(&invalid_bin.join("codex"));
 
         assert_eq!(
             nvm_versioned_tool_candidates_from_home("codex", temp_dir.path()),
