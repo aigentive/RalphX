@@ -208,6 +208,7 @@ export function AgentPublishPanel({
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
+  const hasNoDetectedChanges = changesQuery.isSuccess && changes.length === 0;
 
   if (!workspace) {
     return <EmptyArtifactState title="No workspace selected" />;
@@ -247,6 +248,7 @@ export function AgentPublishPanel({
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
     Boolean(terminalPublicationStatus) ||
+    hasNoDetectedChanges ||
     workspace.status === "missing";
   const publishButtonLabel =
     terminalPublicationLabel ??
