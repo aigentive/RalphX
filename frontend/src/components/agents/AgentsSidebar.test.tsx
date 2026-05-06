@@ -920,4 +920,49 @@ describe("AgentsSidebar", () => {
     await user.click(screen.getByText("Restore session"));
     expect(onRestoreConversation).toHaveBeenCalledWith(archived);
   });
+
+  it("renders the running runtime label and accent status dot for a generating conversation", () => {
+    const conv = conversation({ id: "conversation-run", title: "Live run" });
+    const storeKey = getAgentConversationStoreKey(conv);
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [storeKey]: conv.id },
+      agentStatus: { [storeKey]: "generating" },
+    });
+
+    renderSidebar();
+
+    expect(screen.getByText("running")).toBeInTheDocument();
+  });
+
+  it("rename Submit no-ops when the dialog is closed before submitting", async () => {
+    const user = userEvent.setup();
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const conv = conversation({ id: "conversation-rename-3", title: "" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onRenameConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    const titleInput = screen.getByLabelText("Session title");
+    // Clear and submit Enter without any new value — trimmed length === 0 path.
+    await user.clear(titleInput);
+    await user.keyboard("{Enter}");
+    expect(onRenameConversation).not.toHaveBeenCalled();
+  });
 });
