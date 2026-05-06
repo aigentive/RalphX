@@ -7,13 +7,14 @@ use tokio::sync::RwLock;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
 
 pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
+    pr_descriptions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrDescription>>,
     publication_events:
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
 }
@@ -22,6 +23,7 @@ impl MemoryAgentConversationWorkspaceRepository {
     pub fn new() -> Self {
         Self {
             workspaces: RwLock::new(HashMap::new()),
+            pr_descriptions: RwLock::new(HashMap::new()),
             publication_events: RwLock::new(HashMap::new()),
         }
     }
@@ -126,6 +128,35 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn save_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+        description: AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        self.pr_descriptions
+            .write()
+            .await
+            .insert(conversation_id.clone(), description);
+        Ok(())
+    }
+
+    async fn get_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>> {
+        Ok(self
+            .pr_descriptions
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned())
+    }
+
+    async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        self.pr_descriptions.write().await.remove(conversation_id);
+        Ok(())
+    }
+
     async fn append_publication_event(
         &self,
         event: AgentConversationWorkspacePublicationEvent,
@@ -158,6 +189,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .write()
             .await
             .remove(conversation_id);
+        self.pr_descriptions.write().await.remove(conversation_id);
         Ok(())
     }
 }
@@ -179,10 +211,46 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::entities::{AgentConversationWorkspacePublicationEvent, ChatConversationId};
+    use crate::domain::entities::{
+        AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
+    };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
     use super::MemoryAgentConversationWorkspaceRepository;
+
+    #[tokio::test]
+    async fn pr_description_round_trips_and_clears() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let conversation_id = ChatConversationId::from_string("conversation-1");
+
+        repo.save_pr_description(
+            &conversation_id,
+            AgentWorkspacePrDescription::new(
+                Some("Describe agent workspace publish".to_string()),
+                "## Summary\n\n- Added publish descriptions".to_string(),
+            ),
+        )
+        .await
+        .unwrap();
+
+        let saved = repo
+            .get_pr_description(&conversation_id)
+            .await
+            .unwrap()
+            .expect("description should be saved");
+        assert_eq!(
+            saved.title.as_deref(),
+            Some("Describe agent workspace publish")
+        );
+        assert!(saved.body_markdown.contains("## Summary"));
+
+        repo.clear_pr_description(&conversation_id).await.unwrap();
+        assert!(repo
+            .get_pr_description(&conversation_id)
+            .await
+            .unwrap()
+            .is_none());
+    }
 
     #[tokio::test]
     async fn publication_events_are_listed_in_append_order() {

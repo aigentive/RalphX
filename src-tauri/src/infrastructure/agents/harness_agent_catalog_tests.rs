@@ -25,6 +25,11 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "session_namer",
         "ralphx-utility-session-namer",
     ),
+    (
+        "ralphx-utility-pr-describer",
+        "pr_describer",
+        "ralphx-utility-pr-describer",
+    ),
 ];
 
 const CODEX_PILOT_AGENTS: &[&str] = &["ralphx-ideation", "ralphx-utility-session-namer"];
@@ -213,6 +218,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-memory-capture",
     "ralphx-ideation-team-lead",
     "ralphx-utility-session-namer",
+    "ralphx-utility-pr-describer",
     "ralphx-chat-task",
     "ralphx-chat-project",
     "ralphx-review-chat",
@@ -1301,6 +1307,7 @@ fn legacy_agent_aliases_resolve_into_canonical_catalog_entries() {
         ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
+        ("pr-describer", "ralphx-utility-pr-describer"),
     ];
 
     for (legacy_name, canonical_name) in cases {

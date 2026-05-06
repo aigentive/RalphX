@@ -9,9 +9,9 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_IDEATION_TEAM_MEMBER, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
     SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER,
-    SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY, SHORT_SESSION_NAMER, SHORT_WORKER,
-    SHORT_WORKER_TEAM,
+    SHORT_PLAN_VERIFIER, SHORT_PR_DESCRIBER, SHORT_PROJECT_ANALYZER, SHORT_QA_EXECUTOR,
+    SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
+    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents,
@@ -98,6 +98,7 @@ fn test_all_agent_names_are_known() {
         SHORT_ORCHESTRATOR_IDEATION,
         SHORT_ORCHESTRATOR_IDEATION_READONLY,
         SHORT_SESSION_NAMER,
+        SHORT_PR_DESCRIBER,
         SHORT_CHAT_TASK,
         SHORT_CHAT_PROJECT,
         SHORT_REVIEW_CHAT,
@@ -2905,6 +2906,7 @@ fn test_get_agent_config_accepts_legacy_agent_aliases() {
         ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
+        ("pr-describer", "ralphx-utility-pr-describer"),
     ];
 
     for (legacy_name, canonical_name) in cases {
@@ -2922,6 +2924,7 @@ fn test_preapproved_tools_always_contains_permission_request() {
         "ralphx-execution-coder",
         "ralphx-execution-merger",
         "ralphx-utility-session-namer",
+        "ralphx-utility-pr-describer",
         "ralphx-chat-task",
     ] {
         let tools = get_preapproved_tools(agent_name).unwrap_or_default();

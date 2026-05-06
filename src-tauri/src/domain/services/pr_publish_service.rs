@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tempfile::NamedTempFile;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, ArtifactContent, ChatConversation, PlanBranch, Project, Task,
-    TaskCategory,
+    AgentConversationWorkspace, AgentWorkspacePrDescription, ArtifactContent, ChatConversation,
+    PlanBranch, Project, Task, TaskCategory,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
 use crate::domain::services::GithubServiceTrait;
@@ -61,9 +61,16 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         working_dir: &Path,
         conversation: &ChatConversation,
         workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
-        let title = build_agent_workspace_pr_title(conversation);
-        let body_file = write_agent_workspace_pr_body(conversation, workspace)?;
+        let title = description
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| build_agent_workspace_pr_title(conversation));
+        let body_file = write_agent_workspace_pr_body(&description.body_markdown)?;
 
         if let Some(pr_number) = workspace.publication_pr_number {
             self.github
@@ -355,18 +362,7 @@ fn build_agent_workspace_pr_title(conversation: &ChatConversation) -> String {
         .unwrap_or_else(|| "Agent conversation changes".to_string())
 }
 
-fn write_agent_workspace_pr_body(
-    conversation: &ChatConversation,
-    workspace: &AgentConversationWorkspace,
-) -> AppResult<NamedTempFile> {
-    let body = format!(
-        "## RalphX Agent Conversation\n\n\
-         - Conversation: `{}`\n\
-         - Base branch: `{}`\n\
-         - Feature branch: `{}`\n\n\
-         Published from a RalphX Agents conversation workspace.",
-        conversation.id, workspace.base_ref, workspace.branch_name
-    );
+fn write_agent_workspace_pr_body(body: &str) -> AppResult<NamedTempFile> {
     let body_file = NamedTempFile::new().map_err(|e| {
         AppError::Infrastructure(format!("failed to create PR body temp file: {e}"))
     })?;
@@ -404,4 +400,105 @@ fn fit_plan_markdown_to_pr_body(prefix: &str, plan_markdown: &str, suffix: &str)
         truncated_plan.trim_end(),
         PR_BODY_TRUNCATION_NOTICE
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, ProjectId,
+    };
+    use crate::tests::mock_github_service::MockGithubService;
+
+    fn agent_workspace_fixture() -> (ChatConversation, AgentConversationWorkspace) {
+        let project_id = ProjectId::from_string("project-pr-publish".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.title = Some("Conversation title".to_string());
+        let workspace = AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("0".repeat(40)),
+            "feature/pr-description".to_string(),
+            "/tmp/pr-description-worktree".to_string(),
+        );
+        (conversation, workspace)
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_publisher_creates_draft_with_generated_body() {
+        let (conversation, workspace) = agent_workspace_fixture();
+        let description = AgentWorkspacePrDescription::new(
+            Some("Generated PR title".to_string()),
+            "## Summary\n\nGenerated body".to_string(),
+        );
+        let github = Arc::new(MockGithubService::new());
+        github.will_create_pr(42, "https://github.com/mock/repo/pull/42");
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let publisher = AgentWorkspacePrPublisher::new(&github_trait);
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let outcome = publisher
+            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.pr_number, 42);
+        assert!(outcome.created_pr);
+        assert_eq!(outcome.pr_status, "draft");
+        let state = github.state();
+        let (base, head, title, body_path) = state
+            .last_create_draft_pr_args
+            .clone()
+            .expect("draft PR args should be captured");
+        assert_eq!(base, "main");
+        assert_eq!(head, "feature/pr-description");
+        assert_eq!(title, "Generated PR title");
+        assert!(body_path.contains("tmp"));
+        assert_eq!(
+            state.last_create_draft_pr_body.as_deref(),
+            Some("## Summary\n\nGenerated body")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_publisher_updates_existing_pr_with_title_fallback() {
+        let (mut conversation, mut workspace) = agent_workspace_fixture();
+        conversation.title = Some("Untitled agent".to_string());
+        workspace.publication_pr_number = Some(77);
+        workspace.publication_pr_url = Some("https://github.com/mock/repo/pull/77".to_string());
+        let description =
+            AgentWorkspacePrDescription::new(None, "## Summary\n\nUpdated body".to_string());
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let publisher = AgentWorkspacePrPublisher::new(&github_trait);
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let outcome = publisher
+            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.pr_number, 77);
+        assert!(!outcome.created_pr);
+        assert_eq!(outcome.pr_status, "open");
+        assert_eq!(outcome.pr_url, "https://github.com/mock/repo/pull/77");
+        let state = github.state();
+        assert_eq!(state.update_pr_details_calls, 1);
+        let (pr_number, title, body_path) = state
+            .last_update_pr_details_args
+            .clone()
+            .expect("update PR args should be captured");
+        assert_eq!(pr_number, 77);
+        assert_eq!(title, "Agent conversation changes");
+        assert!(body_path.contains("tmp"));
+        assert_eq!(
+            state.last_update_pr_details_body.as_deref(),
+            Some("## Summary\n\nUpdated body")
+        );
+    }
 }

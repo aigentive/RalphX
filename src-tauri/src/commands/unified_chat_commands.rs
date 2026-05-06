@@ -26,6 +26,7 @@ use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
 };
 use crate::application::agent_workspace_bridge::wake_agent_workspace_for_bridge_events;
+use crate::application::agent_workspace_pr_description::draft_agent_workspace_pr_description;
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
 use crate::application::git_service::GitService;
 use crate::application::publish_resilience::{
@@ -2895,6 +2896,27 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         return Err("No committed changes to publish on this agent branch".to_string());
     }
 
+    mark_agent_workspace_publish_status(state, &workspace, "describing")
+        .await
+        .map_err(|e| e.to_string())?;
+    let pr_description = match draft_agent_workspace_pr_description(
+        state,
+        &conversation,
+        &project,
+        &workspace,
+        &worktree_path,
+        review_base,
+    )
+    .await
+    {
+        Ok(description) => description,
+        Err(error) => {
+            let error = error.to_string();
+            mark_agent_workspace_publish_description_failure(state, &workspace, &error).await;
+            return Err(error);
+        }
+    };
+
     mark_agent_workspace_publish_status(state, &workspace, "pushing")
         .await
         .map_err(|e| e.to_string())?;
@@ -2920,7 +2942,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
 
     let publisher = AgentWorkspacePrPublisher::new(github);
     let pr_result = publisher
-        .publish_draft_pr(&worktree_path, &conversation, &workspace)
+        .publish_draft_pr(&worktree_path, &conversation, &workspace, &pr_description)
         .await;
     let outcome = match pr_result {
         Ok(result) => result,
@@ -3012,6 +3034,32 @@ async fn mark_agent_workspace_publish_status(
         None,
     )
     .await
+}
+
+async fn mark_agent_workspace_publish_description_failure(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+) {
+    let _ = state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            &workspace.conversation_id,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.as_deref(),
+            workspace.publication_pr_status.as_deref(),
+            Some("description_failed"),
+        )
+        .await;
+    let _ = append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        "description_failed",
+        "failed",
+        error,
+        Some("operational".to_string()),
+    )
+    .await;
 }
 
 #[doc(hidden)]
@@ -3316,7 +3364,7 @@ fn publication_event_status_for_push_status(push_status: &str) -> &'static str {
     match push_status {
         "pushed" => "succeeded",
         "no_changes" => "skipped",
-        "failed" | "needs_agent" => "failed",
+        "failed" | "needs_agent" | "description_failed" => "failed",
         _ => "started",
     }
 }
@@ -3326,10 +3374,12 @@ fn publication_event_summary_for_push_status(push_status: &str) -> &'static str 
         "checking" => "Checking workspace changes",
         "committing" => "Committing workspace changes",
         "refreshing" => "Refreshing branch from base",
+        "describing" => "Drafting pull request description",
         "pushing" => "Pushing agent branch",
         "pushed" => "Agent branch pushed",
         "no_changes" => "No committed changes to publish",
         "needs_agent" => "Publish needs workspace agent repair",
+        "description_failed" => "Pull request description failed",
         "failed" => "Publish failed",
         _ => "Publish status changed",
     }
@@ -3718,6 +3768,7 @@ mod tests {
         normalize_agent_runtime_selection, normalized_effort_for_supported,
         parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
         project_plan_branch_publication_into_workspace_response,
+        publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
         send_agent_workspace_publish_repair_message_for_target,
@@ -4531,6 +4582,95 @@ mod tests {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[test]
+    fn publication_event_status_helpers_include_description_states() {
+        assert_eq!(
+            publication_event_status_for_push_status("describing"),
+            "started"
+        );
+        assert_eq!(
+            publication_event_summary_for_push_status("describing"),
+            "Drafting pull request description"
+        );
+        assert_eq!(
+            publication_event_status_for_push_status("description_failed"),
+            "failed"
+        );
+        assert_eq!(
+            publication_event_summary_for_push_status("description_failed"),
+            "Pull request description failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_stops_before_push_when_pr_description_fails() {
+        let github = Arc::new(MockGithubService::new());
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("description-fails", true, None, github).await;
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "change that should be described\n",
+        )
+        .expect("workspace change should be written");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("missing generated PR description should block publish");
+
+        assert!(error.contains("completed without submitting a PR description"));
+        assert_eq!(github.state().push_branch_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some("description_failed")
+        );
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("publication events should load");
+        assert!(events.iter().any(|event| {
+            event.step == "describing"
+                && event.status == "started"
+                && event.summary == "Drafting pull request description"
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "description_failed"
+                && event.status == "failed"
+                && event.classification.as_deref() == Some("operational")
+        }));
     }
 
     #[test]

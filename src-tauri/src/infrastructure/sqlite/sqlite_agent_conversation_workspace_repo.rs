@@ -9,7 +9,8 @@ use tokio::sync::Mutex;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -338,6 +339,74 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      SET status = ?2, updated_at = ?3
                      WHERE conversation_id = ?1",
                     rusqlite::params![conversation_id, status, updated_at],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn save_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+        description: AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let title = description.title;
+        let body_markdown = description.body_markdown;
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pr_title = ?2,
+                         publication_pr_body = ?3,
+                         updated_at = ?4
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, title, body_markdown, updated_at],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn get_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT publication_pr_title, publication_pr_body
+                     FROM agent_conversation_workspaces
+                     WHERE conversation_id = ?1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![conversation_id])?;
+                let Some(row) = rows.next()? else {
+                    return Ok(None);
+                };
+                let body_markdown: Option<String> = row.get(1)?;
+                let title: Option<String> = row.get(0)?;
+                Ok(body_markdown.map(|body| AgentWorkspacePrDescription {
+                    title,
+                    body_markdown: body,
+                }))
+            })
+            .await
+    }
+
+    async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let updated_at = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET publication_pr_title = NULL,
+                         publication_pr_body = NULL,
+                         updated_at = ?2
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id, updated_at],
                 )?;
                 Ok(())
             })

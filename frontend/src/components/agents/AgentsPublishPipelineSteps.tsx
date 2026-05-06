@@ -4,6 +4,7 @@ const PUBLISH_STEPS = [
   { id: "checking", label: "Check workspace" },
   { id: "committing", label: "Commit changes" },
   { id: "refreshing", label: "Refresh branch" },
+  { id: "describing", label: "Draft PR description" },
   { id: "pushing", label: "Push branch" },
   { id: "pushed", label: "Open draft PR" },
 ] as const;
@@ -21,6 +22,9 @@ export function PublishPipelineSteps({
       return PUBLISH_STEPS.length;
     }
     if (normalizedStatus === "pushing") {
+      return 4;
+    }
+    if (normalizedStatus === "describing") {
       return 3;
     }
     if (normalizedStatus === "refreshed") {
@@ -35,7 +39,9 @@ export function PublishPipelineSteps({
     return 0;
   })();
   const isRepairStatus = normalizedStatus === "needs_agent";
-  const isTerminalFailure = normalizedStatus === "failed" || isRepairStatus;
+  const isDescriptionFailure = normalizedStatus === "description_failed";
+  const isTerminalFailure = normalizedStatus === "failed" || isRepairStatus || isDescriptionFailure;
+  const failureIndex = isDescriptionFailure ? 3 : 0;
 
   return (
     <div
@@ -49,11 +55,11 @@ export function PublishPipelineSteps({
       <div className="mb-2 text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
         Publish pipeline
       </div>
-      <div className="grid gap-2 sm:grid-cols-5">
+      <div className="grid gap-2 sm:grid-cols-6">
         {PUBLISH_STEPS.map((step, index) => {
           const isDone = activeIndex > index;
           const isActive = isPublishing && activeIndex === index;
-          const isFailed = isTerminalFailure && index === 0;
+          const isFailed = isTerminalFailure && index === failureIndex;
           return (
             <div
               key={step.id}
@@ -104,6 +110,8 @@ export function PublishPipelineSteps({
         <div className="mt-3 text-xs text-[var(--text-muted)]">
           {isRepairStatus
             ? "The latest publish attempt found a fixable issue and sent it back to the workspace agent."
+            : isDescriptionFailure
+              ? "RalphX could not draft a PR description, so no pull request was opened."
             : "The latest publish attempt failed. Fixable errors are sent back to the workspace agent."}
         </div>
       )}

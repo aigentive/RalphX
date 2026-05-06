@@ -267,6 +267,7 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "memory-capture" => "ralphx-memory-capture",
         "memory-maintainer" => "ralphx-memory-maintainer",
         "session-namer" => "ralphx-utility-session-namer",
+        "pr-describer" => "ralphx-utility-pr-describer",
         _ => short_name,
     }
 }

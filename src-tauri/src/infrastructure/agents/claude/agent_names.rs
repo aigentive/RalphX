@@ -16,6 +16,7 @@ pub const PLUGIN_PREFIX: &str = "ralphx:";
 pub const SHORT_ORCHESTRATOR_IDEATION: &str = "ralphx-ideation";
 pub const SHORT_ORCHESTRATOR_IDEATION_READONLY: &str = "ralphx-ideation-readonly";
 pub const SHORT_SESSION_NAMER: &str = "ralphx-utility-session-namer";
+pub const SHORT_PR_DESCRIBER: &str = "ralphx-utility-pr-describer";
 pub const SHORT_CHAT_TASK: &str = "ralphx-chat-task";
 pub const SHORT_CHAT_PROJECT: &str = "ralphx-chat-project";
 pub const SHORT_REVIEW_CHAT: &str = "ralphx-review-chat";
@@ -54,8 +55,10 @@ pub const SHORT_IDEATION_SPECIALIST_UX: &str = "ralphx-ideation-specialist-ux";
 pub const SHORT_IDEATION_SPECIALIST_CODE_QUALITY: &str = "ralphx-ideation-specialist-code-quality";
 pub const SHORT_IDEATION_ADVOCATE: &str = "ralphx-ideation-advocate";
 pub const SHORT_IDEATION_CRITIC: &str = "ralphx-ideation-critic";
-pub const SHORT_IDEATION_SPECIALIST_PIPELINE_SAFETY: &str = "ralphx-ideation-specialist-pipeline-safety";
-pub const SHORT_IDEATION_SPECIALIST_STATE_MACHINE: &str = "ralphx-ideation-specialist-state-machine";
+pub const SHORT_IDEATION_SPECIALIST_PIPELINE_SAFETY: &str =
+    "ralphx-ideation-specialist-pipeline-safety";
+pub const SHORT_IDEATION_SPECIALIST_STATE_MACHINE: &str =
+    "ralphx-ideation-specialist-state-machine";
 
 // ── ChatService team agents (team_mode=true → resolve_agent_with_team_mode) ──
 
@@ -113,6 +116,9 @@ pub const AGENT_REVIEW_HISTORY: &str = "ralphx:ralphx-review-history";
 
 /// Session naming agent (haiku, background)
 pub const AGENT_SESSION_NAMER: &str = "ralphx:ralphx-utility-session-namer";
+
+/// Agent workspace PR description writer (background)
+pub const AGENT_PR_DESCRIBER: &str = "ralphx:ralphx-utility-pr-describer";
 
 /// Project analysis agent (background)
 pub const AGENT_PROJECT_ANALYZER: &str = "ralphx:ralphx-project-analyzer";

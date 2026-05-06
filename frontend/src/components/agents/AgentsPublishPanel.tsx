@@ -196,10 +196,20 @@ export function AgentPublishPanel({
   const isUpdatingFromBase = updateFromBaseMutation.isPending;
   const effectivePublishing = isPublishingWorkspace || isUpdatingFromBase;
   const isRepairPending = workspace.publicationPushStatus === "needs_agent";
+  const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
   const pipelineStatus = isUpdatingFromBase
     ? "refreshing"
     : isPublishingWorkspace &&
-        !["checking", "committing", "refreshing", "refreshed", "pushing", "pushed"].includes(
+        ![
+          "checking",
+          "committing",
+          "refreshing",
+          "refreshed",
+          "describing",
+          "description_failed",
+          "pushing",
+          "pushed",
+        ].includes(
           workspace.publicationPushStatus ?? "",
         )
       ? "checking"
@@ -210,6 +220,8 @@ export function AgentPublishPanel({
     freshness?.baseRef ??
     workspace.baseRef ??
     base;
+  const shouldShowPublishPipeline =
+    effectivePublishing || workspace.publicationPushStatus === "description_failed";
   const isFreshnessLoading = freshnessQuery.isLoading;
   const publishDisabled =
     !onPublishWorkspace ||
@@ -247,6 +259,8 @@ export function AgentPublishPanel({
           ? workspace.publicationPrNumber || workspace.publicationPrUrl
             ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
             : "Publishing is managed by this ideation plan's task pipeline."
+        : isDescriptionFailed
+          ? "RalphX could not draft a PR description. No pull request was opened; retry Commit & Publish after reviewing the latest publish event."
         : isChangesLoading
           ? "Loading changed files..."
           : isPublishCurrent
@@ -380,7 +394,7 @@ export function AgentPublishPanel({
               }
             />
           </div>
-          {effectivePublishing && (
+          {shouldShowPublishPipeline && (
             <PublishPipelineSteps
               status={pipelineStatus}
               isPublishing={effectivePublishing}

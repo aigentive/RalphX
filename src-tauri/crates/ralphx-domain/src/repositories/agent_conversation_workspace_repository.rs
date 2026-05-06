@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, ChatConversationId, IdeationSessionId, PlanBranchId,
-    ProjectId,
+    AgentConversationWorkspaceStatus, AgentWorkspacePrDescription, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -49,6 +49,19 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         conversation_id: &ChatConversationId,
         status: AgentConversationWorkspaceStatus,
     ) -> AppResult<()>;
+
+    async fn save_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+        description: AgentWorkspacePrDescription,
+    ) -> AppResult<()>;
+
+    async fn get_pr_description(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>>;
+
+    async fn clear_pr_description(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 
     async fn append_publication_event(
         &self,

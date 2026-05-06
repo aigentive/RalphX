@@ -1,0 +1,12 @@
+name: ralphx-utility-pr-describer
+role: pr_describer
+description: "Writes reviewer-focused pull request descriptions for agent conversation workspace publishes"
+capabilities:
+  mcp_tools:
+    - submit_agent_workspace_pr_description
+harnesses:
+  claude:
+    model: sonnet
+    tools:
+      mcp_only: true
+    preapproved_cli_tools: []
