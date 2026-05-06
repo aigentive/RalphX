@@ -36,6 +36,7 @@ pub struct MockGithubService {
     pub create_draft_pr_calls: Arc<Mutex<u32>>,
     pub mark_pr_ready_calls: Arc<Mutex<u32>>,
     pub update_pr_details_calls: Arc<Mutex<u32>>,
+    pub update_pr_base_calls: Arc<Mutex<u32>>,
     pub close_pr_calls: Arc<Mutex<u32>>,
     pub delete_remote_branch_calls: Arc<Mutex<u32>>,
     pub find_pr_by_head_branch_calls: Arc<Mutex<u32>>,
@@ -62,6 +63,7 @@ impl MockGithubService {
             create_draft_pr_calls: Arc::new(Mutex::new(0)),
             mark_pr_ready_calls: Arc::new(Mutex::new(0)),
             update_pr_details_calls: Arc::new(Mutex::new(0)),
+            update_pr_base_calls: Arc::new(Mutex::new(0)),
             close_pr_calls: Arc::new(Mutex::new(0)),
             delete_remote_branch_calls: Arc::new(Mutex::new(0)),
             find_pr_by_head_branch_calls: Arc::new(Mutex::new(0)),
@@ -144,6 +146,9 @@ impl MockGithubService {
     pub fn update_pr_details_calls(&self) -> u32 {
         *self.update_pr_details_calls.lock().unwrap()
     }
+    pub fn update_pr_base_calls(&self) -> u32 {
+        *self.update_pr_base_calls.lock().unwrap()
+    }
     pub fn delete_branch_calls(&self) -> u32 {
         *self.delete_remote_branch_calls.lock().unwrap()
     }
@@ -194,6 +199,11 @@ impl GithubServiceTrait for MockGithubService {
         if let Some(result) = self.update_pr_details_result.lock().unwrap().take() {
             return result;
         }
+        Ok(())
+    }
+
+    async fn update_pr_base(&self, _wd: &Path, _pr_number: i64, _base: &str) -> AppResult<()> {
+        *self.update_pr_base_calls.lock().unwrap() += 1;
         Ok(())
     }
 
