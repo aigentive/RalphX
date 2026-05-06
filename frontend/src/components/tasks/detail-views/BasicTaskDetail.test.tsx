@@ -625,6 +625,22 @@ describe("BasicTaskDetail", () => {
       await user.type(textarea, "Try a different approach");
       expect(textarea).toHaveValue("Try a different approach");
     });
+
+    it("renders stop history section with stopped-from label, reason and time-ago", () => {
+      const stopMetadataInner = JSON.stringify({
+        stopped_from_status: "executing",
+        stopped_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        stop_reason: "Manual halt during pipeline",
+      });
+      const metadata = JSON.stringify({ stop_metadata: stopMetadataInner });
+      const task = createTestTask({ internalStatus: "stopped", metadata });
+
+      render(<BasicTaskDetail task={task} />, { wrapper: TestWrapper });
+
+      expect(screen.getByText("Stopped from")).toBeInTheDocument();
+      expect(screen.getByText(/Manual halt during pipeline/i)).toBeInTheDocument();
+      expect(screen.getByText("Reason")).toBeInTheDocument();
+    });
   });
 
   describe("execution mode selector", () => {
