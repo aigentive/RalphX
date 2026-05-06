@@ -281,6 +281,30 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByText("Provider ADR")).toBeInTheDocument();
   });
 
+  it("ArtifactWidget renders MarkdownPreview headings/sub-headings in compact mode", async () => {
+    const user = userEvent.setup();
+    render(
+      <ArtifactWidget
+        compact
+        toolCall={makeToolCall("mcp__ralphx__get_artifact", {
+          result: {
+            title: "Compact Doc",
+            artifact_type: "design_doc",
+            content: "# Heading\n\n## Sub-heading\n\nParagraph body line",
+            version: 1,
+          },
+        })}
+      />,
+    );
+    // Expand the preview if collapsed.
+    const headerEl = screen.queryByText("Heading");
+    if (!headerEl) {
+      const trigger = screen.getByText("Compact Doc");
+      await user.click(trigger);
+    }
+    expect(screen.getByText("Heading")).toBeInTheDocument();
+  });
+
   it("renders ContextWidget and IssuesSummaryWidget from parsed MCP results", async () => {
     const user = userEvent.setup();
     render(
