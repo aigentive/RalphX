@@ -121,6 +121,16 @@ function getStatusState(running: number, paused: boolean): "running" | "paused" 
   return "idle";
 }
 
+function StatusSeparator() {
+  return (
+    <span
+      aria-hidden="true"
+      className="h-[3px] w-[3px] rounded-full"
+      style={{ backgroundColor: "var(--border-strong, var(--border-default))" }}
+    />
+  );
+}
+
 export function ExecutionControlBar({
   projectId,
   runningCount,
@@ -193,16 +203,23 @@ export function ExecutionControlBar({
   const ideationLabel = breakpoint === "wide" ? "Ideation: " : breakpoint === "medium" ? "I: " : "";
   const attentionCount = mergeAttentionCount ?? (hasAttentionMerges ? 1 : 0);
   const showAttentionCount = attentionCount > 0;
-  const showMergeWorkCount = mergingCount > 0 || !showAttentionCount;
+  const showMergeWorkCount = mergingCount > 0;
 
   // Only show ideation indicator when max > 0
   const showIdeation = ideationMax > 0;
 
   return (
     <TooltipProvider>
-      {/* Outer container with padding for floating effect */}
-      <div className="p-2" style={{ backgroundColor: "var(--bg-base)" }}>
-        {/* Inner floating glass container */}
+      <div
+        data-testid="execution-control-shell"
+        className="h-9"
+        style={{
+          backgroundColor: "var(--kanban-toolbar-bg)",
+          borderTopColor: "var(--kanban-toolbar-border, #2E2E36)",
+          borderTopStyle: "solid",
+          borderTopWidth: "1px",
+        }}
+      >
         <div
           data-testid="execution-control-bar"
           data-paused={isPaused ? "true" : "false"}
@@ -212,27 +229,25 @@ export function ExecutionControlBar({
           role="region"
           aria-label="Execution controls"
           aria-live="polite"
-          className="flex py-3 items-center justify-between px-4 z-10"
+          className="z-10 flex h-full items-center justify-between px-4 text-[0.7188rem]"
           style={{
-            /* macOS Tahoe: floating panel - FLAT with blur */
-            borderRadius: "10px",
-            background: "var(--bg-surface)",
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-            border: "1px solid var(--border-subtle)",
-            boxShadow: "var(--shadow-md)",
+            backgroundColor: "transparent",
+            borderRadius: 0,
+            border: "none",
+            borderStyle: "none",
+            boxShadow: "none",
           }}
         >
         {/* Status Section (Left) */}
         <div
-          className="flex items-center gap-4"
+          className="flex items-center gap-5"
           aria-label={`${runningCount} tasks running out of ${maxConcurrent}, ${queuedCount} queued tasks, ${queuedMessageCount} queued messages, ${pausedCount} paused, ${mergingCount} merge tasks, ${attentionCount} escalated merge tasks`}
         >
           {/* Animated Status Indicator (anchor for all popovers) */}
           <div
             data-testid="status-indicator"
             className={cn(
-              "w-2 h-2 rounded-full transition-colors duration-200",
+              "h-[7px] w-[7px] rounded-full transition-colors duration-200",
               isRunning && "status-indicator-running"
             )}
             style={{ backgroundColor: statusColor }}
@@ -260,11 +275,21 @@ export function ExecutionControlBar({
             >
               <button
                 data-testid="running-count"
-                className="text-[13px] font-medium cursor-pointer hover:opacity-80 transition-opacity"
-                style={{ color: runningCount > 0 ? STATUS_COLORS.running : "var(--text-primary)" }}
+                className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
+                style={{ color: runningCount > 0 ? STATUS_COLORS.running : "var(--text-muted)" }}
                 onClick={() => { setActiveTab("execution"); setIsPopoverOpen(true); }}
               >
-                {runningLabel}{runningCount}/{maxConcurrent}
+                <span>{runningLabel}</span>
+                <span
+                  style={{
+                    color: runningCount > 0 ? STATUS_COLORS.running : "var(--text-primary)",
+                    fontFamily:
+                      "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                    fontWeight: 500,
+                  }}
+                >
+                  {runningCount}/{maxConcurrent}
+                </span>
               </button>
             </RunningProcessPopover>
             <InfoTooltip
@@ -296,7 +321,7 @@ export function ExecutionControlBar({
           </div>
 
           {/* Separator */}
-          <span style={{ color: "var(--text-muted)" }}>•</span>
+          <StatusSeparator />
 
           {/* Queued Count (Clickable Popover) + Info Tooltip */}
           <div className="flex items-center gap-1.5">
@@ -307,12 +332,22 @@ export function ExecutionControlBar({
             >
               <button
                 data-testid="queued-count"
-                className="text-[13px] cursor-pointer hover:underline transition-all"
-                style={{ color: queuedCount > 0 ? STATUS_COLORS.ready : "var(--text-secondary)" }}
+                className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
+                style={{ color: "var(--text-muted)" }}
                 aria-label="View queued tasks"
                 aria-haspopup="dialog"
               >
-                {queuedLabel}{queuedCount}
+                <span>{queuedLabel}</span>
+                <span
+                  style={{
+                    color: queuedCount > 0 ? STATUS_COLORS.ready : "var(--text-primary)",
+                    fontFamily:
+                      "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                    fontWeight: 500,
+                  }}
+                >
+                  {queuedCount}
+                </span>
               </button>
             </QueuedTasksPopover>
             <InfoTooltip
@@ -352,14 +387,16 @@ export function ExecutionControlBar({
 
           {queuedMessageCount > 0 && (
             <>
-              <span style={{ color: "var(--text-muted)" }}>•</span>
+              <StatusSeparator />
               <div
                 data-testid="queued-message-count"
-                className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[12px]"
+                className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.7188rem]"
                 style={{
                   color: "var(--status-warning)",
                   backgroundColor: "var(--status-warning-muted)",
-                  border: "1px solid var(--status-warning-border)",
+                  borderColor: "var(--status-warning-border)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
                 }}
                 aria-label={`${queuedMessageCount} queued agent messages held by pause or capacity barriers`}
                 title="Queued agent messages held by pause/capacity barriers"
@@ -376,26 +413,38 @@ export function ExecutionControlBar({
           {/* Ideation Capacity Indicator - only visible when max > 0 */}
           {showIdeation && (
             <>
-              <span style={{ color: "var(--text-muted)" }}>•</span>
+              <StatusSeparator />
               <div className="flex items-center gap-1.5">
                 <button
                   data-testid="ideation-count"
                   data-ideation-trigger
-                  className="text-[13px] font-medium cursor-pointer hover:opacity-80 transition-opacity"
-                  style={{ color: ideationActive > 0 ? "var(--accent-primary)" : "var(--text-secondary)" }}
+                  className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
+                  style={{ color: "var(--text-muted)" }}
                   onClick={() => { setActiveTab("ideation"); setIsPopoverOpen(true); }}
                   aria-label={`Ideation: ${ideationActive} active, ${ideationMax} max`}
                 >
-                  {ideationLabel}{ideationActive}/{ideationMax}
+                  <span>{ideationLabel}</span>
+                  <span
+                    style={{
+                      color: ideationActive > 0 ? "var(--accent-primary)" : "var(--text-primary)",
+                      fontFamily:
+                        "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {ideationActive}/{ideationMax}
+                  </span>
                 </button>
                 {ideationWaiting > 0 && (
                   <span
                     data-testid="ideation-waiting-badge"
-                    className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-medium"
+                    className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium"
                     style={{
                       color: "var(--status-warning)",
                       backgroundColor: "var(--status-warning-muted)",
-                      border: "1px solid var(--status-warning-border)",
+                      borderColor: "var(--status-warning-border)",
+                      borderStyle: "solid",
+                      borderWidth: "1px",
                     }}
                     title={`${ideationWaiting} ideation session${ideationWaiting === 1 ? "" : "s"} waiting for capacity`}
                   >
@@ -409,88 +458,130 @@ export function ExecutionControlBar({
           {/* Paused Count (Clickable Popover) - only visible when > 0 */}
           {pausedCount > 0 && (
             <>
-              <span style={{ color: "var(--text-muted)" }}>•</span>
+              <StatusSeparator />
               <PausedTasksPopover
                 pausedTasks={pausedTasks}
                 alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
               >
                 <button
                   data-testid="paused-count"
-                  className="text-[13px] cursor-pointer hover:opacity-80 transition-opacity"
-                  style={{ color: STATUS_COLORS.paused }}
+                  className="inline-flex cursor-pointer items-center gap-1 transition-opacity hover:opacity-80"
+                  style={{ color: "var(--text-muted)" }}
                   aria-label="View paused tasks"
                   aria-haspopup="dialog"
                 >
-                  {pausedLabel}{pausedCount}
+                  <span>{pausedLabel}</span>
+                  <span
+                    style={{
+                      color: STATUS_COLORS.paused,
+                      fontFamily:
+                        "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                      fontWeight: 500,
+                    }}
+                  >
+                    {pausedCount}
+                  </span>
                 </button>
               </PausedTasksPopover>
             </>
           )}
 
-          {/* Separator */}
-          <span style={{ color: "var(--text-muted)" }}>•</span>
-
           {/* Merging Count with Popover */}
-          {mergePipelineData ? (
-            <MergePipelinePopover
-              active={mergePipelineData.active}
-              waiting={mergePipelineData.waiting}
-              needsAttention={mergePipelineData.needsAttention}
-              runningCount={runningCount}
-              alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
-            >
-              <button
-                data-testid="merging-count"
-                className="flex items-center gap-1.5 text-[13px] cursor-pointer hover:opacity-80 transition-opacity"
-                style={{
-                  color: showAttentionCount && mergingCount === 0
-                    ? STATUS_COLORS.mergeAttention
-                    : mergingCount > 0
-                      ? STATUS_COLORS.pendingMerge
-                      : "var(--text-secondary)",
-                }}
-              >
-                {showMergeWorkCount && <span>{mergingLabel}{mergingCount}</span>}
-                {showAttentionCount && (
-                  <span
-                    data-testid="merge-attention-indicator"
-                    className="inline-flex items-center gap-1"
-                    style={{ color: STATUS_COLORS.mergeAttention }}
-                    title="Some merge tasks are escalated"
-                  >
-                    <AlertTriangle className="h-3.5 w-3.5" />
-                    <span data-testid="merge-attention-count">
-                      {mergeAttentionLabel}{attentionCount}
-                    </span>
-                  </span>
-                )}
-              </button>
-            </MergePipelinePopover>
-          ) : (
-            <span
-              data-testid="merging-count"
-              className="flex items-center gap-1.5 text-[13px]"
-              style={{
-                color: showAttentionCount && mergingCount === 0
-                  ? STATUS_COLORS.mergeAttention
-                  : "var(--text-secondary)",
-              }}
-            >
-              {showMergeWorkCount && <span>{mergingLabel}{mergingCount}</span>}
-              {showAttentionCount && (
-                <span
-                  data-testid="merge-attention-indicator"
-                  className="inline-flex items-center gap-1"
-                  style={{ color: STATUS_COLORS.mergeAttention }}
-                  title="Some merge tasks are escalated"
+          {(showMergeWorkCount || showAttentionCount) && (
+            <>
+              <StatusSeparator />
+              {mergePipelineData ? (
+                <MergePipelinePopover
+                  active={mergePipelineData.active}
+                  waiting={mergePipelineData.waiting}
+                  needsAttention={mergePipelineData.needsAttention}
+                  runningCount={runningCount}
+                  alignOffset={POPOVER_ALIGN_TO_SEPARATOR_DOT}
                 >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  <span data-testid="merge-attention-count">
-                    {mergeAttentionLabel}{attentionCount}
-                  </span>
+                  <button
+                    data-testid="merging-count"
+                    className="flex cursor-pointer items-center gap-1.5 transition-opacity hover:opacity-80"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {showMergeWorkCount && (
+                      <span className="inline-flex items-center gap-1">
+                        <span>{mergingLabel}</span>
+                        <span
+                          style={{
+                            color: STATUS_COLORS.pendingMerge,
+                            fontFamily:
+                              "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {mergingCount}
+                        </span>
+                      </span>
+                    )}
+                    {showAttentionCount && (
+                      <span
+                        data-testid="merge-attention-count"
+                        className="inline-flex items-center gap-1"
+                        style={{ color: STATUS_COLORS.mergeAttention }}
+                      >
+                        <AlertTriangle className="h-3 w-3" />
+                        <span>{mergeAttentionLabel}</span>
+                        <span
+                          style={{
+                            fontFamily:
+                              "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                            fontWeight: 500,
+                          }}
+                        >
+                          {attentionCount}
+                        </span>
+                      </span>
+                    )}
+                  </button>
+                </MergePipelinePopover>
+              ) : (
+                <span
+                  data-testid="merging-count"
+                  className="flex items-center gap-1.5"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {showMergeWorkCount && (
+                    <span className="inline-flex items-center gap-1">
+                      <span>{mergingLabel}</span>
+                      <span
+                        style={{
+                          color: STATUS_COLORS.pendingMerge,
+                          fontFamily:
+                            "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                          fontWeight: 500,
+                        }}
+                      >
+                        {mergingCount}
+                      </span>
+                    </span>
+                  )}
+                  {showAttentionCount && (
+                    <span
+                      data-testid="merge-attention-count"
+                      className="inline-flex items-center gap-1"
+                      style={{ color: STATUS_COLORS.mergeAttention }}
+                    >
+                      <AlertTriangle className="h-3 w-3" />
+                      <span>{mergeAttentionLabel}</span>
+                      <span
+                        style={{
+                          fontFamily:
+                            "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                          fontWeight: 500,
+                        }}
+                      >
+                        {attentionCount}
+                      </span>
+                    </span>
+                  )}
                 </span>
               )}
-            </span>
+            </>
           )}
         </div>
 
@@ -505,7 +596,7 @@ export function ExecutionControlBar({
               style={{ color: STATUS_COLORS.running }}
             />
             <span
-              className="text-[13px] truncate"
+              className="text-[0.8125rem] truncate"
               style={{ color: "var(--text-secondary)" }}
             >
               {currentTaskName}
@@ -514,7 +605,7 @@ export function ExecutionControlBar({
         )}
 
         {/* Control Section (Right) */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {/* Pause/Resume Button */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -526,31 +617,28 @@ export function ExecutionControlBar({
                 disabled={!canPauseToggle}
                 aria-label={isStopped ? "Start execution" : isPaused ? "Resume execution" : "Pause execution"}
                 aria-pressed={isPaused && !isStopped}
-                className="gap-2 h-9 px-4 transition-all duration-150 active:scale-[0.96] rounded-lg text-[13px]"
+                className="h-6 gap-1.5 rounded-[6px] px-2.5 text-[0.7188rem] font-medium transition-all duration-150 active:scale-[0.98]"
                 style={{
-                  /* macOS Tahoe: flat button styling */
-                  backgroundColor: isStopped
-                    ? "var(--accent-muted)"
-                    : isPaused
-                      ? "var(--status-warning-muted)"
-                      : "var(--bg-hover)",
+                  backgroundColor: "var(--bg-elevated)",
+                  borderColor: "var(--border-default)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
                   color: isStopped
                     ? "var(--accent-primary)"
                     : isPaused
                       ? STATUS_COLORS.paused
                       : "var(--text-primary)",
-                  border: "none",
-                  opacity: canPauseToggle ? 1 : 0.5,
+                  opacity: canPauseToggle ? 1 : 0.55,
                 }}
               >
                 {isLoading ? (
-                  <Loader2 className="w-[18px] h-[18px] animate-spin" />
+                  <Loader2 className="h-[11px] w-[11px] animate-spin" />
                 ) : isStopped ? (
-                  <Play className="w-[18px] h-[18px]" />
+                  <Play className="h-[11px] w-[11px]" />
                 ) : isPaused ? (
-                  <Play className="w-[18px] h-[18px]" />
+                  <Play className="h-[11px] w-[11px]" />
                 ) : (
-                  <Pause className="w-[18px] h-[18px]" />
+                  <Pause className="h-[11px] w-[11px]" />
                 )}
                 <span className="hidden sm:inline">
                   {isStopped ? "Start" : isPaused ? "Resume" : "Pause"}
@@ -579,16 +667,17 @@ export function ExecutionControlBar({
                 disabled={!canStop}
                 aria-label={isStopped ? "Execution already stopped" : "Stop all running tasks"}
                 aria-disabled={!canStop}
-                className="gap-2 h-9 px-4 transition-all duration-150 active:scale-[0.96] rounded-lg text-[13px]"
+                className="h-6 gap-1.5 rounded-[6px] px-2.5 text-[0.7188rem] font-medium transition-all duration-150 active:scale-[0.98]"
                 style={{
-                  /* macOS Tahoe: flat button styling */
-                  backgroundColor: canStop ? "var(--status-error-muted)" : "var(--bg-hover)",
+                  backgroundColor: "var(--bg-elevated)",
+                  borderColor: "var(--border-default)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
                   color: canStop ? STATUS_COLORS.stop : "var(--text-muted)",
-                  border: "none",
-                  opacity: canStop ? 1 : 0.5,
+                  opacity: canStop ? 1 : 0.55,
                 }}
               >
-                <Square className="w-4 h-4 fill-current" />
+                <Square className="h-[11px] w-[11px] fill-current" />
                 <span className="hidden sm:inline">Stop</span>
               </Button>
             </TooltipTrigger>

@@ -100,10 +100,10 @@ function AIReviewCard({
             <Bot className="w-5 h-5" style={{ color: "var(--status-info)" }} />
           </div>
           <div>
-            <span className="text-[13px] font-semibold text-text-primary/80 block">
+            <span className="text-[0.8125rem] font-semibold text-text-primary/80 block">
               AI Review Summary
             </span>
-            <span className="text-[11px] text-text-primary/45">
+            <span className="text-[0.6875rem] text-text-primary/45">
               {issues.length > 0
                 ? `${issues.length} observation${issues.length > 1 ? "s" : ""}`
                 : "Automated checks passed"}
@@ -134,7 +134,7 @@ function AIReviewCard({
 
               {/* Summary text */}
               {summary && (
-                <div className="text-[13px] text-text-primary/65 leading-relaxed prose prose-sm prose-invert max-w-none">
+                <div className="text-[0.8125rem] text-text-primary/65 leading-relaxed prose prose-sm prose-invert max-w-none">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={markdownComponents}
@@ -160,7 +160,7 @@ function AIReviewCard({
         {/* No content fallback */}
         {!summary && issues.length === 0 && (
           <div className="pl-12 mt-4">
-            <div className="flex items-center gap-2 text-[13px] text-text-primary/50">
+            <div className="flex items-center gap-2 text-[0.8125rem] text-text-primary/50">
               <CheckCircle2 className="w-4 h-4" style={{ color: "var(--status-success)" }} />
               <span>All automated checks passed</span>
             </div>
@@ -170,7 +170,7 @@ function AIReviewCard({
         {/* Show more - outside gradient, below content */}
         {hasContent && !isExpanded && (
           <div
-            className="pl-12 mt-2 text-[12px] font-medium"
+            className="pl-12 mt-2 text-[0.75rem] font-medium"
             style={{ color: "var(--status-info)" }}
           >
             Show more
@@ -182,7 +182,7 @@ function AIReviewCard({
       {hasContent && isExpanded && (
         <button
           onClick={() => setIsExpanded(false)}
-          className="pl-12 mt-3 text-[12px] font-medium transition-colors hover:opacity-80"
+          className="pl-12 mt-3 text-[0.75rem] font-medium transition-colors hover:opacity-80"
           style={{ color: "var(--status-info)" }}
         >
           Show less
@@ -263,7 +263,7 @@ function ActionButtonsCard({
         <div className="mb-4 space-y-3">
           <div className="flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-text-primary/40" />
-            <span className="text-[12px] font-semibold text-text-primary/60">
+            <span className="text-[0.75rem] font-semibold text-text-primary/60">
               What needs to be changed?
             </span>
           </div>
@@ -272,7 +272,7 @@ function ActionButtonsCard({
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             placeholder="Describe the changes needed..."
-            className="min-h-[100px] text-[13px] resize-none rounded-xl"
+            className="min-h-[100px] text-[0.8125rem] resize-none rounded-xl"
             style={{
               backgroundColor: "var(--overlay-scrim)",
               border: "1px solid var(--overlay-moderate)",
@@ -285,7 +285,7 @@ function ActionButtonsCard({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span
-            className="text-[11px] font-semibold uppercase tracking-wider"
+            className="text-[0.6875rem] font-semibold uppercase tracking-wider"
             style={{ color: "var(--text-muted)" }}
           >
             Your Decision
@@ -295,7 +295,7 @@ function ActionButtonsCard({
               data-testid="review-code-button"
               onClick={onReviewCode}
               variant="ghost"
-              className="h-7 px-3 gap-1.5 rounded-lg font-medium text-[12px]"
+              className="h-7 px-3 gap-1.5 rounded-lg font-medium text-[0.75rem]"
               style={{ color: "var(--status-info)" }}
             >
               <Code className="w-3.5 h-3.5" />
@@ -308,7 +308,7 @@ function ActionButtonsCard({
           data-testid="approve-button"
           onClick={handleApprove}
           disabled={isLoading || showFeedback}
-          className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px] transition-colors"
+          className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
           style={{
             backgroundColor: "var(--status-success)",
             color: "white",
@@ -327,7 +327,7 @@ function ActionButtonsCard({
           onClick={handleRequestChangesClick}
           disabled={isLoading || (showFeedback && !feedback.trim())}
           variant="ghost"
-          className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+          className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             color: "var(--status-warning)",
             backgroundColor: "var(--bg-elevated)",
@@ -350,7 +350,7 @@ function ActionButtonsCard({
             setShowFeedback(false);
             setFeedback("");
           }}
-          className="mt-3 text-[12px] text-text-primary/40 hover:text-text-primary/60 transition-colors"
+          className="mt-3 text-[0.75rem] text-text-primary/40 hover:text-text-primary/60 transition-colors"
         >
           Cancel
         </button>
@@ -358,7 +358,7 @@ function ActionButtonsCard({
 
       {/* Error display */}
       {(approveMutation.error || requestChangesMutation.error) && (
-        <p className="mt-3 text-[12px]" style={{ color: "var(--status-error)" }}>
+        <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {approveMutation.error?.message || requestChangesMutation.error?.message}
         </p>
       )}

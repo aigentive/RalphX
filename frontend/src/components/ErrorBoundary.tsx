@@ -59,11 +59,11 @@ export class ErrorBoundary extends Component<Props, State> {
               marginBottom: "12px",
             }}
           >
-            <span style={{ fontSize: "20px" }}>⚠️</span>
+            <span style={{ fontSize: "1.25rem" }}>⚠️</span>
             <h2
               style={{
                 margin: 0,
-                fontSize: "16px",
+                fontSize: "1rem",
                 fontWeight: 600,
                 color: "#ef4444",
               }}
@@ -85,7 +85,7 @@ export class ErrorBoundary extends Component<Props, State> {
               >
                 <code
                   style={{
-                    fontSize: "13px",
+                    fontSize: "0.8125rem",
                     color: "#fca5a5",
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
@@ -100,7 +100,7 @@ export class ErrorBoundary extends Component<Props, State> {
                   <summary
                     style={{
                       cursor: "pointer",
-                      fontSize: "13px",
+                      fontSize: "0.8125rem",
                       color: "#9ca3af",
                       marginBottom: "8px",
                     }}
@@ -119,7 +119,7 @@ export class ErrorBoundary extends Component<Props, State> {
                     <pre
                       style={{
                         margin: 0,
-                        fontSize: "11px",
+                        fontSize: "0.6875rem",
                         color: "#9ca3af",
                         whiteSpace: "pre-wrap",
                       }}
@@ -141,7 +141,7 @@ export class ErrorBoundary extends Component<Props, State> {
               border: "none",
               backgroundColor: "#ef4444",
               color: "white",
-              fontSize: "13px",
+              fontSize: "0.8125rem",
               fontWeight: 500,
               cursor: "pointer",
             }}

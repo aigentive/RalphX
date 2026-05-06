@@ -103,21 +103,21 @@ export function PlanMergeContextCard({
             <FileText className="w-4 h-4 text-text-primary/45" />
           </div>
           <div className="min-w-0 flex-1">
-            <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+            <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
               Plan
             </span>
-            <span className="text-[13px] text-text-primary/80 font-medium line-clamp-2">
+            <span className="text-[0.8125rem] text-text-primary/80 font-medium line-clamp-2">
               {planTitle}
             </span>
             {planExcerpt && !compact && (
-              <p className="mt-1 text-[12px] text-text-primary/50 line-clamp-2">
+              <p className="mt-1 text-[0.75rem] text-text-primary/50 line-clamp-2">
                 {planExcerpt}
               </p>
             )}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-text-primary/45">
+        <div className="flex flex-wrap items-center gap-2 text-[0.6875rem] text-text-primary/45">
           {planArtifact && (
             <span className="px-2 py-1 rounded bg-[var(--overlay-faint)]">
               v{planArtifact.version}

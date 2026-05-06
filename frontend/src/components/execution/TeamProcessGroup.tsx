@@ -111,7 +111,7 @@ export function TeamProcessGroup({
         </span>
 
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded shrink-0"
           style={{
             color: "var(--accent-primary)",
             backgroundColor: "var(--accent-muted)",
@@ -194,7 +194,7 @@ export function TeamProcessGroup({
 
                   {/* Name */}
                   <span
-                    className="text-[11px] font-medium shrink-0"
+                    className="text-[0.6875rem] font-medium shrink-0"
                     style={{ color: "var(--text-secondary)" }}
                   >
                     {teammate.name}
@@ -204,13 +204,13 @@ export function TeamProcessGroup({
                   {teammate.step && (
                     <>
                       <span
-                        className="shrink-0 text-[11px]"
+                        className="shrink-0 text-[0.6875rem]"
                         style={{ color: "var(--text-muted)" }}
                       >
                         ·
                       </span>
                       <span
-                        className="text-[10px] truncate min-w-0"
+                        className="text-[0.625rem] truncate min-w-0"
                         style={{ color: "var(--text-muted)" }}
                       >
                         {teammate.step}
@@ -223,7 +223,7 @@ export function TeamProcessGroup({
                     <>
                       <span className="flex-1" />
                       <span
-                        className="text-[9px] font-medium px-1 rounded shrink-0"
+                        className="text-[0.5625rem] font-medium px-1 rounded shrink-0"
                         style={{
                           color: "var(--text-muted)",
                           backgroundColor: "var(--overlay-weak)",

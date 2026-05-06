@@ -35,7 +35,7 @@ export function PrStatusBadge({ status }: { status: PrStatus }) {
   const Icon = config.icon;
   return (
     <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[0.6875rem] font-medium"
       style={{ backgroundColor: config.bg, color: config.color }}
     >
       <Icon className="w-3 h-3" />

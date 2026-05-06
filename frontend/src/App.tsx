@@ -12,7 +12,7 @@ import { EventProvider } from "@/providers/EventProvider";
 import { TaskBoard } from "@/components/tasks/TaskBoard";
 import { ReviewsPanel } from "@/components/reviews/ReviewsPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
-import { KanbanSplitLayout, LeftNavRail } from "@/components/layout";
+import { AppTopBar, KanbanSplitLayout, LeftNavRail } from "@/components/layout";
 import { PermissionDialog } from "@/components/PermissionDialog";
 import { IdeationView, ProposalEditModal, FinalizeConfirmationDialog, VerificationConfirmDialog } from "@/components/Ideation";
 import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
@@ -26,8 +26,6 @@ import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
-import { ThemeSelector } from "@/components/layout/ThemeSelector";
-import { ProjectSelector } from "@/components/projects/ProjectSelector";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
 import { useUiStore } from "@/stores/uiStore";
@@ -68,18 +66,7 @@ import type { SelectionSource } from "@/api/plan";
 import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-  CheckCircle,
-  PanelRight,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 
@@ -148,8 +135,6 @@ function AppContent() {
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
   const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
-  const graphRightPanelUserOpen = useUiStore((s) => s.graphRightPanelUserOpen);
-  const graphRightPanelCompactOpen = useUiStore((s) => s.graphRightPanelCompactOpen);
   const toggleGraphRightPanelUserOpen = useUiStore((s) => s.toggleGraphRightPanel);
   const toggleGraphRightPanelCompactOpen = useUiStore(
     (s) => s.toggleGraphRightPanelCompactOpen
@@ -774,129 +759,23 @@ function AppContent() {
     <TooltipProvider delayDuration={300}>
       <main
         className="h-screen flex flex-col overflow-hidden"
-        style={{ backgroundColor: "var(--bg-base)", color: "var(--text-primary)" }}
+        style={{ backgroundColor: "var(--app-content-bg)", color: "var(--text-primary)" }}
       >
       {/* Update checker - runs on mount, shows toast if update available */}
       <UpdateChecker />
 
-      {/* Header - macOS Tahoe Liquid Glass (slim — primary nav lives in left rail) */}
-        <header
-          className="fixed top-0 left-0 right-0 h-12 flex items-center justify-between pr-4 pl-24 border-b z-50 select-none"
-          style={{
-            background: "color-mix(in srgb, var(--bg-base) 85%, transparent)",
-            backdropFilter: "blur(24px)",
-            WebkitBackdropFilter: "blur(24px)",
-            borderColor: "var(--border-subtle)",
-          }}
-          data-tauri-drag-region
-          data-testid="app-header"
-        >
-          {/* Left Section reserved for window chrome (traffic lights via pl-24) */}
-          <div className="flex-1" />
-
-          {/* Right Section: Project Selector + Panel Toggles */}
-          <div
-            className="flex items-center gap-2"
-            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          >
-            <ThemeSelector />
-            {/* Project selector — hidden during welcome screen */}
-            {!(hasNoProjects || showWelcomeOverlay) && (
-              <div className="mr-2">
-                <ProjectSelector onNewProject={handleOpenProjectWizard} align="end" />
-              </div>
-            )}
-            {/* Reviews Panel Toggle */}
-            {!(hasNoProjects || showWelcomeOverlay) && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={toggleReviewsPanel}
-                  className={cn(
-                    "relative gap-2 h-8 transition-all duration-150 active:scale-[0.98]",
-                    reviewsPanelOpen ? "px-3" : "px-2 xl:px-3"
-                  )}
-                  style={{
-                    background: reviewsPanelOpen
-                      ? "var(--accent-muted)"
-                      : "transparent",
-                    border: reviewsPanelOpen ? "1px solid var(--accent-border)" : "1px solid transparent",
-                    color: reviewsPanelOpen ? "var(--accent-primary)" : "var(--text-muted)",
-                  }}
-                  data-testid="reviews-toggle"
-                >
-                  <CheckCircle className="w-[18px] h-[18px] flex-shrink-0" />
-                  <span className={cn(
-                    "text-sm font-medium whitespace-nowrap",
-                    reviewsPanelOpen ? "inline" : "hidden xl:inline"
-                  )}>
-                    Reviews
-                  </span>
-                  {/* Badge with pending count */}
-                  {pendingReviewCount > 0 && (
-                    <span
-                      className="absolute -top-1 -right-1 flex items-center justify-center min-w-[18px] h-[18px] px-1 text-xs font-bold rounded-full animate-badge-pop"
-                      style={{
-                        backgroundColor: "var(--status-warning)",
-                        color: "var(--text-inverse)",
-                      }}
-                      data-testid="reviews-badge"
-                    >
-                      {pendingReviewCount > 9 ? "9+" : pendingReviewCount}
-                    </span>
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                Toggle Reviews <kbd className="ml-1 opacity-70">⌘⇧R</kbd>
-              </TooltipContent>
-            </Tooltip>
-            )}
-
-            {/* Graph Right Panel Toggle (graph view only) */}
-            {!(hasNoProjects || showWelcomeOverlay) && currentView === "graph" && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleToggleGraphRightPanel}
-                    disabled={battleModeActive}
-                    className="h-8 w-8 p-0 transition-all duration-150 active:scale-[0.98]"
-                    style={{
-                      background: (isNavCompact ? graphRightPanelCompactOpen : graphRightPanelUserOpen)
-                        ? "var(--accent-muted)"
-                        : "transparent",
-                      border: (isNavCompact ? graphRightPanelCompactOpen : graphRightPanelUserOpen)
-                        ? "1px solid var(--accent-border)"
-                        : "1px solid transparent",
-                      color: (isNavCompact ? graphRightPanelCompactOpen : graphRightPanelUserOpen)
-                        ? "var(--accent-primary)"
-                        : "var(--text-muted)",
-                      opacity: battleModeActive ? 0.45 : 1,
-                    }}
-                    data-testid="graph-panel-toggle"
-                  >
-                    <PanelRight className="w-[18px] h-[18px]" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  {battleModeActive
-                    ? "Disabled during Battle Mode"
-                    : <>Toggle Graph Panel <kbd className="ml-1 opacity-70">⌘L</kbd></>}
-                </TooltipContent>
-              </Tooltip>
-            )}
-          </div>
-        </header>
+      <AppTopBar
+        currentView={currentView}
+        pendingReviewCount={pendingReviewCount}
+        reviewsPanelOpen={reviewsPanelOpen}
+        onToggleReviewsPanel={toggleReviewsPanel}
+      />
 
       {/* Spacer for fixed header */}
       <div className="h-12 flex-shrink-0" />
 
       {/* App body: left nav rail + main content */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
         <LeftNavRail
           currentView={currentView}
           onViewChange={handleViewChange}
@@ -913,10 +792,10 @@ function AppContent() {
         />
       ) : (
         /* Normal content with view-specific content and optional panels */
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
           {/* Main view area */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-auto h-full">
+          <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
+            <div className="flex-1 overflow-auto h-full" style={{ backgroundColor: "var(--app-content-bg)" }}>
               {currentView === "kanban" && (
                 <KanbanSplitLayout
                   projectId={currentProjectId}
@@ -1067,26 +946,28 @@ function AppContent() {
             </div>
         </div>
 
-          {/* ReviewsPanel - floating overlay with Tahoe glass panel.
+          {/* ReviewsPanel - right sidebar surface.
               bottomOffset 76 when ExecutionControlBar is visible below this
               panel (kanban/graph/ideation), 0 elsewhere so the panel fills
               the viewport instead of leaving a ~84px void. */}
           {reviewsPanelOpen && (
             <div
-              className="fixed top-12 right-0 w-[400px] z-50 flex flex-col"
+              className="fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l"
+              data-testid="reviews-panel-shell"
               style={{
                 bottom: (currentView === "kanban" || currentView === "graph" || currentView === "ideation") ? "76px" : "0px",
-                background: "var(--bg-elevated)",
+                backgroundColor: "var(--app-sidebar-bg)",
+                borderLeftColor: "var(--app-sidebar-border)",
+                borderLeftStyle: "solid",
+                borderLeftWidth: "1px",
               }}
             >
-              {/* Floating panel inner container */}
               <div
-                className="flex flex-col flex-1 rounded-[10px] overflow-hidden"
+                className="flex flex-1 flex-col overflow-hidden"
+                data-testid="reviews-panel-frame"
                 style={{
-                  margin: "8px",
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--border-subtle)",
-                  boxShadow: "var(--shadow-md)",
+                  backgroundColor: "var(--app-sidebar-bg)",
+                  boxShadow: "none",
                 }}
               >
                 <ReviewsPanel

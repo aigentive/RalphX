@@ -209,13 +209,13 @@ const StatusFilterContent = memo(function StatusFilterContent({
                 style={{ backgroundColor: categoryColor }}
               />
               <span
-                className="text-[11px] font-semibold uppercase tracking-wider"
+                className="text-[0.6875rem] font-semibold uppercase tracking-wider"
                 style={{ color: categoryColor }}
               >
                 {categoryLabel}
               </span>
               {someSelected && (
-                <span className="ml-auto text-[10px] text-[var(--text-muted)]">
+                <span className="ml-auto text-[0.625rem] text-[var(--text-muted)]">
                   {
                     items.filter((item) =>
                       filters.statuses.includes(item.status)
@@ -320,7 +320,7 @@ const FilterButton = memo(function FilterButton({
         <span className="text-[var(--text-secondary)] flex-1 text-left">{label}</span>
       )}
       {activeCount !== undefined && activeCount > 0 && !isCompact && (
-        <span className="text-[10px] text-[var(--accent-primary)]">
+        <span className="text-[0.625rem] text-[var(--accent-primary)]">
           {activeCount}
         </span>
       )}
@@ -538,12 +538,12 @@ function FloatingGraphFiltersComponent({
               sideOffset={8}
             >
               <div className="flex items-center justify-between px-2 py-1">
-                <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">
+                <span className="text-[0.625rem] text-[var(--text-muted)] uppercase tracking-wide">
                   Grouping
                 </span>
                 <button
                   onClick={() => onGroupingChange({ byPlan: false, byTier: false, showUncategorized: false })}
-                  className="text-[10px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  className="text-[0.625rem] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
                 >
                   None
                 </button>

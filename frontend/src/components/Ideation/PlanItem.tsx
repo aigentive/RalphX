@@ -118,7 +118,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
   if (parentSessionTitle) {
     return (
       <div
-        className="flex flex-col gap-0.5 text-[12px]"
+        className="flex flex-col gap-0.5 text-[0.75rem]"
         style={{ color: "var(--text-muted)" }}
       >
         <ActivityIndicator isActive={isIdeationActive || isVerifying} isWaiting={isIdeationWaiting} isQueued={isQueued} label={activityLabel} color={activityColor} />
@@ -134,7 +134,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
     case "drafts":
       return (
         <div
-          className="flex items-center gap-1 text-[12px]"
+          className="flex items-center gap-1 text-[0.75rem]"
           style={{ color: "var(--text-muted)" }}
         >
           {(isIdeationActive || isIdeationWaiting || isVerifying || isQueued) ? (
@@ -154,7 +154,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
       if (!progress) {
         if (isIdeationActive || isIdeationWaiting || isVerifying || isQueued) {
           return (
-            <span className="text-[12px]">
+            <span className="text-[0.75rem]">
               <ActivityIndicator isActive={isIdeationActive || isVerifying} isWaiting={isIdeationWaiting} isQueued={isQueued} label={activityLabel} color={activityColor} />
             </span>
           );
@@ -162,7 +162,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
         return null;
       }
       return (
-        <div className="flex items-center gap-1 text-[12px]">
+        <div className="flex items-center gap-1 text-[0.75rem]">
           <ActivityIndicator isActive={isIdeationActive || isVerifying} isWaiting={isIdeationWaiting} isQueued={isQueued} label={activityLabel ?? "Agent working"} separator="·" color={activityColor} />
           <span style={{ color: "var(--status-success)" }}>
             {progress.done}/{progress.total} done
@@ -181,7 +181,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
     case "accepted":
       return (
         <div
-          className="flex items-center gap-1 text-[12px]"
+          className="flex items-center gap-1 text-[0.75rem]"
           style={{ color: "var(--text-muted)" }}
         >
           <ActivityIndicator isActive={isIdeationActive || isVerifying} isWaiting={isIdeationWaiting} isQueued={isQueued} separator="·" label={activityLabel} color={activityColor} />
@@ -202,7 +202,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
       if (!hasActivity) return null;
       return (
         <div
-          className="flex items-center gap-1 text-[12px]"
+          className="flex items-center gap-1 text-[0.75rem]"
           style={{ color: "var(--text-muted)" }}
         >
           <ActivityIndicator isActive={isIdeationActive || isVerifying} isWaiting={isIdeationWaiting} isQueued={isQueued} separator="·" label={activityLabel} color={activityColor} />
@@ -215,7 +215,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
       if (!hasActivity) return null;
       return (
         <div
-          className="flex items-center gap-1 text-[12px]"
+          className="flex items-center gap-1 text-[0.75rem]"
           style={{ color: "var(--text-muted)" }}
         >
           <ActivityIndicator isActive={isIdeationActive || isVerifying} isWaiting={isIdeationWaiting} isQueued={isQueued} separator="·" label={activityLabel} color={activityColor} />
@@ -229,7 +229,7 @@ function MetadataLine({ group, plan, progress, isIdeationActive, isIdeationWaiti
 // Context Menu
 // ============================================================================
 
-const MENU_ITEM_CLASSES = "text-[13px] cursor-pointer gap-2.5 py-2";
+const MENU_ITEM_CLASSES = "text-[0.8125rem] cursor-pointer gap-2.5 py-2";
 
 function ContextMenuItems({ group, onStartRename, onArchive, onReopen, onResetReaccept }: {
   group: SessionGroup;
@@ -376,33 +376,17 @@ export const PlanItem = memo(function PlanItem({
     <div
       data-testid={`plan-item-${plan.id}`}
       className={cn(
-        "group relative cursor-pointer",
-        "transition-all duration-150 ease-out"
+        "group relative cursor-pointer agents-session-row plan-item-row",
+        "mx-2 rounded-[6px]",
+        "transition-colors duration-150 ease-out"
       )}
+      aria-current={isSelected ? "true" : undefined}
+      data-menu-open={isMenuOpen ? "true" : undefined}
       style={{
-        padding: "10px 16px",
-        background: isSelected
-          ? withAlpha("var(--accent-primary)", 12)
-          : isMenuOpen
-            ? "var(--overlay-faint)"
-            : "transparent",
-        borderTop: "1px solid transparent",
-        borderBottom: "1px solid transparent",
-        borderLeft: isSelected ? "2px solid var(--accent-primary)" : "2px solid transparent",
-        borderRight: "none",
+        padding: "10px 12px",
         opacity: muted && !isSelected ? 0.7 : 1,
       }}
       onClick={handleClick}
-      onMouseEnter={(e) => {
-        if (!isSelected && !isMenuOpen) {
-          e.currentTarget.style.background = "var(--overlay-faint)";
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isSelected && !isMenuOpen) {
-          e.currentTarget.style.background = "transparent";
-        }
-      }}
     >
       <div className="flex items-center gap-2">
         {/* Plan icon */}
@@ -438,7 +422,7 @@ export const PlanItem = memo(function PlanItem({
               onChange={(e) => onTitleChange(e.target.value)}
               onKeyDown={handleKeyDown}
               onBlur={handleConfirmRename}
-              className="h-6 text-[13px] px-2 py-0 rounded-md"
+              className="h-6 text-[0.8125rem] px-2 py-0 rounded-md"
               style={{
                 background: "var(--bg-surface)",
                 border: "1px solid var(--overlay-moderate)",
@@ -450,7 +434,7 @@ export const PlanItem = memo(function PlanItem({
               <div className="flex items-center gap-1.5">
                 <span
                   className={cn(
-                    "text-[12px] font-medium truncate tracking-[-0.01em]",
+                    "text-[0.75rem] font-medium truncate tracking-[-0.01em]",
                     "transition-colors duration-150"
                   )}
                   style={{
@@ -467,7 +451,7 @@ export const PlanItem = memo(function PlanItem({
                   <button
                     type="button"
                     data-testid="import-badge"
-                    className="inline-flex items-center gap-0.5 text-[9px] font-medium px-1 py-0.5 rounded flex-shrink-0 select-none transition-opacity hover:opacity-80"
+                    className="inline-flex items-center gap-0.5 text-[0.5625rem] font-medium px-1 py-0.5 rounded flex-shrink-0 select-none transition-opacity hover:opacity-80"
                     style={{
                       background: "var(--status-success-muted)",
                       border: "1px solid var(--status-success-border)",

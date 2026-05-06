@@ -1,4 +1,5 @@
-import { Monitor, Moon, SunMedium, type LucideIcon } from "lucide-react";
+import { useState } from "react";
+import { Check, ChevronDown, Contrast, Moon, SunMedium, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useThemeStore, type ThemeName } from "@/stores/themeStore";
@@ -31,60 +32,107 @@ const THEME_OPTIONS: ThemeOption[] = [
     label: "High contrast",
     shortLabel: "Contrast",
     description: "Maximum-contrast black canvas with shape-first emphasis and stronger borders.",
-    icon: Monitor,
+    icon: Contrast,
   },
 ];
 
-export function ThemeSelector({ className = "" }: { className?: string }) {
+interface ThemeSelectorProps {
+  className?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function ThemeSelector({
+  className = "",
+  open: controlledOpen,
+  onOpenChange,
+}: ThemeSelectorProps) {
   const theme = useThemeStore((s) => s.theme);
   const setTheme = useThemeStore((s) => s.setTheme);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const setOpen = onOpenChange ?? setUncontrolledOpen;
+  const current = THEME_OPTIONS.find((option) => option.value === theme) ?? THEME_OPTIONS[0]!;
+  const CurrentIcon = current.icon;
 
   return (
     <div
       className={cn(
-        "inline-flex h-8 items-center gap-0.5 rounded-lg border p-0.5 shadow-sm shrink-0",
+        "relative inline-flex shrink-0",
         className
       )}
-      style={{
-        background: "var(--bg-surface)",
-        borderColor: "var(--border-default)",
-      }}
       data-testid="theme-selector"
-      role="radiogroup"
-      aria-label="Theme"
     >
-      {THEME_OPTIONS.map((option) => {
-        const OptionIcon = option.icon;
-        const isActive = option.value === theme;
+      <button
+        type="button"
+        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+        style={{
+          backgroundColor: open ? "var(--bg-hover)" : "var(--bg-elevated)",
+          borderColor: open ? "var(--border-strong)" : "var(--border-default)",
+          color: open ? "var(--text-primary)" : "var(--text-secondary)",
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Theme · ${current.label}`}
+        data-testid="theme-selector-trigger"
+        onClick={() => setOpen(!open)}
+      >
+        <CurrentIcon className="h-3.5 w-3.5 shrink-0" style={{ color: "var(--text-muted)" }} />
+        <span>{current.label}</span>
+        <ChevronDown
+          className={cn("h-3 w-3 shrink-0 transition-transform duration-150", open && "rotate-180")}
+          style={{ color: open ? "var(--text-secondary)" : "var(--text-muted)" }}
+        />
+      </button>
 
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={isActive}
-            aria-label={`${option.label} theme`}
-            title={option.description}
-            onClick={() => setTheme(option.value)}
-            className={cn(
-              "inline-flex h-[26px] items-center gap-1 rounded-[8px] px-2 text-[11px] font-medium transition-all duration-150 outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]",
-              !isActive && "hover:bg-[var(--overlay-faint)] hover:text-[var(--text-primary)]"
-            )}
-            style={{
-              background: isActive ? "var(--accent-muted)" : "transparent",
-              border: "1px solid transparent",
-              color: isActive ? "var(--accent-primary)" : "var(--text-secondary)",
-              boxShadow: isActive
-                ? "inset 0 0 0 1px var(--accent-border)"
-                : "none",
-            }}
-            data-testid={`theme-option-${option.value}`}
-          >
-            <OptionIcon className="h-[13px] w-[13px] shrink-0" />
-            <span className="leading-none">{option.shortLabel}</span>
-          </button>
-        );
-      })}
+      {open && (
+        <div
+          role="menu"
+          aria-label="Theme"
+          data-testid="theme-selector-menu"
+          className="absolute right-0 top-[calc(100%+6px)] z-[60] flex min-w-[168px] flex-col gap-px rounded-[8px] border p-1 shadow-lg"
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-default)",
+            boxShadow: "var(--shadow-lg)",
+          }}
+        >
+          {THEME_OPTIONS.map((option) => {
+            const OptionIcon = option.icon;
+            const isActive = option.value === theme;
+
+            return (
+              <button
+                key={option.value}
+                type="button"
+                role="menuitemradio"
+                aria-checked={isActive}
+                aria-label={`${option.label} theme`}
+                onClick={() => {
+                  setTheme(option.value);
+                  setOpen(false);
+                }}
+                className="inline-flex items-center gap-2.5 rounded-[6px] px-2 py-1.5 text-left text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+                style={{ color: isActive ? "var(--text-primary)" : "var(--text-secondary)" }}
+                data-testid={`theme-option-${option.value}`}
+              >
+                <OptionIcon
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{ color: isActive ? "var(--accent-primary)" : "var(--text-muted)" }}
+                />
+                <span className="flex-1">{option.label}</span>
+                <Check
+                  className="h-3 w-3 shrink-0"
+                  style={{
+                    color: "var(--accent-primary)",
+                    opacity: isActive ? 1 : 0,
+                  }}
+                />
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

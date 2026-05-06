@@ -90,6 +90,26 @@ describe("Column", () => {
       expect(screen.getByText("In Progress")).toBeInTheDocument();
     });
 
+    it("drops the 220px minWidth when fillWidth is true", () => {
+      const column = createMockColumn();
+      render(
+        <Column column={column} projectId="p1" showArchived={false} fillWidth />,
+        { wrapper: DndWrapper },
+      );
+      const root = screen.getByTestId(`column-${column.id}`);
+      expect(root.style.minWidth).toBe("0px");
+    });
+
+    it("keeps the 220px minWidth when fillWidth is unset", () => {
+      const column = createMockColumn();
+      render(
+        <Column column={column} projectId="p1" showArchived={false} />,
+        { wrapper: DndWrapper },
+      );
+      const root = screen.getByTestId(`column-${column.id}`);
+      expect(root.style.minWidth).toBe("220px");
+    });
+
     it("should render task count in header", () => {
       const tasks = [createMockTask(), createMockTask(), createMockTask()];
       vi.mocked(useInfiniteTasksQuery).mockReturnValue({
@@ -104,7 +124,7 @@ describe("Column", () => {
 
       const column = createMockColumn();
       render(<Column column={column} projectId="p1" showArchived={false} />, { wrapper: DndWrapper });
-      expect(screen.getByText("3")).toBeInTheDocument();
+      expect(screen.getByText("(3)")).toBeInTheDocument();
     });
 
     it("should render tasks", () => {
@@ -133,6 +153,15 @@ describe("Column", () => {
       render(<Column column={column} projectId="p1" showArchived={false} />, { wrapper: DndWrapper });
       const columnEl = screen.getByTestId(`column-${column.id}`);
       expect(columnEl).toBeInTheDocument();
+      expect(screen.getByTestId("empty-state-tray")).toHaveStyle({
+        backgroundColor: "var(--kanban-tray-bg)",
+        color: "var(--kanban-empty-ink)",
+      });
+      expect(screen.getByTestId("empty-state-label")).toHaveStyle({
+        color: "var(--kanban-empty-ink)",
+        fontSize: "12px",
+        fontWeight: "500",
+      });
     });
   });
 
@@ -148,16 +177,16 @@ describe("Column", () => {
       const column = createMockColumn();
       render(<Column column={column} projectId="p1" showArchived={false} isOver />, { wrapper: DndWrapper });
       const dropZone = screen.getByTestId(`drop-zone-${column.id}`);
-      expect(dropZone.style.background).toBe("var(--status-info-muted)");
-      expect(dropZone.style.borderRadius).toBe("10px");
+      expect(dropZone.style.backgroundColor).toBe("var(--status-info-muted)");
+      expect(dropZone.style.borderRadius).toBe("6px");
     });
 
     it("should not apply isOver styling when isOver is false", () => {
       const column = createMockColumn();
       render(<Column column={column} projectId="p1" showArchived={false} isOver={false} />, { wrapper: DndWrapper });
       const dropZone = screen.getByTestId(`drop-zone-${column.id}`);
-      expect(dropZone.style.background).toBe("transparent");
-      expect(dropZone.style.borderRadius).toBe("10px");
+      expect(dropZone.style.backgroundColor).toBe("transparent");
+      expect(dropZone.style.borderRadius).toBe("0px");
     });
   });
 
@@ -184,8 +213,8 @@ describe("Column", () => {
       const column = createMockColumn({ id: "in_progress" });
       render(<Column column={column} projectId="p1" showArchived={false} isOver isInvalid />, { wrapper: DndWrapper });
       const dropZone = screen.getByTestId(`drop-zone-${column.id}`);
-      expect(dropZone.style.background).toBe("var(--status-error-muted)");
-      expect(dropZone.style.borderRadius).toBe("10px");
+      expect(dropZone.style.backgroundColor).toBe("var(--status-error-muted)");
+      expect(dropZone.style.borderRadius).toBe("6px");
     });
   });
 
@@ -221,6 +250,10 @@ describe("Column", () => {
       );
 
       expect(screen.getByTestId("collapsed-empty-state")).toHaveTextContent("No tasks");
+      expect(screen.getByTestId("collapsed-empty-state-label")).toHaveStyle({
+        color: "var(--kanban-empty-ink)",
+        fontWeight: "500",
+      });
     });
 
     it("should expose a collapse control when expanded", () => {

@@ -155,7 +155,7 @@ export const IssuesSummaryWidget = React.memo(function IssuesSummaryWidget({
         >
           <polyline points="20 6 9 17 4 12" />
         </svg>
-        <span style={{ fontSize: "10.5px", color: "var(--text-muted)" }}>
+        <span style={{ fontSize: "0.6562rem", color: "var(--text-muted)" }}>
           No open issues
         </span>
       </div>
@@ -222,7 +222,7 @@ export const IssuesSummaryWidget = React.memo(function IssuesSummaryWidget({
         </span>
         <span
           style={{
-            fontSize: "9.5px",
+            fontSize: "0.5938rem",
             padding: "1px 6px",
             borderRadius: "6px",
             fontWeight: 500,
@@ -274,7 +274,7 @@ export const IssuesSummaryWidget = React.memo(function IssuesSummaryWidget({
                   {/* Severity badge */}
                   <span
                     style={{
-                      fontSize: "9px",
+                      fontSize: "0.5625rem",
                       padding: "1px 5px",
                       borderRadius: "4px",
                       fontWeight: 600,
@@ -303,7 +303,7 @@ export const IssuesSummaryWidget = React.memo(function IssuesSummaryWidget({
                     {issue.file_path && (
                       <div
                         style={{
-                          fontSize: "10px",
+                          fontSize: "0.625rem",
                           color: "var(--text-muted)",
                           fontFamily: "var(--font-mono)",
                           marginTop: "1px",

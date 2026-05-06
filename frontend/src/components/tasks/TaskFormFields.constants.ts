@@ -10,7 +10,7 @@
 // ============================================================================
 
 export const inputBaseStyles = `
-  w-full h-10 px-3 rounded-lg text-[13px]
+  w-full h-10 px-3 rounded-lg text-[0.8125rem]
   bg-[var(--bg-surface)] border border-[var(--border-subtle)]
   text-[var(--text-primary)] placeholder:text-[var(--text-muted)]
   transition-colors duration-150
@@ -19,7 +19,7 @@ export const inputBaseStyles = `
 `.replace(/\n/g, ' ').trim();
 
 export const selectBaseStyles = `
-  w-full h-10 px-3 rounded-lg text-[13px]
+  w-full h-10 px-3 rounded-lg text-[0.8125rem]
   bg-[var(--bg-surface)] border border-[var(--border-subtle)]
   text-[var(--text-primary)] cursor-pointer
   transition-colors duration-150
@@ -32,7 +32,7 @@ export const selectBaseStyles = `
 `.replace(/\n/g, ' ').trim();
 
 export const textareaBaseStyles = `
-  w-full px-3 py-2.5 rounded-lg text-[13px] leading-relaxed
+  w-full px-3 py-2.5 rounded-lg text-[0.8125rem] leading-relaxed
   bg-[var(--bg-surface)] border border-[var(--border-subtle)]
   text-[var(--text-primary)] placeholder:text-[var(--text-muted)]
   transition-colors duration-150 resize-none
@@ -40,14 +40,14 @@ export const textareaBaseStyles = `
   disabled:opacity-50 disabled:cursor-not-allowed
 `.replace(/\n/g, ' ').trim();
 
-export const labelStyles = "block text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2";
+export const labelStyles = "block text-[0.6875rem] font-medium text-[var(--text-muted)] uppercase tracking-wide mb-2";
 
 // ============================================================================
 // Button Styles (Tahoe: flat, no glow shadows)
 // ============================================================================
 
 export const buttonPrimaryStyles = `
-  h-10 px-4 rounded-lg text-[13px] font-medium
+  h-10 px-4 rounded-lg text-[0.8125rem] font-medium
   bg-[var(--accent-primary)] text-white
   transition-colors duration-150
   hover:bg-[var(--accent-hover)]
@@ -57,7 +57,7 @@ export const buttonPrimaryStyles = `
 `.replace(/\n/g, ' ').trim();
 
 export const buttonSecondaryStyles = `
-  h-10 px-4 rounded-lg text-[13px] font-medium
+  h-10 px-4 rounded-lg text-[0.8125rem] font-medium
   bg-transparent border border-[var(--border-default)] text-[var(--text-secondary)]
   transition-colors duration-150
   hover:bg-[var(--overlay-weak)] hover:text-[var(--text-primary)]

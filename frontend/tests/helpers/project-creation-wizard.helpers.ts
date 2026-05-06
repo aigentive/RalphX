@@ -3,20 +3,20 @@ import { Page } from "@playwright/test";
 /**
  * Trigger the ProjectCreationWizard modal in web mode
  *
- * Opens the wizard by clicking the "New Project" option in the ProjectSelector dropdown.
+ * Opens the welcome overlay and uses its create-project CTA. The v27 topbar no
+ * longer renders ProjectSelector, so this follows the current user-facing path.
  */
 export async function openProjectCreationWizard(page: Page): Promise<void> {
-  // Click the project selector trigger to open the dropdown
-  await page.click('[data-testid="project-selector-trigger"]');
+  await page.evaluate(() => {
+    const uiStore = (window as Window & {
+      __uiStore?: { getState(): { openWelcomeOverlay(): void } };
+    }).__uiStore;
+    uiStore?.getState().openWelcomeOverlay();
+  });
 
-  // Wait for dropdown to appear
-  await page.waitForSelector('[data-testid="new-project-option"]', { state: "visible" });
-
-  // Click the "New Project" option
-  await page.click('[data-testid="new-project-option"]');
-
-  // Wait a small amount of time for modal to open
-  await page.waitForTimeout(200);
+  await page.waitForSelector('[data-testid="welcome-screen"]', { state: "visible" });
+  await page.click('[data-testid="create-first-project-button"]');
+  await page.waitForSelector('[data-testid="project-creation-wizard"]', { state: "visible" });
 }
 
 /**

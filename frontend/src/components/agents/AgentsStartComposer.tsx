@@ -397,7 +397,7 @@ export function AgentsStartComposer({
       <div className="relative z-10 flex w-full max-w-[980px] flex-col items-center">
         <div className="max-w-[620px] text-center">
           <div
-            className="mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-medium uppercase tracking-[0.16em]"
+            className="mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[0.625rem] font-medium uppercase tracking-[0.16em]"
             style={{
               color: "var(--text-secondary)",
               background: "var(--bg-surface)",
@@ -430,7 +430,7 @@ export function AgentsStartComposer({
             </span>
           </h2>
           <p
-            className="mx-auto mt-3 max-w-[520px] text-[13px] leading-relaxed"
+            className="mx-auto mt-3 max-w-[520px] text-[0.8125rem] leading-relaxed"
             style={{ color: "var(--text-secondary)" }}
           >
             Choose the project and runtime, then ask your agent for something amazing.
@@ -561,7 +561,7 @@ export function AgentsStartComposer({
 
           {error && (
             <div
-              className="mx-auto mt-4 inline-flex max-w-full items-center gap-2 rounded-full border px-4 py-2 text-[13px]"
+              className="mx-auto mt-4 inline-flex max-w-full items-center gap-2 rounded-full border px-4 py-2 text-[0.8125rem]"
               style={{
                 color: "var(--status-error)",
                 background: "var(--status-error-muted)",

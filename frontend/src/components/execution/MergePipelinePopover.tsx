@@ -60,13 +60,13 @@ function SectionHeader({ title, count, isOpen, onToggle, highlight = false }: Se
         style={{ color: "var(--text-muted)" }}
       />
       <span
-        className="text-[10px] font-semibold uppercase tracking-wider"
+        className="text-[0.625rem] font-semibold uppercase tracking-wider"
         style={{ color: highlight ? attentionStyle.color : "var(--text-muted)" }}
       >
         {title}
       </span>
       <span
-        className="text-[10px] tabular-nums ml-auto"
+        className="text-[0.625rem] tabular-nums ml-auto"
         style={{ color: "var(--text-muted)" }}
       >
         {count}
@@ -147,7 +147,7 @@ export function MergePipelinePopover({
             Merge Pipeline
           </h3>
           <span
-            className="text-[11px] tabular-nums"
+            className="text-[0.6875rem] tabular-nums"
             style={{ color: "var(--text-muted)" }}
           >
             {total} total
@@ -234,7 +234,7 @@ export function MergePipelinePopover({
 
         {/* Footer */}
         <div
-          className="mt-2 pt-2 px-2 text-[11px]"
+          className="mt-2 pt-2 px-2 text-[0.6875rem]"
           style={{
             borderTop: "1px solid var(--overlay-weak)",
             color: "var(--text-muted)",

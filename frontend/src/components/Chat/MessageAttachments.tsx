@@ -122,7 +122,7 @@ export function MessageAttachments({
 
           {/* File size */}
           <span
-            className="text-[10px]"
+            className="text-[0.625rem]"
             style={{
               color: "var(--text-muted)",
             }}

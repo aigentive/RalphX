@@ -11,7 +11,7 @@ export function renderStreamContent(text: string): React.ReactNode[] {
       return (
         <span
           key={i}
-          className="inline-block text-[9px] px-1 py-px rounded mx-0.5"
+          className="inline-block text-[0.5625rem] px-1 py-px rounded mx-0.5"
           style={{
             backgroundColor: "var(--border-subtle)",
             color: "var(--accent-primary)",

@@ -156,12 +156,12 @@ function TimelineItem({
   const ReviewerIcon = isHuman ? User : isSystem ? Settings : Bot;
   const reviewerLabel = getReviewerTypeLabel(entry.reviewer).replace(" Review", "");
   const previewClassName = [
-    "text-[13px] text-text-primary leading-relaxed",
-    "[&_.prose]:!text-text-primary [&_.prose]:text-[13px] [&_.prose]:leading-relaxed",
-    "[&_p]:!text-text-primary [&_p]:text-[13px] [&_p]:leading-relaxed",
+    "text-[0.8125rem] text-text-primary leading-relaxed",
+    "[&_.prose]:!text-text-primary [&_.prose]:text-[0.8125rem] [&_.prose]:leading-relaxed",
+    "[&_p]:!text-text-primary [&_p]:text-[0.8125rem] [&_p]:leading-relaxed",
     "[&_li]:!text-text-primary [&_ul]:!text-text-primary [&_ol]:!text-text-primary",
-    "[&_li]:text-[13px] [&_ul]:text-[13px] [&_ol]:text-[13px]",
-    "[&_code]:!text-text-primary [&_code]:text-[12px]",
+    "[&_li]:text-[0.8125rem] [&_ul]:text-[0.8125rem] [&_ol]:text-[0.8125rem]",
+    "[&_code]:!text-text-primary [&_code]:text-[0.75rem]",
   ].join(" ");
 
   const getLabel = () => {
@@ -225,12 +225,12 @@ function TimelineItem({
                     : "color-mix(in srgb, var(--status-info) 70%, var(--text-muted))",
               }}
             />
-            <span className="text-[12px] font-semibold text-text-primary/70">
+            <span className="text-[0.75rem] font-semibold text-text-primary/70">
               {getLabel()}
             </span>
             {entryContext && (
               <span
-                className="text-[10px] text-text-primary/40 truncate min-w-0 max-w-[220px]"
+                className="text-[0.625rem] text-text-primary/40 truncate min-w-0 max-w-[220px]"
                 title={entryContext}
               >
                 {entryContext}
@@ -238,7 +238,7 @@ function TimelineItem({
             )}
             {isStale && (
               <span
-                className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                className="text-[0.5625rem] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded"
                 style={{
                   backgroundColor: "var(--overlay-weak)",
                   color: "var(--text-muted)",
@@ -247,7 +247,7 @@ function TimelineItem({
                 Superseded
               </span>
             )}
-            <span className="text-[10px] text-text-primary/40 ml-auto">
+            <span className="text-[0.625rem] text-text-primary/40 ml-auto">
               {formatRelativeTime(entry.created_at)}
             </span>
           </div>
@@ -259,7 +259,7 @@ function TimelineItem({
                 dialogTitle="Full review feedback"
                 dialogDescription="Full review feedback in a scrollable view."
                 fullButtonLabel="View full feedback"
-                fullButtonClassName="text-[12px]"
+                fullButtonClassName="text-[0.75rem]"
                 previewClassName={previewClassName}
               />
 
@@ -271,17 +271,17 @@ function TimelineItem({
                   }}
                 >
                   <div className="min-w-0">
-                    <div className="text-[11px] font-medium text-text-primary/65">
+                    <div className="text-[0.6875rem] font-medium text-text-primary/65">
                       Follow-up ideation session
                     </div>
-                    <div className="mt-0.5 text-[11px] text-text-primary/45 break-all">
+                    <div className="mt-0.5 text-[0.6875rem] text-text-primary/45 break-all">
                       {entry.followup_session_id}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => navigateToIdeationSession(entry.followup_session_id!)}
-                    className="shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-opacity hover:opacity-80"
+                    className="shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
                     style={{
                       color: "var(--accent-primary)",
                       backgroundColor: "var(--overlay-faint)",
@@ -301,7 +301,7 @@ function TimelineItem({
           <div className="pl-5 mt-1.5 flex items-center gap-1 flex-wrap">
             {resolutionTrail.map((item, i) => (
               <Fragment key={`${item.label}-${i}`}>
-                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                   {item.label}{" "}
                   <span style={{ color: "var(--text-muted)" }}>
                     ({formatRelativeTime(item.timestamp)})
@@ -309,7 +309,7 @@ function TimelineItem({
                 </span>
                 {i < resolutionTrail.length - 1 && (
                   <span
-                    className="text-[10px]"
+                    className="text-[0.625rem]"
                     style={{ color: "var(--text-muted)" }}
                   >
                     →
@@ -350,7 +350,7 @@ export function ReviewTimeline({
 
   if (displayedHistory.length === 0) {
     return (
-      <p className="text-[12px] text-text-primary/35 italic py-2">
+      <p className="text-[0.75rem] text-text-primary/35 italic py-2">
         {emptyMessage}
       </p>
     );

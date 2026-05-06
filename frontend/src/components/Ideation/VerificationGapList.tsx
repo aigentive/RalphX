@@ -101,7 +101,7 @@ function GapScoreTrend({ rounds }: { rounds: RoundSummary[] }) {
   return (
     <div className="flex items-center gap-3 mb-3">
       <div
-        className="flex items-center gap-1.5 text-[11px]"
+        className="flex items-center gap-1.5 text-[0.6875rem]"
         style={{ color: "var(--text-muted)" }}
       >
         <span>Gap score:</span>
@@ -114,7 +114,7 @@ function GapScoreTrend({ rounds }: { rounds: RoundSummary[] }) {
       </div>
 
       <div
-        className="flex items-center gap-1 text-[11px]"
+        className="flex items-center gap-1 text-[0.6875rem]"
         style={{
           color: stable
             ? "var(--text-secondary)"
@@ -204,7 +204,7 @@ export function VerificationGapList({
   if (gaps.length === 0) {
     return (
       <div
-        className="flex items-center justify-center py-4 text-[12px]"
+        className="flex items-center justify-center py-4 text-[0.75rem]"
         style={{ color: "var(--text-muted)" }}
       >
         No gaps found
@@ -244,7 +244,7 @@ export function VerificationGapList({
         <GapScoreTrend rounds={rounds} />
       ) : gapScore !== undefined ? (
         <div
-          className="flex items-center gap-1.5 text-[11px] mb-3"
+          className="flex items-center gap-1.5 text-[0.6875rem] mb-3"
           style={{ color: "var(--text-muted)" }}
         >
           <span>Gap score:</span>
@@ -261,7 +261,7 @@ export function VerificationGapList({
           return (
             <span
               key={severity}
-              className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+              className="inline-flex items-center gap-1 text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md"
               style={{
                 background: cfg.bg,
                 border: `1px solid ${cfg.border}`,
@@ -281,7 +281,7 @@ export function VerificationGapList({
         {selectable && onSelectionChange && (
           <button
             type="button"
-            className="ml-auto text-[10px] transition-colors"
+            className="ml-auto text-[0.625rem] transition-colors"
             style={{ color: "var(--text-muted)" }}
             onClick={allSelected ? handleDeselectAll : handleSelectAll}
             onMouseEnter={(e) => {
@@ -303,7 +303,7 @@ export function VerificationGapList({
           return (
             <div key={severity} className="mb-2 last:mb-0">
               <div
-                className="text-[10px] font-semibold uppercase tracking-wider mb-1"
+                className="text-[0.625rem] font-semibold uppercase tracking-wider mb-1"
                 style={{ color: cfg.color, opacity: 0.7 }}
               >
                 {cfg.label}
@@ -337,21 +337,21 @@ export function VerificationGapList({
                       {/* Content */}
                       <div className="flex-1 min-w-0">
                         <div
-                          className="text-[12px] leading-snug"
+                          className="text-[0.75rem] leading-snug"
                           style={{ color: "var(--text-primary)" }}
                         >
                           {gap.description}
                         </div>
                         {gap.whyItMatters && (
                           <div
-                            className="text-[11px] mt-0.5 leading-snug"
+                            className="text-[0.6875rem] mt-0.5 leading-snug"
                             style={{ color: "var(--text-secondary)" }}
                           >
                             {gap.whyItMatters}
                           </div>
                         )}
                         <div
-                          className="text-[10px] mt-0.5 opacity-60"
+                          className="text-[0.625rem] mt-0.5 opacity-60"
                           style={{ color: cfg.color }}
                         >
                           {gap.category}

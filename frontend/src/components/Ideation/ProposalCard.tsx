@@ -148,7 +148,7 @@ export const ProposalCard = React.memo(function ProposalCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <h3
-              className="text-[13px] font-medium leading-snug tracking-[-0.01em]"
+              className="text-[0.8125rem] font-medium leading-snug tracking-[-0.01em]"
               style={{ color: "var(--text-primary)" }}
             >
               {proposal.title}
@@ -205,7 +205,7 @@ export const ProposalCard = React.memo(function ProposalCard({
           </div>
 
           <p
-            className="text-[12px] mt-1.5 line-clamp-2 leading-relaxed"
+            className="text-[0.75rem] mt-1.5 line-clamp-2 leading-relaxed"
             style={{ color: "var(--text-secondary)" }}
           >
             {proposal.description
@@ -220,7 +220,7 @@ export const ProposalCard = React.memo(function ProposalCard({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span
-                      className="px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wider cursor-default"
+                      className="px-2 py-0.5 rounded-md text-[0.625rem] font-semibold uppercase tracking-wider cursor-default"
                       style={{
                         background: priorityColor.bg,
                         border: `1px solid ${priorityColor.border}`,
@@ -234,7 +234,7 @@ export const ProposalCard = React.memo(function ProposalCard({
                 </Tooltip>
               ) : (
                 <span
-                  className="px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wider"
+                  className="px-2 py-0.5 rounded-md text-[0.625rem] font-semibold uppercase tracking-wider"
                   style={{
                     background: priorityColor.bg,
                     border: `1px solid ${priorityColor.border}`,
@@ -247,7 +247,7 @@ export const ProposalCard = React.memo(function ProposalCard({
             </TooltipProvider>
 
             <span
-              className="px-2 py-0.5 rounded-md text-[10px] font-medium"
+              className="px-2 py-0.5 rounded-md text-[0.625rem] font-medium"
               style={{
                 background: "var(--overlay-faint)",
                 border: "1px solid var(--overlay-weak)",
@@ -259,7 +259,7 @@ export const ProposalCard = React.memo(function ProposalCard({
 
             {proposal.userModified && (
               <span
-                className="px-2 py-0.5 rounded-md text-[10px] font-medium italic"
+                className="px-2 py-0.5 rounded-md text-[0.625rem] font-medium italic"
                 style={{
                   background: "var(--status-info-muted)",
                   border: "1px solid var(--status-info-border)",
@@ -276,7 +276,7 @@ export const ProposalCard = React.memo(function ProposalCard({
                   <TooltipTrigger asChild>
                     <span
                       data-testid="blocks-count"
-                      className="px-1.5 py-0.5 rounded text-[10px] font-semibold cursor-default"
+                      className="px-1.5 py-0.5 rounded text-[0.625rem] font-semibold cursor-default"
                       style={{ color: "var(--accent-primary)" }}
                     >
                       →{blocksCount}
@@ -297,7 +297,7 @@ export const ProposalCard = React.memo(function ProposalCard({
                     <button
                       data-testid="depends-on-inline"
                       onClick={(e) => { e.stopPropagation(); setIsDepsExpanded(!isDepsExpanded); }}
-                      className="flex items-center gap-1.5 text-[11px] transition-colors duration-150"
+                      className="flex items-center gap-1.5 text-[0.6875rem] transition-colors duration-150"
                       style={{ color: "var(--text-muted)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
@@ -316,7 +316,7 @@ export const ProposalCard = React.memo(function ProposalCard({
                     </button>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">
-                    <div className="space-y-1.5 text-[12px]">
+                    <div className="space-y-1.5 text-[0.75rem]">
                       <div className="font-medium">
                         Depends on {dependsOnDetails!.length} proposal{dependsOnDetails!.length !== 1 ? "s" : ""}:
                       </div>
@@ -339,7 +339,7 @@ export const ProposalCard = React.memo(function ProposalCard({
                   }}
                 >
                   {dependsOnDetails!.map((dep) => (
-                    <div key={dep.proposalId} className="text-[11px]">
+                    <div key={dep.proposalId} className="text-[0.6875rem]">
                       <div style={{ color: "var(--text-secondary)" }} className="font-medium">
                         {dep.title}
                       </div>
@@ -359,7 +359,7 @@ export const ProposalCard = React.memo(function ProposalCard({
             <button
               data-testid="view-historical-plan"
               onClick={(e) => { e.stopPropagation(); handleViewHistoricalPlan(); }}
-              className="mt-3 text-[12px] flex items-center gap-1.5 transition-colors duration-150"
+              className="mt-3 text-[0.75rem] flex items-center gap-1.5 transition-colors duration-150"
               style={{ color: "var(--accent-primary)" }}
               onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent-primary)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = "var(--accent-primary)"; }}
@@ -374,7 +374,7 @@ export const ProposalCard = React.memo(function ProposalCard({
             <button
               data-testid="view-task-link"
               onClick={(e) => { e.stopPropagation(); onNavigateToTask(proposal.createdTaskId!); }}
-              className="mt-3 text-[12px] flex items-center gap-1.5 transition-colors duration-150"
+              className="mt-3 text-[0.75rem] flex items-center gap-1.5 transition-colors duration-150"
               style={{ color: "var(--accent-primary)" }}
               onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent-primary)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = "var(--accent-primary)"; }}

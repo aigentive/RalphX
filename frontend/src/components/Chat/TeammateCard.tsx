@@ -59,11 +59,11 @@ export const TeammateCard = React.memo(function TeammateCard({
           className="w-2 h-2 rounded-full shrink-0"
           style={{ backgroundColor: color }}
         />
-        <span className="text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>
+        <span className="text-[0.75rem] font-medium" style={{ color: "var(--text-secondary)" }}>
           {name}
         </span>
         <span
-          className="text-[10px] px-1.5 py-0 rounded"
+          className="text-[0.625rem] px-1.5 py-0 rounded"
           style={{
             backgroundColor: "var(--bg-elevated)",
             color: "var(--text-muted)",
@@ -76,7 +76,7 @@ export const TeammateCard = React.memo(function TeammateCard({
             className="w-1.5 h-1.5 rounded-full"
             style={{ backgroundColor: statusConfig.dotColor }}
           />
-          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
             {statusConfig.label}
           </span>
         </div>
@@ -84,21 +84,21 @@ export const TeammateCard = React.memo(function TeammateCard({
 
       {/* Role description */}
       {roleDescription && (
-        <p className="text-[11px] mb-1 truncate" style={{ color: "var(--text-muted)" }}>
+        <p className="text-[0.6875rem] mb-1 truncate" style={{ color: "var(--text-muted)" }}>
           {roleDescription}
         </p>
       )}
 
       {/* Current activity */}
       {currentActivity && status !== "shutdown" && (
-        <p className="text-[11px] mb-1 truncate" style={{ color: "var(--text-muted)" }}>
+        <p className="text-[0.6875rem] mb-1 truncate" style={{ color: "var(--text-muted)" }}>
           {currentActivity}
         </p>
       )}
 
       {/* Cost */}
       <div className="flex items-center justify-between mt-1.5">
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
           {formatTokens(tokensUsed)} tokens | {formatCost(estimatedCostUsd)}
         </span>
 

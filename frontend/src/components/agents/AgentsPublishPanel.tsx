@@ -47,10 +47,12 @@ import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   getAgentWorkspaceTerminalPublicationLabel,
   getAgentWorkspaceTerminalPublicationStatus,
+  getAgentWorkspaceEffectiveBaseLabel,
   hasPublishedWorkspacePr,
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
+import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -127,27 +129,7 @@ export function AgentPublishPanel({
         ["agents", "conversation-workspace", result.workspace.conversationId],
         result.workspace,
       );
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "conversation-workspace", result.workspace.conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "conversation-workspace-freshness", result.workspace.conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: [
-            "agents",
-            "conversation-workspace-publication-events",
-            result.workspace.conversationId,
-          ],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "workspace-diff", result.workspace.conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "workspace-commits", result.workspace.conversationId],
-        }),
-      ]);
+      await invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
       toast.success(
         result.updated
           ? `Updated from ${result.targetRef}`
@@ -159,17 +141,7 @@ export function AgentPublishPanel({
         error instanceof Error ? error.message : "Failed to update from base",
       );
       if (conversationId) {
-        void Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace", conversationId],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace-freshness", conversationId],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
-          }),
-        ]);
+        void invalidateWorkspaceQueries(queryClient, conversationId);
       }
     },
   });
@@ -180,17 +152,7 @@ export function AgentPublishPanel({
         ["agents", "conversation-workspace", updatedWorkspace.conversationId],
         updatedWorkspace,
       );
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "conversation-workspace", updatedWorkspace.conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "conversation-workspace-freshness", updatedWorkspace.conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ["agents", "conversation-workspace-publication-events", updatedWorkspace.conversationId],
-        }),
-      ]);
+      await invalidateWorkspaceQueries(queryClient, updatedWorkspace.conversationId);
       toast.success("Pull request closed");
     },
     onError: (error) => {
@@ -215,7 +177,8 @@ export function AgentPublishPanel({
   }
 
   const branch = workspace.branchName;
-  const base = workspace.baseDisplayName ?? workspace.baseRef;
+  const freshness = freshnessQuery.data;
+  const base = getAgentWorkspaceEffectiveBaseLabel(workspace, freshness);
   const prLabel = workspace.publicationPrNumber
     ? `PR #${workspace.publicationPrNumber}`
     : workspace.publicationPrUrl
@@ -224,9 +187,11 @@ export function AgentPublishPanel({
   const prUrlLabel = workspace.publicationPrUrl
     ? formatPullRequestUrlLabel(workspace.publicationPrUrl)
     : null;
-  const freshness = freshnessQuery.data;
+  const baseStatus = freshness?.baseStatus ?? "valid";
+  const baseBlocked = baseStatus === "blocked";
+  const baseRetargeted = baseStatus === "retargeted";
   const isBranchUpdateNeeded =
-    !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
+    !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isUpdatingFromBase = updateFromBaseMutation.isPending;
   const effectivePublishing = isPublishingWorkspace || isUpdatingFromBase;
@@ -239,12 +204,18 @@ export function AgentPublishPanel({
         )
       ? "checking"
       : workspace.publicationPushStatus;
-  const baseActionLabel = freshness?.baseRef ?? workspace.baseRef ?? base;
+  const baseActionLabel =
+    freshness?.effectiveBaseDisplayName ??
+    freshness?.effectiveBaseRef ??
+    freshness?.baseRef ??
+    workspace.baseRef ??
+    base;
   const isFreshnessLoading = freshnessQuery.isLoading;
   const publishDisabled =
     !onPublishWorkspace ||
     isPipelineOwnedWorkspace ||
     effectivePublishing ||
+    baseBlocked ||
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
     Boolean(terminalPublicationStatus) ||
@@ -255,7 +226,7 @@ export function AgentPublishPanel({
     (isPipelineOwnedWorkspace
       ? "Managed by Tasks"
       : isPublishCurrent
-        ? "Published"
+        ? "PR is up to date"
         : "Commit & Publish");
   const canClosePr =
     hasPublishedPr &&
@@ -270,6 +241,8 @@ export function AgentPublishPanel({
       ? `${terminalPrLabel} has been merged. By continuing this conversation, a new workspace branch will be created automatically.`
       : terminalPublicationStatus === "closed"
         ? `${terminalPrLabel} is closed. By continuing this conversation, a new workspace branch will be created automatically.`
+        : baseBlocked
+          ? "Publishing is blocked until the workspace base branch is resolved."
         : isPipelineOwnedWorkspace
           ? workspace.publicationPrNumber || workspace.publicationPrUrl
             ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
@@ -361,7 +334,12 @@ export function AgentPublishPanel({
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <PublishFact icon={GitBranch} label="Branch" value={branch} />
-            <PublishFact icon={FileText} label="Base" value={base} />
+            <PublishFact
+              icon={FileText}
+              label="Base"
+              value={base}
+              description={freshness?.baseBlockReason ?? null}
+            />
             <PublishFact
               icon={GitPullRequestArrow}
               label="Pull Request"
@@ -444,6 +422,45 @@ export function AgentPublishPanel({
               </span>
             </div>
           )}
+          {baseRetargeted && (
+            <div
+              className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-retargeted"
+            >
+              <GitBranch
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+              />
+              <span>Base branch retargeted to {base}.</span>
+            </div>
+          )}
+          {baseBlocked && (
+            <div
+              className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--status-warning-border)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-blocked"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--status-warning)" }}
+              />
+              <span>
+                {freshness?.baseBlockReason ??
+                  "This workspace base branch cannot be resolved safely."}
+              </span>
+            </div>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold text-[var(--text-primary)]">
@@ -461,7 +478,7 @@ export function AgentPublishPanel({
                 variant="ghost"
                 className="h-9 gap-2 px-3 text-xs"
                 onClick={() => setReviewOpen(true)}
-                disabled={isChangesLoading && !hasPublishedPr}
+                disabled={baseBlocked || (isChangesLoading && !hasPublishedPr)}
                 data-testid="agents-review-changes"
               >
                 <Code className="h-3.5 w-3.5" />
@@ -473,6 +490,7 @@ export function AgentPublishPanel({
                   className={primaryActionClassName}
                   onClick={() => void confirmUpdateFromBase()}
                   disabled={
+                    baseBlocked ||
                     effectivePublishing ||
                     (isRepairPending && !isPipelineOwnedWorkspace)
                   }
@@ -500,7 +518,11 @@ export function AgentPublishPanel({
                   ) : (
                     <GitPullRequestArrow className="h-3.5 w-3.5" />
                   )}
-                  {isFreshnessLoading ? "Checking..." : publishButtonLabel}
+                  {baseBlocked
+                    ? "Base unavailable"
+                    : isFreshnessLoading
+                      ? "Checking..."
+                      : publishButtonLabel}
                 </Button>
               )}
               {canClosePr && (

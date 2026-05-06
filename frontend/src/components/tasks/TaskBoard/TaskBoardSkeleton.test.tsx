@@ -18,10 +18,10 @@ describe("TaskBoardSkeleton", () => {
     expect(columns).toHaveLength(5);
   });
 
-  it("should render headers only for expanded columns (first 3)", () => {
+  it("should render headers for all stable v29a columns", () => {
     render(<TaskBoardSkeleton />);
     const headers = screen.getAllByTestId(/skeleton-header-/);
-    expect(headers).toHaveLength(3);
+    expect(headers).toHaveLength(5);
   });
 
   it("should render card placeholders in expanded columns", () => {
@@ -37,25 +37,18 @@ describe("TaskBoardSkeleton", () => {
     expect(pulsingElements.length).toBeGreaterThan(0);
   });
 
-  it("should render first 3 columns as expanded (280px) and last 2 as collapsed rails (128px)", () => {
+  it("should render columns as stable grid cells", () => {
     render(<TaskBoardSkeleton />);
 
-    // First 3 columns: expanded
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       const col = screen.getByTestId(`skeleton-column-${i}`);
-      expect(col.style.width).toBe("280px");
-    }
-
-    // Last 2 columns: collapsed
-    for (let i = 3; i < 5; i++) {
-      const col = screen.getByTestId(`skeleton-column-${i}`);
-      expect(col.style.width).toBe("128px");
+      expect(col.style.background).toBe("var(--kanban-column-bg)");
     }
   });
 
   it("should use correct background color", () => {
     render(<TaskBoardSkeleton />);
     const skeleton = screen.getByTestId("task-board-skeleton");
-    expect(skeleton.style.background).toBe("var(--bg-base)");
+    expect(skeleton.style.background).toBe("var(--kanban-board-divider)");
   });
 });

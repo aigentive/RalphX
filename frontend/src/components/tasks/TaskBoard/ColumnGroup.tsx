@@ -1,10 +1,9 @@
 /**
  * ColumnGroup - Collapsible group within a kanban column
  *
- * Design: macOS Tahoe (2025)
- * - Clean, minimal section header like Finder
+ * Design: v29a Kanban
+ * - Divider-separated groups with compact section headers
  * - Simple chevron rotation
- * - Subtle left accent when expanded
  */
 
 import { type ReactNode } from "react";
@@ -51,27 +50,25 @@ export function ColumnGroup({
     <Collapsible
       open={isExpanded}
       {...(handleOpenChange && { onOpenChange: handleOpenChange })}
-      className="mt-1 first:mt-0"
+      className="mt-1 border-t pt-2 first:mt-0 first:border-t-0 first:pt-0"
+      style={{
+        borderTopColor: "var(--kanban-group-divider)",
+        borderTopStyle: "solid",
+      }}
     >
-      <div
-        className="overflow-hidden"
-        style={{
-          borderLeft: isExpanded && accentColor
-            ? `2px solid ${accentColor}`
-            : "2px solid transparent",
-        }}
-      >
+      <div className="overflow-hidden">
         {/* Group header - simple like Finder section headers */}
         <CollapsibleTrigger asChild>
           <button
             type="button"
             className={cn(
-              "w-full flex items-center gap-1.5 px-2 py-1.5 text-left",
+              "w-full flex items-center gap-1.5 rounded-md text-left",
               "transition-colors rounded-md",
               "focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]/50"
             )}
             style={{
               background: "transparent",
+              padding: "4px 4px 2px",
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.background = "var(--overlay-faint)";
@@ -91,7 +88,10 @@ export function ColumnGroup({
 
             {/* Optional icon */}
             {icon && (
-              <span className="flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
+              <span
+                className="flex-shrink-0"
+                style={{ color: accentColor || "var(--text-secondary)" }}
+              >
                 {icon}
               </span>
             )}
@@ -100,9 +100,10 @@ export function ColumnGroup({
             <span
               className="flex-1 truncate"
               style={{
-                fontSize: "11px",
-                fontWeight: 500,
+                fontSize: "0.7188rem",
+                fontWeight: 600,
                 color: "var(--text-secondary)",
+                letterSpacing: "0.02em",
               }}
             >
               {label}
@@ -111,20 +112,21 @@ export function ColumnGroup({
             {/* Count - simple */}
             <span
               style={{
-                fontSize: "10px",
+                fontSize: "0.6875rem",
                 fontWeight: 500,
                 color: "var(--text-muted)",
                 fontVariantNumeric: "tabular-nums",
+                fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
               }}
             >
-              {count}
+              ({count})
             </span>
           </button>
         </CollapsibleTrigger>
 
         {/* Group content */}
         <CollapsibleContent className="pt-1">
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-2">
             {children}
           </div>
         </CollapsibleContent>

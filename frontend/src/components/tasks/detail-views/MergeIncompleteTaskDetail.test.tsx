@@ -333,6 +333,49 @@ describe("MergeIncompleteTaskDetail", () => {
     expect(screen.getByText("Git error: branch locked")).toBeInTheDocument();
   });
 
+  it("renders diagnostic info and supports manual_retry / attempt_succeeded event kinds", () => {
+    const events: MergeRecoveryEvent[] = [
+      createRecoveryEvent({
+        kind: "manual_retry",
+        source: "user",
+        message: "User triggered manual retry",
+        at: "2026-02-11T08:00:00+00:00",
+      }),
+      createRecoveryEvent({
+        kind: "attempt_succeeded",
+        source: "system",
+        message: "Merge attempt succeeded",
+        at: "2026-02-11T08:01:00+00:00",
+      }),
+    ];
+
+    const metadata = JSON.stringify({
+      error: "Git operation error: lock contention",
+      diagnostic_info: "rebase aborted; index.lock present at .git/index.lock",
+      source_branch: "ralphx/ralphx/task-123",
+      target_branch: "ralphx/ralphx/plan-main",
+      merge_recovery: {
+        version: 1,
+        events,
+        last_state: "succeeded",
+      },
+    });
+
+    const task = createTestTask({ metadata });
+    render(<MergeIncompleteTaskDetail task={task} />, { wrapper: TestWrapper });
+
+    // diagnosticInfo branch (covers patch line in ErrorContextCard)
+    expect(
+      screen.getByText(/rebase aborted; index\.lock present/i),
+    ).toBeInTheDocument();
+
+    // manual_retry + attempt_succeeded labels (covers patch lines in RecoveryTimeline labels/colors)
+    expect(screen.getByText("Manual Retry")).toBeInTheDocument();
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    expect(screen.getByText("User triggered manual retry")).toBeInTheDocument();
+    expect(screen.getByText("Merge attempt succeeded")).toBeInTheDocument();
+  });
+
   it("explains hook environment failures as escalated setup issues, not code changes", () => {
     const metadata = JSON.stringify({
       error:

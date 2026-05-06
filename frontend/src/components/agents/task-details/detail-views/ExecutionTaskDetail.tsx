@@ -123,7 +123,7 @@ function ActionButtonsCard({
       <DetailCard>
         <div className="flex items-center justify-between">
           <span
-            className="text-[11px] font-semibold uppercase tracking-wider"
+            className="text-[0.6875rem] font-semibold uppercase tracking-wider"
             style={{ color: "var(--text-muted)" }}
           >
             Actions
@@ -161,7 +161,7 @@ function ActionButtonsCard({
         </div>
 
         {error && (
-          <p className="mt-3 text-[12px]" style={{ color: "var(--status-error)" }}>
+          <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
             {error}
           </p>
         )}
@@ -235,7 +235,7 @@ function RevisionFeedbackCard({
         {/* Feedback content */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-[12px] font-semibold text-text-primary/70">
+            <span className="text-[0.75rem] font-semibold text-text-primary/70">
               {getReviewFeedbackHeading(feedback.reviewer, true)}
             </span>
             <StatusPill
@@ -245,14 +245,14 @@ function RevisionFeedbackCard({
               size="sm"
             />
           </div>
-          <div className="text-[13px] text-text-primary/55 leading-relaxed" style={{ wordBreak: "break-word" }}>
+          <div className="text-[0.8125rem] text-text-primary/55 leading-relaxed" style={{ wordBreak: "break-word" }}>
             <ReviewFeedbackBody
               summary={feedback.summary ?? null}
               notes={feedback.notes ?? null}
               dialogTitle="Full revision feedback"
               dialogDescription="Full review feedback in a scrollable view."
               fullButtonLabel="View full feedback"
-              previewClassName="text-[13px] text-text-primary/55 leading-relaxed"
+              previewClassName="text-[0.8125rem] text-text-primary/55 leading-relaxed"
             />
           </div>
         </div>
@@ -278,10 +278,10 @@ function TeamProgressSection({ teammates }: { teammates: TeammateState[] }) {
                 className="w-2 h-2 rounded-full shrink-0"
                 style={{ backgroundColor: mate.color }}
               />
-              <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>
+              <span className="text-[0.75rem] font-medium" style={{ color: "var(--text-primary)" }}>
                 {mate.name}
               </span>
-              <span className="text-[10px] px-1.5 rounded" style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-muted)" }}>
+              <span className="text-[0.625rem] px-1.5 rounded" style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-muted)" }}>
                 {mate.model}
               </span>
               <StatusPill
@@ -292,12 +292,12 @@ function TeamProgressSection({ teammates }: { teammates: TeammateState[] }) {
               />
             </div>
             {mate.roleDescription && (
-              <p className="text-[11px] mt-1 truncate" style={{ color: "var(--text-muted)" }}>
+              <p className="text-[0.6875rem] mt-1 truncate" style={{ color: "var(--text-muted)" }}>
                 {mate.roleDescription}
               </p>
             )}
             {mate.currentActivity && (
-              <p className="text-[11px] mt-0.5 truncate" style={{ color: "var(--text-muted)" }}>
+              <p className="text-[0.6875rem] mt-0.5 truncate" style={{ color: "var(--text-muted)" }}>
                 {mate.currentActivity}
               </p>
             )}
@@ -414,12 +414,12 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
                 style={{ color: "var(--status-warning)" }}
               />
               <div className="flex-1 min-w-0">
-                <p className="text-[13px]" style={{ color: "var(--status-warning)" }}>
+                <p className="text-[0.8125rem]" style={{ color: "var(--status-warning)" }}>
                   {agentError.message}
                 </p>
                 {agentError.errorAt && (
                   <span
-                    className="text-[11px] mt-1.5 block"
+                    className="text-[0.6875rem] mt-1.5 block"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {new Date(agentError.errorAt).toLocaleString()}

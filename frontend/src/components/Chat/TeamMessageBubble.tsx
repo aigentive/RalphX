@@ -58,15 +58,15 @@ export const TeamMessageBubble = React.memo(function TeamMessageBubble({
               style={{ backgroundColor: fromColor }}
             />
           )}
-          <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+          <span className="text-[0.6875rem] font-medium" style={{ color: "var(--text-secondary)" }}>
             {from}
           </span>
-          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>→</span>
-          <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+          <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>→</span>
+          <span className="text-[0.6875rem] font-medium" style={{ color: "var(--text-secondary)" }}>
             {to === "*" ? "all" : to}
           </span>
           {timestamp && (
-            <span className="text-[10px] ml-auto" style={{ color: "var(--text-muted)" }}>
+            <span className="text-[0.625rem] ml-auto" style={{ color: "var(--text-muted)" }}>
               {new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </span>
           )}
@@ -82,7 +82,7 @@ export const TeamMessageBubble = React.memo(function TeamMessageBubble({
         >
           <div
             ref={contentRef}
-            className="text-[12px] [&_h1]:text-[14px] [&_h2]:text-[13px] [&_h3]:text-[12px]"
+            className="text-[0.75rem] [&_h1]:text-[0.875rem] [&_h2]:text-[0.8125rem] [&_h3]:text-[0.75rem]"
             style={{ color: "var(--text-secondary)" }}
           >
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>

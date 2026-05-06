@@ -200,13 +200,13 @@ function TimelineEventItem({ event, isLast }: TimelineEventItemProps) {
       <div className="flex-1 pb-3">
         <div className="flex items-center gap-2">
           <span
-            className="text-[12px] font-medium"
+            className="text-[0.75rem] font-medium"
             style={{ color: "var(--text-primary)" }}
           >
             {config.label}
           </span>
           <span
-            className="text-[11px] ml-auto"
+            className="text-[0.6875rem] ml-auto"
             style={{ color: "var(--text-muted)" }}
           >
             {formatRelativeTime(event.timestamp)}
@@ -214,7 +214,7 @@ function TimelineEventItem({ event, isLast }: TimelineEventItemProps) {
         </div>
         {event.details && (
           <p
-            className="text-[11px] mt-0.5"
+            className="text-[0.6875rem] mt-0.5"
             style={{ color: "var(--text-muted)" }}
           >
             {event.details}
@@ -241,14 +241,14 @@ export function IssueTimeline({ issue, showFileLink = true }: IssueTimelineProps
       {/* Issue header */}
       <div className="mb-3 pb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
         <h4
-          className="text-[13px] font-medium"
+          className="text-[0.8125rem] font-medium"
           style={{ color: "var(--text-primary)" }}
         >
           {issue.title}
         </h4>
         {issue.description && (
           <p
-            className="text-[12px] mt-1"
+            className="text-[0.75rem] mt-1"
             style={{ color: "var(--text-secondary)" }}
           >
             {issue.description}
@@ -258,7 +258,7 @@ export function IssueTimeline({ issue, showFileLink = true }: IssueTimelineProps
           <div className="flex items-center gap-1.5 mt-2">
             <FileCode className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
             <span
-              className="text-[11px] font-mono"
+              className="text-[0.6875rem] font-mono"
               style={{ color: "var(--status-info)" }}
             >
               {issue.filePath}:{issue.lineNumber}
@@ -285,13 +285,13 @@ export function IssueTimeline({ issue, showFileLink = true }: IssueTimelineProps
           style={{ borderTop: "1px solid var(--border-subtle)" }}
         >
           <span
-            className="text-[10px] uppercase tracking-wider"
+            className="text-[0.625rem] uppercase tracking-wider"
             style={{ color: "var(--text-muted)" }}
           >
             Resolution Notes
           </span>
           <p
-            className="text-[11px] mt-1"
+            className="text-[0.6875rem] mt-1"
             style={{ color: "var(--text-secondary)" }}
           >
             {issue.resolutionNotes}

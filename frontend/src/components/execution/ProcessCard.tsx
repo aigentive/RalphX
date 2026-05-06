@@ -186,7 +186,7 @@ export function ProcessCard({
           {process.title}
         </span>
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded shrink-0"
           style={{
             color: statusStyle.color,
             backgroundColor: statusStyle.bgColor,
@@ -236,7 +236,7 @@ export function ProcessCard({
 
       {/* Line 2: Step · Elapsed · Origin · Branch */}
       <div
-        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[11px] min-w-0"
+        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[0.6875rem] min-w-0"
         style={{ color: "var(--text-muted)" }}
       >
         {stepInfo && <span className="shrink-0">{stepInfo}</span>}
@@ -257,7 +257,7 @@ export function ProcessCard({
               ·
             </span>
             <span
-              className="text-[10px] font-medium px-1 rounded shrink-0"
+              className="text-[0.625rem] font-medium px-1 rounded shrink-0"
               style={{
                 color: originStyle.color,
                 backgroundColor: originStyle.bgColor,
@@ -276,7 +276,7 @@ export function ProcessCard({
               ·
             </span>
             <span
-              className="font-mono text-[10px] truncate min-w-0"
+              className="font-mono text-[0.625rem] truncate min-w-0"
               style={{ color: "var(--text-muted)" }}
               title={process.taskBranch}
             >

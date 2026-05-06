@@ -318,7 +318,7 @@ export function ChatInput({
             placeholder={effectivePlaceholder}
             rows={1}
             aria-label="Message input"
-            className="flex-1 px-3 py-2 text-[13px] resize-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 focus:border-0"
+            className="flex-1 px-3 py-2 text-[0.8125rem] resize-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 focus:border-0"
             style={{
               background: "transparent",
               color: "var(--text-primary)",
@@ -408,7 +408,7 @@ export function ChatInput({
       {/* Helper Text - macOS Tahoe muted styling */}
       {showHelperText && (
         <p
-          className="text-[10px] mt-1.5"
+          className="text-[0.625rem] mt-1.5"
           style={{ color: "var(--text-muted)" }}
         >
           {questionMode

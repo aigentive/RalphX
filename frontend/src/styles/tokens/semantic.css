@@ -20,32 +20,44 @@
   /* ============================================================================
    * Backgrounds
    * ============================================================================ */
-  --bg-base:          var(--gray-975);  /* app root */
-  --bg-surface:       var(--gray-950);  /* panels, sidebars */
-  --bg-elevated:      var(--gray-925);  /* cards, dropdowns */
-  --bg-hover:         var(--gray-850);  /* row hover */
+  --bg-base:          #18181D;  /* app root / canvas */
+  --bg-surface:       #1E1E23;  /* panels, sidebars */
+  --bg-elevated:      #232329;  /* cards, dropdowns */
+  --bg-hover:         #2A2A31;  /* row hover */
+  --bg-sunken:        #15151A;  /* recessed bars */
   --bg-surface-hover: var(--bg-hover);  /* deprecated alias — migrate callsites to --bg-hover */
-  --nav-rail-bg:      hsl(220 10% 6%);   /* primary nav rail — sits darker than sidebar */
+  --topbar-bg:        #1E1E23;
+  --nav-rail-bg:      #1B1B20;   /* primary nav rail — sits darker than sidebar */
+  --app-navbar-bg:    #1E1E23;   /* v27 panel */
+  --app-rail-bg:      #1B1B20;   /* v27 rail */
+  --app-sidebar-bg:   #1E1E23;   /* v27 panel */
+  --app-content-bg:   #18181D;   /* v27 canvas */
+  --brand-tile:       #232329;
+  --brand-pill-from:  #2E2F35;
+  --brand-pill-to:    #2E2E34;
+  --brand-x:          #FA4F19;
 
   /* ============================================================================
    * Text
    * ============================================================================ */
-  --text-primary:   hsl(220 10% 90%);
-  --text-secondary: var(--gray-500);
-  --text-muted:     var(--gray-600);
-  --text-inverse:   hsl(220 10% 6%); /* on accent/light surfaces (e.g. HC yellow btn) */
-  --text-on-accent: var(--primary-foreground);
+  --text-primary:   #F2F2F4;
+  --text-secondary: #C7C7CC;
+  --text-muted:     #8E8E96;
+  --text-subtle:    #6A6A72;
+  --text-inverse:   #1A0E07; /* on accent/light surfaces */
+  --text-on-accent: #1A0E07;
 
   /* ============================================================================
    * Accent (brand) — warm orange used sparingly
    * ============================================================================ */
-  --accent-primary:   var(--orange-500);
-  --accent-secondary: var(--amber-500);
-  --accent-hover:     var(--orange-600);
-  --accent-muted:     hsla(14 100% 60% / 0.15); /* tinted bg for icon boxes */
-  --accent-border:    hsla(14 100% 60% / 0.25); /* subtle accent-tinted borders */
-  --chat-user-bubble-bg: hsla(14 100% 60% / 0.12);
-  --chat-user-bubble-border: hsla(14 100% 60% / 0.45);
+  --accent-primary:   #FF6A35;
+  --accent-secondary: #FF8050;
+  --accent-hover:     #E0521E;
+  --accent-muted:     rgba(255,106,53,.10); /* tinted bg for icon boxes */
+  --accent-muted-strong: rgba(255,106,53,.16); /* v27 active row tint top */
+  --accent-border:    rgba(255,106,53,.28); /* subtle accent-tinted borders */
+  --chat-user-bubble-bg: rgba(255,106,53,.10);
+  --chat-user-bubble-border: rgba(255,106,53,.28);
   --chat-user-bubble-text: var(--text-primary);
   --chat-user-bubble-copy-hover: hsla(0 0% 100% / 0.08);
 
@@ -55,22 +67,22 @@
    * Muted/border/strong are derived from the base via color-mix so themes
    * only need to re-point the base — alphas stay proportional automatically.
    * ============================================================================ */
-  --status-success:        var(--cvd-bluish-green);
+  --status-success:        #3FBF7F;
   --status-success-muted:  color-mix(in srgb, var(--status-success) 10%, transparent);
   --status-success-border: color-mix(in srgb, var(--status-success) 30%, transparent);
   --status-success-strong: color-mix(in srgb, var(--status-success) 50%, transparent);
 
-  --status-warning:        var(--cvd-yellow);
+  --status-warning:        #E0B341;
   --status-warning-muted:  color-mix(in srgb, var(--status-warning) 10%, transparent);
   --status-warning-border: color-mix(in srgb, var(--status-warning) 30%, transparent);
   --status-warning-strong: color-mix(in srgb, var(--status-warning) 50%, transparent);
 
-  --status-error:          var(--cvd-vermillion);
+  --status-error:          #D55E00;
   --status-error-muted:    color-mix(in srgb, var(--status-error) 10%, transparent);
   --status-error-border:   color-mix(in srgb, var(--status-error) 30%, transparent);
   --status-error-strong:   color-mix(in srgb, var(--status-error) 50%, transparent);
 
-  --status-info:           var(--cvd-blue);
+  --status-info:           #6FB3FF;
   --status-info-muted:     color-mix(in srgb, var(--status-info) 10%, transparent);
   --status-info-border:    color-mix(in srgb, var(--status-info) 30%, transparent);
   --status-info-strong:    color-mix(in srgb, var(--status-info) 50%, transparent);
@@ -81,10 +93,18 @@
   /* ============================================================================
    * Borders
    * ============================================================================ */
-  --border-subtle:  var(--gray-900);
-  --border-default: var(--gray-800);
-  --border-focus:   var(--blue-500);
+  --border-subtle:  #2E2E36;
+  --border-default: #393940;
+  --border-strong:  #44444D;
+  --border-focus:   #6FB3FF;
+  --app-navbar-border:  #2E2E36; /* v27 line */
+  --app-rail-border:    #2E2E36; /* v27 line */
+  --app-sidebar-border: #2E2E36; /* v27 line */
+  --app-content-border: #2E2E36; /* v27 line */
   --border-inline:  var(--border-subtle); /* field/chip chrome — HC overrides to 30% white */
+  --nav-rail-active-color: var(--text-primary);
+  --nav-rail-inactive-color: #8E8E96;
+  --nav-rail-active-shadow: inset 0 0 0 1px var(--border-default);
 
   /* Theme-adjustable stroke widths — HC overrides to thicker values */
   --border-width-default: 1px;
@@ -114,7 +134,7 @@
    * Nav active surface — tokenised so each theme can pick its own flavour
    *   Dark: white bg + dark text
    *   Light: orange bg + white text
-   *   HC:    yellow bg + black text
+   *   HC:    v27 orange bg + dark text
    * ============================================================================ */
   --nav-active-bg:   var(--color-white);
   --nav-active-text: hsl(220 10% 6%);
@@ -126,7 +146,7 @@
    * (Audit/spec: Team F report 2026-04-18.)
    * ============================================================================ */
 
-  /* Accent pulse (orange in dark, darker orange in light, yellow in HC) */
+  /* Accent pulse (v27 orange across dark, light, and HC) */
   --shadow-pulse-accent-base:   0 0 0 0 hsla(14 100% 60% / 0.6),
                                 0 0 8px hsla(14 100% 60% / 0.3);
   --shadow-pulse-accent-expand: 0 0 0 4px hsla(14 100% 60% / 0),
@@ -179,7 +199,7 @@
   --popover-foreground: var(--text-primary);
 
   --primary:            var(--accent-primary);
-  --primary-foreground: var(--color-white);
+  --primary-foreground: var(--text-on-accent);
 
   --secondary:            var(--bg-surface);
   --secondary-foreground: var(--text-primary);
@@ -191,7 +211,7 @@
   --accent-foreground: var(--text-primary);
 
   --destructive:            var(--status-error);
-  --destructive-foreground: var(--color-white);
+  --destructive-foreground: var(--text-primary);
 
   --border: var(--border-default);
   --input:  var(--border-default);
@@ -206,7 +226,7 @@
   --sidebar:                       var(--bg-surface);
   --sidebar-foreground:            var(--text-primary);
   --sidebar-primary:               var(--accent-primary);
-  --sidebar-primary-foreground:    var(--color-white);
+  --sidebar-primary-foreground:    var(--text-on-accent);
   --sidebar-accent:                var(--bg-hover);
   --sidebar-accent-foreground:     var(--text-primary);
   --sidebar-border:                var(--border-subtle);
@@ -224,7 +244,7 @@
   --popover:            var(--bg-elevated);
   --popover-foreground: var(--text-primary);
   --primary:            var(--accent-primary);
-  --primary-foreground: var(--color-white);
+  --primary-foreground: var(--text-on-accent);
   --secondary:            var(--bg-surface);
   --secondary-foreground: var(--text-primary);
   --muted:            var(--bg-surface);
@@ -232,7 +252,7 @@
   --accent:            var(--bg-hover);
   --accent-foreground: var(--text-primary);
   --destructive:            var(--status-error);
-  --destructive-foreground: var(--color-white);
+  --destructive-foreground: var(--text-primary);
   --border: var(--border-default);
   --input:  var(--border-default);
   --ring:   var(--accent-primary);
@@ -244,7 +264,7 @@
   --sidebar:                       var(--bg-surface);
   --sidebar-foreground:            var(--text-primary);
   --sidebar-primary:               var(--accent-primary);
-  --sidebar-primary-foreground:    var(--color-white);
+  --sidebar-primary-foreground:    var(--text-on-accent);
   --sidebar-accent:                var(--bg-hover);
   --sidebar-accent-foreground:     var(--text-primary);
   --sidebar-border:                var(--border-subtle);

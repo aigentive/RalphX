@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RepositorySettingsSection } from "./RepositorySettingsSection";
+
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    success: (...a: unknown[]) => toastSuccess(...a),
+    error: (...a: unknown[]) => toastError(...a),
+  },
+}));
 
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitRemoteUrl: vi.fn(),
@@ -15,6 +24,7 @@ vi.mock("@/hooks/useGithubSettings", () => ({
   useUpdateGithubPrEnabled: vi.fn(),
 }));
 
+const mockUpdateProject = vi.fn();
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
   selectActiveProject: vi.fn(),
@@ -40,6 +50,7 @@ import {
   useUpdateGithubPrEnabled,
 } from "@/hooks/useGithubSettings";
 import { useProjectStore } from "@/stores/projectStore";
+import { api, getGitDefaultBranch } from "@/lib/tauri";
 
 const mockProject = {
   id: "proj-1",
@@ -85,7 +96,16 @@ describe("RepositorySettingsSection", () => {
     mockRefetchGitAuth.mockReset();
     mockRefetchGhAuth.mockReset();
 
-    vi.mocked(useProjectStore).mockReturnValue(mockProject);
+    mockUpdateProject.mockReset();
+    vi.mocked(useProjectStore).mockImplementation(((selector: unknown) => {
+      const state = { updateProject: mockUpdateProject };
+      if (typeof selector === "function") {
+        // selectActiveProject is a vi.fn() returning undefined; treat as project-getter
+        const result = (selector as (s: unknown) => unknown)(state);
+        return result === undefined ? mockProject : result;
+      }
+      return mockProject;
+    }) as never);
 
     vi.mocked(useGitRemoteUrl).mockReturnValue({
       data: "https://github.com/user/repo.git",
@@ -396,5 +416,206 @@ describe("RepositorySettingsSection", () => {
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId("merge-validation-mode")).toBeInTheDocument();
+  });
+
+  it("shows 'Not configured' when remote URL is null", () => {
+    vi.mocked(useGitRemoteUrl).mockReturnValue({
+      data: null,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useGitRemoteUrl>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByText("Not configured")).toBeInTheDocument();
+  });
+
+  it("disables PR toggle for malformed URLs", () => {
+    vi.mocked(useGitRemoteUrl).mockReturnValue({
+      data: "::::not a url::::",
+      isLoading: false,
+    } as unknown as ReturnType<typeof useGitRemoteUrl>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const toggle = screen.getByTestId("github-pr-enabled");
+    expect(toggle).toBeDisabled();
+  });
+
+  it("commits base branch on blur and shows success toast", async () => {
+    vi.mocked(api.projects.update).mockResolvedValue(undefined as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "develop" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(api.projects.update).toHaveBeenCalledWith("proj-1", {
+        baseBranch: "develop",
+      });
+    });
+    expect(mockUpdateProject).toHaveBeenCalledWith("proj-1", {
+      baseBranch: "develop",
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Base branch updated");
+  });
+
+  it("does not commit base branch when value unchanged on blur", async () => {
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "main" } });
+    fireEvent.blur(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.projects.update).not.toHaveBeenCalled();
+  });
+
+  it("shows error toast when base branch update fails", async () => {
+    vi.mocked(api.projects.update).mockRejectedValueOnce(new Error("nope"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "feature" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("nope");
+    });
+  });
+
+  it("falls back to default toast message on non-Error throw", async () => {
+    vi.mocked(api.projects.update).mockRejectedValueOnce("oops");
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "feature" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Failed to update base branch");
+    });
+  });
+
+  it("detects default branch and updates project", async () => {
+    vi.mocked(getGitDefaultBranch).mockResolvedValueOnce("trunk");
+    vi.mocked(api.projects.update).mockResolvedValue(undefined as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTitle("Detect"));
+
+    await waitFor(() => {
+      expect(getGitDefaultBranch).toHaveBeenCalledWith("/home/user/project");
+    });
+    await waitFor(() => {
+      expect(api.projects.update).toHaveBeenCalledWith("proj-1", {
+        baseBranch: "trunk",
+      });
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Detected default branch: trunk");
+  });
+
+  it("shows error toast when no working directory configured for detect", async () => {
+    vi.mocked(useProjectStore).mockImplementation(((selector: unknown) => {
+      const proj = { ...mockProject, workingDirectory: null };
+      const state = { updateProject: mockUpdateProject };
+      if (typeof selector === "function") {
+        const res = (selector as (s: unknown) => unknown)(state);
+        return res === undefined ? proj : res;
+      }
+      return proj;
+    }) as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTitle("Detect"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        "No working directory set for this project"
+      );
+    });
+    expect(getGitDefaultBranch).not.toHaveBeenCalled();
+  });
+
+  it("shows error toast when default-branch detection fails", async () => {
+    vi.mocked(getGitDefaultBranch).mockRejectedValueOnce(new Error("git error"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTitle("Detect"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("git error");
+    });
+  });
+
+  it("commits worktree directory change on blur", async () => {
+    vi.mocked(api.projects.update).mockResolvedValue(undefined as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("worktree-location") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/tmp/wt" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(api.projects.update).toHaveBeenCalledWith("proj-1", {
+        worktreeParentDirectory: "/tmp/wt",
+      });
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Worktree location updated");
+  });
+
+  it("does not commit worktree change when value matches default", async () => {
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("worktree-location") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "~/ralphx-worktrees" } });
+    fireEvent.blur(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.projects.update).not.toHaveBeenCalled();
+  });
+
+  it("shows error toast when worktree update fails", async () => {
+    vi.mocked(api.projects.update).mockRejectedValueOnce(new Error("io fail"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("worktree-location") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/tmp/wt" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("io fail");
+    });
+  });
+
+  it("shows error toast when PR toggle mutation fails", async () => {
+    mockMutateAsync.mockRejectedValueOnce(new Error("toggle fail"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId("github-pr-enabled"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("toggle fail");
+    });
+  });
+
+  it("shows Saving indicator while PR mutation pending", () => {
+    vi.mocked(useUpdateGithubPrEnabled).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: true,
+    } as unknown as ReturnType<typeof useUpdateGithubPrEnabled>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByText("Saving...")).toBeInTheDocument();
   });
 });

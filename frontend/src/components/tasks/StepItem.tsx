@@ -130,7 +130,7 @@ export function StepItem({ step, index, editable = false, hideCompletionNote = f
         >
           <span
             style={{
-              fontSize: '13px',
+              fontSize: '0.8125rem',
               fontWeight: 400,
               color: 'var(--text-muted)',
             }}
@@ -139,7 +139,7 @@ export function StepItem({ step, index, editable = false, hideCompletionNote = f
           </span>
           <span
             style={{
-              fontSize: '13px',
+              fontSize: '0.8125rem',
               fontWeight: 400,
               color: 'var(--text-secondary)',
               marginLeft: '4px',
@@ -154,7 +154,7 @@ export function StepItem({ step, index, editable = false, hideCompletionNote = f
           <p
             style={{
               marginTop: '2px',
-              fontSize: '12px',
+              fontSize: '0.75rem',
               color: 'var(--text-muted)',
               lineHeight: 1.5,
               textDecoration: isSkipped ? 'line-through' : 'none',
@@ -169,7 +169,7 @@ export function StepItem({ step, index, editable = false, hideCompletionNote = f
           <p
             style={{
               marginTop: '4px',
-              fontSize: '11px',
+              fontSize: '0.6875rem',
               color: 'var(--text-muted)',
               fontStyle: 'italic',
               lineHeight: 1.5,

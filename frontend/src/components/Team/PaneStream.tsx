@@ -22,7 +22,7 @@ export const PaneStream = React.memo(function PaneStream({
       style={{ backgroundColor: "var(--bg-base)" }}
     >
       <p
-        className="text-[11px] text-center py-4"
+        className="text-[0.6875rem] text-center py-4"
         style={{ color: "var(--text-muted)" }}
       >
         View {teammateName}&apos;s output in the teammate tab

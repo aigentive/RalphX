@@ -57,8 +57,8 @@ export function StatusPill({
 }: StatusPillProps) {
   const styles = VARIANT_STYLES[variant];
   const sizeClasses = size === "sm"
-    ? "px-2.5 py-1 text-[10px] gap-1.5"
-    : "px-3 py-1.5 text-[11px] gap-2";
+    ? "px-2.5 py-1 text-[0.625rem] gap-1.5"
+    : "px-3 py-1.5 text-[0.6875rem] gap-2";
   const iconSize = size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5";
 
   return (

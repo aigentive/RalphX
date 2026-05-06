@@ -238,7 +238,7 @@ export function StatusActivityBadge({
   if (isWaiting) {
     if (isInlineLayout) {
       return (
-        <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-text-primary/55">
+        <div className="flex items-center gap-1.5 min-w-0 text-[0.6875rem] text-text-primary/55">
           <CirclePause className="h-3 w-3 shrink-0 text-text-primary/45" />
           <span className="truncate">Awaiting input</span>
           {showActivityButton && (
@@ -312,7 +312,7 @@ export function StatusActivityBadge({
   if (isInlineLayout) {
     return (
       <div
-        className="flex items-center gap-1.5 min-w-0 text-[11px] text-text-primary/55"
+        className="flex items-center gap-1.5 min-w-0 text-[0.6875rem] text-text-primary/55"
         data-testid="chat-session-status-inline"
       >
         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-text-primary/55" />

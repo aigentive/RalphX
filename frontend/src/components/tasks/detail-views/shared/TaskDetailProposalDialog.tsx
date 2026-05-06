@@ -120,27 +120,27 @@ export function TaskDetailProposalDialog({
                     <Lightbulb className="w-4 h-4 text-[var(--accent-primary)]" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h3 className="text-[18px] font-semibold tracking-tight text-text-primary/90">
+                    <h3 className="text-[1.125rem] font-semibold tracking-tight text-text-primary/90">
                       {content.title}
                     </h3>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       {content.category && (
-                        <span className="rounded-md bg-[var(--overlay-weak)] px-2 py-1 text-[11px] font-medium text-text-primary/50">
+                        <span className="rounded-md bg-[var(--overlay-weak)] px-2 py-1 text-[0.6875rem] font-medium text-text-primary/50">
                           {content.category}
                         </span>
                       )}
                       {content.priority && (
-                        <span className="rounded-md bg-[var(--status-warning-muted)] px-2 py-1 text-[11px] font-medium capitalize text-[var(--status-warning)]">
+                        <span className="rounded-md bg-[var(--status-warning-muted)] px-2 py-1 text-[0.6875rem] font-medium capitalize text-[var(--status-warning)]">
                           {content.priority}
                         </span>
                       )}
                       {content.complexity && (
-                        <span className="rounded-md bg-[var(--overlay-weak)] px-2 py-1 text-[11px] font-medium text-text-primary/50">
+                        <span className="rounded-md bg-[var(--overlay-weak)] px-2 py-1 text-[0.6875rem] font-medium text-text-primary/50">
                           {content.complexity}
                         </span>
                       )}
                       {content.planVersionAtCreation !== null && (
-                        <span className="rounded-md bg-[var(--overlay-weak)] px-2 py-1 text-[11px] font-medium text-text-primary/50">
+                        <span className="rounded-md bg-[var(--overlay-weak)] px-2 py-1 text-[0.6875rem] font-medium text-text-primary/50">
                           Plan v{content.planVersionAtCreation}
                         </span>
                       )}
@@ -151,10 +151,10 @@ export function TaskDetailProposalDialog({
 
               {content.description && (
                 <section className="space-y-2">
-                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-primary/40">
+                  <h4 className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-primary/40">
                     Description
                   </h4>
-                  <p className="text-[13px] leading-relaxed text-text-primary/70">
+                  <p className="text-[0.8125rem] leading-relaxed text-text-primary/70">
                     {content.description}
                   </p>
                 </section>
@@ -162,10 +162,10 @@ export function TaskDetailProposalDialog({
 
               {content.priorityReason && (
                 <section className="space-y-2">
-                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-primary/40">
+                  <h4 className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-primary/40">
                     Priority Rationale
                   </h4>
-                  <p className="text-[13px] italic leading-relaxed text-text-primary/65">
+                  <p className="text-[0.8125rem] italic leading-relaxed text-text-primary/65">
                     "{content.priorityReason}"
                   </p>
                 </section>
@@ -173,16 +173,16 @@ export function TaskDetailProposalDialog({
 
               {content.steps.length > 0 && (
                 <section className="space-y-2">
-                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-primary/40">
+                  <h4 className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-primary/40">
                     Implementation Steps
                   </h4>
                   <ol className="space-y-2">
                     {content.steps.map((step, index) => (
                       <li key={`${step}-${index}`} className="flex items-start gap-3">
-                        <span className="mt-0.5 w-4 flex-shrink-0 text-right text-[11px] font-mono font-semibold text-[var(--accent-primary)]">
+                        <span className="mt-0.5 w-4 flex-shrink-0 text-right text-[0.6875rem] font-mono font-semibold text-[var(--accent-primary)]">
                           {index + 1}.
                         </span>
-                        <span className="text-[13px] leading-snug text-text-primary/70">
+                        <span className="text-[0.8125rem] leading-snug text-text-primary/70">
                           {step}
                         </span>
                       </li>
@@ -193,14 +193,14 @@ export function TaskDetailProposalDialog({
 
               {content.acceptanceCriteria.length > 0 && (
                 <section className="space-y-2">
-                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-primary/40">
+                  <h4 className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-primary/40">
                     Acceptance Criteria
                   </h4>
                   <ul className="space-y-2">
                     {content.acceptanceCriteria.map((criterion, index) => (
                       <li key={`${criterion}-${index}`} className="flex items-start gap-2.5">
                         <CheckSquare className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-[color-mix(in_srgb,var(--accent-primary)_50%,transparent)]" />
-                        <span className="text-[13px] leading-snug text-text-primary/70">
+                        <span className="text-[0.8125rem] leading-snug text-text-primary/70">
                           {criterion}
                         </span>
                       </li>
@@ -211,17 +211,17 @@ export function TaskDetailProposalDialog({
 
               {content.implementationNotes && (
                 <section className="space-y-2">
-                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-text-primary/40">
+                  <h4 className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-primary/40">
                     Implementation Notes
                   </h4>
-                  <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-text-primary/70">
+                  <p className="whitespace-pre-wrap text-[0.8125rem] leading-relaxed text-text-primary/70">
                     {content.implementationNotes}
                   </p>
                 </section>
               )}
             </div>
           ) : (
-            <div className="rounded-xl border border-[var(--overlay-weak)] bg-[var(--overlay-faint)] px-4 py-5 text-[13px] text-text-primary/55">
+            <div className="rounded-xl border border-[var(--overlay-weak)] bg-[var(--overlay-faint)] px-4 py-5 text-[0.8125rem] text-text-primary/55">
               The proposal details could not be loaded.
             </div>
           )}

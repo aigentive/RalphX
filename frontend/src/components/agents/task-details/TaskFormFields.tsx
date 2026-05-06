@@ -133,7 +133,7 @@ export function TaskFormFields({
       {/* Error Display - Tahoe flat styling */}
       {validationError && (
         <div
-          className="flex items-center gap-2.5 px-3.5 py-3 rounded-lg text-[13px]"
+          className="flex items-center gap-2.5 px-3.5 py-3 rounded-lg text-[0.8125rem]"
           style={{
             backgroundColor: "var(--status-error-muted)",
             border: "1px solid var(--status-error-border)",

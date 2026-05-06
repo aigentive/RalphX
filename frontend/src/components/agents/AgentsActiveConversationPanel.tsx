@@ -3,6 +3,7 @@ import { Clock, Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
 
 import type {
   AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
   AgentConversationWorkspaceMode,
 } from "@/api/chat";
 import {
@@ -69,6 +70,7 @@ interface AgentsActiveConversationPanelProps {
   activeProjectId: string;
   activeProjectOptions: AgentComposerOption[];
   activeWorkspace: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   attachedIdeationSessionId: string | null;
   availableArtifactTabs: readonly IdeationArtifactTab[];
   chatFocus: AgentsChatFocus;
@@ -105,6 +107,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   activeProjectId,
   activeProjectOptions,
   activeWorkspace,
+  activeWorkspaceFreshness,
   attachedIdeationSessionId,
   availableArtifactTabs,
   chatFocus,
@@ -403,7 +406,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     placeholder="Current project"
                     disabled
                   />
-                  <AgentConversationBaseLine workspace={activeWorkspace} />
+                  <AgentConversationBaseLine
+                    workspace={activeWorkspace}
+                    {...(activeWorkspaceFreshness
+                      ? { freshness: activeWorkspaceFreshness }
+                      : {})}
+                  />
                 </div>
               </>
             ),

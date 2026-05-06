@@ -43,10 +43,10 @@ test.describe("Kanban Board - All Status Columns", () => {
 
     // Verify all 5 default workflow columns exist by visible headings rather than
     // stale implementation-specific ids.
-    await expect(page.getByRole("heading", { name: "Backlog" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Draft" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Ready" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Executing" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Review" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "In Progress" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "In Review" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Done" })).toBeVisible();
   });
 });

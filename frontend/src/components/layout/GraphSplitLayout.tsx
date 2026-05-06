@@ -169,7 +169,7 @@ export function GraphSplitLayout({
       ref={containerRef}
       data-testid="graph-split-layout"
       className="flex h-full overflow-hidden"
-      style={{ backgroundColor: "var(--bg-base)" }}
+      style={{ backgroundColor: "var(--app-content-bg)" }}
     >
       <style>{overlayAnimationStyles}</style>
       {/* Left Section - Graph canvas */}

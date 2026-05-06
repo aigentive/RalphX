@@ -260,31 +260,35 @@ export function GitAuthRepairPanel({
   const panelClassName =
     surface === "publish"
       ? "rounded-lg border p-4"
-      : "rounded-md border px-3 py-2";
+      : "settings-diag-card";
 
   return (
     <div
       className={panelClassName}
-      style={{
-        background: surface === "publish" ? "var(--bg-surface)" : "var(--bg-subtle)",
-        borderColor: "var(--border-subtle)",
-      }}
+      style={
+        surface === "publish"
+          ? {
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+            }
+          : undefined
+      }
       data-testid="git-auth-repair-panel"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
+      <div className="settings-diag-card__row">
+        <div className="settings-diag-card__title-wrap">
           {isChecking ? (
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--text-muted)]" />
+            <Loader2 className="settings-diag-card__icon h-4 w-4 animate-spin" />
           ) : hasVisibleIssue ? (
-            <AlertTriangle className="h-4 w-4 shrink-0 text-[var(--status-warning)]" />
+            <AlertTriangle className="settings-diag-card__icon h-4 w-4" />
           ) : (
-            <CheckCircle2 className="h-4 w-4 shrink-0 text-status-success" />
+            <CheckCircle2 className="settings-diag-card__icon settings-diag-card__icon--ok h-4 w-4" />
           )}
           <div className="min-w-0">
-            <div className="text-xs font-semibold text-[var(--text-primary)]">
+            <div className="settings-diag-card__title">
               {title}
             </div>
-            <div className="truncate text-[11px] text-[var(--text-muted)]">
+            <div className="settings-diag-card__sub truncate">
               {isChecking
                 ? "Checking repository credentials..."
                 : subtitle}
@@ -295,7 +299,7 @@ export function GitAuthRepairPanel({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 gap-1 px-2 text-[11px]"
+          className="settings-btn-ghost"
           onClick={() => void resumeDeferredStartupIfHealthy()}
           disabled={isChecking || resumeDeferredGitStartupMutation.isPending}
           data-testid="git-auth-recheck"
@@ -305,9 +309,9 @@ export function GitAuthRepairPanel({
         </Button>
       </div>
 
-      <div className="mt-2 space-y-1 text-xs leading-relaxed text-[var(--text-secondary)]">
+      <div className="settings-diag-card__body">
         {messages.map((message, index) => (
-          <div key={index}>{message}</div>
+          <p key={index}>{message}</p>
         ))}
         {loginPrompt && <GhAuthLoginPrompt prompt={loginPrompt} />}
         {diagnosticsQuery.isError && (
@@ -321,12 +325,12 @@ export function GitAuthRepairPanel({
         canLoginGithubCli ||
         canSetupGithubHttps ||
         canCopyGithubLogin) && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="settings-diag-card__actions">
           {diagnostics?.canSwitchToSsh && (
             <Button
               type="button"
               size="sm"
-              className="h-8 gap-2 px-3 text-xs"
+              className="settings-btn-primary"
               onClick={() => void handleSwitchToSsh()}
               disabled={switchToSshMutation.isPending}
               data-testid="git-auth-switch-ssh"
@@ -344,7 +348,7 @@ export function GitAuthRepairPanel({
               type="button"
               variant={showPrAccessMode ? "default" : "secondary"}
               size="sm"
-              className="h-8 gap-2 px-3 text-xs"
+              className="settings-btn-ghost"
               onClick={() => void handleLoginGhWithBrowser()}
               disabled={loginGhWithBrowserMutation.isPending}
               data-testid="git-auth-login-gh"
@@ -362,7 +366,7 @@ export function GitAuthRepairPanel({
               type="button"
               variant="secondary"
               size="sm"
-              className="h-8 gap-2 px-3 text-xs"
+              className="settings-btn-ghost"
               onClick={() => void handleSetupGhGitAuth()}
               disabled={setupGhGitAuthMutation.isPending}
               data-testid="git-auth-setup-gh"
