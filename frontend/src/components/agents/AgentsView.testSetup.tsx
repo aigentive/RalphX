@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { ideationApi } from "@/api/ideation";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
+import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import { useAgentTerminalStore } from "./agentTerminalStore";
 import type { AgentConversation } from "./agentConversations";
@@ -283,6 +285,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     agentProcessContextIdOverride,
     sendOptions,
     onChildSessionNavigate,
+    emptyState,
   }: {
     headerContent?: ReactNode;
     headerSubContent?: ReactNode;
@@ -294,6 +297,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     agentProcessContextIdOverride?: string;
     sendOptions?: Record<string, unknown>;
     onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+    emptyState?: ReactNode;
   }) => {
     integratedChatPanelRenderMock({
       ideationSessionId,
@@ -341,6 +345,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
           onRemoveAttachment: vi.fn(),
           attachmentsUploading: false,
         })}
+        {emptyState}
       </div>
     );
   },
@@ -691,6 +696,15 @@ export function setupAgentsViewTest() {
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
 
+  useChatStore.setState({
+    messages: {},
+    activeConversationIds: {},
+    queuedMessages: {},
+    agentStatus: {},
+    isSending: {},
+  });
+  useUiStore.getState().setExecutionPaused(false);
+  useUiStore.getState().setExecutionQueuedCount(0, 0);
   resetAgentSessionState();
   useAgentArtifactUiStore.setState({
     artifactByConversationId: {},

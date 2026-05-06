@@ -6,6 +6,7 @@ import { useCallback, useRef, useState } from "react";
 import { PRIORITY_VALUES, type TaskProposal, type IdeationSession } from "@/types/ideation";
 import { useIdeationStore, type ProactiveSyncNotification } from "@/stores/ideationStore";
 import { ideationApi } from "@/api/ideation";
+import { backendApiUrl } from "@/api/backend";
 
 export function useIdeationHandlers(
   session: IdeationSession | null,
@@ -70,7 +71,7 @@ export function useIdeationHandlers(
 
     isImportingRef.current = true;
     try {
-      const apiResponse = await fetch("http://localhost:3847/api/create_plan_artifact", {
+      const apiResponse = await fetch(backendApiUrl("create_plan_artifact"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: session.id, title, content }),

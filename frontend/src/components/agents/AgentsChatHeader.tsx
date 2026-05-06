@@ -53,6 +53,7 @@ import {
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
+  getAgentWorkspaceEffectiveBaseLabel,
   hasPublishedWorkspacePr,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
@@ -567,14 +568,22 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
       (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),
     staleTime: 10_000,
   });
-  const isBehindBase = !terminalStatus && Boolean(freshness?.isBaseAhead);
+  const isBaseBlocked = freshness?.baseStatus === "blocked";
+  const isBehindBase = !isBaseBlocked && !terminalStatus && Boolean(freshness?.isBaseAhead);
   const statusLabel = terminalStatus
     ? terminalStatus.replace(/_/g, " ")
+    : isBaseBlocked
+      ? "Base unavailable"
     : isBehindBase
       ? "Behind base"
       : (workspace.publicationPushStatus ?? workspace.status).replace(/_/g, " ");
-  const baseLabel =
-    freshness?.baseDisplayName ?? freshness?.baseRef ?? workspace.baseDisplayName ?? workspace.baseRef;
+  const baseLabel = getAgentWorkspaceEffectiveBaseLabel(workspace, freshness);
+  const statusColor = isBaseBlocked || isBehindBase
+    ? "var(--status-warning)"
+    : "var(--text-secondary)";
+  const statusBorderColor = isBaseBlocked || isBehindBase
+    ? "var(--status-warning-border)"
+    : "var(--overlay-weak)";
 
   return (
     <Tooltip>
@@ -583,9 +592,9 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
           tabIndex={0}
           className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6875rem] font-medium sm:max-w-[300px]"
           style={{
-            color: isBehindBase ? "var(--status-warning)" : "var(--text-secondary)",
+            color: statusColor,
             background: "var(--bg-surface)",
-            borderColor: isBehindBase ? "var(--status-warning-border)" : "var(--overlay-weak)",
+            borderColor: statusBorderColor,
           }}
           data-testid="agents-workspace-status"
         >
@@ -593,7 +602,12 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
           <span className="truncate font-mono">{branch.short}</span>
           <span
             className="h-1 w-1 shrink-0 rounded-full"
-            style={{ background: isBehindBase ? "var(--status-warning)" : "var(--accent-primary)" }}
+            style={{
+              background:
+                isBaseBlocked || isBehindBase
+                  ? "var(--status-warning)"
+                  : "var(--accent-primary)",
+            }}
           />
           <span className="shrink-0 capitalize">{statusLabel}</span>
         </div>
@@ -602,6 +616,7 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
         <div className="space-y-1">
           <div>Branch: {branch.full}</div>
           <div>Base: {baseLabel}</div>
+          {freshness?.baseBlockReason && <div>{freshness.baseBlockReason}</div>}
           {workspace.publicationPrUrl && (
             <div>
               PR:{" "}

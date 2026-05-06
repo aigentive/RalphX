@@ -11,6 +11,7 @@ import type {
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 import {
@@ -60,6 +61,7 @@ export function useStartAgentConversation({
   setRuntimeForConversation,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
+  const queueMessage = useChatStore((s) => s.queueMessage);
   const handleStartAgentConversation = useCallback(
     async ({
       projectId: targetProjectId,
@@ -140,6 +142,16 @@ export function useStartAgentConversation({
       const resolvedConversationId = result.conversation.id;
       const optimisticWorkspace = result.workspace;
       seedConversationState(result.conversation, optimisticWorkspace ?? null);
+      if (
+        result.sendResult.wasQueued &&
+        result.sendResult.queuedMessageId != null
+      ) {
+        queueMessage(
+          getAgentConversationStoreKey(result.conversation),
+          content,
+          result.sendResult.queuedMessageId
+        );
+      }
       invalidateConversationDataQueries(queryClient, resolvedConversationId);
       await invalidateProjectConversations(targetProjectId);
       handleAutoManagedTitle({
@@ -154,6 +166,7 @@ export function useStartAgentConversation({
       invalidateProjectConversations,
       modelRegistry,
       queryClient,
+      queueMessage,
       selectConversation,
       setActiveConversation,
       setFocusedProject,

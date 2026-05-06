@@ -4,6 +4,7 @@
 pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
 pub mod agent_conversation_workspace;
+pub mod agent_conversation_workspace_base;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;
@@ -141,6 +142,8 @@ pub use team_service::TeamService;
 pub use team_state_tracker::TeamStateTracker;
 pub use webhook_service::WebhookService;
 
+#[cfg(test)]
+mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]

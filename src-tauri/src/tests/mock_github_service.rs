@@ -20,6 +20,7 @@ pub struct MockGithubState {
     pub create_draft_pr_result: Option<AppResult<(i64, String)>>,
     pub mark_pr_ready_result: Option<AppResult<()>>,
     pub update_pr_details_result: Option<AppResult<()>>,
+    pub update_pr_base_result: Option<AppResult<()>>,
     pub check_pr_status_result: Option<AppResult<PrStatus>>,
     pub check_pr_sync_state_result: Option<AppResult<PrSyncState>>,
     pub check_pr_review_feedback_result: Option<AppResult<Option<PrReviewFeedback>>>,
@@ -34,6 +35,7 @@ pub struct MockGithubState {
     pub create_draft_pr_calls: u32,
     pub mark_pr_ready_calls: u32,
     pub update_pr_details_calls: u32,
+    pub update_pr_base_calls: u32,
     pub check_pr_status_calls: u32,
     pub check_pr_sync_state_calls: u32,
     pub check_pr_review_feedback_calls: u32,
@@ -51,6 +53,7 @@ pub struct MockGithubState {
     pub last_mark_pr_ready_number: Option<i64>,
     pub last_update_pr_details_args: Option<(i64, String, String)>,
     pub last_update_pr_details_body: Option<String>,
+    pub last_update_pr_base_args: Option<(i64, String)>,
     pub last_check_pr_status_number: Option<i64>,
     pub last_check_pr_sync_state_number: Option<i64>,
     pub last_check_pr_review_feedback_number: Option<i64>,
@@ -182,6 +185,18 @@ impl GithubServiceTrait for MockGithubService {
         ));
         s.last_update_pr_details_body = std::fs::read_to_string(body_file).ok();
         s.update_pr_details_result.take().unwrap_or(Ok(()))
+    }
+
+    async fn update_pr_base(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        base: &str,
+    ) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.update_pr_base_calls += 1;
+        s.last_update_pr_base_args = Some((pr_number, base.to_string()));
+        s.update_pr_base_result.take().unwrap_or(Ok(()))
     }
 
     async fn check_pr_status(&self, _working_dir: &Path, pr_number: i64) -> AppResult<PrStatus> {
