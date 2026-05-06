@@ -45,6 +45,17 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         Self { github }
     }
 
+    pub async fn update_pr_base(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        base: &str,
+    ) -> AppResult<()> {
+        self.github
+            .update_pr_base(working_dir, pr_number, base)
+            .await
+    }
+
     pub async fn publish_draft_pr(
         &self,
         working_dir: &Path,
