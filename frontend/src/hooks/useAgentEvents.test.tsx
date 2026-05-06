@@ -581,6 +581,47 @@ describe("useAgentEvents", () => {
       });
     });
 
+    it("invalidates workspace publish queries from workspace-changed payloads", () => {
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversation_id: "conv-snake",
+        });
+      });
+      act(() => {
+        emitEvent("agent:workspace_changed", {
+          conversationId: "conv-camel",
+        });
+      });
+      act(() => {
+        emitEvent("agent:workspace_changed", null);
+        emitEvent("agent:workspace_changed", { conversation_id: "   " });
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "conversation-workspace", "conv-snake"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "conversation-workspace-freshness", "conv-snake"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "conversation-workspace-publication-events", "conv-snake"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "workspace-diff", "conv-camel"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "workspace-commits", "conv-camel"],
+      });
+      expect(invalidateSpy).not.toHaveBeenCalledWith({
+        queryKey: ["agents", "conversation-workspace", "   "],
+      });
+    });
+
     it("clears running state for task_execution on stop/completion", () => {
       const wrapper = createWrapper();
 

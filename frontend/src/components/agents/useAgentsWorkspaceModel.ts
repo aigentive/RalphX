@@ -14,6 +14,7 @@ import {
   runtimeFromConversation,
 } from "./agentConversationRuntime";
 import {
+  getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceTerminalPublicationLabel,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishCurrent,
@@ -86,13 +87,21 @@ export function useAgentsWorkspaceModel({
     activeWorkspace,
     activeWorkspaceFreshnessQuery.data,
   );
+  const activeWorkspaceFreshness = activeWorkspaceFreshnessQuery.data;
   const publishShortcutLabel = terminalPublicationLabel
     ? terminalPublicationLabel
-    : activeWorkspaceFreshnessQuery.data?.isBaseAhead
-    ? `Update from ${activeWorkspaceFreshnessQuery.data.baseRef}`
-    : isPublishShortcutCurrent
-      ? "Published"
-      : "Commit & Publish";
+    : activeWorkspaceFreshness?.baseStatus === "blocked"
+      ? "Base unavailable"
+      : activeWorkspaceFreshness?.isBaseAhead
+        ? `Update from ${
+            activeWorkspaceFreshness.effectiveBaseRef ??
+            activeWorkspaceFreshness.baseRef ??
+            activeWorkspace?.baseRef ??
+            getAgentWorkspaceEffectiveBaseLabel(activeWorkspace, activeWorkspaceFreshness)
+          }`
+        : isPublishShortcutCurrent
+          ? "Published"
+          : "Commit & Publish";
   const activeConversationModeLocked =
     activeConversationMode === "ideation" || isWorkspaceModeLocked(activeWorkspace);
   const terminalUnavailableReason = getAgentTerminalUnavailableReason(
@@ -103,6 +112,7 @@ export function useAgentsWorkspaceModel({
     activeConversationMode,
     activeConversationModeLocked,
     activeWorkspace,
+    activeWorkspaceFreshness,
     normalizedActiveRuntime,
     publishShortcutLabel,
     terminalUnavailableReason,

@@ -625,6 +625,25 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn update_pr_base_uses_gh_pr_edit_with_base() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(Vec::new())]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        service
+            .update_pr_base(Path::new("/tmp"), 68, "main")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec!["pr", "edit", "68", "--base", "main"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
     async fn check_pr_review_feedback_uses_review_decision_and_review_api() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
             Ok(vec![r#"{"reviewDecision":"CHANGES_REQUESTED"}"#.to_string()]),

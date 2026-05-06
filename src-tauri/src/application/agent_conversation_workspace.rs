@@ -3,6 +3,9 @@ use std::path::{Component, Path, PathBuf};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
+use crate::application::agent_conversation_workspace_base::{
+    apply_workspace_base_resolution, is_commit_contained_in, resolve_workspace_base, BaseStatus,
+};
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
@@ -173,13 +176,39 @@ pub async fn rollover_agent_conversation_workspace(
                 workspace.conversation_id
             )));
         }
+    }
 
+    let base_resolution = resolve_workspace_base(project, workspace).await?;
+    if base_resolution.status == BaseStatus::Blocked {
+        return Err(AppError::Validation(
+            base_resolution
+                .block_reason
+                .clone()
+                .unwrap_or_else(|| "Agent workspace base is blocked".to_string()),
+        ));
+    }
+    if base_resolution.status == BaseStatus::Retargeted {
+        let old_branch_head = GitService::get_branch_sha(&repo_path, &workspace.branch_name)
+            .await
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "Cannot verify old workspace branch containment before rollover: {error}"
+                ))
+            })?;
+        let target_ref = base_resolution.effective_checkout_ref()?;
+        if !is_commit_contained_in(&repo_path, &old_branch_head, target_ref).await? {
+            return Err(AppError::Validation(format!(
+                "Cannot continue agent conversation {} on a new branch because old workspace branch HEAD is not contained in the default branch",
+                workspace.conversation_id
+            )));
+        }
+    }
+
+    if expected_path.exists() {
         GitService::delete_worktree(&repo_path, &expected_path).await?;
     }
 
-    GitService::fetch_origin(&repo_path).await?;
-    let base_checkout_ref =
-        agent_conversation_rollover_base_ref(&repo_path, &workspace.base_ref).await?;
+    let base_checkout_ref = base_resolution.effective_checkout_ref()?.to_string();
     let branch_name =
         agent_conversation_continuation_branch_name(project, &workspace.conversation_id);
 
@@ -198,8 +227,8 @@ pub async fn rollover_agent_conversation_workspace(
     )
     .await;
     let base_commit = GitService::get_head_sha(&expected_path).await?;
-
     let mut updated = workspace.clone();
+    apply_workspace_base_resolution(&mut updated, &base_resolution)?;
     updated.base_commit = Some(base_commit);
     updated.branch_name = branch_name;
     updated.worktree_path = expected_path.to_string_lossy().to_string();
@@ -214,38 +243,6 @@ pub async fn rollover_agent_conversation_workspace(
 
 pub fn is_terminal_agent_conversation_publication_status(status: Option<&str>) -> bool {
     matches!(status, Some("merged" | "closed"))
-}
-
-async fn agent_conversation_rollover_base_ref(
-    repo_path: &Path,
-    base_ref: &str,
-) -> AppResult<String> {
-    let trimmed_base = base_ref.trim();
-    if trimmed_base.is_empty() {
-        return Err(AppError::Validation(
-            "Agent conversation workspace base ref is empty".to_string(),
-        ));
-    }
-
-    if trimmed_base.starts_with("origin/") {
-        if GitService::ref_exists(repo_path, trimmed_base).await? {
-            return Ok(trimmed_base.to_string());
-        }
-    } else {
-        let remote_ref = format!("origin/{trimmed_base}");
-        if GitService::ref_exists(repo_path, &remote_ref).await? {
-            return Ok(remote_ref);
-        }
-    }
-
-    if GitService::ref_exists(repo_path, trimmed_base).await? {
-        return Ok(trimmed_base.to_string());
-    }
-
-    Err(AppError::Validation(format!(
-        "Agent conversation base ref '{}' does not exist in the project repository",
-        trimmed_base
-    )))
 }
 
 async fn run_agent_conversation_workspace_setup(
@@ -488,7 +485,7 @@ mod tests {
     };
     use std::process::Command;
 
-    fn git(repo: &Path, args: &[&str]) {
+    fn git(repo: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .args(args)
             .current_dir(repo)
@@ -501,6 +498,7 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     fn setup_repo(root: &Path) {
@@ -663,6 +661,124 @@ mod tests {
             "dirty workspace should produce a clear validation error: {error}"
         );
         let checked_out = GitService::get_current_branch(Path::new(&workspace.worktree_path))
+            .await
+            .expect("old workspace should remain checked out");
+        assert_eq!(checked_out, workspace.branch_name);
+    }
+
+    #[tokio::test]
+    async fn rollover_agent_conversation_workspace_blocks_stale_base_before_deleting_worktree() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Unsafe Rollover".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        git(&repo_path, &["checkout", "--orphan", "unmerged-base"]);
+        std::fs::write(repo_path.join("README.md"), "unmerged\n")
+            .expect("fixture file should be written");
+        git(&repo_path, &["add", "README.md"]);
+        git(&repo_path, &["commit", "-m", "unmerged"]);
+        let unmerged_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-stale-rollover-test".to_string());
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+        workspace.base_ref = "feature/deleted-base".to_string();
+        workspace.base_display_name = Some("Current branch (feature/deleted-base)".to_string());
+        workspace.base_commit = Some(unmerged_sha);
+        workspace.publication_pr_status = Some("merged".to_string());
+        let old_worktree_path = PathBuf::from(&workspace.worktree_path);
+
+        let error = rollover_agent_conversation_workspace(&project, &workspace)
+            .await
+            .expect_err("unsafe stale base should block rollover");
+
+        assert!(error
+            .to_string()
+            .contains("not contained in the default branch"));
+        assert!(old_worktree_path.exists());
+        let checked_out = GitService::get_current_branch(&old_worktree_path)
+            .await
+            .expect("old workspace should remain checked out");
+        assert_eq!(checked_out, workspace.branch_name);
+    }
+
+    #[tokio::test]
+    async fn rollover_agent_conversation_workspace_blocks_retarget_when_old_head_not_contained() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Retarget Rollover".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let main_sha = git(&repo_path, &["rev-parse", "main"]);
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-retarget-rollover-test".to_string());
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("unmerged.txt"),
+            "not merged to main\n",
+        )
+        .expect("fixture file should be written");
+        git(
+            Path::new(&workspace.worktree_path),
+            &["add", "unmerged.txt"],
+        );
+        git(
+            Path::new(&workspace.worktree_path),
+            &["commit", "-m", "workspace-only change"],
+        );
+
+        workspace.base_ref = "feature/deleted-base".to_string();
+        workspace.base_display_name = Some("Current branch (feature/deleted-base)".to_string());
+        workspace.base_commit = Some(main_sha);
+        workspace.publication_pr_status = Some("merged".to_string());
+        let old_worktree_path = PathBuf::from(&workspace.worktree_path);
+
+        let error = rollover_agent_conversation_workspace(&project, &workspace)
+            .await
+            .expect_err("old branch head outside default should block rollover");
+
+        assert!(error
+            .to_string()
+            .contains("old workspace branch HEAD is not contained"));
+        assert!(old_worktree_path.exists());
+        let checked_out = GitService::get_current_branch(&old_worktree_path)
             .await
             .expect("old workspace should remain checked out");
         assert_eq!(checked_out, workspace.branch_name);

@@ -13,6 +13,7 @@ interface AgentsConversationMainRegionProps {
   activeProjectId: string | null;
   activeProjectOptions: ActiveConversationPanelProps["activeProjectOptions"];
   activeWorkspace: ActiveConversationPanelProps["activeWorkspace"];
+  activeWorkspaceFreshness: ActiveConversationPanelProps["activeWorkspaceFreshness"];
   attachedIdeationSessionId: ActiveConversationPanelProps["attachedIdeationSessionId"];
   availableArtifactTabs: ActiveConversationPanelProps["availableArtifactTabs"];
   chatFocus: ActiveConversationPanelProps["chatFocus"];
@@ -53,6 +54,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   activeProjectId,
   activeProjectOptions,
   activeWorkspace,
+  activeWorkspaceFreshness,
   attachedIdeationSessionId,
   availableArtifactTabs,
   chatFocus,
@@ -94,6 +96,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         activeProjectId={activeProjectId}
         activeProjectOptions={activeProjectOptions}
         activeWorkspace={activeWorkspace}
+        activeWorkspaceFreshness={activeWorkspaceFreshness}
         attachedIdeationSessionId={attachedIdeationSessionId}
         availableArtifactTabs={availableArtifactTabs}
         chatFocus={chatFocus}
