@@ -436,9 +436,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
       "Workspace/Agents/New run"
     );
-    const commandSearch = screen.getByRole("button", {
-      name: "Search runs, projects, agents",
-    });
+    const commandSearch = screen.getByTestId("topbar-command-search");
     expect(commandSearch).toBeInTheDocument();
     expect(commandSearch).toHaveClass("h-8", "w-[320px]", "rounded-[6px]");
     expect(commandSearch.getAttribute("style")).toContain("background-color: var(--bg-elevated)");

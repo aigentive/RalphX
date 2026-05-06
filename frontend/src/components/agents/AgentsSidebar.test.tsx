@@ -399,8 +399,12 @@ describe("AgentsSidebar", () => {
     renderSidebar();
 
     const recent = screen.getByTestId("agents-static-recent");
-    expect(within(recent).getByText("Recent")).toBeInTheDocument();
-    expect(within(recent).getByRole("button", { name: "View all" })).toBeInTheDocument();
+    // Static recent block is rendered but hidden ("Coming soon") via aria-hidden + display:none
+    expect(recent).toHaveAttribute("aria-hidden", "true");
+    expect(within(recent).getByText("Recent", { selector: "span" })).toBeInTheDocument();
+    expect(
+      within(recent).getByRole("button", { name: "View all", hidden: true }),
+    ).toBeInTheDocument();
     expect(within(recent).getByText("Add ranking to reefbot homepage")).toBeInTheDocument();
     expect(within(recent).getByText("Tighten kanban drag handles")).toBeInTheDocument();
     expect(screen.getByTestId("agents-add-project")).toBeInTheDocument();
