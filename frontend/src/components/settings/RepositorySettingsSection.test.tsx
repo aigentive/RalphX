@@ -4,6 +4,15 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RepositorySettingsSection } from "./RepositorySettingsSection";
 
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    success: (...a: unknown[]) => toastSuccess(...a),
+    error: (...a: unknown[]) => toastError(...a),
+  },
+}));
+
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitRemoteUrl: vi.fn(),
   useGitAuthDiagnostics: vi.fn(),
@@ -15,6 +24,7 @@ vi.mock("@/hooks/useGithubSettings", () => ({
   useUpdateGithubPrEnabled: vi.fn(),
 }));
 
+const mockUpdateProject = vi.fn();
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
   selectActiveProject: vi.fn(),
@@ -85,7 +95,16 @@ describe("RepositorySettingsSection", () => {
     mockRefetchGitAuth.mockReset();
     mockRefetchGhAuth.mockReset();
 
-    vi.mocked(useProjectStore).mockReturnValue(mockProject);
+    mockUpdateProject.mockReset();
+    vi.mocked(useProjectStore).mockImplementation(((selector: unknown) => {
+      const state = { updateProject: mockUpdateProject };
+      if (typeof selector === "function") {
+        // selectActiveProject is a vi.fn() returning undefined; treat as project-getter
+        const result = (selector as (s: unknown) => unknown)(state);
+        return result === undefined ? mockProject : result;
+      }
+      return mockProject;
+    }) as never);
 
     vi.mocked(useGitRemoteUrl).mockReturnValue({
       data: "https://github.com/user/repo.git",
