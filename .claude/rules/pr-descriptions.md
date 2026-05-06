@@ -2,14 +2,12 @@
 
 # PR Description Rules
 
-## Required Shape
+## Source Of Truth
 
-| Section | Detail |
+| Rule | Detail |
 |---|---|
-| Summary | 2-4 bullets: what changed + why it matters |
-| User Impact | Visible behavior, product workflow, or failure mode addressed |
-| Technical Context | Root cause, important architecture decisions, intentional scope limits |
-| Risks / Follow-Ups | Compatibility, migrations, rollout risk, known gaps |
+| Template first | Follow `.github/PULL_REQUEST_TEMPLATE.md`; it is the shared format for humans and agents |
+| Missing template | For external projects without a PR template, use RalphX's fallback template with the same section intent |
 
 ## Rules
 

@@ -362,6 +362,17 @@ impl AppState {
         }
     }
 
+    pub(crate) async fn resolve_pr_describer_runtime(&self) -> ResolvedBackgroundAgentRuntime {
+        ResolvedBackgroundAgentRuntime {
+            client: Arc::clone(&self.agent_clients.default_client),
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }
+    }
+
     /// Create AppState for production use with SQLite repositories.
     /// Opens the database at the default path and runs migrations.
     pub fn new_production(app_handle: AppHandle) -> AppResult<Self> {

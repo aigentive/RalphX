@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tempfile::NamedTempFile;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, ArtifactContent, ChatConversation, PlanBranch, Project, Task,
-    TaskCategory,
+    AgentConversationWorkspace, AgentWorkspacePrDescription, ArtifactContent, ChatConversation,
+    PlanBranch, Project, Task, TaskCategory,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
 use crate::domain::services::GithubServiceTrait;
@@ -61,9 +61,16 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         working_dir: &Path,
         conversation: &ChatConversation,
         workspace: &AgentConversationWorkspace,
+        description: &AgentWorkspacePrDescription,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
-        let title = build_agent_workspace_pr_title(conversation);
-        let body_file = write_agent_workspace_pr_body(conversation, workspace)?;
+        let title = description
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| build_agent_workspace_pr_title(conversation));
+        let body_file = write_agent_workspace_pr_body(&description.body_markdown)?;
 
         if let Some(pr_number) = workspace.publication_pr_number {
             self.github
@@ -355,18 +362,7 @@ fn build_agent_workspace_pr_title(conversation: &ChatConversation) -> String {
         .unwrap_or_else(|| "Agent conversation changes".to_string())
 }
 
-fn write_agent_workspace_pr_body(
-    conversation: &ChatConversation,
-    workspace: &AgentConversationWorkspace,
-) -> AppResult<NamedTempFile> {
-    let body = format!(
-        "## RalphX Agent Conversation\n\n\
-         - Conversation: `{}`\n\
-         - Base branch: `{}`\n\
-         - Feature branch: `{}`\n\n\
-         Published from a RalphX Agents conversation workspace.",
-        conversation.id, workspace.base_ref, workspace.branch_name
-    );
+fn write_agent_workspace_pr_body(body: &str) -> AppResult<NamedTempFile> {
     let body_file = NamedTempFile::new().map_err(|e| {
         AppError::Infrastructure(format!("failed to create PR body temp file: {e}"))
     })?;

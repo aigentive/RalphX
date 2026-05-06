@@ -1,7 +1,8 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
+    ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -47,6 +48,42 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project/agent-11111111".to_string(),
         "/tmp/ralphx/agent-11111111".to_string(),
     )
+}
+
+#[tokio::test]
+async fn pr_description_round_trips_and_clears() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    repo.save_pr_description(
+        &conversation_id,
+        AgentWorkspacePrDescription::new(
+            Some("Describe agent workspace publish".to_string()),
+            "## Summary\n\n- Added publish descriptions".to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let saved = repo
+        .get_pr_description(&conversation_id)
+        .await
+        .unwrap()
+        .expect("description should be saved");
+    assert_eq!(
+        saved.title.as_deref(),
+        Some("Describe agent workspace publish")
+    );
+    assert!(saved.body_markdown.contains("## Summary"));
+
+    repo.clear_pr_description(&conversation_id).await.unwrap();
+    assert!(repo
+        .get_pr_description(&conversation_id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

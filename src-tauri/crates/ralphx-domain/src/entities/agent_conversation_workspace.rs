@@ -147,6 +147,24 @@ pub struct AgentConversationWorkspacePublicationEvent {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrDescription {
+    pub title: Option<String>,
+    pub body_markdown: String,
+}
+
+impl AgentWorkspacePrDescription {
+    pub fn new(title: Option<String>, body_markdown: String) -> Self {
+        Self {
+            title: title.and_then(|value| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }),
+            body_markdown,
+        }
+    }
+}
+
 impl AgentConversationWorkspacePublicationEvent {
     pub fn new(
         conversation_id: ChatConversationId,

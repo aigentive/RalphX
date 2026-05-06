@@ -395,6 +395,37 @@ async fn test_resolve_session_namer_runtime_uses_default_client_even_when_ideati
 }
 
 #[tokio::test]
+async fn test_resolve_pr_describer_runtime_uses_default_client_even_when_ideation_lane_is_codex() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock.clone())
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
+
+    let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
+    codex_lane.model = Some("gpt-5.4".to_string());
+    codex_lane.effort = Some(LogicalEffort::XHigh);
+    state
+        .agent_lane_settings_repo
+        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
+        .await
+        .unwrap();
+
+    let runtime = state.resolve_pr_describer_runtime().await;
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &default_mock),
+        "PR describer should stay on the default helper client instead of inheriting the main ideation lane"
+    );
+    assert_eq!(runtime.harness, None);
+    assert_eq!(runtime.model, None);
+    assert_eq!(runtime.logical_effort, None);
+}
+
+#[tokio::test]
 async fn test_ideation_repos_accessible() {
     let state = AppState::new_test();
     let project_id = ProjectId::new();

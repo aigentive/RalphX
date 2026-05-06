@@ -1,1 +1,1 @@
-{"version":3,"file":"agent-workspace-tools.d.ts","sourceRoot":"","sources":["../src/agent-workspace-tools.ts"],"names":[],"mappings":"AAAA;;;;GAIG;AAEH,OAAO,EAAE,IAAI,EAAE,MAAM,oCAAoC,CAAC;AAE1D,eAAO,MAAM,qBAAqB,EAAE,IAAI,EAuCvC,CAAC"}
+{"version":3,"file":"agent-workspace-tools.d.ts","sourceRoot":"","sources":["../src/agent-workspace-tools.ts"],"names":[],"mappings":"AAAA;;;;GAIG;AAEH,OAAO,EAAE,IAAI,EAAE,MAAM,oCAAoC,CAAC;AAE1D,eAAO,MAAM,qBAAqB,EAAE,IAAI,EA+DvC,CAAC"}

@@ -549,6 +549,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 summary,
             });
         }
+        else if (name === "submit_agent_workspace_pr_description") {
+            // POST /api/agent-workspaces/:conversation_id/pr-description
+            const { conversation_id, title, body_markdown } = args;
+            result = await callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+                title,
+                body_markdown,
+            });
+        }
         else if (name === "report_conflict") {
             // POST /api/git/tasks/:task_id/report-conflict
             const { task_id, conflict_files, reason } = args;

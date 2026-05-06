@@ -5,6 +5,7 @@ pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
+pub mod agent_workspace_pr_description;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;

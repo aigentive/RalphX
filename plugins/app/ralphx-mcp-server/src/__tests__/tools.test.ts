@@ -1235,6 +1235,25 @@ describe('agent workspace repair tool', () => {
   });
 });
 
+describe('agent workspace PR description tool', () => {
+  const allTools = getAllTools();
+  const tool = allTools.find((t) => t.name === 'submit_agent_workspace_pr_description');
+
+  it('should exist in ALL_TOOLS', () => {
+    expect(tool).toBeDefined();
+  });
+
+  it('should require conversation and body fields', () => {
+    expect(tool?.inputSchema.type).toBe('object');
+    expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('title');
+    expect(tool?.inputSchema.properties).toHaveProperty('body_markdown');
+    expect(tool?.inputSchema.required).toEqual(
+      expect.arrayContaining(['conversation_id', 'body_markdown'])
+    );
+  });
+});
+
 // ===========================================================================
 // RalphX native delegation bridge tools
 // ===========================================================================

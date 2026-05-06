@@ -41,5 +41,28 @@ export const AGENT_WORKSPACE_TOOLS = [
             ],
         },
     },
+    {
+        name: "submit_agent_workspace_pr_description",
+        description: "Submit the completed pull request title/body for an agent workspace publish. " +
+            "Call this exactly once after writing a reviewer-focused body that follows the supplied pull request template.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "The agent workspace conversation ID from the PR description prompt",
+                },
+                title: {
+                    type: "string",
+                    description: "Optional pull request title. Omit unless the prompt context supports a better title.",
+                },
+                body_markdown: {
+                    type: "string",
+                    description: "Complete Markdown pull request body following the supplied template",
+                },
+            },
+            required: ["conversation_id", "body_markdown"],
+        },
+    },
 ];
 //# sourceMappingURL=agent-workspace-tools.js.map
