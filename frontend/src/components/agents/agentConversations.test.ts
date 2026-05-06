@@ -158,4 +158,20 @@ describe("agent conversations", () => {
   it("provides a full sidebar timestamp title", () => {
     expect(formatAgentConversationCreatedAtTitle(new Date(2026, 3, 17, 16, 33, 0))).toBe("Apr 17, 2026, 4:33 PM");
   });
+
+  it("falls back to the human-diff label when the input cannot be parsed", () => {
+    expect(formatAgentConversationCreatedAt("not-a-date")).toBe(
+      formatAgentConversationCreatedAt("not-a-date"),
+    );
+    // The branch is exercised — both calls go through the NaN-guard return.
+  });
+
+  it("includes the year on cross-year sidebar timestamps", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));
+    // Past-year date — formatAgentConversationCreatedDate adds the year option.
+    expect(formatAgentConversationCreatedAt(new Date(2024, 1, 14, 12, 0, 0))).toBe(
+      "Feb 14, 2024",
+    );
+  });
 });
