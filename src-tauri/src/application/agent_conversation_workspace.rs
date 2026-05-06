@@ -711,16 +711,10 @@ mod tests {
             .await
             .expect_err("unsafe stale base should block rollover");
 
-        assert!(
-            error
-                .to_string()
-                .contains("not contained in the default branch"),
-            "blocked stale base should explain containment failure: {error}"
-        );
-        assert!(
-            old_worktree_path.exists(),
-            "blocked rollover must leave the old worktree intact"
-        );
+        assert!(error
+            .to_string()
+            .contains("not contained in the default branch"));
+        assert!(old_worktree_path.exists());
         let checked_out = GitService::get_current_branch(&old_worktree_path)
             .await
             .expect("old workspace should remain checked out");
@@ -780,16 +774,10 @@ mod tests {
             .await
             .expect_err("old branch head outside default should block rollover");
 
-        assert!(
-            error
-                .to_string()
-                .contains("old workspace branch HEAD is not contained"),
-            "blocked rollover should explain old branch containment failure: {error}"
-        );
-        assert!(
-            old_worktree_path.exists(),
-            "blocked rollover must not delete the old worktree"
-        );
+        assert!(error
+            .to_string()
+            .contains("old workspace branch HEAD is not contained"));
+        assert!(old_worktree_path.exists());
         let checked_out = GitService::get_current_branch(&old_worktree_path)
             .await
             .expect("old workspace should remain checked out");
