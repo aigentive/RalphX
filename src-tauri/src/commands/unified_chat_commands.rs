@@ -3768,6 +3768,7 @@ mod tests {
         normalize_agent_runtime_selection, normalized_effort_for_supported,
         parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
         project_plan_branch_publication_into_workspace_response,
+        publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
         send_agent_workspace_publish_repair_message_for_target,
@@ -4581,6 +4582,95 @@ mod tests {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[test]
+    fn publication_event_status_helpers_include_description_states() {
+        assert_eq!(
+            publication_event_status_for_push_status("describing"),
+            "started"
+        );
+        assert_eq!(
+            publication_event_summary_for_push_status("describing"),
+            "Drafting pull request description"
+        );
+        assert_eq!(
+            publication_event_status_for_push_status("description_failed"),
+            "failed"
+        );
+        assert_eq!(
+            publication_event_summary_for_push_status("description_failed"),
+            "Pull request description failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_stops_before_push_when_pr_description_fails() {
+        let github = Arc::new(MockGithubService::new());
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("description-fails", true, None, github).await;
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "change that should be described\n",
+        )
+        .expect("workspace change should be written");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("missing generated PR description should block publish");
+
+        assert!(error.contains("completed without submitting a PR description"));
+        assert_eq!(github.state().push_branch_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some("description_failed")
+        );
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("publication events should load");
+        assert!(events.iter().any(|event| {
+            event.step == "describing"
+                && event.status == "started"
+                && event.summary == "Drafting pull request description"
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "description_failed"
+                && event.status == "failed"
+                && event.classification.as_deref() == Some("operational")
+        }));
     }
 
     #[test]

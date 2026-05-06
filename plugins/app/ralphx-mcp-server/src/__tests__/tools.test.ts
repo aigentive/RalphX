@@ -15,10 +15,14 @@ import {
   formatToolErrorMessage,
   parseAllowedToolsFromArgs,
 } from '../tools.js';
-import { loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
+import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
+import {
+  callCompleteAgentWorkspaceRepairTool,
+  callSubmitAgentWorkspacePrDescriptionTool,
+} from '../agent-workspace-tools.js';
 import {
   IDEATION_TEAM_LEAD,
   IDEATION_TEAM_MEMBER,
@@ -147,6 +151,14 @@ describe('getAllowedToolNames', () => {
       'delegate_wait',
       'delegate_cancel',
     ]);
+  });
+
+  it('resolves the PR describer legacy alias to canonical metadata', () => {
+    setAgentType('pr-describer');
+
+    expect(canonicalAgentName('pr-describer')).toBe('ralphx-utility-pr-describer');
+    expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
+    expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
   });
 });
 
@@ -1251,6 +1263,46 @@ describe('agent workspace PR description tool', () => {
     expect(tool?.inputSchema.required).toEqual(
       expect.arrayContaining(['conversation_id', 'body_markdown'])
     );
+  });
+
+  it('routes PR description submissions to the agent workspace endpoint', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callSubmitAgentWorkspacePrDescriptionTool(callTauri, {
+        conversation_id: 'conversation-1',
+        title: 'Generated title',
+        body_markdown: '## Summary\n\nGenerated body',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/pr-description', {
+      title: 'Generated title',
+      body_markdown: '## Summary\n\nGenerated body',
+    });
+  });
+});
+
+describe('agent workspace repair tool transport', () => {
+  it('routes repair completion to the agent workspace endpoint', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspaceRepairTool(callTauri, {
+        conversation_id: 'conversation-1',
+        repair_commit_sha: 'a'.repeat(40),
+        resolved_base_ref: 'main',
+        resolved_base_commit: 'b'.repeat(40),
+        summary: 'Resolved conflicts',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
+      repair_commit_sha: 'a'.repeat(40),
+      resolved_base_ref: 'main',
+      resolved_base_commit: 'b'.repeat(40),
+      summary: 'Resolved conflicts',
+    });
   });
 });
 

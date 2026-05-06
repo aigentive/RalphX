@@ -65,4 +65,20 @@ export const AGENT_WORKSPACE_TOOLS = [
         },
     },
 ];
+export async function callCompleteAgentWorkspaceRepairTool(callTauri, args) {
+    const { conversation_id, repair_commit_sha, resolved_base_ref, resolved_base_commit, summary, } = args;
+    return callTauri(`agent-workspaces/${conversation_id}/complete-repair`, {
+        repair_commit_sha,
+        resolved_base_ref,
+        resolved_base_commit,
+        summary,
+    });
+}
+export async function callSubmitAgentWorkspacePrDescriptionTool(callTauri, args) {
+    const { conversation_id, title, body_markdown } = args;
+    return callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+        title,
+        body_markdown,
+    });
+}
 //# sourceMappingURL=agent-workspace-tools.js.map

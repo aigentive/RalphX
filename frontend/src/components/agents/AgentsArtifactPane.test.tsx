@@ -1490,6 +1490,30 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("shows the PR description drafting step while publishing", () => {
+    renderPane(
+      "publish",
+      workspace({ mode: "edit", publicationPushStatus: "describing" }),
+      vi.fn(),
+      true,
+    );
+
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-step-describing")).toHaveTextContent(
+      "Draft PR description"
+    );
+  });
+
+  it("shows description failure without opening a pull request", () => {
+    renderPane(
+      "publish",
+      workspace({ mode: "edit", publicationPushStatus: "description_failed" }),
+    );
+
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+    expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
+  });
+
   it("hides the publish pipeline after agent repair terminal state", () => {
     renderPane("publish", workspace({ mode: "edit", publicationPushStatus: "needs_agent" }));
 

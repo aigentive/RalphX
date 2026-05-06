@@ -4,10 +4,11 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { getAllowedToolNames, getFilteredTools, getToolsByAgent, isToolAllowed, setAgentType, getAllTools, getToolRecoveryHint, formatToolErrorMessage, parseAllowedToolsFromArgs, } from '../tools.js';
-import { loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
+import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
+import { callCompleteAgentWorkspaceRepairTool, callSubmitAgentWorkspacePrDescriptionTool, } from '../agent-workspace-tools.js';
 import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
@@ -96,6 +97,12 @@ describe('getAllowedToolNames', () => {
             'delegate_wait',
             'delegate_cancel',
         ]);
+    });
+    it('resolves the PR describer legacy alias to canonical metadata', () => {
+        setAgentType('pr-describer');
+        expect(canonicalAgentName('pr-describer')).toBe('ralphx-utility-pr-describer');
+        expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
+        expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
     });
 });
 describe('getToolRecoveryHint', () => {
@@ -1015,6 +1022,36 @@ describe('agent workspace PR description tool', () => {
         expect(tool?.inputSchema.properties).toHaveProperty('title');
         expect(tool?.inputSchema.properties).toHaveProperty('body_markdown');
         expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['conversation_id', 'body_markdown']));
+    });
+    it('routes PR description submissions to the agent workspace endpoint', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callSubmitAgentWorkspacePrDescriptionTool(callTauri, {
+            conversation_id: 'conversation-1',
+            title: 'Generated title',
+            body_markdown: '## Summary\n\nGenerated body',
+        })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/pr-description', {
+            title: 'Generated title',
+            body_markdown: '## Summary\n\nGenerated body',
+        });
+    });
+});
+describe('agent workspace repair tool transport', () => {
+    it('routes repair completion to the agent workspace endpoint', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callCompleteAgentWorkspaceRepairTool(callTauri, {
+            conversation_id: 'conversation-1',
+            repair_commit_sha: 'a'.repeat(40),
+            resolved_base_ref: 'main',
+            resolved_base_commit: 'b'.repeat(40),
+            summary: 'Resolved conflicts',
+        })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-repair', {
+            repair_commit_sha: 'a'.repeat(40),
+            resolved_base_ref: 'main',
+            resolved_base_commit: 'b'.repeat(40),
+            summary: 'Resolved conflicts',
+        });
     });
 });
 // ===========================================================================

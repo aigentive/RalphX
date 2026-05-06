@@ -475,3 +475,113 @@ pub async fn complete_agent_workspace_repair(
         pr_url,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use crate::application::{AppState, TeamService, TeamStateTracker};
+    use crate::commands::ExecutionState;
+    use crate::domain::entities::{
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind,
+        ProjectId,
+    };
+
+    fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
+        let tracker = TeamStateTracker::new();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
+        HttpServerState {
+            app_state,
+            execution_state: Arc::new(ExecutionState::new()),
+            team_tracker: tracker,
+            team_service,
+            delegation_service: Default::default(),
+        }
+    }
+
+    fn test_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            conversation_id,
+            ProjectId::new(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("0".repeat(40)),
+            "feature/pr-description".to_string(),
+            "/tmp/pr-description-worktree".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn submit_agent_workspace_pr_description_saves_valid_body() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(test_workspace(conversation_id.clone()))
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let Json(response) = submit_agent_workspace_pr_description(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(SubmitAgentWorkspacePrDescriptionRequest {
+                title: Some("Better PR title".to_string()),
+                body_markdown: "## Summary\n\nGenerated body".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.success);
+        let saved = app_state
+            .agent_conversation_workspace_repo
+            .get_pr_description(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.title.as_deref(), Some("Better PR title"));
+        assert_eq!(saved.body_markdown, "## Summary\n\nGenerated body");
+    }
+
+    #[tokio::test]
+    async fn submit_agent_workspace_pr_description_rejects_empty_body() {
+        let state = test_http_state(Arc::new(AppState::new_test()));
+
+        let (status, Json(body)) = submit_agent_workspace_pr_description(
+            State(state),
+            Path(ChatConversationId::new().to_string()),
+            Json(SubmitAgentWorkspacePrDescriptionRequest {
+                title: None,
+                body_markdown: "   ".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn submit_agent_workspace_pr_description_requires_workspace() {
+        let state = test_http_state(Arc::new(AppState::new_test()));
+
+        let (status, Json(body)) = submit_agent_workspace_pr_description(
+            State(state),
+            Path(ChatConversationId::new().to_string()),
+            Json(SubmitAgentWorkspacePrDescriptionRequest {
+                title: None,
+                body_markdown: "## Summary\n\nGenerated body".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "Agent workspace not found");
+    }
+}

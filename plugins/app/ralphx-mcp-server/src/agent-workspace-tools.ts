@@ -6,6 +6,8 @@
 
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
+type TauriPost = (path: string, body: Record<string, unknown>) => Promise<unknown>;
+
 export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "complete_agent_workspace_repair",
@@ -70,3 +72,45 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
     },
   },
 ];
+
+export async function callCompleteAgentWorkspaceRepairTool(
+  callTauri: TauriPost,
+  args: unknown
+): Promise<unknown> {
+  const {
+    conversation_id,
+    repair_commit_sha,
+    resolved_base_ref,
+    resolved_base_commit,
+    summary,
+  } = args as {
+    conversation_id: string;
+    repair_commit_sha: string;
+    resolved_base_ref: string;
+    resolved_base_commit: string;
+    summary: string;
+  };
+
+  return callTauri(`agent-workspaces/${conversation_id}/complete-repair`, {
+    repair_commit_sha,
+    resolved_base_ref,
+    resolved_base_commit,
+    summary,
+  });
+}
+
+export async function callSubmitAgentWorkspacePrDescriptionTool(
+  callTauri: TauriPost,
+  args: unknown
+): Promise<unknown> {
+  const { conversation_id, title, body_markdown } = args as {
+    conversation_id: string;
+    title?: string;
+    body_markdown: string;
+  };
+
+  return callTauri(`agent-workspaces/${conversation_id}/pr-description`, {
+    title,
+    body_markdown,
+  });
+}

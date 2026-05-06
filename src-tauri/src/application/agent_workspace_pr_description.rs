@@ -388,6 +388,212 @@ fn escape_xml_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::process::Command;
+
+    use async_trait::async_trait;
+    use chrono::{Duration, Utc};
+    use futures::{stream, Stream};
+    use tempfile::TempDir;
+
+    use crate::domain::agents::{
+        AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgentRole,
+        AgenticClient, ClientCapabilities, ResponseChunk,
+    };
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, ChatMessage, IdeationAnalysisBaseRefKind, MessageRole,
+    };
+    use crate::domain::repositories::AgentConversationWorkspaceRepository;
+
+    struct SubmittingPrDescriptionClient {
+        repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        conversation_id: crate::domain::entities::ChatConversationId,
+        title: Option<String>,
+        body_markdown: String,
+        output: AgentOutput,
+        capabilities: ClientCapabilities,
+        spawned_configs: tokio::sync::Mutex<Vec<AgentConfig>>,
+    }
+
+    impl SubmittingPrDescriptionClient {
+        fn success(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: crate::domain::entities::ChatConversationId,
+            title: Option<String>,
+            body_markdown: impl Into<String>,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+                title,
+                body_markdown: body_markdown.into(),
+                output: AgentOutput::success("submitted"),
+                capabilities: ClientCapabilities::mock(),
+                spawned_configs: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn failed(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: crate::domain::entities::ChatConversationId,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+                title: None,
+                body_markdown: String::new(),
+                output: AgentOutput::failed("agent failed", 1),
+                capabilities: ClientCapabilities::mock(),
+                spawned_configs: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn spawned_configs(&self) -> Vec<AgentConfig> {
+            self.spawned_configs.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl AgenticClient for SubmittingPrDescriptionClient {
+        async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
+            self.spawned_configs.lock().await.push(config.clone());
+            Ok(AgentHandle::mock(config.role))
+        }
+
+        async fn stop_agent(&self, _handle: &AgentHandle) -> AgentResult<()> {
+            Ok(())
+        }
+
+        async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
+            if self.output.success {
+                self.repo
+                    .save_pr_description(
+                        &self.conversation_id,
+                        AgentWorkspacePrDescription::new(
+                            self.title.clone(),
+                            self.body_markdown.clone(),
+                        ),
+                    )
+                    .await
+                    .expect("test PR description should save");
+            }
+            Ok(self.output.clone())
+        }
+
+        async fn send_prompt(
+            &self,
+            _handle: &AgentHandle,
+            _prompt: &str,
+        ) -> AgentResult<AgentResponse> {
+            Ok(AgentResponse::new(""))
+        }
+
+        fn stream_response(
+            &self,
+            _handle: &AgentHandle,
+            _prompt: &str,
+        ) -> Pin<Box<dyn Stream<Item = AgentResult<ResponseChunk>> + Send>> {
+            Box::pin(stream::empty())
+        }
+
+        fn capabilities(&self) -> &ClientCapabilities {
+            &self.capabilities
+        }
+
+        async fn is_available(&self) -> AgentResult<bool> {
+            Ok(true)
+        }
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn create_reviewable_repo() -> (TempDir, PathBuf, String) {
+        let temp_dir = TempDir::new().expect("temp repo should be created");
+        let repo = temp_dir.path().to_path_buf();
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test User"]);
+
+        std::fs::create_dir_all(repo.join(".github")).unwrap();
+        std::fs::write(
+            repo.join(".github").join("PULL_REQUEST_TEMPLATE.md"),
+            "## Summary\n\n## User Impact\n\n## Risks / Follow-Ups\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Initial commit"]);
+        let base = run_git(&repo, &["rev-parse", "HEAD"]);
+
+        run_git(&repo, &["checkout", "-b", "feature/pr-description"]);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn answer() -> u8 { 42 }\n",
+        )
+        .unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Add PR description helper"]);
+
+        (temp_dir, repo, base)
+    }
+
+    fn project_for(repo: &Path) -> Project {
+        Project::new("Example <Project>".to_string(), repo.display().to_string())
+    }
+
+    fn conversation_for(project: &Project) -> ChatConversation {
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.title = Some("Improve PR descriptions & publishing".to_string());
+        conversation
+    }
+
+    fn workspace_for(
+        conversation: &ChatConversation,
+        project: &Project,
+        repo: &Path,
+        base: &str,
+    ) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            conversation.id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some(base.to_string()),
+            "feature/pr-description".to_string(),
+            repo.display().to_string(),
+        )
+    }
+
+    fn message_for_conversation(
+        conversation: &ChatConversation,
+        role: MessageRole,
+        content: impl Into<String>,
+        offset_seconds: i64,
+    ) -> ChatMessage {
+        let mut message =
+            ChatMessage::user_in_project(crate::domain::entities::ProjectId::new(), content.into());
+        message.conversation_id = Some(conversation.id.clone());
+        message.project_id = None;
+        message.role = role;
+        message.created_at = Utc::now() + Duration::seconds(offset_seconds);
+        message
+    }
 
     #[test]
     fn validation_rejects_empty_body() {
@@ -396,10 +602,307 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_overlong_body_and_accepts_trimmed_content() {
+        validate_agent_workspace_pr_description_body("  ## Summary\nUseful body\n").unwrap();
+
+        let body = "x".repeat(MAX_AGENT_WORKSPACE_PR_BODY_CHARS + 1);
+        let error = validate_agent_workspace_pr_description_body(&body).unwrap_err();
+        assert!(error.to_string().contains("too long"));
+    }
+
+    #[test]
     fn fallback_template_has_expected_sections() {
         assert!(DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE.contains("## Summary"));
         assert!(DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE.contains("## User Impact"));
         assert!(DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE.contains("## Risks / Follow-Ups"));
+    }
+
+    #[tokio::test]
+    async fn template_context_prefers_workspace_then_project_then_fallback() {
+        let project_dir = TempDir::new().unwrap();
+        let workspace_dir = TempDir::new().unwrap();
+        let mut project = project_for(project_dir.path());
+        project.working_directory = project_dir.path().display().to_string();
+
+        std::fs::create_dir_all(project_dir.path().join(".github")).unwrap();
+        std::fs::create_dir_all(workspace_dir.path().join(".github")).unwrap();
+        std::fs::write(
+            project_dir
+                .path()
+                .join(".github")
+                .join("PULL_REQUEST_TEMPLATE.md"),
+            "## Project Template\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace_dir
+                .path()
+                .join(".github")
+                .join("PULL_REQUEST_TEMPLATE.md"),
+            "## Workspace Template\n",
+        )
+        .unwrap();
+
+        let context = read_pull_request_template_context(&project, workspace_dir.path()).await;
+        assert_eq!(context.source, "workspace");
+        assert_eq!(context.content, "## Workspace Template");
+
+        std::fs::remove_file(
+            workspace_dir
+                .path()
+                .join(".github")
+                .join("PULL_REQUEST_TEMPLATE.md"),
+        )
+        .unwrap();
+        let context = read_pull_request_template_context(&project, workspace_dir.path()).await;
+        assert_eq!(context.source, "project");
+        assert_eq!(context.content, "## Project Template");
+
+        std::fs::write(
+            project_dir
+                .path()
+                .join(".github")
+                .join("PULL_REQUEST_TEMPLATE.md"),
+            "   \n",
+        )
+        .unwrap();
+        let context = read_pull_request_template_context(&project, workspace_dir.path()).await;
+        assert_eq!(context.source, "ralphx_fallback");
+        assert!(context.content.contains("## User Impact"));
+    }
+
+    #[tokio::test]
+    async fn run_git_text_returns_stdout_and_nonzero_errors() {
+        let (_temp_dir, repo, _base) = create_reviewable_repo();
+
+        let output = run_git_text(&repo, &["status", "--short"]).await.unwrap();
+        assert!(output.trim().is_empty());
+
+        let error = run_git_text(&repo, &["definitely-not-a-command"])
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("git definitely-not-a-command failed"));
+    }
+
+    #[tokio::test]
+    async fn conversation_context_uses_recent_non_empty_messages_and_truncates() {
+        let state = AppState::new_test();
+        let project = Project::new("Project".to_string(), "/tmp/project".to_string());
+        let conversation = conversation_for(&project);
+
+        for index in 0..14 {
+            let content = if index == 3 {
+                "   ".to_string()
+            } else {
+                format!("message-{index} {}", "x".repeat(MAX_MESSAGE_CHARS + 20))
+            };
+            let message = message_for_conversation(
+                &conversation,
+                if index % 2 == 0 {
+                    MessageRole::User
+                } else {
+                    MessageRole::Orchestrator
+                },
+                content,
+                index,
+            );
+            state.chat_message_repo.create(message).await.unwrap();
+        }
+
+        let context = build_conversation_context(&state, &conversation)
+            .await
+            .unwrap();
+
+        assert!(!context.contains("message-0 "));
+        assert!(!context.contains("message-1 "));
+        assert!(context.contains("[user at "));
+        assert!(context.contains("[orchestrator at "));
+        assert!(context.contains("Conversation context truncated by RalphX"));
+    }
+
+    #[test]
+    fn prompt_context_formats_escaped_bounded_diff_data() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let mut project = project_for(&repo);
+        project.name = "Project <A&B>".to_string();
+        let conversation = conversation_for(&project);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let commits = (0..(MAX_COMMIT_SUMMARIES + 2))
+            .map(|index| crate::application::git_service::CommitInfo {
+                sha: format!("{index:040}"),
+                short_sha: format!("{index:07}"),
+                message: format!("Commit <{index}> & details"),
+                author: "A&B".to_string(),
+                timestamp: "2026-05-06T00:00:00Z".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let diff_stats = crate::application::git_service::DiffStats {
+            files_changed: 2,
+            insertions: 10,
+            deletions: 3,
+            changed_files: vec!["src/lib.rs".to_string(), "README.md".to_string()],
+        };
+        let prompt = build_pr_describer_prompt(PrDescriberPromptContext {
+            conversation: &conversation,
+            project: &project,
+            workspace: &workspace,
+            effective_cwd: &repo,
+            review_base: "origin/main & HEAD",
+            template: &PullRequestTemplateContext {
+                source: "workspace",
+                content: "## Summary\nUse <template> & context".to_string(),
+            },
+            commits: &commits,
+            diff_stats: &diff_stats,
+            name_status: &"M\tfile\n".repeat(MAX_NAME_STATUS_CHARS + 1),
+            diff_stat: &" stat\n".repeat(MAX_STAT_CHARS + 1),
+            patch_excerpt: &"diff --git a/file b/file\n".repeat(MAX_PATCH_EXCERPT_CHARS + 1),
+            conversation_context: "[user] use <context> & facts",
+        });
+
+        assert!(prompt.contains("<project_name>Project &lt;A&amp;B&gt;</project_name>"));
+        assert!(prompt.contains("<template source=\"workspace\">"));
+        assert!(prompt.contains("Use &lt;template&gt; &amp; context"));
+        assert!(prompt.contains("2 files changed, 10 insertions, 3 deletions"));
+        assert!(prompt.contains("- src/lib.rs"));
+        assert!(prompt.contains("additional commits omitted by RalphX"));
+        assert!(prompt.contains("Name-status output truncated by RalphX"));
+        assert!(prompt.contains("Diff stat output truncated by RalphX"));
+        assert!(prompt.contains("Patch excerpt truncated by RalphX"));
+        assert!(prompt.contains("use &lt;context&gt; &amp; facts"));
+    }
+
+    #[test]
+    fn empty_commit_and_file_context_has_explicit_placeholders() {
+        let diff_stats = crate::application::git_service::DiffStats {
+            files_changed: 0,
+            insertions: 0,
+            deletions: 0,
+            changed_files: Vec::new(),
+        };
+
+        assert_eq!(
+            format_commit_summaries(&[]),
+            "No commit summaries were available."
+        );
+        assert_eq!(
+            format_changed_files(&diff_stats),
+            "No changed files were reported by git diff."
+        );
+        assert_eq!(
+            escape_xml_text("a < b && c > d"),
+            "a &lt; b &amp;&amp; c &gt; d"
+        );
+    }
+
+    #[tokio::test]
+    async fn draft_pr_description_collects_git_context_and_uses_submitted_body() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let conversation = conversation_for(&project);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let state = AppState::new_test();
+        state
+            .chat_message_repo
+            .create(message_for_conversation(
+                &conversation,
+                MessageRole::User,
+                "Please prepare the publishable PR description.",
+                1,
+            ))
+            .await
+            .unwrap();
+        state
+            .agent_conversation_workspace_repo
+            .save_pr_description(
+                &conversation.id,
+                AgentWorkspacePrDescription::new(
+                    Some("stale title".to_string()),
+                    "stale body".to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let client = Arc::new(SubmittingPrDescriptionClient::success(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            Some("Reviewer-focused PR title".to_string()),
+            "## Summary\n\nReal body from utility agent.",
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let description = draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            description.title.as_deref(),
+            Some("Reviewer-focused PR title")
+        );
+        assert_eq!(
+            description.body_markdown,
+            "## Summary\n\nReal body from utility agent."
+        );
+
+        let configs = client.spawned_configs().await;
+        assert_eq!(configs.len(), 1);
+        let config = &configs[0];
+        assert_eq!(
+            config.role,
+            AgentRole::Custom("ralphx-utility-pr-describer".to_string())
+        );
+        assert_eq!(config.working_directory, repo);
+        assert_eq!(
+            config.agent.as_deref(),
+            Some(agent_names::AGENT_PR_DESCRIBER)
+        );
+        assert_eq!(config.timeout_secs, Some(120));
+        assert!(config
+            .prompt
+            .contains("submit_agent_workspace_pr_description"));
+        assert!(config.prompt.contains("src/lib.rs"));
+        assert!(config
+            .prompt
+            .contains("Please prepare the publishable PR description."));
+    }
+
+    #[tokio::test]
+    async fn draft_pr_description_surfaces_unsuccessful_agent_output() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let conversation = conversation_for(&project);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let state = AppState::new_test();
+        let client = Arc::new(SubmittingPrDescriptionClient::failed(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+        ));
+        let state = state.with_agent_client(client);
+
+        let error = draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("PR describer agent exited unsuccessfully"));
     }
 
     #[test]
