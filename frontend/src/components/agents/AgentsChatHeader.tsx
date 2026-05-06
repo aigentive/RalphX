@@ -149,7 +149,7 @@ export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
       {showFocusSwitcher && activeOption ? (
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
           <span
-            className="shrink-0 text-[11px] font-medium uppercase tracking-[0.08em]"
+            className="shrink-0 text-[0.6875rem] font-medium uppercase tracking-[0.08em]"
             style={{ color: "var(--text-muted)" }}
           >
             Chat
@@ -160,7 +160,7 @@ export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
                 type="button"
                 aria-label={`Chat focus: ${activeOption.label}. Click to switch.`}
                 data-testid="agents-chat-focus-trigger"
-                className="inline-flex h-6 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-2 text-[12px] font-medium transition-colors"
+                className="inline-flex h-6 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-2 text-[0.75rem] font-medium transition-colors"
                 style={
                   activeToneStyle
                     ? {
@@ -211,7 +211,7 @@ export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
                     }
                     data-active={selected ? "true" : "false"}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition-colors",
                       selected ? "cursor-default" : "cursor-pointer",
                     )}
                     style={
@@ -590,7 +590,7 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
       <TooltipTrigger asChild>
         <div
           tabIndex={0}
-          className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium sm:max-w-[300px]"
+          className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6875rem] font-medium sm:max-w-[300px]"
           style={{
             color: statusColor,
             background: "var(--bg-surface)",

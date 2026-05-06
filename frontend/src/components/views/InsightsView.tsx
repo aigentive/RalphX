@@ -83,7 +83,7 @@ function WeekStartToggle({
         <button
           key={day}
           onClick={() => onChange(day)}
-          className="rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+          className="rounded px-2 py-0.5 text-[0.6875rem] font-medium transition-colors"
           style={
             value === day
               ? { backgroundColor: "var(--accent-primary)", color: "var(--text-on-accent)" }
@@ -153,7 +153,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-3 mt-2">
       <span
-        className="text-[10px] font-semibold uppercase tracking-[0.12em]"
+        className="text-[0.625rem] font-semibold uppercase tracking-[0.12em]"
         style={{ color: "var(--text-muted)" }}
       >
         {children}
@@ -192,10 +192,10 @@ function EmeSection({
   return (
     <DetailCard>
       <div className="flex flex-col gap-1">
-        <p className="text-[13px] font-medium" style={{ color: "var(--text-secondary)" }}>
+        <p className="text-[0.8125rem] font-medium" style={{ color: "var(--text-secondary)" }}>
           Effort estimation unlocks after 5 completed tasks
         </p>
-        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+        <p className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
           {stats.taskCount} of 5 tasks completed — keep going!
         </p>
       </div>
@@ -221,7 +221,7 @@ export function InsightsView() {
   if (!projectId) {
     return (
       <div className="flex flex-1 items-center justify-center" style={{ color: "var(--text-muted)" }}>
-        <p className="text-[14px]">Select a project to view insights</p>
+        <p className="text-[0.875rem]">Select a project to view insights</p>
       </div>
     );
   }
@@ -230,7 +230,7 @@ export function InsightsView() {
   if (statsQuery.isLoading || trendsQuery.isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center" style={{ color: "var(--text-muted)" }}>
-        <p className="text-[14px]">Loading insights...</p>
+        <p className="text-[0.875rem]">Loading insights...</p>
       </div>
     );
   }
@@ -239,7 +239,7 @@ export function InsightsView() {
   if (statsQuery.error ?? trendsQuery.error) {
     return (
       <div className="flex flex-1 items-center justify-center" style={{ color: "var(--text-muted)" }}>
-        <p className="text-[14px]">Failed to load insights. Try again.</p>
+        <p className="text-[0.875rem]">Failed to load insights. Try again.</p>
       </div>
     );
   }
@@ -331,12 +331,12 @@ function InsightsContent({
         <div className="flex items-start justify-between gap-4">
           <div data-testid="insights-header" className="flex flex-col gap-1">
             <h1
-              className="text-[22px] font-semibold"
+              className="text-[1.375rem] font-semibold"
               style={{ fontFamily: "system-ui", color: "var(--text-primary)", letterSpacing: "-0.01em" }}
             >
               Insights
             </h1>
-            <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
+            <p className="text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
               Project analytics and effort estimation
             </p>
           </div>
@@ -350,7 +350,7 @@ function InsightsContent({
             <CopyMarkdownButton stats={stats} />
             <button
               onClick={() => exportJSON(stats, trends)}
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium transition-colors"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[0.75rem] font-medium transition-colors"
               style={{
                 backgroundColor: "var(--bg-surface)",
                 color: "var(--text-secondary)",
@@ -363,7 +363,7 @@ function InsightsContent({
             </button>
             <button
               onClick={() => exportCSV(trends)}
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium transition-colors"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[0.75rem] font-medium transition-colors"
               style={{
                 backgroundColor: "var(--bg-surface)",
                 color: "var(--text-secondary)",
@@ -441,10 +441,10 @@ function InsightsContent({
             {!hasEnoughForTrends ? (
               <DetailCard>
                 <div className="flex flex-col gap-1">
-                  <p className="text-[13px] font-medium" style={{ color: "var(--text-secondary)" }}>
+                  <p className="text-[0.8125rem] font-medium" style={{ color: "var(--text-secondary)" }}>
                     Trend charts unlock after 10 completed tasks
                   </p>
-                  <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                  <p className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
                     {stats.taskCount} of 10 tasks completed
                   </p>
                 </div>

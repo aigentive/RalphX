@@ -94,18 +94,18 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
         <div className="flex items-center gap-2">
           <div
             className="flex-1 h-1 rounded-full overflow-hidden"
-            style={{ backgroundColor: "var(--bg-elevated)" }}
+            style={{ backgroundColor: "var(--kanban-progress-track)" }}
           >
             <div
               className="h-full rounded-full transition-all duration-300"
               style={{
                 width: `${percentComplete}%`,
-                backgroundColor: "var(--text-muted)",
+                backgroundColor: "var(--status-success)",
               }}
             />
           </div>
           <span
-            className="text-[10px] tabular-nums shrink-0"
+            className="text-[0.625rem] tabular-nums shrink-0"
             style={{ color: "var(--text-muted)" }}
           >
             {percentComplete}%
@@ -129,7 +129,7 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
           ))}
           {hiddenDotCount > 0 && (
             <span
-              className="text-[10px] shrink-0"
+              className="text-[0.625rem] shrink-0"
               style={{ color: "var(--text-muted)" }}
               aria-label={`${hiddenDotCount} more steps`}
             >

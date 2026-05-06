@@ -68,6 +68,37 @@ describe("ReviewFeedbackBody", () => {
     expect(screen.queryByText(/TS2307 module failure 69/)).not.toBeInTheDocument();
   });
 
+  it("returns null when no summary or notes are provided", () => {
+    const { container } = render(<ReviewFeedbackBody />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders summary only when notes are missing", () => {
+    render(<ReviewFeedbackBody summary="Just a summary" />);
+    expect(screen.getByText("Just a summary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /View full details/i })).not.toBeInTheDocument();
+  });
+
+  it("renders plain mode pre block", () => {
+    render(
+      <ReviewFeedbackBody
+        notes="Plain text body content here"
+        mode="plain"
+      />
+    );
+    expect(screen.getByText("Plain text body content here")).toBeInTheDocument();
+  });
+
+  it("renders bullet lists via flush list components in markdown mode", () => {
+    render(
+      <ReviewFeedbackBody
+        notes={["- one", "- two", "- three", "", "1. first", "2. second"].join("\n")}
+      />
+    );
+    expect(screen.getByText("one")).toBeInTheDocument();
+    expect(screen.getByText("first")).toBeInTheDocument();
+  });
+
   it("opens a dialog for very large feedback bodies", async () => {
     const user = userEvent.setup();
     const veryLongNotes = [

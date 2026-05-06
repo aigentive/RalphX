@@ -39,11 +39,11 @@ function MiniStat({
       className="rounded-lg p-3 flex flex-col gap-1"
       style={{ backgroundColor: "var(--overlay-faint)" }}
     >
-      <div className="flex items-center gap-2 text-[11px] text-text-muted">
+      <div className="flex items-center gap-2 text-[0.6875rem] text-text-muted">
         {icon}
         <span className="uppercase tracking-[0.08em]">{label}</span>
       </div>
-      <div className="text-[15px] font-medium text-text-primary">
+      <div className="text-[0.9375rem] font-medium text-text-primary">
         {value}
       </div>
     </div>
@@ -64,7 +64,7 @@ export function UsageInsightsCard({ stats }: UsageInsightsCardProps) {
             <span className="text-sm font-medium text-text-primary">
               AI Usage
             </span>
-            <span className="text-[12px] text-text-muted">
+            <span className="text-[0.75rem] text-text-muted">
               Aggregated from {stats.usageCoverage.effectiveTotalsSource}
             </span>
           </div>
@@ -96,9 +96,9 @@ export function UsageInsightsCard({ stats }: UsageInsightsCardProps) {
           />
         </div>
 
-        <div className="grid grid-cols-1 min-[800px]:grid-cols-2 gap-3 text-[12px]">
+        <div className="grid grid-cols-1 min-[800px]:grid-cols-2 gap-3 text-[0.75rem]">
           <div className="flex flex-col gap-1.5">
-            <div className="uppercase tracking-[0.08em] text-[10px] text-text-muted">
+            <div className="uppercase tracking-[0.08em] text-[0.625rem] text-text-muted">
               Coverage
             </div>
             <div className="text-text-secondary">
@@ -114,7 +114,7 @@ export function UsageInsightsCard({ stats }: UsageInsightsCardProps) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <div className="uppercase tracking-[0.08em] text-[10px] text-text-muted">
+            <div className="uppercase tracking-[0.08em] text-[0.625rem] text-text-muted">
               Dominant breakdowns
             </div>
             <div className="flex items-center gap-2 text-text-secondary">

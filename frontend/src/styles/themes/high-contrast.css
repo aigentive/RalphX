@@ -4,7 +4,7 @@
  * Targets WCAG 2.1 AAA (7:1 normal / 4.5:1 large / UI). Overrides:
  *   - All backgrounds → pure black
  *   - All text → pure white + graduated grays
- *   - Accent → brand orange (#ff8855 — bright HC variant of #ff6b35 for
+ *   - Accent → brand orange (#FF6A35) from the v27 high-contrast palette
  *     cross-theme branding consistency; pairs with icons to retain
  *     color-blind-safe affordances per color-blind-design.md §4)
  *   - Status → bright, shape-paired (icons mandatory — see
@@ -29,74 +29,93 @@ html[data-theme="high-contrast"] main {
 [data-theme="high-contrast"] {
   /* Backgrounds — pure black on every surface */
   --bg-base:          #000000;
-  --bg-surface:       #000000;
-  --bg-elevated:      #000000;
-  --bg-hover:         hsl(0 0% 15%);
-  --bg-surface-hover: hsl(0 0% 15%);
-  --nav-rail-bg:      #000000;
+  --bg-surface:       #0A0A0A;
+  --bg-elevated:      #1A1A1A;
+  --bg-hover:         #2A2A2A;
+  --bg-sunken:        #050505;
+  --bg-surface-hover: #2A2A2A;
+  --topbar-bg:        #0A0A0A;
+  --nav-rail-bg:      #0A0A0A;
+  --app-navbar-bg:    #0A0A0A;
+  --app-rail-bg:      #0A0A0A;
+  --app-sidebar-bg:   #0A0A0A;
+  --app-content-bg:   #000000;
+  --brand-tile:       #1A1A1A;
+  --brand-pill-from:  #2E2F35;
+  --brand-pill-to:    #2E2E34;
+  --brand-x:          #FA4F19;
 
   /* Text — pure white + graduated grays. Literals, not var(--color-*).
      WKWebView drops chained var() on these too. See
      .claude/rules/wkwebview-css-vars.md. */
   --text-primary:   #ffffff;
-  --text-secondary: #e0e0e0;
-  --text-muted:     #b0b0b0;
-  --text-inverse:   #000000;
+  --text-secondary: #E5E5E5;
+  --text-muted:     #BFBFBF;
+  --text-subtle:    #999999;
+  --text-inverse:   #1A0E07;
+  --text-on-accent: #1A0E07;
 
-  /* Accent — brand orange. Keeps branding consistent with Dark/Light
-     (#ff6b35 base); HC uses a brighter variant (#ff8855) so normal text
-     lands closer to AAA on pure black. Literals per WKWebView rule —
+  /* Accent — brand orange from v27. Literals per WKWebView rule —
      inheritance breaks on chained var() for color-bearing props. */
-  --accent-primary:   #ff8855;
-  --accent-secondary: #ffaa77;
-  --accent-hover:     #ffaa77;
-  --accent-muted:     hsla(20 100% 65% / 0.2);
-  --accent-border:    hsla(20 100% 65% / 0.5);
-  --chat-user-bubble-bg: hsla(20 100% 65% / 0.10);
-  --chat-user-bubble-border: hsla(20 100% 65% / 0.45);
+  --accent-primary:   #FF6A35;
+  --accent-secondary: #FF8050;
+  --accent-hover:     #E0521E;
+  --accent-muted:     rgba(255,106,53,.18);
+  --accent-muted-strong: rgba(255,106,53,.30);
+  --accent-border:    rgba(255,106,53,.55);
+  --chat-user-bubble-bg: rgba(255,106,53,.18);
+  --chat-user-bubble-border: rgba(255,106,53,.55);
   --chat-user-bubble-text: #ffffff;
   --chat-user-bubble-copy-hover: hsla(0 0% 100% / 0.10);
 
   /* Status — bright + always paired with icons. Literals per WKWebView
      rule; color-mix against the same literal keeps the alpha ladder. */
-  --status-success:        #00ff66;
-  --status-success-muted:  color-mix(in srgb, #00ff66 18%, transparent);
-  --status-success-border: color-mix(in srgb, #00ff66 50%, transparent);
-  --status-success-strong: color-mix(in srgb, #00ff66 80%, transparent);
+  --status-success:        #5BCDFF;
+  --status-success-muted:  color-mix(in srgb, #5BCDFF 18%, transparent);
+  --status-success-border: color-mix(in srgb, #5BCDFF 50%, transparent);
+  --status-success-strong: color-mix(in srgb, #5BCDFF 80%, transparent);
 
-  --status-warning:        #ff8855;
-  --status-warning-muted:  color-mix(in srgb, #ff8855 20%, transparent);
-  --status-warning-border: color-mix(in srgb, #ff8855 50%, transparent);
-  --status-warning-strong: color-mix(in srgb, #ff8855 80%, transparent);
+  --status-warning:        #FFD93D;
+  --status-warning-muted:  color-mix(in srgb, #FFD93D 20%, transparent);
+  --status-warning-border: color-mix(in srgb, #FFD93D 50%, transparent);
+  --status-warning-strong: color-mix(in srgb, #FFD93D 80%, transparent);
 
   --status-error:          #ff3344;
   --status-error-muted:    color-mix(in srgb, #ff3344 18%, transparent);
   --status-error-border:   color-mix(in srgb, #ff3344 50%, transparent);
   --status-error-strong:   color-mix(in srgb, #ff3344 80%, transparent);
 
-  /* HC: remap info→yellow so Ready/Queued/etc. read on black (sky fails AAA) */
-  --status-info:           #ff8855;
-  --status-info-muted:     color-mix(in srgb, #ff8855 20%, transparent);
-  --status-info-border:    color-mix(in srgb, #ff8855 50%, transparent);
-  --status-info-strong:    color-mix(in srgb, #ff8855 80%, transparent);
+  /* HC: remap info to the v27 high-contrast status blue. */
+  --status-info:           #5BCDFF;
+  --status-info-muted:     color-mix(in srgb, #5BCDFF 20%, transparent);
+  --status-info-border:    color-mix(in srgb, #5BCDFF 50%, transparent);
+  --status-info-strong:    color-mix(in srgb, #5BCDFF 80%, transparent);
 
-  --accent-strong:         color-mix(in srgb, #ff8855 80%, transparent);
+  --accent-strong:         color-mix(in srgb, #FF6A35 80%, transparent);
 
   /* Borders — always solid white, thicker stroke width. Literals for the
      same WKWebView reason as the bg/text tokens above. */
-  --border-subtle:  hsla(0 0% 100% / 0.50);
-  --border-default: #ffffff;
-  --border-focus:   #ff8855;
+  --border-subtle:  #555555;
+  --border-default: #777777;
+  --border-strong:  #999999;
+  --border-focus:   #FFFFFF;
+  --app-navbar-border:  #555555;
+  --app-rail-border:    #555555;
+  --app-sidebar-border: #555555;
+  --app-content-border: #555555;
   --border-width-default: 2px;
   --border-width-focus:   3px;
 
   /* Inline form-control border (composer wrapper, pills, etc.). Without
      this token defined per-theme, inline `var(--form-border)` resolves
      invalid in HC and Plus button + neighboring chips lose their stroke. */
-  --form-border: hsla(0 0% 100% / 0.30);
+  --form-border: #777777;
 
   /* Focus ring — brand orange. Literal per WKWebView rule. */
-  --focus-ring: #ff8855;
+  --focus-ring: #FFFFFF;
+  --nav-rail-active-color: #FF6A35;
+  --nav-rail-inactive-color: #BFBFBF;
+  --nav-rail-active-shadow: inset 0 0 0 2px #FF6A35;
 
   /* Overlay surfaces — HC uses higher-contrast separation (thicker borders
    * do most of the work). Overlay still available but less subtle. */
@@ -108,25 +127,25 @@ html[data-theme="high-contrast"] main {
   --overlay-scrim-deep: hsla(0 0% 0% / 0.90);
 
   /* Shadow pulses — brand orange for accent, brighter edges so they punch on black */
-  --shadow-pulse-accent-base:   0 0 0 0 hsla(20 100% 65% / 0.5),
-                                0 0 8px hsla(20 100% 65% / 0.3);
-  --shadow-pulse-accent-expand: 0 0 0 4px hsla(20 100% 65% / 0),
-                                0 0 12px hsla(20 100% 65% / 0.5);
+  --shadow-pulse-accent-base:   0 0 0 0 rgba(255,106,53,.5),
+                                0 0 8px rgba(255,106,53,.3);
+  --shadow-pulse-accent-expand: 0 0 0 4px rgba(255,106,53,0),
+                                0 0 12px rgba(255,106,53,.5);
   --shadow-pulse-info-base:   0 0 0 0 hsla(200 100% 70% / 0.5),
                               0 0 8px hsla(200 100% 70% / 0.3);
   --shadow-pulse-info-expand: 0 0 0 4px hsla(200 100% 70% / 0),
                               0 0 12px hsla(200 100% 70% / 0.5);
   --shadow-pulse-status-base:   0 0 0 0 hsla(140 100% 50% / 0.6);
   --shadow-pulse-status-expand: 0 0 0 4px hsla(140 100% 50% / 0);
-  --shadow-glow-accent-soft:   0 0 12px hsla(20 100% 65% / 0.12),
-                               0 0 24px hsla(20 100% 65% / 0.06),
+  --shadow-glow-accent-soft:   0 0 12px rgba(255,106,53,.12),
+                               0 0 24px rgba(255,106,53,.06),
                                inset 0 1px 0 hsla(0 0% 100% / 0.08);
-  --shadow-glow-accent-active: 0 0 18px hsla(20 100% 65% / 0.20),
-                               0 0 36px hsla(20 100% 65% / 0.12),
+  --shadow-glow-accent-active: 0 0 18px rgba(255,106,53,.20),
+                               0 0 36px rgba(255,106,53,.12),
                                inset 0 1px 0 hsla(0 0% 100% / 0.12);
-  --shadow-drop-zone-border: inset 0 0 0 2px hsla(20 100% 65% / 1);
-  --shadow-drop-zone-active: inset 0 0 0 3px hsla(20 100% 65% / 1),
-                             0 0 20px hsla(20 100% 65% / 0.4);
+  --shadow-drop-zone-border: inset 0 0 0 2px #FF6A35;
+  --shadow-drop-zone-active: inset 0 0 0 3px #FF6A35,
+                             0 0 20px rgba(255,106,53,.4);
 
   /* Card/dialog shadows — HC has pure-black surfaces, so drop-shadows are
      invisible. Borders do all elevation work. Keep the vars defined so any
@@ -137,12 +156,31 @@ html[data-theme="high-contrast"] main {
   --shadow-lg: none;
 
   /* Selection — brand orange highlight with black text */
-  --selection-bg:   hsla(20 100% 65% / 0.5);
+  --selection-bg:   rgba(255,106,53,.50);
   --selection-text: #000000;
 
   /* Nav active — brand orange with black text. Literals per WKWebView rule. */
-  --nav-active-bg:   #ff8855;
+  --nav-active-bg:   #FF6A35;
   --nav-active-text: #000000;
+
+  /* Kanban board — v29a high-contrast component chrome */
+  --kanban-toolbar-bg:             #0A0A0A;
+  --kanban-toolbar-border:         #555555;
+  --kanban-board-divider:          #555555;
+  --kanban-column-bg:              rgba(255,255,255,.02);
+  --kanban-card-bg:                #1A1A1A;
+  --kanban-card-border:            #777777;
+  --kanban-card-selected-bg:       rgba(255,255,255,.12);
+  --kanban-card-selected-border:   #FFFFFF;
+  --kanban-card-warning-bg:        rgba(255,217,61,.16);
+  --kanban-card-warning-border:    rgba(255,217,61,.55);
+  --kanban-card-success-bg:        rgba(91,205,255,.16);
+  --kanban-card-success-border:    rgba(91,205,255,.55);
+  --kanban-tray-bg:                #1A1A1A;
+  --kanban-tray-ink:               #999999;
+  --kanban-empty-ink:              #999999;
+  --kanban-group-divider:          #555555;
+  --kanban-progress-track:         rgba(255,255,255,.18);
 
   /* Syntax palette — HC code surface. Bright saturated hues with high
    * luminance contrast against pure black. */
@@ -151,24 +189,24 @@ html[data-theme="high-contrast"] main {
   --syntax-number:      #bd93f9; /* bright lavender */
   --syntax-comment:     #b0b0b0; /* gray (secondary on black) */
   --syntax-function:    #8be9fd; /* bright cyan */
-  --syntax-class-name:  #ff8855; /* brand orange — main accent (literal per WKWebView rule) */
+  --syntax-class-name:  #FF6A35; /* brand orange — main accent (literal per WKWebView rule) */
   --syntax-operator:    var(--syntax-keyword);
   --syntax-punctuation: var(--text-secondary);
 
   /* shadcn bridging */
-  --background:         var(--bg-base);
+  --background:         #000000;
   --foreground:         var(--text-primary);
-  --card:               var(--bg-elevated);
+  --card:               #1A1A1A;
   --card-foreground:    var(--text-primary);
-  --popover:            var(--bg-elevated);
+  --popover:            #1A1A1A;
   --popover-foreground: var(--text-primary);
-  --primary:            var(--accent-primary);
-  --primary-foreground: var(--text-inverse);
-  --secondary:            var(--bg-surface);
+  --primary:            #FF6A35;
+  --primary-foreground: #1A0E07;
+  --secondary:            #0A0A0A;
   --secondary-foreground: var(--text-primary);
-  --muted:            var(--bg-surface);
+  --muted:            #0A0A0A;
   --muted-foreground: var(--text-muted);
-  --accent:            var(--bg-hover);
+  --accent:            #2A2A2A;
   --accent-foreground: var(--text-primary);
   --destructive:            var(--status-error);
   --destructive-foreground: var(--text-primary);
@@ -176,17 +214,54 @@ html[data-theme="high-contrast"] main {
      .claude/rules/wkwebview-css-vars.md). --border + --input in
      particular feed Radix SelectTrigger / Input border-color, which
      had been rendering transparent inside the Settings modal. */
-  --border: #ffffff;
-  --input:  #ffffff;
-  --ring:   #ff8855;
-  --sidebar:                    var(--bg-surface);
+  --border: #777777;
+  --input:  #777777;
+  --ring:   #FFFFFF;
+  --sidebar:                    #0A0A0A;
   --sidebar-foreground:         var(--text-primary);
-  --sidebar-primary:            var(--accent-primary);
-  --sidebar-primary-foreground: var(--text-inverse);
-  --sidebar-accent:             var(--bg-hover);
+  --sidebar-primary:            #FF6A35;
+  --sidebar-primary-foreground: #1A0E07;
+  --sidebar-accent:             #2A2A2A;
   --sidebar-accent-foreground:  var(--text-primary);
-  --sidebar-border:             var(--border-default);
-  --sidebar-ring:               var(--accent-primary);
+  --sidebar-border:             #555555;
+  --sidebar-ring:               #FF6A35;
+}
+
+[data-theme="high-contrast"] [data-testid="kanban-toolbar"] {
+  border-bottom-color: #555555 !important;
+}
+
+[data-theme="high-contrast"] [data-testid="execution-control-shell"] {
+  border-top-color: #555555 !important;
+}
+
+[data-theme="high-contrast"] [data-testid="app-header"] {
+  background-color: #0A0A0A !important;
+  border-bottom-color: #555555 !important;
+}
+
+[data-theme="high-contrast"] [data-testid="left-nav-rail"] {
+  background-color: #0A0A0A !important;
+  border-right-color: #555555 !important;
+}
+
+[data-theme="high-contrast"] [data-testid="agents-sidebar"] {
+  background-color: #0A0A0A !important;
+  border-right-color: #555555 !important;
+}
+
+[data-theme="high-contrast"] [data-testid="reviews-panel-shell"] {
+  background-color: #0A0A0A !important;
+  border-left-color: #555555 !important;
+}
+
+[data-theme="high-contrast"] [data-testid="reviews-panel-frame"] {
+  background-color: #0A0A0A !important;
+}
+
+[data-theme="high-contrast"] [data-testid="agents-view"],
+[data-theme="high-contrast"] [data-testid="agents-split-container"] {
+  background-color: #000000 !important;
 }
 
 /* Thicker focus ring in HC — applied to interactive controls (buttons,
@@ -212,15 +287,15 @@ html[data-theme="high-contrast"] main {
   opacity: 1;
 }
 
-/* Icon-tile contrast in HC. Yellow-on-yellow (accent-muted bg + accent-primary
-   glyph) collapses visually. Restrict yellow to PRIMARY/ACTIVE emphasis only
-   (nav pills, CTAs, active tabs). Section-card icon tiles are SECONDARY
-   emphasis — use a white glyph in a yellow-outlined frame so the hierarchy
-   stays legible (nav yellow-fill > card yellow-border > body white).
+/* Icon-tile contrast in HC. Accent-on-accent (accent-muted bg + accent-primary
+   glyph) collapses visually. Restrict filled orange to PRIMARY/ACTIVE emphasis
+   only (nav pills, CTAs, active tabs). Section-card icon tiles are SECONDARY
+   emphasis — use a white glyph in an accent-outlined frame so the hierarchy
+   stays legible.
    See themes/high-contrast.md §3 — avoid color-only overloading. */
 [data-theme="high-contrast"] {
   /* Component tokens — 1-hop var() to accent primitive (which is the
-     literal #ff8855). Safe per WKWebView rule. */
+     literal #FF6A35). Safe per WKWebView rule. */
   --card-icon-bg: transparent;
   --card-icon-border: var(--accent-primary);
   --card-icon-color: var(--color-white);
@@ -230,9 +305,28 @@ html[data-theme="high-contrast"] main {
      all pure black, and strong white strokes frame the modal, its rail,
      and each card. Matches theme-architecture.md §6 (HC favours shape
      and stroke over luminance). */
-  --dialog-bg:           #000000;
-  --dialog-rail-bg:      #000000;
-  --dialog-border-color: #ffffff;
+  --dialog-bg:           #0A0A0A;
+  --dialog-rail-bg:      #0A0A0A;
+  --dialog-border-color: #999999;
+  --dialog-pane-bg:      #000000;
+  --dialog-pane-head-bg: #1A1A1A;
+  --dialog-pane-head-icon-bg: #2A2A2A;
+  --dialog-divider-color: #555555;
+  --dialog-control-bg: #1A1A1A;
+  --dialog-control-border: #777777;
+  --dialog-control-border-hover: #999999;
+  --dialog-nav-active-bg: #2A2A2A;
+  --dialog-nav-active-border: #999999;
+  --dialog-toggle-off-bg: #999999;
+  --dialog-warn: #FFD93D;
+  --dialog-warn-bg: rgba(255,217,61,.18);
+  --dialog-warn-card-bg: rgba(255,217,61,.10);
+  --dialog-warn-border: rgba(255,217,61,.55);
+  --dialog-shadow: none;
+  --tooltip-bg: #000000;
+  --tooltip-border: #FFFFFF;
+  --tooltip-text: #FFFFFF;
+  --tooltip-shadow: none;
   --card-bg:             #000000;
   --card-border:         #ffffff;
 }
@@ -249,7 +343,7 @@ html[data-theme="high-contrast"] main {
 }
 
 /* HC segmented-tab active state — spec §4 Tabs:
-   Trigger active: yellow bg, black text, 2px bottom border.
+   Trigger active: accent bg, dark text, 2px bottom border.
    Applies to Radix Tabs + ARIA tablist + data-state=active patterns. */
 [data-theme="high-contrast"] [role="tab"][data-state="active"],
 [data-theme="high-contrast"] [role="tab"][aria-selected="true"] {
@@ -259,7 +353,7 @@ html[data-theme="high-contrast"] main {
 }
 
 /* HC nav-rail active item — spec §4 Nav:
-   Active yellow pill needs a 4px black left indicator as a shape cue
+   Active accent pill needs a 4px black left indicator as a shape cue
    (doesn't rely on color alone for state signalling). */
 [data-theme="high-contrast"] [aria-current="page"] {
   border-left: 4px solid var(--color-black);
@@ -267,7 +361,7 @@ html[data-theme="high-contrast"] main {
 
 /* HC count-badge neutrality — when count is zero, render as a transparent
    white-outlined chip instead of the accent-tinted fallback (which on HC
-   ends up as dim yellow-on-black and reads as active). */
+   ends up as dim accent-on-black and reads as active). */
 [data-theme="high-contrast"] [data-count-state="zero"] {
   background: transparent !important;
   border: var(--border-width-default) solid var(--border-default) !important;
@@ -275,26 +369,26 @@ html[data-theme="high-contrast"] main {
 }
 
 /* Settings / dialog on HC — the modal uses the standard HC palette
-   (pure-black surfaces, pure-white text, yellow accent, white borders).
+   (pure-black surfaces, pure-white text, orange accent, strong borders).
    Previously scoped a light palette here as an exception; reverted per
    user request 2026-04-19 — consistency with the rest of the shell wins
    over density-compensation. */
 
-/* Settings polish (HC) — soften the card perimeter and yellow-fill the
+/* Settings polish (HC) — soften the card perimeter and accent-fill the
    section icons per 2026-04-19 feedback. Scope-override tokens inside
    the dialog so the rest of the HC shell keeps strong white strokes. */
 [data-theme="high-contrast"] [data-testid="settings-dialog"] {
   /* Section card border: soft white (30%) instead of pure white. */
   --card-border:       hsla(0 0% 100% / 0.30);
-  /* Section icon tile: yellow-muted fill + yellow border + yellow glyph. */
-  --card-icon-bg:      hsla(20 100% 65% / 0.15);
-  --card-icon-border:  #ff8855;
-  --card-icon-color:   #ff8855;
+  /* Section icon tile: accent-muted fill + accent border + accent glyph. */
+  --card-icon-bg:      rgba(255,106,53,.15);
+  --card-icon-border:  #FF6A35;
+  --card-icon-color:   #FF6A35;
 }
 
 /* Settings left-rail nav — render each row as a link, not a boxed
    button. Strip the border/bg from the global button-border rule;
-   active row is yellow text + solid underline; hover shows a soft
+   active row is accent text + solid underline; hover shows a soft
    dotted underline (accessibility affordance). */
 [data-theme="high-contrast"] [data-testid="settings-dialog"] nav [role="button"] {
   border: none !important;
@@ -306,7 +400,7 @@ html[data-theme="high-contrast"] main {
   text-decoration-color: hsla(0 0% 100% / 0.40);
 }
 [data-theme="high-contrast"] [data-testid="settings-dialog"] nav [role="button"][aria-current="page"] {
-  color: #ff8855 !important;
+  color: #FF6A35 !important;
   background: transparent !important;
   text-decoration: underline;
   text-decoration-thickness: 2px;
@@ -337,7 +431,7 @@ html[data-theme="high-contrast"] main {
 /* Execution Agents tab list — TabsList has an explicit border on the
    wrapper that makes "Global Defaults / Project Overrides" read as a
    pill inside the flat-section context. Drop the wrapper border and
-   bg so only the active trigger's yellow fill signals selection. */
+   bg so only the active trigger's accent fill signals selection. */
 [data-theme="high-contrast"] [data-testid="settings-dialog"] [role="tablist"] {
   border: none !important;
   background: transparent !important;
@@ -365,7 +459,7 @@ html[data-theme="high-contrast"] main {
 }
 
 /* InlineNotice tones on HC — default tokens resolve to ~6% white (ok)
-   and yellow-muted (info), both of which read as ghost rectangles next
+   and accent-muted (info), both of which read as ghost rectangles next
    to the white-bordered inputs. Punch up the bg/border so alerts are
    visually distinct from input fields. */
 [data-theme="high-contrast"] [data-testid="settings-dialog"] {
@@ -373,12 +467,12 @@ html[data-theme="high-contrast"] main {
   --notice-ok-border: hsla(140 100% 50% / 0.40);
   --notice-ok-text:   #ffffff;
 
-  --notice-info-bg:     hsla(20 100% 65% / 0.18);
-  --notice-info-border: hsla(20 100% 65% / 0.50);
+  --notice-info-bg:     rgba(255,106,53,.18);
+  --notice-info-border: rgba(255,106,53,.50);
   --notice-info-text:   #ffffff;
 
-  --notice-warn-bg:     hsla(20 100% 65% / 0.22);
-  --notice-warn-border: hsla(20 100% 65% / 0.55);
+  --notice-warn-bg:     rgba(255,106,53,.22);
+  --notice-warn-border: rgba(255,106,53,.55);
   --notice-warn-text:   #ffffff;
 }
 
@@ -389,10 +483,10 @@ html[data-theme="high-contrast"] main {
    Flatten to a literal + defensive paint. 92% black keeps a hint of the
    backdrop-blur signal without letting content show. */
 [data-theme="high-contrast"] {
-  --dialog-overlay-bg: hsla(0 0% 0% / 0.92);
+  --dialog-overlay-bg: rgba(0,0,0,.60);
 }
 [data-theme="high-contrast"] [data-testid="modal-overlay"] {
-  background-color: hsla(0 0% 0% / 0.92) !important;
+  background-color: rgba(0,0,0,.60) !important;
 }
 
 /* HC sidebar / list-row separation — on pure-black rails the default hover
@@ -467,7 +561,7 @@ html[data-theme="high-contrast"] main {
    `border-b` utility + inline borderColor var; we bump the color to --default
    so it reads as a region fence, not a row divider. */
 [data-theme="high-contrast"] [data-testid="app-header"] {
-  border-bottom-color: var(--border-default) !important;
+  border-bottom-color: var(--app-navbar-border) !important;
   border-bottom-width: 1px !important;
 }
 
@@ -514,15 +608,15 @@ html[data-theme="high-contrast"] main {
   background-color: var(--accent-primary) !important;
 }
 
-/* Ideation plan browser rail — right fence separates rail from main.
-   Soft near-black fill and 15% white stroke so the rail reads as a
-   separate zone without competing with the pure-black main canvas. */
-[data-theme="high-contrast"] [data-testid="plan-browser"] {
-  border-right: 1px solid hsla(0 0% 100% / 0.15) !important;
-  background-color: #0e0e0e !important;
-}
+/* Ideation plan browser rail — match the AgentsSidebar chrome across
+   themes. HC defensively repaints the literal `--app-sidebar-bg` /
+   `--app-sidebar-border` values per the WKWebView CSS-vars rule so the
+   sidebar surface stays opaque and the right fence stays visible. */
 [data-theme="high-contrast"] [data-testid="plan-browser"] > div {
-  background-color: #0e0e0e !important;
+  background-color: #0A0A0A !important;
+  border-right-color: #555555 !important;
+  border-right-style: solid !important;
+  border-right-width: 1px !important;
 }
 
 /* Session group collapsible triggers (Accepted / Done / Archived) — HC
@@ -739,23 +833,14 @@ html[data-theme="high-contrast"] main {
   border-color: var(--border-subtle) !important;
 }
 
-/* HC TaskGraph cards — the default GLASS_SURFACE bg is 85% bg-elevated
-   + 15% transparent, letting the dot grid bleed through the node on
-   pure black. Paint the card fully opaque and force the top/right/
-   bottom perimeter to pure white (the default `--overlay-weak` at 10%
-   is invisible on pure black). The status-colored left stripe (inline
-   `borderLeft`) is preserved because we only override the specific
-   directional properties. Selected/highlighted/focused nodes keep the
-   inline yellow `--accent-primary` border via `:not(.selected)`. */
+/* HC TaskGraph cards — match the kanban card surface tokens so graph
+   nodes pick up the same status-tinted bg + border as kanban cards.
+   The colored left-border stripe is removed; status comes through bg
+   tint and border only. Selected/highlighted/focused nodes keep the
+   inline yellow `--accent-primary` border via inline style. */
 [data-theme="high-contrast"] .react-flow__node [data-testid="task-node"] > div {
-  background: #000000 !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-}
-[data-theme="high-contrast"] .react-flow__node:not(.selected) [data-testid="task-node"]:not([data-highlighted="true"]):not([data-focused="true"]) > div {
-  border-top-color: #ffffff !important;
-  border-right-color: #ffffff !important;
-  border-bottom-color: #ffffff !important;
 }
 
 /* HC TaskGraph dot grid — React Flow's Background uses
@@ -846,4 +931,8 @@ html[data-theme="high-contrast"] main {
 /* Non-clickable entries (events without taskId) — same visual weight. */
 [data-theme="high-contrast"] [data-testid="execution-timeline"] [class*="rounded-md"]:not([role="button"]):not(button) {
   margin-bottom: 6px;
+}
+
+[data-theme="high-contrast"] [data-testid="task-overlay-backdrop"] {
+  background-color: #000000 !important;
 }

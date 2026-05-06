@@ -71,7 +71,7 @@ export function BranchBasePicker({
     <button
       type="button"
       className={cn(
-        "flex min-w-0 max-w-[min(100%,430px)] items-center gap-2 rounded-full px-2 py-1 text-[12px] transition-colors",
+        "flex min-w-0 max-w-[min(100%,430px)] items-center gap-2 rounded-full px-2 py-1 text-[0.75rem] transition-colors",
         !readOnly && "hover:bg-[var(--bg-hover)]",
         "disabled:cursor-not-allowed disabled:opacity-60",
         className
@@ -85,7 +85,7 @@ export function BranchBasePicker({
       onPointerEnter={onIntent}
     >
       <GitBranch className="h-3.5 w-3.5 shrink-0" />
-      <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.14em]">
+      <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-[0.14em]">
         Start from
       </span>
       <span
@@ -163,7 +163,7 @@ export function BranchBasePicker({
                         </span>
                         {option.detail && option.detail !== option.label && (
                           <span
-                            className="mt-0.5 block whitespace-normal break-all font-mono text-[10px] leading-snug"
+                            className="mt-0.5 block whitespace-normal break-all font-mono text-[0.625rem] leading-snug"
                             style={{ color: isSelected ? "currentColor" : "var(--text-muted)" }}
                           >
                             {option.detail}

@@ -157,10 +157,10 @@ export function AuditTrailDialog({ taskId, isOpen, onClose }: AuditTrailDialogPr
                       backdropFilter: "blur(12px)",
                     }}
                   >
-                    <span className="text-[12px] font-semibold text-text-primary/80">
+                    <span className="text-[0.75rem] font-semibold text-text-primary/80">
                       {selectedPhase.label}
                     </span>
-                    <span className="text-[11px] text-text-primary/40 ml-2">
+                    <span className="text-[0.6875rem] text-text-primary/40 ml-2">
                       {filteredEntries.length} events
                     </span>
                   </div>
@@ -184,7 +184,7 @@ export function AuditTrailDialog({ taskId, isOpen, onClose }: AuditTrailDialogPr
                       return (
                         <div key={phase.id}>
                           <h4
-                            className="text-[11px] font-semibold uppercase tracking-wider mb-2"
+                            className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-2"
                             style={{ color: "var(--text-muted)" }}
                           >
                             {phase.label}
@@ -200,7 +200,7 @@ export function AuditTrailDialog({ taskId, isOpen, onClose }: AuditTrailDialogPr
                     {entries.filter((e) => !e.phaseId).length > 0 && (
                       <div>
                         <h4
-                          className="text-[11px] font-semibold uppercase tracking-wider mb-2"
+                          className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-2"
                           style={{ color: "var(--text-muted)" }}
                         >
                           Other
@@ -239,14 +239,14 @@ export function AuditTrailDialog({ taskId, isOpen, onClose }: AuditTrailDialogPr
             backdropFilter: "blur(20px)",
           }}
         >
-          <span className="text-[12px] text-text-primary/50">
+          <span className="text-[0.75rem] text-text-primary/50">
             {entries.length} {entries.length === 1 ? "event" : "events"}
             {selectedPhase && ` \u00B7 Showing: ${selectedPhase.label}`}
           </span>
           <Button
             variant="ghost"
             onClick={onClose}
-            className="text-[13px] text-text-primary/60 hover:text-text-primary/80 hover:bg-[var(--overlay-moderate)]"
+            className="text-[0.8125rem] text-text-primary/60 hover:text-text-primary/80 hover:bg-[var(--overlay-moderate)]"
           >
             Close
           </Button>

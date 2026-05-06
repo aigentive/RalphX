@@ -114,7 +114,7 @@ const markdownComponents = {
       return (
         <code
           className={cn(
-            "block p-3 rounded-md text-[13px] font-mono overflow-x-auto",
+            "block p-3 rounded-md text-[0.8125rem] font-mono overflow-x-auto",
             "bg-white/[0.02] border border-white/[0.04]",
             className,
           )}
@@ -126,7 +126,7 @@ const markdownComponents = {
     }
     return (
       <code
-        className="px-1.5 py-0.5 rounded text-[13px] font-mono bg-white/[0.04] text-text-primary"
+        className="px-1.5 py-0.5 rounded text-[0.8125rem] font-mono bg-white/[0.04] text-text-primary"
         {...props}
       >
         {children}
@@ -378,7 +378,7 @@ export function TeamArtifactDrawer({
         {/* Title + meta */}
         <div className="flex-1 min-w-0">
           <h2
-            className="text-[13px] font-medium truncate tracking-[-0.01em]"
+            className="text-[0.8125rem] font-medium truncate tracking-[-0.01em]"
             style={{ color: "var(--text-primary)" }}
           >
             {currentSummary?.name ?? "Artifact"}
@@ -386,7 +386,7 @@ export function TeamArtifactDrawer({
           <div className="flex items-center gap-2">
             {currentSummary && (
               <span
-                className="text-[10px] font-medium"
+                className="text-[0.625rem] font-medium"
                 style={{ color: "var(--text-muted)" }}
               >
                 {formatArtifactType(currentSummary.artifact_type)}
@@ -399,7 +399,7 @@ export function TeamArtifactDrawer({
                   style={{ color: "var(--text-muted)" }}
                 />
                 <span
-                  className="text-[10px]"
+                  className="text-[0.625rem]"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {artifact.metadata.createdBy}
@@ -412,7 +412,7 @@ export function TeamArtifactDrawer({
         {/* Version badge */}
         {currentSummary && (
           <span
-            className="text-[10px] font-medium px-1.5 py-0.5 rounded-md shrink-0"
+            className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md shrink-0"
             style={{
               background: "var(--overlay-faint)",
               border: "1px solid var(--overlay-faint)",
@@ -426,7 +426,7 @@ export function TeamArtifactDrawer({
         {/* Timestamp */}
         {currentSummary && (
           <span
-            className="text-[10px] shrink-0 hidden sm:inline"
+            className="text-[0.625rem] shrink-0 hidden sm:inline"
             style={{ color: "var(--text-muted)" }}
           >
             {formatTimestamp(currentSummary.created_at)}
@@ -462,7 +462,7 @@ export function TeamArtifactDrawer({
                 style={{ color: "var(--accent-primary)" }}
               />
               <span
-                className="text-[12px]"
+                className="text-[0.75rem]"
                 style={{ color: "var(--text-muted)" }}
               >
                 Loading artifact...
@@ -470,7 +470,7 @@ export function TeamArtifactDrawer({
             </div>
           </div>
         ) : content ? (
-          <div className="text-[13px] leading-relaxed">
+          <div className="text-[0.8125rem] leading-relaxed">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={markdownComponents}
@@ -480,7 +480,7 @@ export function TeamArtifactDrawer({
           </div>
         ) : (
           <p
-            className="text-[13px] italic py-8 text-center"
+            className="text-[0.8125rem] italic py-8 text-center"
             style={{ color: "var(--text-muted)" }}
           >
             No content available
@@ -506,7 +506,7 @@ export function TeamArtifactDrawer({
             }}
             disabled={!hasPrev}
             className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150",
+              "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[0.6875rem] font-medium transition-colors duration-150",
               hasPrev
                 ? "cursor-pointer"
                 : "cursor-not-allowed opacity-30",
@@ -533,7 +533,7 @@ export function TeamArtifactDrawer({
           </button>
 
           <span
-            className="text-[10px] font-medium"
+            className="text-[0.625rem] font-medium"
             style={{ color: "var(--text-muted)" }}
           >
             {selectedIndex + 1} / {allArtifacts.length}
@@ -546,7 +546,7 @@ export function TeamArtifactDrawer({
             }}
             disabled={!hasNext}
             className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150",
+              "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[0.6875rem] font-medium transition-colors duration-150",
               hasNext
                 ? "cursor-pointer"
                 : "cursor-not-allowed opacity-30",

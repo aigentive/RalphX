@@ -64,7 +64,7 @@ export function ActivityContext({ taskId, sessionId, role }: ActivityContextProp
         <span>{label}</span>
       </button>
       {roleLabel && (
-        <span className="px-1.5 py-0.5 rounded bg-[var(--bg-base)] text-[10px]">
+        <span className="px-1.5 py-0.5 rounded bg-[var(--bg-base)] text-[0.625rem]">
           {roleLabel}
         </span>
       )}

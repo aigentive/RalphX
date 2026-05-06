@@ -68,4 +68,98 @@ describe("UpdateChecker", () => {
     expect(mocks.check).toHaveBeenCalledTimes(2);
     expect(mocks.toast).toHaveBeenCalledTimes(1);
   });
+
+  it("swallows check() errors silently", async () => {
+    mocks.check.mockReset();
+    mocks.check.mockRejectedValue(new Error("network down"));
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
+  it("Later button dismisses the update toast", async () => {
+    const toastModule = await import("sonner");
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const [body] = mocks.toast.mock.calls[0]!;
+    interface Node {
+      type?: unknown;
+      props?: { children?: unknown[]; onClick?: () => void };
+    }
+    const root = body as Node;
+    const buttonsRow = (root.props?.children as Node[] | undefined)?.[3] as Node | undefined;
+    const buttons = (buttonsRow?.props?.children as Node[] | undefined) ?? [];
+    const laterBtn = buttons[1];
+    laterBtn!.props!.onClick!();
+    expect(toastModule.toast.dismiss).toHaveBeenCalledWith("update-available");
+  });
+
+  it("Update Now triggers downloadAndInstall, progress events, success toast and relaunch", async () => {
+    const downloadAndInstall = vi.fn().mockImplementation(async (cb) => {
+      cb({ event: "Started", data: { contentLength: 100 } });
+      cb({ event: "Progress", data: { chunkLength: 50 } });
+      cb({ event: "Finished" });
+    });
+    const versioned = { ...update, version: "0.7.1", downloadAndInstall };
+    mocks.check.mockReset();
+    mocks.check.mockResolvedValue(versioned);
+
+    const processMod = await import("@tauri-apps/plugin-process");
+    const toastModule = await import("sonner");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const [body] = mocks.toast.mock.calls[0]!;
+    interface Node {
+      type?: unknown;
+      props?: { children?: unknown[]; onClick?: () => void };
+    }
+    const root = body as Node;
+    const buttonsRow = (root.props?.children as Node[] | undefined)?.[3] as Node | undefined;
+    const installBtn = ((buttonsRow?.props?.children as Node[] | undefined) ?? [])[0];
+    // Drive the install handler.
+    await installBtn!.props!.onClick!();
+
+    expect(downloadAndInstall).toHaveBeenCalled();
+    expect(toastModule.toast.success).toHaveBeenCalledWith(
+      expect.stringContaining("Update installed"),
+      expect.objectContaining({ id: "update-progress" }),
+    );
+
+    // Relaunch fires after the 1500ms grace.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(processMod.relaunch).toHaveBeenCalled();
+  });
+
+  it("install failure shows an error toast and does not relaunch", async () => {
+    const downloadAndInstall = vi.fn().mockRejectedValue(new Error("disk full"));
+    const versioned = { ...update, version: "0.7.2", downloadAndInstall };
+    mocks.check.mockReset();
+    mocks.check.mockResolvedValue(versioned);
+
+    const processMod = await import("@tauri-apps/plugin-process");
+    const toastModule = await import("sonner");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const [body] = mocks.toast.mock.calls[0]!;
+    interface Node {
+      type?: unknown;
+      props?: { children?: unknown[]; onClick?: () => void };
+    }
+    const root = body as Node;
+    const buttonsRow = (root.props?.children as Node[] | undefined)?.[3] as Node | undefined;
+    const installBtn = ((buttonsRow?.props?.children as Node[] | undefined) ?? [])[0];
+    await installBtn!.props!.onClick!();
+
+    expect(toastModule.toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("Failed to install update"),
+      expect.objectContaining({ id: "update-progress" }),
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(processMod.relaunch).not.toHaveBeenCalled();
+  });
 });

@@ -15,8 +15,8 @@ export function useAgentsSidebarState() {
     suppressTransition: suppressSidebarTransition,
   } = useResponsiveSidebarLayout({
     storageKey: AGENTS_SIDEBAR_COLLAPSE_STORAGE_KEY,
-    largeWidth: 340,
-    mediumWidth: 276,
+    largeWidth: 272,
+    mediumWidth: 272,
   });
 
   return {

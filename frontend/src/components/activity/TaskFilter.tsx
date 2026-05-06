@@ -108,7 +108,7 @@ export function TaskFilter({ selectedTaskId, onChange }: TaskFilterProps) {
           )}
           {selectedTaskId && (
             <span
-              className="ml-0.5 px-1 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[10px] cursor-pointer hover:bg-[var(--accent-primary)]/80"
+              className="ml-0.5 px-1 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[0.625rem] cursor-pointer hover:bg-[var(--accent-primary)]/80"
               onClick={(e) => {
                 e.stopPropagation();
                 handleClear();
@@ -190,7 +190,7 @@ export function TaskFilter({ selectedTaskId, onChange }: TaskFilterProps) {
                         <div className="flex-1 min-w-0">
                           <div className="truncate font-medium">{task.title}</div>
                           <div
-                            className="truncate text-[10px] mt-0.5"
+                            className="truncate text-[0.625rem] mt-0.5"
                             style={{ color: "var(--text-muted)" }}
                           >
                             {task.internalStatus}

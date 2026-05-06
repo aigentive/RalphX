@@ -118,13 +118,13 @@ function StopHistorySection({ stopMetadata }: { stopMetadata: StopMetadata }) {
           {/* Stopped From Status */}
           <div className="flex items-center gap-2">
             <span
-              className="text-[11px] font-medium uppercase tracking-wider"
+              className="text-[0.6875rem] font-medium uppercase tracking-wider"
               style={{ color: "var(--text-muted)" }}
             >
               Stopped from
             </span>
             <span
-              className="text-[13px] font-medium px-2 py-0.5 rounded"
+              className="text-[0.8125rem] font-medium px-2 py-0.5 rounded"
               style={{
                 backgroundColor: "var(--status-warning-muted)",
                 color: "var(--status-warning)",
@@ -138,12 +138,12 @@ function StopHistorySection({ stopMetadata }: { stopMetadata: StopMetadata }) {
           {stopMetadata.stopReason && (
             <div className="mt-2">
               <span
-                className="text-[11px] font-medium uppercase tracking-wider block mb-1"
+                className="text-[0.6875rem] font-medium uppercase tracking-wider block mb-1"
                 style={{ color: "var(--text-muted)" }}
               >
                 Reason
               </span>
-              <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
+              <p className="text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
                 {stopMetadata.stopReason}
               </p>
             </div>
@@ -152,7 +152,7 @@ function StopHistorySection({ stopMetadata }: { stopMetadata: StopMetadata }) {
           {/* Time Ago */}
           <div className="flex items-center gap-2 mt-2">
             <Clock className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
-            <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+            <span className="text-[0.75rem]" style={{ color: "var(--text-secondary)" }}>
               {timeAgo}
             </span>
           </div>
@@ -185,7 +185,7 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
             <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--accent-primary)" }} />
             <span
               data-testid="auto-retry-badge"
-              className="text-[13px] font-medium"
+              className="text-[0.8125rem] font-medium"
               style={{ color: "var(--accent-primary)" }}
             >
               Auto-retrying{attemptCount > 0 ? ` (attempt ${attemptCount})` : ""}
@@ -195,7 +195,7 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
             data-testid="stop-retrying-button"
             onClick={() => stopRetryMutation.mutate()}
             disabled={stopRetryMutation.isPending}
-            className="h-8 px-3 gap-1.5 rounded-lg font-medium text-[12px] transition-colors"
+            className="h-8 px-3 gap-1.5 rounded-lg font-medium text-[0.75rem] transition-colors"
             style={{
               backgroundColor: "var(--status-error-muted)",
               color: "var(--status-error)",
@@ -210,7 +210,7 @@ function AutoRetryingSection({ task, attemptCount }: { task: Task; attemptCount:
           </Button>
         </div>
         {stopRetryMutation.error && (
-          <p className="mt-2 text-[12px]" style={{ color: "var(--status-error)" }}>
+          <p className="mt-2 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
             {stopRetryMutation.error.message}
           </p>
         )}
@@ -234,7 +234,7 @@ function ExecutionModeSelector({
   return (
     <div className="flex items-center gap-1" data-testid="execution-mode-selector">
       <span
-        className="text-[11px] font-medium mr-1.5"
+        className="text-[0.6875rem] font-medium mr-1.5"
         style={{ color: "var(--text-muted)" }}
       >
         Mode
@@ -249,7 +249,7 @@ function ExecutionModeSelector({
             type="button"
             disabled={disabled}
             onClick={() => onChange(m)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors disabled:opacity-40"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[0.75rem] font-medium transition-colors disabled:opacity-40"
             style={{
               backgroundColor: isSelected
                 ? m === "team"
@@ -467,7 +467,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
     <DetailCard data-testid="action-buttons">
       <div className="flex items-center justify-between">
         <span
-          className="text-[11px] font-semibold uppercase tracking-wider"
+          className="text-[0.6875rem] font-semibold uppercase tracking-wider"
           style={{ color: "var(--text-muted)" }}
         >
           Actions
@@ -476,7 +476,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
           data-testid={isReady ? "start-button" : "restart-button"}
           onClick={handleAction}
           disabled={restartMutation.isPending || isResuming}
-          className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px] transition-colors"
+          className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
           style={{
             backgroundColor: isReady ? "var(--accent-primary)" : "var(--status-info)",
             color: "white",
@@ -514,7 +514,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
             disabled={restartMutation.isPending || isResuming}
             placeholder="Optional: tell the agent what to do differently..."
             rows={3}
-            className="w-full resize-none rounded-md px-3 py-2 text-[12px] transition-colors disabled:opacity-40 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
+            className="w-full resize-none rounded-md px-3 py-2 text-[0.75rem] transition-colors disabled:opacity-40 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
             style={{
               backgroundColor: "var(--overlay-weak)",
               color: "var(--text-secondary)",
@@ -527,7 +527,7 @@ function ActionButtonsCard({ task }: { task: Task }) {
 
       {/* Error display */}
       {restartMutation.error && (
-        <p className="mt-3 text-[12px]" style={{ color: "var(--status-error)" }}>
+        <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {restartMutation.error.message}
         </p>
       )}
@@ -586,7 +586,7 @@ function UnblockWarningCard({
     <DetailCard>
       <div data-testid="unblock-warning-card" className="flex items-center justify-between">
         <span
-          className="text-[11px] font-semibold uppercase tracking-wider"
+          className="text-[0.6875rem] font-semibold uppercase tracking-wider"
           style={{ color: "var(--text-muted)" }}
         >
           Actions
@@ -595,7 +595,7 @@ function UnblockWarningCard({
           data-testid="unblock-button"
           onClick={handleUnblock}
           disabled={unblockMutation.isPending}
-          className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+          className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             backgroundColor: "var(--status-warning)",
             color: "white",
@@ -610,7 +610,7 @@ function UnblockWarningCard({
         </Button>
       </div>
       {unblockMutation.error && (
-        <p className="mt-3 text-[12px]" style={{ color: "var(--status-error)" }}>
+        <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {unblockMutation.error.message}
         </p>
       )}
@@ -664,7 +664,7 @@ function FreshnessBlockedCard({
           <div className="flex-1 min-w-0">
             <p
               data-testid="freshness-blocked-summary"
-              className="text-[13px] font-medium"
+              className="text-[0.8125rem] font-medium"
               style={{ color: "var(--status-warning)" }}
             >
               Branch conflicts could not be resolved automatically after{" "}
@@ -676,7 +676,7 @@ function FreshnessBlockedCard({
             {info.conflictFiles.length > 0 && (
               <div className="mt-2.5 space-y-1">
                 <span
-                  className="text-[11px] font-semibold uppercase tracking-wider block"
+                  className="text-[0.6875rem] font-semibold uppercase tracking-wider block"
                   style={{ color: "var(--status-warning)" }}
                 >
                   Conflict files
@@ -686,7 +686,7 @@ function FreshnessBlockedCard({
                     <li
                       key={file}
                       data-testid="freshness-conflict-file"
-                      className="text-[12px] font-mono truncate"
+                      className="text-[0.75rem] font-mono truncate"
                       style={{ color: "color-mix(in srgb, var(--status-warning) 85%, transparent)" }}
                     >
                       {file}
@@ -707,7 +707,7 @@ function FreshnessBlockedCard({
             <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
               <GitBranch className="w-3 h-3 shrink-0" style={{ color: "var(--text-muted)" }} />
               <span
-                className="text-[11px] font-mono truncate"
+                className="text-[0.6875rem] font-mono truncate"
                 style={{ color: "var(--text-muted)" }}
                 title={task.taskBranch}
               >
@@ -721,7 +721,7 @@ function FreshnessBlockedCard({
             data-testid="freshness-reset-retry-button"
             onClick={() => resetMutation.mutate()}
             disabled={resetMutation.isPending}
-            className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px] shrink-0 transition-colors"
+            className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] shrink-0 transition-colors"
             style={{
               backgroundColor: "var(--status-warning)",
               color: "var(--bg-surface)",
@@ -737,7 +737,7 @@ function FreshnessBlockedCard({
         </div>
 
         {resetMutation.error && (
-          <p className="mt-3 text-[12px]" style={{ color: "var(--status-error)" }}>
+          <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
             {resetMutation.error.message}
           </p>
         )}
@@ -939,7 +939,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
             {failureInfo.attempt_count > 0 && (
               <div data-testid="attempt-count" className="flex items-center gap-2">
                 <span
-                  className="text-[11px] font-semibold uppercase tracking-wider"
+                  className="text-[0.6875rem] font-semibold uppercase tracking-wider"
                   style={{ color: "var(--status-error)" }}
                 >
                   Failed after {failureInfo.attempt_count}{" "}
@@ -948,7 +948,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
                 {failureInfo.is_timeout && (
                   <span
                     data-testid="timeout-badge"
-                    className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                    className="text-[0.625rem] font-semibold px-2 py-0.5 rounded-full"
                     style={{
                       backgroundColor: "var(--status-error-border)",
                       color: "var(--status-error)",
@@ -964,7 +964,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
               <div className="flex items-center gap-2">
                 <span
                   data-testid="timeout-badge"
-                  className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                  className="text-[0.625rem] font-semibold px-2 py-0.5 rounded-full"
                   style={{
                     backgroundColor: "var(--status-error-border)",
                     color: "var(--status-error)",
@@ -983,7 +983,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
               return (
                 <div data-testid="failure-source-badge" className="flex items-center gap-2">
                   <span
-                    className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                    className="text-[0.625rem] font-semibold px-2 py-0.5 rounded-full"
                     style={
                       isTerminal
                         ? { backgroundColor: "var(--status-error-border)", color: "var(--status-error)" }
@@ -993,7 +993,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
                     {isTerminal ? "Manual retry required" : "Auto-retrying"}
                   </span>
                   <span
-                    className="text-[10px]"
+                    className="text-[0.625rem]"
                     style={{ color: "color-mix(in srgb, var(--status-error) 65%, transparent)" }}
                   >
                     {label}
@@ -1004,7 +1004,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
             {/* Error message */}
             <p
               data-testid="failure-error-message"
-              className="text-[13px]"
+              className="text-[0.8125rem]"
               style={{ color: "var(--status-error)" }}
             >
               {failureInfo.failure_error}
@@ -1013,7 +1013,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
             {failureInfo.failed_at && (
               <p
                 data-testid="failed-at-timestamp"
-                className="text-[11px]"
+                className="text-[0.6875rem]"
                 style={{ color: "color-mix(in srgb, var(--status-error) 60%, transparent)" }}
               >
                 Failed {getTimeAgo(failureInfo.failed_at)}
@@ -1023,7 +1023,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
             {failureInfo.failure_details && (
               <p
                 data-testid="failure-details"
-                className="text-[12px]"
+                className="text-[0.75rem]"
                 style={{ color: "color-mix(in srgb, var(--status-error) 75%, transparent)" }}
               >
                 {failureInfo.failure_details}
@@ -1044,12 +1044,12 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
                 style={{ color: "var(--status-warning)" }}
               />
               <div className="flex-1 min-w-0">
-                <p className="text-[13px]" style={{ color: "var(--status-warning)" }}>
+                <p className="text-[0.8125rem]" style={{ color: "var(--status-warning)" }}>
                   {agentError.message}
                 </p>
                 {agentError.errorAt && (
                   <span
-                    className="text-[11px] mt-1.5 block"
+                    className="text-[0.6875rem] mt-1.5 block"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {getTimeAgo(agentError.errorAt)}
@@ -1092,7 +1092,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
       )}
 
       {!stepsLoading && !hasSteps && (
-        <div className="text-[13px] text-text-secondary italic py-4">
+        <div className="text-[0.8125rem] text-text-secondary italic py-4">
           No steps defined yet
         </div>
       )}

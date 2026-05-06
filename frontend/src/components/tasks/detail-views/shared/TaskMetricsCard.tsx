@@ -23,7 +23,7 @@ function ComplexityBadge({ tier }: { tier: ComplexityTier }) {
   return (
     <span
       data-testid="complexity-badge"
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[0.6875rem] font-medium"
       style={{ backgroundColor: COMPLEXITY_STYLE.bg, color: COMPLEXITY_STYLE.color }}
     >
       <Zap className="w-3 h-3" />
@@ -52,10 +52,10 @@ function StatRow({
         <Icon className="w-3.5 h-3.5 text-text-primary/40" />
       </div>
       <div className="flex-1 min-w-0">
-        <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+        <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
           {label}
         </span>
-        <span className="text-[13px] text-text-primary/70 font-medium">{value}</span>
+        <span className="text-[0.8125rem] text-text-primary/70 font-medium">{value}</span>
       </div>
     </div>
   );
@@ -131,7 +131,7 @@ export function TaskMetricsCard({ taskId }: TaskMetricsCardProps) {
     <div>
       {/* Header: complexity tier */}
       <div className="flex items-center justify-between px-3 py-3">
-        <span className="text-[11px] uppercase tracking-wider text-text-primary/40">
+        <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40">
           Complexity
         </span>
         <ComplexityBadge tier={tier} />

@@ -54,15 +54,12 @@ function SubsectionLabel({
   hint?: string;
 }) {
   return (
-    <div className="flex items-center justify-between pt-4 pb-1">
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+    <div className="settings-section__head">
+      <span className="settings-section__label">
         {children}
       </span>
       {hint && (
-        <span
-          className="text-[9px] uppercase tracking-wider text-[var(--text-muted)] rounded px-1.5 py-0.5"
-          style={{ border: "1px solid var(--border-subtle)" }}
-        >
+        <span className="settings-section__chip">
           {hint}
         </span>
       )}
@@ -118,7 +115,7 @@ function TextSettingRow({
 }) {
   return (
     <SettingRow id={id} label={label} description={description} isDisabled={disabled}>
-      <div className="flex items-center gap-2">
+      <div className="settings-row__control">
         <Input
           id={id}
           data-testid={id}
@@ -127,7 +124,7 @@ function TextSettingRow({
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
           onBlur={onBlur}
-          className="w-[200px] bg-[var(--bg-surface)] border-[var(--border-default)] focus:border-[var(--accent-primary)] focus:ring-[var(--accent-primary)] text-sm"
+          className="settings-input w-[200px]"
         />
         {onAction && (
           <Button
@@ -135,7 +132,7 @@ function TextSettingRow({
             size="sm"
             onClick={onAction}
             disabled={disabled || actionLoading}
-            className="h-8 px-2 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+            className="settings-btn-ghost"
             title={actionLabel}
           >
             {actionLoading ? (
@@ -348,13 +345,7 @@ export function RepositorySettingsSection() {
       />
 
       <SubsectionLabel hint="read-only">Diagnostics</SubsectionLabel>
-      <div
-        className="rounded-md -mx-2 px-2"
-        style={{
-          background: "var(--overlay-faint)",
-          border: "1px solid var(--overlay-weak)",
-        }}
-      >
+      <div className="settings-diagnostics">
         <SettingRow
           id="github-remote-url"
           label="Remote URL"
@@ -363,7 +354,7 @@ export function RepositorySettingsSection() {
           {isLoadingRemote ? (
             <Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" />
           ) : (
-            <span className="text-xs text-[var(--text-secondary)] font-mono max-w-[200px] truncate">
+            <span className="settings-readonly-value max-w-[240px] truncate">
               {remoteUrl ?? "Not configured"}
             </span>
           )}
@@ -376,18 +367,18 @@ export function RepositorySettingsSection() {
           {isLoadingAuth ? (
             <Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" />
           ) : isGhAuthed ? (
-            <div className="flex items-center gap-1.5 text-xs text-status-success">
+            <div className="settings-status-badge settings-status-badge--ok">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Authenticated</span>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 text-xs text-[var(--status-warning)]">
+            <div className="settings-status-badge">
               <XCircle className="w-3.5 h-3.5" />
               <span>Not authenticated</span>
             </div>
           )}
         </SettingRow>
-        <div className="px-2 pb-2">
+        <div className="settings-diagnostics__repair">
           <GitAuthRepairPanel
             projectId={project.id}
             requiresGhAuth={project.githubPrEnabled ?? false}

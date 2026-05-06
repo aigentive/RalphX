@@ -696,7 +696,7 @@ function TerminalPlacementButton({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-[10px]"
+          className="h-7 px-2 text-[0.625rem]"
           onClick={() => onPlacementChange(nextPlacement)}
           aria-label={`Terminal dock: ${TERMINAL_PLACEMENT_LABELS[placement]}`}
           data-testid="agent-terminal-placement"

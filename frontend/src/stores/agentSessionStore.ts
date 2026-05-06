@@ -110,6 +110,13 @@ function ensureArtifactState(state: AgentSessionState, conversationId: string): 
   return state.artifactByConversationId[conversationId];
 }
 
+function expandOnlyProject(state: AgentSessionState, projectId: string) {
+  for (const expandedProjectId of Object.keys(state.expandedProjectIds)) {
+    state.expandedProjectIds[expandedProjectId] = expandedProjectId === projectId;
+  }
+  state.expandedProjectIds[projectId] = true;
+}
+
 export const useAgentSessionStore = create<AgentSessionState & AgentSessionActions>()(
   persist(
     immer((set) => ({
@@ -135,7 +142,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
             state.selectedConversationId = lastConversationId;
           }
           if (projectId) {
-            state.expandedProjectIds[projectId] = true;
+            expandOnlyProject(state, projectId);
           }
         }),
 
@@ -146,7 +153,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.selectedConversationId = conversationId;
           state.lastSelectedConversationByProjectId ??= {};
           state.lastSelectedConversationByProjectId[projectId] = conversationId;
-          state.expandedProjectIds[projectId] = true;
+          expandOnlyProject(state, projectId);
         }),
 
       clearSelection: () =>
@@ -157,12 +164,21 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {
-          state.expandedProjectIds[projectId] = expanded;
+          if (expanded) {
+            expandOnlyProject(state, projectId);
+          } else {
+            state.expandedProjectIds[projectId] = false;
+          }
         }),
 
       toggleProjectExpanded: (projectId) =>
         set((state) => {
-          state.expandedProjectIds[projectId] = !(state.expandedProjectIds[projectId] ?? true);
+          const nextExpanded = !(state.expandedProjectIds[projectId] ?? false);
+          if (nextExpanded) {
+            expandOnlyProject(state, projectId);
+          } else {
+            state.expandedProjectIds[projectId] = false;
+          }
         }),
 
       setShowAllProjects: (showAllProjects) =>

@@ -54,7 +54,7 @@ export function TaskDetailPlanDialog({
               showOverflowActions={false}
             />
           ) : (
-            <div className="rounded-xl border border-[var(--overlay-weak)] bg-[var(--overlay-faint)] px-4 py-5 text-[13px] text-text-primary/55">
+            <div className="rounded-xl border border-[var(--overlay-weak)] bg-[var(--overlay-faint)] px-4 py-5 text-[0.8125rem] text-text-primary/55">
               The full plan could not be loaded.
             </div>
           )}

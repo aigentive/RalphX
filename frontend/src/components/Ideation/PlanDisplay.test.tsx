@@ -361,4 +361,488 @@ describe("PlanDisplay", () => {
       });
     });
   });
+
+  // ============================================================================
+  // Historical version fetch & navigation
+  // ============================================================================
+
+  describe("historical version fetch", () => {
+    const multiVersionPlan: Artifact = {
+      ...mockPlan,
+      metadata: { ...mockPlan.metadata, version: 3 },
+    };
+
+    it("loads inline historical content when an older version is selected", async () => {
+      const user = userEvent.setup();
+      mockGetVersionHistory.mockResolvedValue([
+        { id: "v3-id", version: 3, name: "Plan", created_at: "2026-03-18T10:00:00Z" },
+        { id: "v2-id", version: 2, name: "Plan", created_at: "2026-03-17T10:00:00Z" },
+        { id: "v1-id", version: 1, name: "Plan", created_at: "2026-03-16T10:00:00Z" },
+      ]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multiVersionPlan,
+        content: { type: "inline", text: "# Old version\n\nHistorical body" },
+      });
+
+      render(<PlanDisplay plan={multiVersionPlan} isExpanded={true} />);
+
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      await user.click(screen.getByTitle("View version history"));
+      // Click v1 entry
+      const v1Items = await screen.findAllByText(/v1/);
+      // Use the menuitem text node
+      await user.click(v1Items[v1Items.length - 1]);
+
+      await waitFor(() => {
+        expect(mockGetAtVersion).toHaveBeenCalledWith(multiVersionPlan.id, 1);
+      });
+      // Banner should appear
+      await waitFor(() => {
+        expect(screen.getByText(/Viewing version 1 of 3/i)).toBeInTheDocument();
+      });
+      // Historical content rendered
+      await waitFor(() => {
+        expect(screen.getByText(/Historical body/i)).toBeInTheDocument();
+      });
+
+      // "Back to latest" returns to current version
+      await user.click(screen.getByRole("button", { name: /back to latest/i }));
+      await waitFor(() => {
+        expect(screen.queryByText(/Viewing version 1 of 3/i)).not.toBeInTheDocument();
+      });
+    });
+
+    it("falls back to no historical content when artifact is non-inline", async () => {
+      const user = userEvent.setup();
+      mockGetVersionHistory.mockResolvedValue([]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multiVersionPlan,
+        content: { type: "file", path: "/p/x.md" },
+      });
+
+      render(<PlanDisplay plan={multiVersionPlan} isExpanded={true} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      await user.click(screen.getByTitle("View version history"));
+      const items = await screen.findAllByText(/v2/);
+      await user.click(items[items.length - 1]);
+
+      await waitFor(() => {
+        expect(mockGetAtVersion).toHaveBeenCalledWith(multiVersionPlan.id, 2);
+      });
+      // Banner shown
+      await waitFor(() => {
+        expect(screen.getByText(/Viewing version 2 of 3/i)).toBeInTheDocument();
+      });
+    });
+
+    it("recovers gracefully when getAtVersion rejects", async () => {
+      const user = userEvent.setup();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockGetVersionHistory.mockResolvedValue([]);
+      mockGetAtVersion.mockRejectedValue(new Error("boom"));
+
+      render(<PlanDisplay plan={multiVersionPlan} isExpanded={true} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      await user.click(screen.getByTitle("View version history"));
+      const items = await screen.findAllByText(/v1/);
+      await user.click(items[items.length - 1]);
+
+      await waitFor(() => {
+        expect(errorSpy).toHaveBeenCalledWith("Failed to fetch historical version:", expect.any(Error));
+      });
+      errorSpy.mockRestore();
+    });
+
+    it("auto-expands when a version is selected from a collapsed state", async () => {
+      const user = userEvent.setup();
+      mockGetVersionHistory.mockResolvedValue([]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multiVersionPlan,
+        content: { type: "inline", text: "# old\n\nold body" },
+      });
+
+      render(<PlanDisplay plan={multiVersionPlan} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      // Initially collapsed - markdown content not rendered
+      expect(screen.queryByText("Authentication Plan")).not.toBeInTheDocument();
+
+      await user.click(screen.getByTitle("View version history"));
+      const items = await screen.findAllByText(/v1/);
+      await user.click(items[items.length - 1]);
+
+      // Auto expanded - banner visible
+      await waitFor(() => {
+        expect(screen.getByText(/Viewing version 1 of 3/i)).toBeInTheDocument();
+      });
+    });
+
+    it("applies requestedVersion from parent and notifies via onVersionViewed", async () => {
+      mockGetVersionHistory.mockResolvedValue([]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multiVersionPlan,
+        content: { type: "inline", text: "# v2\n\nv2 body" },
+      });
+      const onVersionViewed = vi.fn();
+
+      render(
+        <PlanDisplay
+          plan={multiVersionPlan}
+          isExpanded={true}
+          requestedVersion={2}
+          onVersionViewed={onVersionViewed}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(mockGetAtVersion).toHaveBeenCalledWith(multiVersionPlan.id, 2);
+      });
+      await waitFor(() => {
+        expect(onVersionViewed).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ============================================================================
+  // Default export (Blob fallback)
+  // ============================================================================
+
+  describe("default export fallback", () => {
+    it("creates a download link when onExport is not provided", async () => {
+      const user = userEvent.setup();
+      const createObjectURL = vi.fn().mockReturnValue("blob:http://test/abc");
+      const revokeObjectURL = vi.fn();
+      const origCreate = URL.createObjectURL;
+      const origRevoke = URL.revokeObjectURL;
+      Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true });
+      Object.defineProperty(URL, "revokeObjectURL", { value: revokeObjectURL, configurable: true });
+      const clickSpy = vi.fn();
+      const origAnchorClick = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = clickSpy;
+
+      try {
+        render(<PlanDisplay plan={mockPlan} />);
+        const buttons = screen.getAllByRole("button");
+        const moreButton = buttons[buttons.length - 1]!;
+        await user.click(moreButton);
+        await user.click(screen.getByRole("menuitem", { name: /export/i }));
+
+        expect(createObjectURL).toHaveBeenCalled();
+        expect(clickSpy).toHaveBeenCalled();
+        expect(revokeObjectURL).toHaveBeenCalled();
+      } finally {
+        HTMLAnchorElement.prototype.click = origAnchorClick;
+        Object.defineProperty(URL, "createObjectURL", { value: origCreate, configurable: true });
+        Object.defineProperty(URL, "revokeObjectURL", { value: origRevoke, configurable: true });
+      }
+    });
+  });
+
+  // ============================================================================
+  // Copy Markdown action
+  // ============================================================================
+
+  describe("copy markdown", () => {
+    it("copies inline plan text to clipboard from overflow menu", async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText },
+        configurable: true,
+        writable: true,
+      });
+
+      render(<PlanDisplay plan={mockPlan} />);
+      const buttons = screen.getAllByRole("button");
+      const moreButton = buttons[buttons.length - 1]!;
+      await user.click(moreButton);
+
+      await user.click(screen.getByRole("menuitem", { name: /copy markdown/i }));
+      expect(writeText).toHaveBeenCalledWith(expect.stringContaining("Authentication Plan"));
+    });
+
+    it("disables copy menu item for file artifacts", async () => {
+      const user = userEvent.setup();
+      const filePlan: Artifact = {
+        ...mockPlan,
+        content: { type: "file", path: "/p/plan.md" },
+      };
+
+      render(<PlanDisplay plan={filePlan} />);
+      const buttons = screen.getAllByRole("button");
+      const moreButton = buttons[buttons.length - 1]!;
+      await user.click(moreButton);
+
+      const copyItem = screen.getByRole("menuitem", { name: /copy markdown/i });
+      expect(copyItem).toHaveAttribute("aria-disabled", "true");
+    });
+  });
+
+  // ============================================================================
+  // Hover handlers (mouse enter/leave) — chrome buttons & history dropdown
+  // ============================================================================
+
+  describe("hover handlers", () => {
+    it("invokes mouse enter/leave handlers for Approve in wrapper card without throwing", () => {
+      render(<PlanDisplay plan={mockPlan} showApprove={true} onApprove={() => {}} />);
+      const approveBtn = screen.getByRole("button", { name: /approve/i });
+      fireEvent.mouseEnter(approveBtn);
+      fireEvent.mouseLeave(approveBtn);
+      expect(approveBtn).toBeInTheDocument();
+    });
+
+    it("invokes mouse enter/leave handlers on Create Proposals button", () => {
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          linkedProposalsCount={0}
+          onCreateProposals={() => {}}
+        />,
+      );
+      const btn = screen.getByRole("button", { name: /create proposals/i });
+      fireEvent.mouseEnter(btn);
+      fireEvent.mouseLeave(btn);
+      expect(btn).toBeInTheDocument();
+    });
+
+    it("invokes hover handlers on history dropdown trigger and overflow trigger", async () => {
+      mockGetVersionHistory.mockResolvedValue([]);
+      const multi: Artifact = { ...mockPlan, metadata: { ...mockPlan.metadata, version: 2 } };
+      render(<PlanDisplay plan={multi} />);
+
+      const historyBtn = screen.getByTitle("View version history");
+      fireEvent.mouseEnter(historyBtn);
+      fireEvent.mouseLeave(historyBtn);
+
+      // overflow ("..." MoreHorizontal) is the last button
+      const buttons = screen.getAllByRole("button");
+      const moreBtn = buttons[buttons.length - 1]!;
+      fireEvent.mouseEnter(moreBtn);
+      fireEvent.mouseLeave(moreBtn);
+
+      expect(historyBtn).toBeInTheDocument();
+    });
+
+    it("invokes hover handlers on Back to latest button", async () => {
+      const user = userEvent.setup();
+      const multi: Artifact = { ...mockPlan, metadata: { ...mockPlan.metadata, version: 2 } };
+      mockGetVersionHistory.mockResolvedValue([]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multi,
+        content: { type: "inline", text: "# old\n\nold body" },
+      });
+
+      render(<PlanDisplay plan={multi} isExpanded={true} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      await user.click(screen.getByTitle("View version history"));
+      const items = await screen.findAllByText(/v1/);
+      await user.click(items[items.length - 1]);
+
+      const back = await screen.findByRole("button", { name: /back to latest/i });
+      fireEvent.mouseEnter(back);
+      fireEvent.mouseLeave(back);
+      expect(back).toBeInTheDocument();
+    });
+  });
+
+  // ============================================================================
+  // Chromeless rendering
+  // ============================================================================
+
+  describe("chromeless mode", () => {
+    it("uses extracted H1 as title and skips wrapper chrome", () => {
+      render(<PlanDisplay plan={mockPlan} chromeless={true} />);
+      // Body H1 should be hoisted as the chromeless title
+      expect(screen.getByTestId("plan-display-chromeless")).toBeInTheDocument();
+      expect(screen.getByText("Authentication Plan")).toBeInTheDocument();
+    });
+
+    it("falls back to plan.name as title when content has no leading H1", () => {
+      const noH1: Artifact = {
+        ...mockPlan,
+        content: { type: "inline", text: "Just a body, no heading" },
+      };
+      render(<PlanDisplay plan={noH1} chromeless={true} />);
+      expect(screen.getByText("Authentication Implementation Plan")).toBeInTheDocument();
+      expect(screen.getByText(/Just a body/i)).toBeInTheDocument();
+    });
+
+    it("renders 'No content available' for empty inline body in chromeless mode", () => {
+      const empty: Artifact = { ...mockPlan, content: { type: "inline", text: "" } };
+      render(<PlanDisplay plan={empty} chromeless={true} />);
+      expect(screen.getByText("No content available")).toBeInTheDocument();
+    });
+
+    it("renders Approve in chromeless mode and dispatches onApprove", () => {
+      const onApprove = vi.fn();
+      render(
+        <PlanDisplay plan={mockPlan} chromeless={true} showApprove={true} onApprove={onApprove} />,
+      );
+      const btn = screen.getByRole("button", { name: /approve/i });
+      fireEvent.mouseEnter(btn);
+      fireEvent.mouseLeave(btn);
+      fireEvent.click(btn);
+      expect(onApprove).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders Approved badge in chromeless mode when isApproved", () => {
+      render(
+        <PlanDisplay plan={mockPlan} chromeless={true} showApprove={true} isApproved={true} />,
+      );
+      expect(screen.getByText("Approved")).toBeInTheDocument();
+    });
+
+    it("renders Create Proposals in chromeless mode and dispatches handler", () => {
+      const onCreateProposals = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          linkedProposalsCount={0}
+          onCreateProposals={onCreateProposals}
+        />,
+      );
+      const btn = screen.getByRole("button", { name: /create proposals/i });
+      fireEvent.mouseEnter(btn);
+      fireEvent.mouseLeave(btn);
+      fireEvent.click(btn);
+      expect(onCreateProposals).toHaveBeenCalledTimes(1);
+    });
+
+    it("hides overflow + version-history when showOverflowActions=false", () => {
+      const multi: Artifact = { ...mockPlan, metadata: { ...mockPlan.metadata, version: 2 } };
+      render(
+        <PlanDisplay plan={multi} chromeless={true} showOverflowActions={false} />,
+      );
+      expect(screen.queryByTitle("View version history")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Plan actions")).not.toBeInTheDocument();
+    });
+
+    it("shows version dropdown in chromeless mode for multi-version plans", async () => {
+      const user = userEvent.setup();
+      mockGetVersionHistory.mockResolvedValue([
+        { id: "v2-id", version: 2, name: "Plan", created_at: "2026-03-18T10:00:00Z" },
+        { id: "v1-id", version: 1, name: "Plan", created_at: "2026-03-17T10:00:00Z" },
+      ]);
+      const multi: Artifact = { ...mockPlan, metadata: { ...mockPlan.metadata, version: 2 } };
+
+      render(<PlanDisplay plan={multi} chromeless={true} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      await user.click(screen.getByTitle("View version history"));
+      await waitFor(() => {
+        expect(screen.getByText("(latest)")).toBeInTheDocument();
+      });
+    });
+
+    it("renders DebateSummary in chromeless mode for debate plans", () => {
+      const debateMetadata: TeamMetadata = {
+        teamIdeated: true,
+        teamMode: "debate",
+        teammateCount: 2,
+        findings: [],
+        debateSummary: {
+          advocates: [],
+          winner: { name: "Team A", justification: "Better" },
+        },
+      };
+      render(<PlanDisplay plan={mockPlan} chromeless={true} teamMetadata={debateMetadata} />);
+      expect(screen.getByTestId("debate-summary")).toBeInTheDocument();
+    });
+
+    it("renders historical banner + Back to latest in chromeless mode", async () => {
+      const user = userEvent.setup();
+      const multi: Artifact = { ...mockPlan, metadata: { ...mockPlan.metadata, version: 2 } };
+      mockGetVersionHistory.mockResolvedValue([]);
+      mockGetAtVersion.mockResolvedValue({
+        ...multi,
+        content: { type: "inline", text: "# old\n\nold chrome body" },
+      });
+
+      render(<PlanDisplay plan={multi} chromeless={true} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalled());
+
+      await user.click(screen.getByTitle("View version history"));
+      const items = await screen.findAllByText(/v1/);
+      await user.click(items[items.length - 1]);
+
+      const back = await screen.findByRole("button", { name: /back to latest/i });
+      await user.click(back);
+      await waitFor(() => {
+        expect(screen.queryByText(/Viewing version 1 of 2/i)).not.toBeInTheDocument();
+      });
+    });
+
+    it("calls onEdit and default export from chromeless overflow menu", async () => {
+      const user = userEvent.setup();
+      const onEdit = vi.fn();
+      const onExport = vi.fn();
+      render(
+        <PlanDisplay plan={mockPlan} chromeless={true} onEdit={onEdit} onExport={onExport} />,
+      );
+
+      const more = screen.getByLabelText("Plan actions");
+      await user.click(more);
+      await user.click(screen.getByRole("menuitem", { name: /edit/i }));
+      expect(onEdit).toHaveBeenCalled();
+
+      await user.click(more);
+      await user.click(screen.getByRole("menuitem", { name: /export/i }));
+      expect(onExport).toHaveBeenCalled();
+    });
+
+    it("copies inline content from chromeless overflow menu", async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText },
+        configurable: true,
+        writable: true,
+      });
+
+      render(<PlanDisplay plan={mockPlan} chromeless={true} />);
+      await user.click(screen.getByLabelText("Plan actions"));
+      await user.click(screen.getByRole("menuitem", { name: /copy markdown/i }));
+      expect(writeText).toHaveBeenCalled();
+    });
+  });
+
+  // ============================================================================
+  // Controlled expansion + plan id reset
+  // ============================================================================
+
+  describe("controlled expansion & plan changes", () => {
+    it("calls onExpandedChange when toggling header in controlled mode", () => {
+      const onExpandedChange = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          isExpanded={false}
+          onExpandedChange={onExpandedChange}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /Authentication Implementation Plan/i }));
+      expect(onExpandedChange).toHaveBeenCalledWith(true);
+    });
+
+    it("resets selected version when plan id changes", async () => {
+      const v3: Artifact = { ...mockPlan, metadata: { ...mockPlan.metadata, version: 3 } };
+      mockGetVersionHistory.mockResolvedValue([]);
+
+      const { rerender } = render(<PlanDisplay plan={v3} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalledWith(v3.id));
+
+      const v3New: Artifact = {
+        ...v3,
+        id: "artifact-2",
+        metadata: { ...v3.metadata, version: 3 },
+      };
+      rerender(<PlanDisplay plan={v3New} />);
+      await waitFor(() => expect(mockGetVersionHistory).toHaveBeenCalledWith("artifact-2"));
+    });
+  });
 });

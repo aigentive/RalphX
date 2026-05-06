@@ -214,6 +214,11 @@ vi.mock("@/hooks/useReviews", () => ({
     isLoading: false,
   }),
   useTasksAwaitingReview: vi.fn().mockReturnValue({
+    allTasks: [],
+    aiTasks: [],
+    humanTasks: [],
+    aiCount: 0,
+    humanCount: 0,
     totalCount: 0,
     isLoading: false,
   }),
@@ -360,15 +365,49 @@ describe("App", () => {
     expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
   });
 
-  it("should display project selector", () => {
+  it("renders the v27 mini rail logo and flat active highlight", () => {
     render(<App />);
-    // ProjectSelector is mocked, check for the mock element
-    expect(screen.getByTestId("project-selector-mock")).toBeInTheDocument();
+
+    const brandSvg = screen.getByTestId("left-nav-brand").querySelector("svg");
+    expect(brandSvg).toHaveClass("h-[44px]", "w-[44px]");
+
+    const activeButton = screen.getByTestId("nav-agents");
+    expect(activeButton.className).toContain("h-[44px] w-[44px]");
+    expect(activeButton.className).not.toContain("focus-visible:ring");
+    expect(activeButton.className).toContain(
+      "focus-visible:[outline:2px_solid_var(--border-focus)]"
+    );
+    expect(activeButton).toHaveStyle({
+      backgroundColor: "var(--bg-hover)",
+      color: "var(--nav-rail-active-color)",
+      boxShadow: "var(--nav-rail-active-shadow)",
+    });
+    expect(activeButton.querySelector(".left-nav-rail__active-border")).toBeInTheDocument();
+
+    expect(screen.getByTestId("nav-kanban")).toHaveStyle({
+      color: "var(--nav-rail-inactive-color)",
+    });
   });
 
   it("should display theme selector", () => {
     render(<App />);
     expect(screen.getByTestId("theme-selector")).toBeInTheDocument();
+  });
+
+  it("keeps only one topbar dropdown open at a time", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.getByTestId("theme-option-dark")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("font-scale-selector-trigger"));
+    expect(screen.queryByTestId("theme-option-dark")).not.toBeInTheDocument();
+    expect(screen.getByTestId("font-scale-option-default")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.queryByTestId("font-scale-option-default")).not.toBeInTheDocument();
+    expect(screen.getByTestId("theme-option-dark")).toBeInTheDocument();
   });
 
   it("should have main element with flex layout", () => {
@@ -378,11 +417,70 @@ describe("App", () => {
     expect(mainElement).toHaveClass("h-screen", "flex", "flex-col");
   });
 
-  it("should render header with RalphX branding", () => {
+  it("selecting a font-scale option closes the dropdown and updates the trigger label", async () => {
+    const user = userEvent.setup();
+    const { useThemeStore } = await import("@/stores/themeStore");
+    const initial = useThemeStore.getState().fontScale;
+    try {
+      render(<App />);
+
+      await user.click(screen.getByTestId("font-scale-selector-trigger"));
+      await user.click(screen.getByTestId("font-scale-option-lg"));
+      // Dropdown closed.
+      expect(screen.queryByTestId("font-scale-option-lg")).not.toBeInTheDocument();
+      // Trigger label reflects the new option (110%).
+      expect(screen.getByTestId("font-scale-selector").textContent).toMatch(/110%/);
+    } finally {
+      // Reset persisted fontScale so order-dependent v27 chrome tests still see 100%.
+      useThemeStore.getState().setFontScale(initial);
+    }
+  });
+
+  it("should render the v27 top navigation chrome", () => {
     render(<App />);
     const header = screen.getByRole("banner");
     expect(header).toBeInTheDocument();
-    expect(header).toHaveClass("flex", "items-center", "justify-between");
+    expect(header).toHaveAttribute("data-testid", "app-header");
+    expect(header.getAttribute("style")).toContain(
+      "background-color: var(--app-navbar-bg)"
+    );
+    expect(header.getAttribute("style")).toContain("border-bottom-color: var(--app-navbar-border)");
+    expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
+      "background-color: var(--app-rail-bg)"
+    );
+    expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
+      "border-right-color: var(--app-rail-border)"
+    );
+    expect(screen.getByTestId("window-traffic-lights")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/New run"
+    );
+    const commandSearch = screen.getByTestId("topbar-command-search");
+    expect(commandSearch).toBeInTheDocument();
+    expect(commandSearch).toHaveClass("h-8", "w-[320px]", "rounded-[6px]");
+    expect(commandSearch.getAttribute("style")).toContain("background-color: var(--bg-elevated)");
+    expect(commandSearch.getAttribute("style")).toContain("border-color: var(--border-default)");
+    expect(screen.getByTestId("font-scale-selector")).toHaveTextContent("100%");
+    expect(screen.queryByTestId("project-selector-mock")).not.toBeInTheDocument();
+  });
+
+  it("uses the v27 panel surface for the right reviews sidebar", () => {
+    useUiStore.setState({ reviewsPanelOpen: true });
+
+    render(<App />);
+
+    expect(screen.getByTestId("reviews-panel-shell").getAttribute("style")).toContain(
+      "background-color: var(--app-sidebar-bg)"
+    );
+    expect(screen.getByTestId("reviews-panel-shell").getAttribute("style")).toContain(
+      "border-left-color: var(--app-sidebar-border)"
+    );
+    expect(screen.getByTestId("reviews-panel-frame").getAttribute("style")).toContain(
+      "background-color: var(--app-sidebar-bg)"
+    );
+    expect(screen.getByTestId("reviews-panel-frame").getAttribute("style")).toContain(
+      "box-shadow: none"
+    );
   });
 
   it("should render Agents view by default", () => {
@@ -654,8 +752,8 @@ describe("App", () => {
       expect(screen.queryByTestId("nav-graph")).toBeNull();
       expect(screen.queryByTestId("nav-kanban")).toBeNull();
 
-      // Right-side controls are hidden
-      expect(screen.queryByTestId("reviews-toggle")).toBeNull();
+      // v27 topbar controls stay mounted even when the project-scoped rail collapses.
+      expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();
 
       // Settings button still rendered (only thing left in Navigation)
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();

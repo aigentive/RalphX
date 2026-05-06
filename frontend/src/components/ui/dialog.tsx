@@ -39,7 +39,7 @@ interface DialogContentProps
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, children, hideCloseButton = false, overlayClassName, forceMount, ...props }, ref) => {
+>(({ className, children, hideCloseButton = false, overlayClassName, forceMount, style, ...props }, ref) => {
   const forceMountProps = forceMount ? { forceMount } : {};
 
   return (
@@ -54,7 +54,8 @@ const DialogContent = React.forwardRef<
         )}
         style={{
           backgroundColor: "var(--dialog-bg, var(--bg-elevated))",
-          boxShadow: "var(--shadow-lg)",
+          boxShadow: "var(--dialog-shadow, var(--shadow-lg))",
+          ...style,
         }}
         {...forceMountProps}
         {...props}

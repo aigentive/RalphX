@@ -79,14 +79,14 @@ function MergeInfoCard({
               <GitCommit className="w-4 h-4" style={{ color: "var(--status-success)" }} />
             </div>
             <div className="flex-1 min-w-0">
-              <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+              <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
                 Merge Commit
               </span>
-              <span className="text-[13px] text-text-primary/70 font-mono">
+              <span className="text-[0.8125rem] text-text-primary/70 font-mono">
                 {shortSha}
               </span>
             </div>
-            <span className="text-[12px] text-text-primary/40">
+            <span className="text-[0.75rem] text-text-primary/40">
               {formatRelativeTime(mergedAt)}
             </span>
           </div>
@@ -109,12 +109,12 @@ function MergeInfoCard({
                 <GitMerge className="w-4 h-4" style={{ color: "var(--status-success)" }} />
               </div>
               <div className="flex-1 min-w-0">
-                <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+                <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
                   Branch
                 </span>
                 <BranchBadge branch={branchName} variant="muted" />
               </div>
-              <span className="text-[10px] px-2 py-0.5 rounded bg-[var(--overlay-faint)] text-text-primary/40">
+              <span className="text-[0.625rem] px-2 py-0.5 rounded bg-[var(--overlay-faint)] text-text-primary/40">
                 Deleted
               </span>
             </div>
@@ -168,7 +168,7 @@ export function MergedTaskDetail({
       <button
         type="button"
         onClick={handleOpenPrInGithub}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer shrink-0"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer shrink-0"
         style={{
           backgroundColor: statusTint("success", 14),
           color: "var(--status-success)",

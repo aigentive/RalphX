@@ -46,7 +46,7 @@ export function PublishPipelineSteps({
       }}
       data-testid="agents-publish-pipeline"
     >
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+      <div className="mb-2 text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
         Publish pipeline
       </div>
       <div className="grid gap-2 sm:grid-cols-5">

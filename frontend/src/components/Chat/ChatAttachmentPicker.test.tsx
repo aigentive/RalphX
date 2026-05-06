@@ -683,7 +683,7 @@ describe("ChatAttachmentPicker", () => {
       const overlay = screen.getByTestId("attachment-drop-overlay");
       const text = overlay.querySelector("span");
 
-      expect(text).toHaveClass("text-[13px]");
+      expect(text).toHaveClass("text-[0.8125rem]");
       expect(text).toHaveClass("font-medium");
       expect(text).toHaveStyle({ color: "var(--accent-primary)" });
     });

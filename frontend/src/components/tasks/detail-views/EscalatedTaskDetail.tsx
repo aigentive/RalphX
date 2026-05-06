@@ -165,10 +165,10 @@ function EscalationReasonCard({
           <Icon className="w-5 h-5" style={{ color: "var(--status-warning)" }} />
         </div>
         <div>
-          <span className="text-[13px] font-semibold text-text-primary/80 block">
+          <span className="text-[0.8125rem] font-semibold text-text-primary/80 block">
             Escalation Reason
           </span>
-          <span className="text-[11px] text-text-primary/45">
+          <span className="text-[0.6875rem] text-text-primary/45">
             {escalationInfo.subtitle}
           </span>
         </div>
@@ -177,7 +177,7 @@ function EscalationReasonCard({
       {/* Reason text */}
       {escalationInfo.reason ? (
         <div
-          className="text-[13px] text-text-primary/55 leading-relaxed pl-12"
+          className="text-[0.8125rem] text-text-primary/55 leading-relaxed pl-12"
           style={{ wordBreak: "break-word" }}
         >
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -185,7 +185,7 @@ function EscalationReasonCard({
           </ReactMarkdown>
         </div>
       ) : (
-        <p className="text-[13px] text-text-primary/35 italic pl-12">
+        <p className="text-[0.8125rem] text-text-primary/35 italic pl-12">
           No escalation reason provided
         </p>
       )}
@@ -278,7 +278,7 @@ function DecisionButtonsCard({
       data-testid="re-review-button"
       onClick={() => reReviewMutation.mutate()}
       disabled={isLoading || showFeedback}
-      className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px] transition-colors"
+      className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
       style={{
         backgroundColor: "var(--accent-primary)",
         color: "white",
@@ -298,7 +298,7 @@ function DecisionButtonsCard({
       data-testid="approve-button"
       onClick={handleApprove}
       disabled={isLoading || showFeedback}
-      className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px] transition-colors"
+      className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem] transition-colors"
       style={{
         backgroundColor: "var(--status-success)",
         color: "white",
@@ -319,7 +319,7 @@ function DecisionButtonsCard({
       onClick={handleRequestChangesClick}
       disabled={isLoading || (showFeedback && !feedback.trim())}
       variant="ghost"
-      className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+      className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
       style={{
         color: "var(--status-warning)",
         backgroundColor: "var(--bg-elevated)",
@@ -341,7 +341,7 @@ function DecisionButtonsCard({
         <div className="mb-4 space-y-3">
           <div className="flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-text-primary/40" />
-            <span className="text-[12px] font-semibold text-text-primary/60">
+            <span className="text-[0.75rem] font-semibold text-text-primary/60">
               What needs to be changed?
             </span>
           </div>
@@ -350,7 +350,7 @@ function DecisionButtonsCard({
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             placeholder="Describe the changes needed..."
-            className="min-h-[100px] text-[13px] resize-none rounded-xl"
+            className="min-h-[100px] text-[0.8125rem] resize-none rounded-xl"
             style={{
               backgroundColor: "var(--overlay-scrim)",
               border: "1px solid var(--overlay-moderate)",
@@ -382,7 +382,7 @@ function DecisionButtonsCard({
             setShowFeedback(false);
             setFeedback("");
           }}
-          className="mt-3 text-[12px] text-text-primary/40 hover:text-text-primary/60 transition-colors"
+          className="mt-3 text-[0.75rem] text-text-primary/40 hover:text-text-primary/60 transition-colors"
         >
           Cancel
         </button>
@@ -391,7 +391,7 @@ function DecisionButtonsCard({
       {(approveMutation.error ||
         requestChangesMutation.error ||
         reReviewMutation.error) && (
-        <p className="mt-3 text-[12px]" style={{ color: "var(--status-error)" }}>
+        <p className="mt-3 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
           {approveMutation.error?.message ||
             requestChangesMutation.error?.message ||
             reReviewMutation.error?.message}
@@ -459,17 +459,17 @@ export function EscalatedTaskDetail({ task, isHistorical = false }: EscalatedTas
           <DetailCard>
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="text-[13px] font-semibold text-text-primary/80">
+                <div className="text-[0.8125rem] font-semibold text-text-primary/80">
                   AI spawned a follow-up ideation session
                 </div>
-                <div className="mt-1 text-[12px] text-text-primary/45 break-all">
+                <div className="mt-1 text-[0.75rem] text-text-primary/45 break-all">
                   {followupSessionId}
                 </div>
               </div>
               <Button
                 type="button"
                 onClick={() => navigateToIdeationSession(followupSessionId)}
-                className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+                className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
                 style={{
                   backgroundColor: statusTint("accent", 16),
                   color: "var(--accent-primary)",

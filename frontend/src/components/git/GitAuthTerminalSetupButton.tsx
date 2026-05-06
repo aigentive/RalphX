@@ -10,7 +10,7 @@ export function GitAuthTerminalSetupButton({ onCopy }: { onCopy: () => void }) {
         type="button"
         variant="secondary"
         size="sm"
-        className="h-8 gap-2 px-3 text-xs"
+        className="settings-btn-ghost"
         onClick={onCopy}
         data-testid="git-auth-copy-gh-login"
       >

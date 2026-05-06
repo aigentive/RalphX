@@ -47,13 +47,13 @@ export function PublishEventLog({
     <div className="px-1" data-testid="agents-publish-events">
       <button
         type="button"
-        className="flex items-center gap-2 bg-transparent p-0 text-[11px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
+        className="flex items-center gap-2 bg-transparent p-0 text-[0.6875rem] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
         onClick={() => setIsExpanded((current) => !current)}
         data-theme-button-skip="true"
         data-testid="agents-publish-history-toggle"
       >
         <span>{isExpanded ? "Hide publish history" : "Show publish history"}</span>
-        <span className="text-[10px] text-[var(--text-muted)]">
+        <span className="text-[0.625rem] text-[var(--text-muted)]">
           {visibleEvents.length}
         </span>
       </button>
@@ -106,7 +106,7 @@ export function PublishEventLog({
                   <div className="font-medium text-[var(--text-secondary)]">
                     {event.summary}
                   </div>
-                  <div className="mt-0.5 text-[11px] capitalize text-[var(--text-muted)]">
+                  <div className="mt-0.5 text-[0.6875rem] capitalize text-[var(--text-muted)]">
                     {event.step.replace(/_/g, " ")}
                     {event.classification
                       ? ` / ${event.classification.replace(/_/g, " ")}`

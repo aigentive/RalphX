@@ -157,7 +157,7 @@ export function TaskEditForm({
             Steps
           </label>
           {isExecuting && (
-            <span className="text-[11px] text-text-primary/40 italic">
+            <span className="text-[0.6875rem] text-text-primary/40 italic">
               Cannot edit while executing
             </span>
           )}
@@ -189,7 +189,7 @@ export function TaskEditForm({
               type="button"
               onClick={handleAddStep}
               disabled={isSaving || isAddingStep || !newStepTitle.trim()}
-              className="h-10 px-3 rounded-lg text-[13px] font-medium shrink-0 flex items-center justify-center gap-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="h-10 px-3 rounded-lg text-[0.8125rem] font-medium shrink-0 flex items-center justify-center gap-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 background: "transparent",
                 border: "1px solid var(--overlay-moderate)",

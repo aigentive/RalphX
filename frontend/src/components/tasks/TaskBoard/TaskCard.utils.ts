@@ -2,16 +2,84 @@
  * TaskCard utility functions
  *
  * Contains styling helpers extracted from TaskCard.tsx to reduce component size.
- * Design: macOS Tahoe (2025) - Clean, flat, minimal like Finder
+ * Design: v29a Kanban — flat card surfaces with full-card status tints.
  */
 
 import { type InternalStatus, NON_DRAGGABLE_STATUSES } from "@/types/status";
-import { getStatusBorderColor } from "@/types/status-icons";
+import { KANBAN_CARD_FALLBACKS } from "@/lib/kanban-card-token-fallbacks";
+
+function cssVar(name: string, fallback?: string): string {
+  return fallback ? `var(${name}, ${fallback})` : `var(${name})`;
+}
+
+function cardSurface(backgroundColor: string, borderColor: string): React.CSSProperties {
+  return {
+    backgroundColor,
+    borderColor,
+    borderStyle: "solid",
+    borderWidth: "1px",
+  };
+}
+
+function isWarningStatus(status: InternalStatus): boolean {
+  return [
+    "blocked",
+    "re_executing",
+    "escalated",
+    "revision_needed",
+    "pending_merge",
+    "merging",
+    "waiting_on_pr",
+    "merge_incomplete",
+    "paused",
+  ].includes(status);
+}
+
+function isSuccessStatus(status: InternalStatus): boolean {
+  return ["approved", "merged", "review_passed", "qa_passed"].includes(status);
+}
+
+function isErrorStatus(status: InternalStatus): boolean {
+  return ["failed", "stopped", "merge_conflict", "qa_failed"].includes(status);
+}
+
+function getStatusSurface(status: InternalStatus, isArchived: boolean): React.CSSProperties {
+  if (isArchived) {
+    return cardSurface(
+      cssVar("--kanban-card-bg", "#232329"),
+      cssVar("--kanban-card-border", "#34343C")
+    );
+  }
+
+  if (isSuccessStatus(status)) {
+    return cardSurface(
+      cssVar("--kanban-card-success-bg", KANBAN_CARD_FALLBACKS.successBg),
+      cssVar("--kanban-card-success-border", KANBAN_CARD_FALLBACKS.successBorder)
+    );
+  }
+
+  if (isWarningStatus(status)) {
+    return cardSurface(
+      cssVar("--kanban-card-warning-bg", KANBAN_CARD_FALLBACKS.warningBg),
+      cssVar("--kanban-card-warning-border", KANBAN_CARD_FALLBACKS.warningBorder)
+    );
+  }
+
+  if (isErrorStatus(status)) {
+    return cardSurface(
+      cssVar("--status-error-muted", KANBAN_CARD_FALLBACKS.errorBg),
+      cssVar("--status-error-border", KANBAN_CARD_FALLBACKS.errorBorder)
+    );
+  }
+
+  return cardSurface(
+    cssVar("--kanban-card-bg", "#232329"),
+    cssVar("--kanban-card-border", "#34343C")
+  );
+}
 
 /**
- * Build base card styles (macOS Tahoe - subtle floating elevation)
- * Content cards get light elevation to distinguish them as distinct items.
- * Left border color is determined by task status.
+ * Build base card styles.
  */
 export function getBaseCardStyles(
   status: InternalStatus,
@@ -19,13 +87,11 @@ export function getBaseCardStyles(
   isDraggable: boolean
 ): React.CSSProperties {
   return {
+    ...getStatusSurface(status, isArchived),
     cursor: isDraggable ? "grab" : "default",
-    transition: "background 150ms ease, transform 150ms ease, box-shadow 150ms ease",
+    transition: "background 150ms ease, border-color 150ms ease, transform 150ms ease",
     borderRadius: "8px",
-    background: "var(--bg-surface)",
-    border: "1px solid var(--overlay-moderate)",
-    boxShadow: "var(--shadow-xs)",
-    borderLeft: `3px solid ${getStatusBorderColor(status, isArchived)}`,
+    boxShadow: "none",
   };
 }
 
@@ -45,19 +111,16 @@ export function getCardStyles(
     return {
       ...baseStyles,
       cursor: "grabbing",
-      transform: "scale(1.02)",
-      background: "var(--bg-elevated)",
-      boxShadow: "var(--shadow-lg)",
+      transform: "scale(1.015)",
+      boxShadow: "none",
       zIndex: 50,
     };
   }
 
-  // Selected state - subtle blue tint like Finder selection
   if (isSelected) {
     return {
       ...baseStyles,
-      background: "color-mix(in srgb, var(--status-info) 24%, transparent)",
-      border: "1px solid color-mix(in srgb, var(--status-info) 34%, transparent)",
+      boxShadow: `inset 0 0 0 1px ${cssVar("--kanban-card-selected-border", KANBAN_CARD_FALLBACKS.selectedBorder)}`,
     };
   }
 

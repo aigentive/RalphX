@@ -101,23 +101,23 @@ function FeedbackCard({ review, issues }: FeedbackCardProps) {
           )}
         </div>
         <div className="flex-1">
-          <span className="text-[13px] font-semibold text-text-primary/80 block">
+          <span className="text-[0.8125rem] font-semibold text-text-primary/80 block">
             {getReviewFeedbackHeading(review.reviewer)}
           </span>
-          <span className="text-[11px] text-text-primary/40">{timeAgo}</span>
+          <span className="text-[0.6875rem] text-text-primary/40">{timeAgo}</span>
         </div>
       </div>
 
       {/* Main feedback text (show notes only if no structured issues) */}
       {issues.length === 0 && (review.summary || review.notes) && (
-        <div className="text-[13px] text-text-primary/55 leading-relaxed mb-4 pl-12" style={{ wordBreak: "break-word" }}>
+        <div className="text-[0.8125rem] text-text-primary/55 leading-relaxed mb-4 pl-12" style={{ wordBreak: "break-word" }}>
           <ReviewFeedbackBody
             summary={review.summary ?? null}
             notes={review.notes ?? null}
             dialogTitle="Full revision feedback"
             dialogDescription="Full review feedback in a scrollable view."
             fullButtonLabel="View full feedback"
-            previewClassName="text-[13px] text-text-primary/55 leading-relaxed"
+            previewClassName="text-[0.8125rem] text-text-primary/55 leading-relaxed"
           />
         </div>
       )}
@@ -127,7 +127,7 @@ function FeedbackCard({ review, issues }: FeedbackCardProps) {
         <div className="pl-12">
           <div className="flex items-center gap-2 mb-2">
             <AlertTriangle className="w-3.5 h-3.5" style={{ color: "var(--status-warning)" }} />
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-text-primary/50">
+            <span className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-primary/50">
               Issues to Address
             </span>
           </div>

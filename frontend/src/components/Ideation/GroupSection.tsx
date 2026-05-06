@@ -27,6 +27,7 @@ export interface GroupSectionProps {
   accentColor?: string;
   count: number;
   search: string;
+  activePlanId?: string | null;
   renderItem: (plan: IdeationSessionWithProgress, group: SessionGroup) => React.ReactNode;
 }
 
@@ -44,6 +45,7 @@ export function GroupSection({
   accentColor,
   count,
   search,
+  activePlanId,
   renderItem,
 }: GroupSectionProps) {
   const apiKey = GROUP_KEY_TO_API[groupKey];
@@ -112,6 +114,9 @@ export function GroupSection({
     );
   }
 
+  const containsActive =
+    activePlanId != null && sessions.some((s) => s.id === activePlanId);
+
   return (
     <SessionGroupHeader
       icon={icon}
@@ -119,6 +124,7 @@ export function GroupSection({
       count={count}
       isOpen={isOpen}
       onToggle={onToggle}
+      isActive={containsActive}
       {...(accentColor != null && { accentColor })}
     >
       {isOpen && (

@@ -950,7 +950,7 @@ export function BattleModeV2Overlay({
       {hud.activeCallouts.map((callout) => (
         <div
           key={callout.id}
-          className="pointer-events-none absolute -translate-x-1/2 rounded border border-cyan-300/35 bg-slate-950/50 px-2 py-1 text-[10px] text-cyan-100 shadow-[0_0_18px_rgba(34,211,238,0.2)]"
+          className="pointer-events-none absolute -translate-x-1/2 rounded border border-cyan-300/35 bg-slate-950/50 px-2 py-1 text-[0.625rem] text-cyan-100 shadow-[0_0_18px_rgba(34,211,238,0.2)]"
           style={{
             left: callout.x,
             top: Math.max(8, callout.y),

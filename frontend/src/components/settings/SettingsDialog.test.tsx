@@ -200,6 +200,24 @@ describe("SettingsDialog", () => {
       );
     });
 
+    it("uses the v30 settings modal shell classes and active nav treatment", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      const dialog = screen.getByTestId("settings-dialog");
+      expect(dialog).toHaveClass("settings-modal");
+
+      const navigation = screen.getByRole("navigation");
+      expect(navigation).toHaveClass("settings-nav");
+      expect(within(navigation).getByRole("button", { name: "Repository" })).toHaveClass(
+        "settings-nav__item",
+      );
+      expect(within(navigation).getByRole("button", { name: "Repository" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    });
+
     it("paints the settings shell before hydrating the active section", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);

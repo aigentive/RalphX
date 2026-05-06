@@ -137,7 +137,7 @@ describe("ExecutionControlBar", () => {
         },
       });
 
-      expect(screen.getByTestId("merging-count")).toHaveTextContent(/(Merging|M):\s*2/);
+      expect(screen.getByTestId("merging-count")).toHaveTextContent(/(Merge|M):\s*2/);
       expect(screen.getByTestId("merge-attention-count")).toHaveTextContent(/(Escalated|E):\s*1/);
     });
 
@@ -280,22 +280,32 @@ describe("ExecutionControlBar", () => {
   });
 
   describe("styling", () => {
-    it("applies floating glass background style", () => {
+    it("applies flat v29a status bar background style", () => {
       renderBar();
       const bar = screen.getByTestId("execution-control-bar");
-      expect(bar).toHaveStyle({ background: "var(--bg-surface)" });
+      expect(bar.getAttribute("style")).toContain("background-color: transparent");
     });
 
-    it("applies subtle border styling", () => {
+    it("keeps the outer status bar border on the v29a kanban line token", () => {
       renderBar();
-      const bar = screen.getByTestId("execution-control-bar");
-      expect(bar.style.border).toBe("1px solid var(--border-subtle)");
+      const shell = screen.getByTestId("execution-control-shell");
+      expect(shell).toHaveStyle({
+        borderTopColor: "var(--kanban-toolbar-border, #2E2E36)",
+        borderTopStyle: "solid",
+        borderTopWidth: "1px",
+      });
     });
 
-    it("applies box shadow for elevation", () => {
+    it("removes inner floating card border styling", () => {
       renderBar();
       const bar = screen.getByTestId("execution-control-bar");
-      expect(bar.style.boxShadow).toBe("var(--shadow-md)");
+      expect(bar.style.borderStyle).toBe("none");
+    });
+
+    it("does not apply elevation shadow", () => {
+      renderBar();
+      const bar = screen.getByTestId("execution-control-bar");
+      expect(bar.style.boxShadow).toBe("none");
     });
   });
 
@@ -357,7 +367,8 @@ describe("ExecutionControlBar", () => {
     it("has error styling when can stop", () => {
       renderBar({ runningCount: 1 });
       const stopBtn = screen.getByTestId("stop-button");
-      expect(stopBtn).toHaveStyle({ backgroundColor: "var(--status-error-muted)" });
+      expect(stopBtn).toHaveStyle({ backgroundColor: "var(--bg-elevated)" });
+      expect(stopBtn.getAttribute("style")).toContain("border-color: var(--border-default)");
       expect(stopBtn).toHaveStyle({ color: "var(--status-error)" });
       expect(stopBtn).toHaveStyle({ opacity: "1" });
     });
@@ -365,9 +376,9 @@ describe("ExecutionControlBar", () => {
     it("has muted styling when disabled", () => {
       renderBar();
       const stopBtn = screen.getByTestId("stop-button");
-      expect(stopBtn).toHaveStyle({ backgroundColor: "var(--bg-hover)" });
+      expect(stopBtn).toHaveStyle({ backgroundColor: "var(--bg-elevated)" });
       expect(stopBtn).toHaveStyle({ color: "var(--text-muted)" });
-      expect(stopBtn).toHaveStyle({ opacity: "0.5" });
+      expect(stopBtn).toHaveStyle({ opacity: "0.55" });
     });
 
     it("has Square icon", () => {
@@ -383,7 +394,8 @@ describe("ExecutionControlBar", () => {
     it("has accent styling when paused", () => {
       renderBar({ queuedCount: 3, isPaused: true });
       const pauseBtn = screen.getByTestId("pause-toggle-button");
-      expect(pauseBtn).toHaveStyle({ backgroundColor: "var(--status-warning-muted)" });
+      expect(pauseBtn).toHaveStyle({ backgroundColor: "var(--bg-elevated)" });
+      expect(pauseBtn.getAttribute("style")).toContain("border-color: var(--border-default)");
       expect(pauseBtn).toHaveStyle({ color: "var(--status-warning)" });
     });
 
@@ -515,6 +527,30 @@ describe("ExecutionControlBar", () => {
     it("RunningProcessPopover receives showIdeation=false when ideationMax is 0", () => {
       renderBar();
       expect(screen.getByTestId("mock-running-popover")).toHaveAttribute("data-show-ideation", "false");
+    });
+  });
+
+  describe("responsive breakpoints", () => {
+    it("renders the wide layout when window width > 1200px", () => {
+      const original = window.innerWidth;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1400 });
+      try {
+        renderBar({ runningCount: 2 });
+        expect(screen.getByTestId("execution-control-bar")).toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: original });
+      }
+    });
+
+    it("renders the narrow layout when window width < 800px", () => {
+      const original = window.innerWidth;
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+      try {
+        renderBar({ runningCount: 1 });
+        expect(screen.getByTestId("execution-control-bar")).toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, "innerWidth", { configurable: true, value: original });
+      }
     });
   });
 });
