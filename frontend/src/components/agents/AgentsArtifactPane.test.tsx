@@ -1284,6 +1284,54 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("refreshes workspace facts when Update from base fails", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "valid",
+      effectiveBaseRef: "feature/agent-screen",
+      effectiveBaseDisplayName: "Current branch (feature/agent-screen)",
+      baseBlockReason: null,
+    });
+    updateWorkspaceFromBaseMock.mockRejectedValue(new Error("base update failed"));
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+      "feature/agent-screen"
+    );
+    getWorkspaceFreshnessMock.mockClear();
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Update branch",
+      })
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
+    );
+    await waitFor(() =>
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1")
+    );
+  });
+
   it("treats merged pull requests as terminal even if the old base moved", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
 

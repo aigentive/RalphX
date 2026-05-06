@@ -1429,25 +1429,17 @@ impl<R: Runtime> AppChatService<R> {
             )));
         }
 
-        let updated_workspace =
-            match rollover_agent_conversation_workspace(&project, &workspace).await {
-                Ok(updated_workspace) => updated_workspace,
-                Err(error) => {
-                    self.emit_event(
-                        "agent:workspace_changed",
-                        serde_json::json!({ "conversation_id": conversation_id.as_str() }),
-                    );
-                    return Err(ChatServiceError::SpawnFailed(error.to_string()));
-                }
-            };
-        let updated_workspace = repo
-            .create_or_update(updated_workspace)
-            .await
-            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+        let rollover_result = rollover_agent_conversation_workspace(&project, &workspace).await;
         self.emit_event(
             "agent:workspace_changed",
             serde_json::json!({ "conversation_id": conversation_id.as_str() }),
         );
+        let updated_workspace =
+            rollover_result.map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+        let updated_workspace = repo
+            .create_or_update(updated_workspace)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
 
         self.conversation_repo
             .clear_provider_session_ref(&conversation_id)
