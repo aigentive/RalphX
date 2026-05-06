@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { ColumnGroup } from "./ColumnGroup";
@@ -36,10 +36,9 @@ describe("ColumnGroup", () => {
       </ColumnGroup>,
     );
     const trigger = screen.getByRole("button") as HTMLButtonElement;
-    // Simulate the hover handlers — they swap inline background color.
-    trigger.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-    trigger.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
-    // No throw is sufficient — the handlers ran.
-    expect(trigger).toBeInTheDocument();
+    fireEvent.mouseEnter(trigger);
+    expect(trigger.style.background).toContain("overlay-faint");
+    fireEvent.mouseLeave(trigger);
+    expect(trigger.style.background).toBe("transparent");
   });
 });
