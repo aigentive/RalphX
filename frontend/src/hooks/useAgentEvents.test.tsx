@@ -1458,6 +1458,60 @@ describe("useAgentEvents", () => {
       ).toBeGreaterThan(Date.now() - 1_000);
     });
 
+    it("forces Agents workspace conversations idle when the backend process is no longer running", async () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents(null), { wrapper });
+
+      act(() => {
+        useChatStore.setState((state) => ({
+          ...state,
+          activeConversationIds: { "project:conversation-2": "conversation-2" },
+          agentStatus: { "project:conversation-2": "generating" },
+          lastAgentEventTimestamp: {
+            "project:conversation-2": Date.now() - 360_000,
+          },
+          toolCallStartTimes: {
+            "project:conversation-2": { "tool-stale": Date.now() - 660_000 },
+          },
+        }));
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+        await Promise.resolve();
+      });
+
+      expect(chatApi.isAgentRunning).toHaveBeenCalledWith("project", "conversation-2");
+      expect(useChatStore.getState().agentStatus["project:conversation-2"]).toBeUndefined();
+      expect(useChatStore.getState().toolCallStartTimes["project:conversation-2"]).toBeUndefined();
+    });
+
+    it("falls back to clearing Agents workspace status when the liveness check fails", async () => {
+      vi.mocked(chatApi.isAgentRunning).mockRejectedValue(new Error("liveness check failed"));
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents(null), { wrapper });
+
+      act(() => {
+        useChatStore.setState((state) => ({
+          ...state,
+          activeConversationIds: { "project:conversation-3": "conversation-3" },
+          agentStatus: { "project:conversation-3": "generating" },
+          lastAgentEventTimestamp: {
+            "project:conversation-3": Date.now() - 360_000,
+          },
+        }));
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(30_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(chatApi.isAgentRunning).toHaveBeenCalledWith("project", "conversation-3");
+      expect(useChatStore.getState().agentStatus["project:conversation-3"]).toBeUndefined();
+    });
+
     it("resets on message_created — does NOT fire while events keep coming", () => {
       const wrapper = createWrapper();
       renderHook(() => useAgentEvents("conv-1"), { wrapper });
