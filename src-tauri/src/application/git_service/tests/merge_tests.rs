@@ -1,7 +1,25 @@
 use super::super::*;
 use super::init_test_repo;
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Output};
 use std::sync::{Arc, Mutex as StdMutex};
+
+fn git(repo: &Path, args: &[&str]) -> Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap()
+}
+
+fn assert_git_success(output: &Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{}: {}",
+        context,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 // These tests verify the merge verification logic used by attempt_merge_auto_complete
 // and complete_merge HTTP handler to detect when a commit is NOT on main branch.
@@ -945,6 +963,96 @@ async fn test_try_complete_stale_rebase_has_real_conflicts() {
 // =============================================================================
 // fetch_origin serialization tests
 // =============================================================================
+
+#[tokio::test]
+async fn test_fetch_origin_prunes_deleted_remote_tracking_refs() {
+    let origin_dir = tempfile::tempdir().unwrap();
+    let seed_dir = tempfile::tempdir().unwrap();
+    let clone_parent = tempfile::tempdir().unwrap();
+    let origin_repo = origin_dir.path();
+    let seed_repo = seed_dir.path();
+    let clone_repo = clone_parent.path().join("clone");
+
+    let init_origin = Command::new("git")
+        .args(["init", "--bare", origin_repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_git_success(&init_origin, "Expected bare origin init to succeed");
+
+    init_test_repo(seed_repo);
+    std::fs::write(seed_repo.join("main.txt"), "main").unwrap();
+    assert_git_success(&git(seed_repo, &["add", "."]), "Expected add on seed repo to succeed");
+    assert_git_success(
+        &git(seed_repo, &["commit", "-m", "initial main"]),
+        "Expected main commit to succeed",
+    );
+
+    assert_git_success(
+        &git(seed_repo, &["remote", "add", "origin", origin_repo.to_str().unwrap()]),
+        "Expected remote add to succeed",
+    );
+    assert_git_success(
+        &git(seed_repo, &["push", "-u", "origin", "main"]),
+        "Expected main push to succeed",
+    );
+
+    assert_git_success(
+        &git(seed_repo, &["checkout", "-b", "obsolete-base"]),
+        "Expected branch creation to succeed",
+    );
+    std::fs::write(seed_repo.join("obsolete.txt"), "obsolete").unwrap();
+    assert_git_success(
+        &git(seed_repo, &["add", "."]),
+        "Expected obsolete branch add to succeed",
+    );
+    assert_git_success(
+        &git(seed_repo, &["commit", "-m", "obsolete branch"]),
+        "Expected obsolete branch commit to succeed",
+    );
+    assert_git_success(
+        &git(seed_repo, &["push", "-u", "origin", "obsolete-base"]),
+        "Expected obsolete branch push to succeed",
+    );
+    assert_git_success(
+        &git(seed_repo, &["checkout", "main"]),
+        "Expected checkout back to main to succeed",
+    );
+
+    let clone_origin = Command::new("git")
+        .args([
+            "clone",
+            origin_repo.to_str().unwrap(),
+            clone_repo.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_git_success(&clone_origin, "Expected clone from origin to succeed");
+
+    let initial_ref = git(&clone_repo, &["show-ref", "--verify", "refs/remotes/origin/obsolete-base"]);
+    assert_git_success(
+        &initial_ref,
+        "Expected cloned repo to have origin/obsolete-base before deletion",
+    );
+
+    assert_git_success(
+        &git(seed_repo, &["push", "origin", "--delete", "obsolete-base"]),
+        "Expected remote branch deletion to succeed",
+    );
+
+    let stale_ref = git(&clone_repo, &["show-ref", "--verify", "refs/remotes/origin/obsolete-base"]);
+    assert_git_success(
+        &stale_ref,
+        "Expected stale origin/obsolete-base ref to remain before fetch",
+    );
+
+    GitService::fetch_origin(&clone_repo).await.unwrap();
+
+    let pruned_ref = git(&clone_repo, &["show-ref", "--verify", "refs/remotes/origin/obsolete-base"]);
+    assert!(
+        !pruned_ref.status.success(),
+        "Expected origin/obsolete-base to be pruned after fetch_origin"
+    );
+}
 
 /// Verify that concurrent fetch_origin calls on repos without an origin remote
 /// complete without errors and without panicking.

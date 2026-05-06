@@ -69,7 +69,7 @@ impl GitService {
 
         debug!("fetch_origin: acquired FETCH_LOCK, fetching {:?}", repo);
 
-        let output = git_cmd::run(&["fetch", "origin"], repo).await?;
+        let output = git_cmd::run(&["fetch", "--prune", "origin"], repo).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
