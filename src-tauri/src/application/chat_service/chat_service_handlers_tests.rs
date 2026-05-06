@@ -7,7 +7,8 @@ use tauri::Manager;
 
 use crate::application::{
     chat_service::verification_child_process_registry::VerificationChildProcessRegistry,
-    chat_service::ProviderErrorCategory, AppState, InteractiveProcessRegistry,
+    chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
+    AppState, InteractiveProcessRegistry,
 };
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, ChatConversation, IdeationSessionId, InternalStatus, Project,
@@ -276,6 +277,112 @@ async fn test_execution_attempt_guard_allows_current_run() {
         )
         .await,
         "Current execution run must still be allowed to transition the task",
+    );
+}
+
+#[tokio::test]
+async fn test_load_current_task_execution_attempt_classifies_current_attempt() {
+    use crate::domain::entities::{AgentRun, ChatConversationId};
+    use crate::infrastructure::memory::MemoryAgentRunRepository;
+
+    let task_id = TaskId::new();
+    let mut task = make_task(InternalStatus::Executing);
+    task.id = task_id.clone();
+    let status_entered_at = Utc::now();
+    let task_repo: Arc<dyn TaskRepository> = Arc::new(StubTaskRepo {
+        task: Some(task.clone()),
+        status_entered_at: Some(status_entered_at),
+    });
+
+    let run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let mut current_run = AgentRun::new(ChatConversationId::new());
+    current_run.started_at = status_entered_at + chrono::Duration::milliseconds(250);
+    let current_run_id = current_run.id.as_str().to_string();
+    run_repo.create(current_run).await.unwrap();
+
+    let mut stale_run = AgentRun::new(ChatConversationId::new());
+    stale_run.started_at = status_entered_at - chrono::Duration::minutes(2);
+    let stale_run_id = stale_run.id.as_str().to_string();
+    run_repo.create(stale_run).await.unwrap();
+    let run_repo: Arc<dyn AgentRunRepository> = run_repo;
+
+    let current = load_current_task_execution_attempt(
+        &task_id,
+        current_run_id.as_str(),
+        &task_repo,
+        &run_repo,
+    )
+    .await;
+    assert!(
+        current.is_some(),
+        "current execution attempt should be eligible for finalization"
+    );
+
+    let stale =
+        load_current_task_execution_attempt(&task_id, stale_run_id.as_str(), &task_repo, &run_repo)
+            .await;
+    assert!(
+        stale.is_none(),
+        "older execution run must not finalize a newer execution attempt"
+    );
+
+    let review_repo: Arc<dyn TaskRepository> = Arc::new(StubTaskRepo {
+        task: Some(make_task(InternalStatus::Reviewing)),
+        status_entered_at: Some(status_entered_at),
+    });
+    let review_attempt = load_current_task_execution_attempt(
+        &task_id,
+        current_run_id.as_str(),
+        &review_repo,
+        &run_repo,
+    )
+    .await;
+    assert!(
+        review_attempt.is_none(),
+        "review-state tasks are no longer active execution attempts"
+    );
+}
+
+#[tokio::test]
+async fn test_load_current_task_execution_attempt_handles_missing_records() {
+    use crate::infrastructure::memory::MemoryAgentRunRepository;
+
+    let task_id = TaskId::new();
+    let missing_task_repo: Arc<dyn TaskRepository> = Arc::new(StubTaskRepo {
+        task: None,
+        status_entered_at: None,
+    });
+    let run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+
+    let missing_task = load_current_task_execution_attempt(
+        &task_id,
+        "missing-run",
+        &missing_task_repo,
+        &run_repo,
+    )
+    .await;
+    assert!(
+        missing_task.is_none(),
+        "missing tasks cannot be finalized as execution attempts"
+    );
+
+    let mut task = make_task(InternalStatus::Executing);
+    task.id = task_id.clone();
+    let active_task_repo: Arc<dyn TaskRepository> = Arc::new(StubTaskRepo {
+        task: Some(task),
+        status_entered_at: Some(Utc::now()),
+    });
+
+    let missing_run = load_current_task_execution_attempt(
+        &task_id,
+        "missing-run",
+        &active_task_repo,
+        &run_repo,
+    )
+    .await;
+    assert!(
+        missing_run.is_some(),
+        "missing agent-run rows should fail open for active execution tasks"
     );
 }
 
@@ -575,6 +682,66 @@ impl TaskStepRepository for StubErrorTaskStepRepo {
     }
 }
 
+struct StatusChangingTaskStepRepo {
+    task_repo: Arc<dyn TaskRepository>,
+    task_id: TaskId,
+    target_status: InternalStatus,
+}
+
+impl StatusChangingTaskStepRepo {
+    async fn move_task_to_target_status(&self) -> AppResult<()> {
+        let Some(mut task) = self.task_repo.get_by_id(&self.task_id).await? else {
+            return Ok(());
+        };
+        task.internal_status = self.target_status;
+        self.task_repo.update(&task).await
+    }
+}
+
+#[async_trait]
+impl TaskStepRepository for StatusChangingTaskStepRepo {
+    async fn create(&self, step: TaskStep) -> AppResult<TaskStep> {
+        Ok(step)
+    }
+    async fn get_by_id(&self, _: &TaskStepId) -> AppResult<Option<TaskStep>> {
+        Ok(None)
+    }
+    async fn get_by_task(&self, task_id: &TaskId) -> AppResult<Vec<TaskStep>> {
+        if task_id == &self.task_id {
+            self.move_task_to_target_status().await?;
+        }
+        Ok(Vec::new())
+    }
+    async fn get_by_task_and_status(
+        &self,
+        _: &TaskId,
+        _: TaskStepStatus,
+    ) -> AppResult<Vec<TaskStep>> {
+        Ok(Vec::new())
+    }
+    async fn update(&self, _: &TaskStep) -> AppResult<()> {
+        Ok(())
+    }
+    async fn delete(&self, _: &TaskStepId) -> AppResult<()> {
+        Ok(())
+    }
+    async fn delete_by_task(&self, _: &TaskId) -> AppResult<()> {
+        Ok(())
+    }
+    async fn count_by_status(&self, _: &TaskId) -> AppResult<HashMap<TaskStepStatus, u32>> {
+        Ok(HashMap::new())
+    }
+    async fn bulk_create(&self, steps: Vec<TaskStep>) -> AppResult<Vec<TaskStep>> {
+        Ok(steps)
+    }
+    async fn reorder(&self, _: &TaskId, _: Vec<TaskStepId>) -> AppResult<()> {
+        Ok(())
+    }
+    async fn reset_all_to_pending(&self, _: &TaskId) -> AppResult<u32> {
+        Ok(0)
+    }
+}
+
 fn make_step(task_id: &TaskId, status: TaskStepStatus) -> TaskStep {
     let mut step = TaskStep::new(task_id.clone(), "test step".into(), 0, "agent".into());
     step.status = status;
@@ -727,6 +894,149 @@ fn test_all_skipped_no_completed() {
 
     let result = run(all_steps_completed(&step_repo, &task_id));
     assert!(result, "All Skipped → helper returns true");
+}
+
+async fn assert_late_execution_finalizer_preserves_status(target_status: InternalStatus) {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new("Review Race".into(), "/tmp/review-race".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Execution finalizer race".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
+        Some(Arc::new(StatusChangingTaskStepRepo {
+            task_repo: Arc::clone(&state.task_repo),
+            task_id: task_id.clone(),
+            target_status,
+        }));
+
+    handle_stream_success::<MockRuntime>(
+        "late-run-id",
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        false,
+        false,
+        &execution_state,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &task_step_repo,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(
+        updated.internal_status, target_status,
+        "late execution finalizer must not overwrite review progress with Failed"
+    );
+}
+
+#[tokio::test]
+async fn test_late_execution_finalizer_cannot_overwrite_pending_review_or_reviewing() {
+    assert_late_execution_finalizer_preserves_status(InternalStatus::PendingReview).await;
+    assert_late_execution_finalizer_preserves_status(InternalStatus::Reviewing).await;
+}
+
+#[tokio::test]
+async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_metadata() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new("Incomplete Execution".into(), "/tmp/incomplete-execution".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Current execution attempt".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    handle_stream_success::<MockRuntime>(
+        "run-id-incomplete-success",
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        false,
+        false,
+        &execution_state,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(
+        updated.internal_status,
+        InternalStatus::Failed,
+        "current incomplete execution should still transition to Failed"
+    );
+
+    let metadata: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .expect("incomplete finalizer should persist diagnostic metadata");
+    assert_eq!(
+        metadata
+            .get("last_agent_error_context")
+            .and_then(|value| value.as_str()),
+        Some("execution")
+    );
+    assert_eq!(
+        metadata
+            .get("last_agent_error")
+            .and_then(|value| value.as_str()),
+        Some("Agent ended without completing all task steps")
+    );
 }
 
 // ========================================
@@ -1985,6 +2295,242 @@ async fn test_task_execution_shutdown_error_persists_startup_recovery_metadata()
             .and_then(|value| value.as_str()),
         Some("agent exited during shutdown"),
         "shutdown error path should preserve the agent error for diagnostics"
+    );
+}
+
+#[tokio::test]
+async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new("Failed Execution".into(), "/tmp/failed-execution".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Executing task".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let stream_error = StreamError::Timeout {
+        context_type: ChatContextType::TaskExecution,
+        elapsed_secs: 120,
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "execution timed out after 120s",
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-timeout-error",
+        "message-id-timeout-error",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &execution_state,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(
+        !recovery_spawned,
+        "normal execution error path should not spawn stale-session recovery"
+    );
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(
+        updated.internal_status,
+        InternalStatus::Failed,
+        "current execution error should transition to Failed"
+    );
+
+    let metadata: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .expect("execution error should persist metadata");
+    assert_eq!(
+        metadata
+            .get("last_agent_error_context")
+            .and_then(|value| value.as_str()),
+        Some("execution")
+    );
+    assert_eq!(
+        metadata
+            .get("last_agent_error")
+            .and_then(|value| value.as_str()),
+        Some("execution timed out after 120s")
+    );
+    assert_eq!(
+        metadata.get("is_timeout").and_then(|value| value.as_bool()),
+        Some(true),
+        "timeout finalizer should preserve timeout classification"
+    );
+    assert!(
+        metadata.get("execution_recovery").is_some(),
+        "non-provider execution errors should preserve recovery metadata"
+    );
+}
+
+#[tokio::test]
+async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new("Provider Pause".into(), "/tmp/provider-pause-finalizer".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let existing_provider_metadata = ProviderErrorMetadata {
+        category: ProviderErrorCategory::RateLimit,
+        message: "previous limit".to_string(),
+        retry_after: None,
+        previous_status: InternalStatus::Executing.to_string(),
+        paused_at: Utc::now().to_rfc3339(),
+        auto_resumable: true,
+        resume_attempts: 2,
+    };
+
+    let mut task = Task::new(project.id.clone(), "Executing task".into());
+    task.internal_status = InternalStatus::Executing;
+    task.metadata = Some(existing_provider_metadata.write_to_task_metadata(None));
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let retry_after = (Utc::now() + chrono::Duration::minutes(30)).to_rfc3339();
+    let stream_error = StreamError::ProviderError {
+        category: ProviderErrorCategory::RateLimit,
+        message: "usage limit reached".to_string(),
+        retry_after: Some(retry_after.clone()),
+    };
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "usage limit reached",
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-provider-error",
+        "message-id-provider-error",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &execution_state,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(
+        !recovery_spawned,
+        "provider pause path should not spawn stale-session recovery"
+    );
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated.internal_status, InternalStatus::Paused);
+
+    let provider_error = ProviderErrorMetadata::from_task_metadata(updated.metadata.as_deref())
+        .expect("provider error metadata should be persisted");
+    assert_eq!(provider_error.category, ProviderErrorCategory::RateLimit);
+    assert_eq!(provider_error.message, "usage limit reached");
+    assert_eq!(provider_error.retry_after, Some(retry_after));
+    assert_eq!(
+        provider_error.resume_attempts, 2,
+        "existing resume attempts should carry forward across provider pauses"
+    );
+
+    let metadata: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .expect("provider pause should persist metadata");
+    assert!(
+        metadata.get("pause_reason").is_some(),
+        "provider pause metadata should include the unified pause reason"
     );
 }
 

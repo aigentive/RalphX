@@ -448,7 +448,7 @@ impl Notifier for LoggingNotifier {
 
 /// Repository-backed DependencyManager for automatic task blocking/unblocking
 ///
-/// When a task completes (enters Approved state), this manager:
+/// When a task completes (enters Merged state), this manager:
 /// 1. Finds all tasks that were blocked by the completed task
 /// 2. For each blocked task, checks if ALL its blockers are now complete
 /// 3. If all blockers complete, transitions the task from Blocked to Ready
@@ -473,11 +473,11 @@ impl<R: Runtime> RepoBackedDependencyManager<R> {
     }
 
     /// Check if a blocking task satisfies the dependency (no longer blocking dependents).
-    /// Delegates to InternalStatus::is_dependency_satisfied() as the single source of truth.
+    /// Delegates to the shared dependency blocker classifier.
     /// If task doesn't exist (deleted), consider it satisfied (not blocking).
     async fn is_blocker_complete(&self, blocker_id: &TaskId) -> bool {
         if let Ok(Some(task)) = self.task_repo.get_by_id(blocker_id).await {
-            task.internal_status.is_dependency_satisfied()
+            !task.internal_status.is_active_dependency_blocker()
         } else {
             // If task doesn't exist, consider it "complete" (not blocking)
             true
@@ -496,19 +496,14 @@ impl<R: Runtime> RepoBackedDependencyManager<R> {
         let mut failed_names = Vec::new();
         for blocker_id in blockers {
             if let Ok(Some(task)) = self.task_repo.get_by_id(&blocker_id).await {
-                match task.internal_status {
-                    InternalStatus::Merged
-                    | InternalStatus::Cancelled
-                    | InternalStatus::Stopped
-                    | InternalStatus::MergeIncomplete => {
-                        // complete — not included
-                    }
-                    InternalStatus::Failed => {
-                        failed_names.push(task.title);
-                    }
-                    _ => {
-                        waiting_names.push(task.title);
-                    }
+                if !task.internal_status.is_active_dependency_blocker() {
+                    continue;
+                }
+
+                if task.internal_status == InternalStatus::Failed {
+                    failed_names.push(task.title);
+                } else {
+                    waiting_names.push(task.title);
                 }
             }
         }

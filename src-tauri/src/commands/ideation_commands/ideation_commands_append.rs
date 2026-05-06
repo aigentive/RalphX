@@ -139,7 +139,7 @@ pub async fn append_ideation_plan_task_core(
 
     let has_unsatisfied_blocker = blocker_tasks
         .iter()
-        .any(|task| !task.internal_status.is_dependency_satisfied());
+        .any(|task| task.internal_status.is_active_dependency_blocker());
     let initial_status = if has_unsatisfied_blocker {
         InternalStatus::Blocked
     } else {
@@ -159,7 +159,7 @@ pub async fn append_ideation_plan_task_core(
     task.blocked_reason = if has_unsatisfied_blocker {
         let blocker_titles = blocker_tasks
             .iter()
-            .filter(|task| !task.internal_status.is_dependency_satisfied())
+            .filter(|task| task.internal_status.is_active_dependency_blocker())
             .map(|task| task.title.as_str())
             .collect::<Vec<_>>()
             .join(", ");

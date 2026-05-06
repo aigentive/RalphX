@@ -10,9 +10,8 @@
 use std::sync::Arc;
 
 use crate::domain::entities::{
-    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
-    ScopeDriftStatus, StepProgressSummary, TaskContext, TaskDependencySummary, TaskId,
-    TaskProposalSummary,
+    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary, ScopeDriftStatus,
+    StepProgressSummary, TaskContext, TaskDependencySummary, TaskId, TaskProposalSummary,
 };
 use crate::domain::repositories::{
     ArtifactRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
@@ -149,6 +148,12 @@ impl TaskContextService {
         let mut blocked_by: Vec<TaskDependencySummary> = Vec::new();
         for blocker_id in &blocker_ids {
             if let Some(blocker_task) = self.task_repo.get_by_id(blocker_id).await? {
+                if !blocker_task
+                    .internal_status
+                    .is_active_dependency_blocker()
+                {
+                    continue;
+                }
                 blocked_by.push(TaskDependencySummary {
                     id: blocker_task.id.clone(),
                     title: blocker_task.title.clone(),
@@ -175,17 +180,7 @@ impl TaskContextService {
         let tier = if blocked_by.is_empty() {
             Some(1)
         } else {
-            // Count how many blockers are not yet completed
-            let incomplete_blockers = blocked_by
-                .iter()
-                .filter(|b| {
-                    !matches!(
-                        b.internal_status,
-                        crate::domain::entities::InternalStatus::Approved
-                    )
-                })
-                .count();
-            Some((incomplete_blockers as u32) + 1)
+            Some((blocked_by.len() as u32) + 1)
         };
 
         // 9. Generate context_hints based on what's available

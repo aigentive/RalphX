@@ -1444,8 +1444,7 @@ impl<R: Runtime> StartupJobRunner<R> {
     /// dependent tasks were unblocked).
     ///
     /// Scans all Blocked tasks across all projects and transitions those
-    /// whose blockers are all in terminal states (Approved, Merged, Failed, Cancelled)
-    /// to Ready status.
+    /// whose blockers satisfy the shared dependency classifier to Ready status.
     async fn unblock_ready_tasks(&self) {
         // Get all projects to scan for blocked tasks
         let projects = match self.project_repo.get_all().await {
@@ -1572,14 +1571,14 @@ impl<R: Runtime> StartupJobRunner<R> {
     }
 
     /// Check if all blocker tasks satisfy the dependency (allow unblocking).
-    /// Delegates to InternalStatus::is_dependency_satisfied() — only Merged|Cancelled.
+    /// Delegates to the shared dependency blocker classifier.
     /// MergeIncomplete, Failed, and Stopped are terminal but do NOT satisfy dependencies.
     /// If a blocker doesn't exist (was deleted), it's considered satisfied.
     async fn all_blockers_complete(&self, blocker_ids: &[crate::domain::entities::TaskId]) -> bool {
         for blocker_id in blocker_ids {
             match self.task_repo.get_by_id(blocker_id).await {
                 Ok(Some(task)) => {
-                    if !task.internal_status.is_dependency_satisfied() {
+                    if task.internal_status.is_active_dependency_blocker() {
                         return false;
                     }
                 }
@@ -1682,7 +1681,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                     for blocker_id in &blockers {
                         match self.task_repo.get_by_id(blocker_id).await {
                             Ok(Some(blocker)) => {
-                                if !blocker.internal_status.is_dependency_satisfied() {
+                                if blocker.internal_status.is_active_dependency_blocker() {
                                     let label = if blocker.internal_status == InternalStatus::Failed
                                     {
                                         format!("\"{}\" (failed)", blocker.title)
