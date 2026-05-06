@@ -1002,6 +1002,23 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
+  it("disables publish when no changed files are detected", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceChangesMock.mockResolvedValue([]);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    const publishButton = await screen.findByTestId("agents-publish-confirm");
+    await screen.findByText("No changed files detected yet.");
+    await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
+    expect(publishButton).toBeDisabled();
+
+    fireEvent.click(publishButton);
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("disables publish once the workspace branch is pushed and current", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
