@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import { Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
+import { Clock, Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
 
 import type {
   AgentConversationWorkspace,
@@ -11,6 +11,8 @@ import {
 } from "@/components/Chat/IntegratedChatPanel";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
+import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
   AgentProvider,
@@ -40,6 +42,10 @@ import {
   agentModelOptions,
 } from "./agentOptions";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
+import {
+  getAgentQueueHaltState,
+  type AgentQueueHaltState,
+} from "./agentExecutionPause";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getFocusedChatSessionId,
@@ -138,6 +144,27 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     return getAgentConversationStoreKey(activeConversation);
   }, [activeConversation, focusedChatSessionId]);
+  const queuedMessagesSelector = useMemo(
+    () => selectQueuedMessages(panelStoreKeyOverride),
+    [panelStoreKeyOverride]
+  );
+  const queuedMessages = useChatStore(queuedMessagesSelector);
+  const executionHaltState = useUiStore((s) =>
+    getAgentQueueHaltState(s.executionStatus)
+  );
+  const queuedInitialPrompt = queuedMessages[0]?.content ?? null;
+  const emptyState = useMemo(
+    () =>
+      executionHaltState && queuedInitialPrompt ? (
+        <AgentsPausedQueuedEmptyState
+          haltState={executionHaltState}
+          prompt={queuedInitialPrompt}
+        />
+      ) : (
+        <div />
+      ),
+    [executionHaltState, queuedInitialPrompt]
+  );
 
   // Every chat now renders the rich composer, which hosts the chat focus
   // pill — so the header bar should never duplicate the picker. Keep the
@@ -418,7 +445,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 ),
               }
             : {})}
-          emptyState={<div />}
+          emptyState={emptyState}
         />
       </div>
       <AgentsTerminalDockHost
@@ -432,3 +459,70 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     </div>
   );
 });
+
+function AgentsPausedQueuedEmptyState({
+  haltState,
+  prompt,
+}: {
+  haltState: NonNullable<AgentQueueHaltState>;
+  prompt: string;
+}) {
+  const title =
+    haltState === "stopped" ? "Execution is stopped" : "Execution is paused";
+  const detail =
+    haltState === "stopped"
+      ? "This prompt will start when execution starts."
+      : "This prompt will start when execution resumes.";
+
+  return (
+    <div
+      data-testid="agents-paused-queued-empty-state"
+      className="flex h-full w-full items-center justify-center p-6"
+    >
+      <div className="w-full max-w-[360px] text-center">
+        <div
+          className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-md border"
+          style={{
+            background: "var(--status-warning-muted)",
+            borderColor: "var(--status-warning-border)",
+            color: "var(--status-warning)",
+          }}
+        >
+          <Clock className="h-5 w-5" />
+        </div>
+        <h3
+          className="text-base font-semibold tracking-tight"
+          style={{ color: "var(--text-primary)" }}
+        >
+          {title}
+        </h3>
+        <p
+          className="mt-2 text-sm leading-relaxed"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          {detail}
+        </p>
+        <div
+          className="mt-5 rounded-md border px-3 py-2.5 text-left"
+          style={{
+            background: "var(--bg-surface)",
+            borderColor: "var(--border-subtle)",
+          }}
+        >
+          <p
+            className="text-[11px] font-medium uppercase tracking-[0.12em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Queued prompt
+          </p>
+          <p
+            className="mt-1 line-clamp-4 text-sm leading-relaxed"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {prompt}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}

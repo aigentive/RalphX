@@ -1,6 +1,9 @@
 import { useState, type ComponentProps } from "react";
 import { toast } from "sonner";
 
+import { useUiStore } from "@/stores/uiStore";
+
+import { getAgentQueueHaltState } from "./agentExecutionPause";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { AgentsStartComposer } from "./AgentsStartComposer";
 
@@ -27,6 +30,9 @@ export function AgentsStartConversationPanel({
   projects,
 }: AgentsStartConversationPanelProps) {
   const [isStartingConversation, setIsStartingConversation] = useState(false);
+  const executionHaltState = useUiStore((s) =>
+    getAgentQueueHaltState(s.executionStatus)
+  );
 
   return (
     <div className="flex-1 min-w-0 h-full">
@@ -34,6 +40,7 @@ export function AgentsStartConversationPanel({
         projects={projects}
         defaultProjectId={defaultProjectId}
         defaultRuntime={normalizeRuntimeSelection(defaultRuntime)}
+        executionHaltState={executionHaltState}
         isLoadingProjects={isLoadingProjects}
         isSubmitting={isStartingConversation}
         onCreateProject={onCreateProject}
