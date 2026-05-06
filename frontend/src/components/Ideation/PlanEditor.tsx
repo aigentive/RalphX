@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
+import { backendApiUrl } from "@/api/backend";
 import type { Artifact } from "@/types/artifact";
 import { PlanTemplateSelector } from "./PlanTemplateSelector";
 
@@ -173,7 +174,7 @@ export function PlanEditor({ plan, onSave, onCancel, isNewPlan = false }: PlanEd
 
     try {
       // Call the HTTP endpoint to update plan artifact
-      const response = await fetch("http://localhost:3847/api/update_plan_artifact", {
+      const response = await fetch(backendApiUrl("update_plan_artifact"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

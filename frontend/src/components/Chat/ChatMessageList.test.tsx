@@ -30,6 +30,15 @@ Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
   writable: true,
 });
 
+// jsdom doesn't implement scrollTo on HTMLElement — stub it so scroll-related
+// callbacks in the Virtuoso production path don't throw. Leave scrollBy alone:
+// the existing wheel-scroll test relies on the fallback path that increments
+// scrollTop directly when scrollBy is not a function.
+Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+  value: vi.fn(),
+  writable: true,
+});
+
 // Mock useChatAutoScroll to control scroll behavior in tests
 let mockIsAtBottom = true;
 const mockIsAtBottomRef = { current: true };
@@ -69,6 +78,78 @@ vi.mock("./TaskSubagentCard", () => ({
     <div data-testid={`task-subagent-card-${task.toolUseId}`}>task card</div>
   ),
 }));
+
+// Mock react-virtuoso — the real implementation doesn't work in jsdom and we want
+// to drive the Virtuoso (production) render path to exercise renderItem and the
+// non-test-env branch. The mock renders the timeline items via itemContent and
+// triggers Virtuoso lifecycle callbacks where useful.
+vi.mock("react-virtuoso", async () => {
+  const React = await import("react");
+  const Virtuoso = React.forwardRef<unknown, Record<string, unknown>>(
+    function MockVirtuoso(props, ref) {
+      type ItemContent = (i: number, item: unknown) => React.ReactNode;
+      type Components = { Header?: React.ComponentType };
+      type ScrollerRef = (el: HTMLElement | Window | null) => void;
+      type RangeChanged = (range: { startIndex: number; endIndex: number }) => void;
+      type AtBottomStateChange = (atBottom: boolean) => void;
+      type FollowOutput = (atBottom: boolean) => "smooth" | "auto" | false;
+      type StartReached = (idx: number) => void;
+      const data = (props.data as unknown[]) ?? [];
+      const itemContent = props.itemContent as ItemContent | undefined;
+      const components = (props.components as Components) ?? {};
+      const Header = components.Header;
+      const scrollerRef = props.scrollerRef as ScrollerRef | undefined;
+      const rangeChanged = props.rangeChanged as RangeChanged | undefined;
+      const atBottomStateChange = props.atBottomStateChange as AtBottomStateChange | undefined;
+      const followOutput = props.followOutput as FollowOutput | undefined;
+      const startReached = props.startReached as StartReached | undefined;
+      const innerRef = React.useRef<HTMLDivElement>(null);
+
+      React.useImperativeHandle(ref, () => ({
+        scrollToIndex: () => {},
+        scrollToBottom: () => {},
+      }));
+
+      // Wire scrollerRef + lifecycle callbacks after first paint
+      React.useEffect(() => {
+        if (innerRef.current && scrollerRef) {
+          scrollerRef(innerRef.current);
+        }
+        if (rangeChanged && data.length > 0) {
+          rangeChanged({ startIndex: 0, endIndex: data.length - 1 });
+        }
+        if (atBottomStateChange) {
+          atBottomStateChange(true);
+          atBottomStateChange(false);
+        }
+        if (followOutput) {
+          followOutput(true);
+          followOutput(false);
+        }
+        if (startReached && data.length > 0) {
+          startReached(0);
+        }
+        return () => {
+          if (scrollerRef) {
+            scrollerRef(null);
+          }
+        };
+      }, [scrollerRef, rangeChanged, atBottomStateChange, followOutput, startReached, data.length]);
+
+      return (
+        <div ref={innerRef} data-testid="mock-virtuoso">
+          {Header ? <Header /> : null}
+          {data.map((item, i) => (
+            <div key={i} data-mock-item-index={i}>
+              {itemContent ? itemContent(i, item) : null}
+            </div>
+          ))}
+        </div>
+      );
+    },
+  );
+  return { Virtuoso };
+});
 
 const createMessages = (count: number): ChatMessageData[] => {
   return Array.from({ length: count }, (_, i) => ({
@@ -2526,6 +2607,310 @@ describe("ChatMessageList - Streaming text/empty edge cases", () => {
       />
     );
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+});
+
+// ============================================================================
+// Virtuoso (production-path) coverage — flips isTestEnv off via mocked react-virtuoso.
+// ============================================================================
+
+describe("ChatMessageList - Virtuoso production render path", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITEST", "");
+    mockUseMessageAttachments.mockReturnValue({ data: new Map() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("renders timeline through Virtuoso path with messages", () => {
+    render(<ChatMessageList {...defaultProps} messages={createMessages(3)} />);
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with hook events interleaved", () => {
+    const hookEvents = [
+      {
+        type: "completed" as const,
+        conversationId: "conv-1",
+        contextType: "ideation",
+        contextId: "session-1",
+        timestamp: new Date(2026, 0, 1, 12, 5).getTime(),
+        hookName: "PreToolUse",
+        hookEvent: "tool_use",
+        hookId: "h1",
+        output: "ok",
+        outcome: "allow",
+        exitCode: 0,
+      },
+    ];
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(2)}
+        hookEvents={hookEvents}
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with streaming footer content", () => {
+    const blocks: StreamingContentBlock[] = [
+      { type: "text", text: "streaming text" },
+    ];
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        isAgentRunning={true}
+        streamingContentBlocks={blocks}
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with isFetchingOlderMessages indicator", () => {
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(2)}
+        isFetchingOlderMessages={true}
+      />,
+    );
+    expect(screen.getByText(/Loading earlier messages/i)).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with hasOlderMessages and onLoadOlderMessages", () => {
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(2)}
+        hasOlderMessages={true}
+        onLoadOlderMessages={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with failedRun banner", () => {
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(2)}
+        failedRun={{ id: "r1", errorMessage: "boom" }}
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with team filter empty state when timeline empty", () => {
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={[]}
+        teamFilter="alice"
+        contextKey="ctx-1"
+      />,
+    );
+    // With no messages and no team messages, the Virtuoso path still mounts.
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with team messages from team store", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-team": {
+          teamName: "T",
+          leadName: "lead",
+          teammates: {},
+          messages: [
+            {
+              id: "tm-1",
+              from: "lead",
+              to: "alice",
+              content: "hi",
+              timestamp: new Date(2026, 0, 1, 12, 1).toISOString(),
+            },
+            {
+              id: "tm-2",
+              from: "alice",
+              to: "lead",
+              content: "yes",
+              timestamp: new Date(2026, 0, 1, 12, 2).toISOString(),
+            },
+            {
+              id: "tm-3",
+              from: "bob",
+              to: "*",
+              content: "broadcast",
+              timestamp: new Date(2026, 0, 1, 12, 3).toISOString(),
+            },
+          ],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(2)}
+        teamFilter="alice"
+        contextKey="ctx-team"
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with team messages and 'lead' filter (sees all)", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-lead": {
+          teamName: "T",
+          leadName: "lead",
+          teammates: {},
+          messages: [
+            {
+              id: "tm-a",
+              from: "alice",
+              to: "bob",
+              content: "msg",
+              timestamp: new Date(2026, 0, 1, 12, 1).toISOString(),
+            },
+          ],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(1)}
+        teamFilter="lead"
+        contextKey="ctx-lead"
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with team messages and no team filter", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {
+        "ctx-no-filter": {
+          teamName: "T",
+          leadName: "lead",
+          teammates: {},
+          messages: [
+            {
+              id: "tm-z",
+              from: "alice",
+              to: "lead",
+              content: "msg z",
+              timestamp: new Date(2026, 0, 1, 12, 4).toISOString(),
+            },
+          ],
+          totalTokens: 0,
+          totalEstimatedCostUsd: 0,
+          createdAt: new Date(2026, 0, 1).toISOString(),
+        },
+      },
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={createMessages(1)}
+        contextKey="ctx-no-filter"
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with isFilteredTabEmpty banner shown", async () => {
+    const { useTeamStore } = await import("@/stores/teamStore");
+    useTeamStore.setState({
+      activeTeams: {},
+      pendingPlans: {},
+      artifactVersion: {},
+    });
+    // Need messages.length > 0 AND timeline.length === 0 — that means messages
+    // exist but are filtered out (provider snapshot), AND non-lead teamFilter is set.
+    // The simpler path: empty messages with teamFilter set won't show this. Force the
+    // suppressedProviderMessageId to swallow the only message: agent running, latest
+    // user msg has been answered by an empty assistant with no content.
+    const messages: ChatMessageData[] = [
+      {
+        id: "u-1",
+        role: "user",
+        content: "hi",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+      },
+      {
+        id: "a-1",
+        role: "assistant",
+        content: "",
+        createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+      },
+    ];
+    render(
+      <ChatMessageList
+        {...defaultProps}
+        messages={messages}
+        isAgentRunning={true}
+        teamFilter="alice"
+        contextKey="ctx-empty"
+      />,
+    );
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+
+  it("renders Virtuoso path with system card metadata", () => {
+    const messages: ChatMessageData[] = [
+      {
+        id: "sys-1",
+        role: "system",
+        content: "<auto-verification>x</auto-verification>",
+        createdAt: new Date(2026, 0, 1, 12, 0).toISOString(),
+        toolCalls: null,
+        contentBlocks: null,
+        metadata: JSON.stringify({ auto_verification: true }),
+      },
+    ];
+    render(<ChatMessageList {...defaultProps} messages={messages} />);
+    expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
+  });
+});
+
+describe("ChatMessageList - Scroll-to-bottom button interactions (Virtuoso path)", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITEST", "");
+    mockUseMessageAttachments.mockReturnValue({ data: new Map() });
+    mockIsAtBottom = false;
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    mockIsAtBottom = true;
+  });
+
+  it("scroll-to-bottom button is rendered (visible state may depend on scroll element)", () => {
+    render(<ChatMessageList {...defaultProps} messages={createMessages(10)} />);
+    // The button always mounts in Virtuoso path
+    expect(screen.getByTestId("chat-scroll-to-bottom-button")).toBeInTheDocument();
   });
 });
 

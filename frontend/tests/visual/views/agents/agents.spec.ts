@@ -608,6 +608,7 @@ test.describe("Agents View", () => {
     await selectAgentConversation(page, editConversationId);
     await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
     await page.getByTestId("agents-publish-workspace").click();
+    await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
 
     const submitButton = page.getByTestId("agents-conversation-submit");
     await expect(submitButton).toBeVisible();

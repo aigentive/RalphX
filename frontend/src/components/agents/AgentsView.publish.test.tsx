@@ -73,6 +73,41 @@ describe("AgentsView publish", () => {
     );
   });
 
+  it("shows Base unavailable in the header shortcut when backend blocks the saved base", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      })
+    );
+    getAgentConversationWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "blocked",
+      effectiveBaseRef: null,
+      effectiveBaseDisplayName: null,
+      baseBlockReason: "Saved base commit is not contained in the default branch",
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-workspace")).toHaveTextContent(
+        "Base unavailable"
+      )
+    );
+  });
+
   it("shows Update from base in the header shortcut for ideation plan-branch workspaces", async () => {
     mockAgentViewData(conversation({ agentMode: "ideation" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
@@ -189,7 +224,7 @@ describe("AgentsView publish", () => {
     await screen.findByTestId("agents-publish-confirm");
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
 
-    await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getAgentConversationWorkspaceMock).toHaveBeenCalledTimes(3));
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
     expect(toastErrorMock).toHaveBeenCalledWith(
       "Publish failed. Sent the error to the agent to fix."

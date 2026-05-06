@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
+import { useUiStore } from "@/stores/uiStore";
 import {
   agentProjectFixture as project,
   conversationFixture as conversation,
@@ -154,6 +156,70 @@ describe("AgentsView start conversation", () => {
       })
     );
     invalidateSpy.mockRestore();
+  });
+
+  it("renders a queued starter prompt and paused explanation when global execution is paused", async () => {
+    mockAgentViewData();
+    useUiStore.getState().setExecutionPaused(true);
+    const pausedConversation = conversation({
+      id: "conversation-paused",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(pausedConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: pausedConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-paused",
+      }),
+      sendResult: {
+        conversationId: "conversation-paused",
+        agentRunId: "",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-paused-start",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-paused-banner")).toHaveTextContent(
+        "Execution is paused"
+      )
+    );
+    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Queue Prompt");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "build the queued feature" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-paused",
+          content: "build the queued feature",
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(useChatStore.getState().queuedMessages["project:conversation-paused"]).toEqual([
+        expect.objectContaining({
+          id: "queued-paused-start",
+          content: "build the queued feature",
+          isEditing: false,
+        }),
+      ])
+    );
+
+    const queuedEmptyState = await screen.findByTestId("agents-paused-queued-empty-state");
+    expect(queuedEmptyState).toHaveTextContent("Execution is paused");
+    expect(queuedEmptyState).toHaveTextContent(
+      "This prompt will start when execution resumes."
+    );
+    expect(queuedEmptyState).toHaveTextContent("build the queued feature");
   });
 
   it("starts with the remembered runtime when the project has a valid runtime preference", async () => {

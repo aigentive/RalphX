@@ -730,6 +730,10 @@ describe("chat api", () => {
       is_base_ahead: true,
       has_uncommitted_changes: true,
       unpublished_commit_count: 2,
+      base_status: "retargeted",
+      effective_base_ref: "main",
+      effective_base_display_name: "Project default (main)",
+      base_block_reason: null,
     });
 
     const result = await getAgentConversationWorkspaceFreshness("conversation-1");
@@ -742,6 +746,9 @@ describe("chat api", () => {
       conversationId: "conversation-1",
       baseRef: "feature/agent-screen",
       targetRef: "origin/feature/agent-screen",
+      baseStatus: "retargeted",
+      effectiveBaseRef: "main",
+      effectiveBaseDisplayName: "Project default (main)",
       isBaseAhead: true,
       hasUncommittedChanges: true,
       unpublishedCommitCount: 2,

@@ -1,14 +1,25 @@
+mod common;
+
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+
+use ralphx_lib::application::agent_conversation_workspace::{
+    prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+};
 use ralphx_lib::application::{AppState, MockChatService, SendResult};
 use ralphx_lib::commands::unified_chat_commands::{
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
     AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse, SendAgentMessageResponse,
 };
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
+use ralphx_lib::domain::services::github_service::GithubServiceTrait;
 use ralphx_lib::domain::services::QueuedMessage;
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 
@@ -69,7 +80,10 @@ fn test_send_agent_message_response_queued() {
     assert_eq!(response.agent_run_id, "run-existing");
     assert!(!response.is_new_conversation);
     assert!(response.was_queued);
-    assert_eq!(response.queued_message_id.as_deref(), Some("queued-msg-123"));
+    assert_eq!(
+        response.queued_message_id.as_deref(),
+        Some("queued-msg-123")
+    );
     assert!(!response.queued_as_pending);
 }
 
@@ -133,6 +147,100 @@ fn test_agent_workspace() -> AgentConversationWorkspace {
         "ralphx/ralphx/agent-1234".to_string(),
         "/tmp/agent-1234".to_string(),
     )
+}
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should spawn");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_publish_repo(repo_path: &Path) -> String {
+    std::fs::create_dir_all(repo_path).expect("repo root should be created");
+    git(repo_path, &["init", "-b", "main"]);
+    git(repo_path, &["config", "user.email", "test@example.com"]);
+    git(repo_path, &["config", "user.name", "Test User"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("fixture file should be written");
+    git(repo_path, &["add", "README.md"]);
+    git(repo_path, &["commit", "-m", "base"]);
+    git(repo_path, &["rev-parse", "HEAD"])
+}
+
+async fn setup_ipc_workspace_state(
+    suffix: &str,
+    capture_base_commit: bool,
+    publication_pr_number: Option<i64>,
+    github: Arc<common::MockGithubService>,
+) -> (
+    tempfile::TempDir,
+    AppState,
+    ChatConversationId,
+    Arc<common::MockGithubService>,
+) {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    let main_sha = setup_publish_repo(&repo_path);
+
+    let mut project = Project::new(
+        format!("IPC Workspace {suffix}"),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let conversation_id = ChatConversationId::from_string(format!("conversation-ipc-{suffix}"));
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("workspace should be prepared");
+    workspace.base_ref = "feature/deleted-base".to_string();
+    workspace.base_display_name = Some("Current branch (feature/deleted-base)".to_string());
+    workspace.base_commit = capture_base_commit.then_some(main_sha);
+    workspace.publication_pr_number = publication_pr_number;
+    workspace.publication_pr_url =
+        publication_pr_number.map(|number| format!("https://github.com/mock/repo/pull/{number}"));
+    workspace.publication_pr_status = publication_pr_number.map(|_| "open".to_string());
+
+    let mut state = AppState::new_test();
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    state.github_service = Some(github_trait);
+    state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("project should be persisted");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should be persisted");
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should be persisted");
+
+    (temp, state, conversation_id, github)
 }
 
 #[tokio::test]
@@ -309,9 +417,10 @@ mod ipc_contract {
         UpsertCustomAgentModelInput,
     };
     use ralphx_lib::commands::unified_chat_commands::{
-        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
-        StartAgentConversationInput, SwitchAgentConversationModeInput,
-        UpdateAgentConversationTitleInput,
+        get_agent_conversation_workspace_freshness,
+        publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
+        QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
+        SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
     };
     use ralphx_lib::domain::agents::{
         built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,
@@ -328,6 +437,97 @@ mod ipc_contract {
             .manage(AppState::new_test())
             .build(mock_context(noop_assets()))
             .expect("mock app should build")
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_blocks_stale_base_without_commit() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "freshness-blocked",
+            false,
+            None,
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should return blocked state");
+
+        assert_eq!(response.base_status, "blocked");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref, None);
+        assert_eq!(
+            response.base_block_reason.as_deref(),
+            Some(
+                "Saved base branch is unavailable and the workspace is missing its captured base commit"
+            )
+        );
+        assert_eq!(response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_reports_retargeted_base() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "freshness-retargeted",
+            true,
+            None,
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should resolve retargeted base");
+
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(response.target_ref, "main");
+        assert!(!response.is_base_ahead);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_publish_blocks_when_existing_pr_base_retarget_fails() {
+        let github = std::sync::Arc::new(super::common::MockGithubService::new());
+        github.will_fail_update_pr_base("denied");
+        let (_temp, state, conversation_id, github) =
+            super::setup_ipc_workspace_state("publish-retarget-fails", true, Some(654), github)
+                .await;
+        let execution_state = std::sync::Arc::new(super::ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("failed PR base retarget should block publish");
+
+        assert!(error.contains("Existing PR #654 targets the deleted branch"));
+        assert_eq!(github.update_pr_base_calls(), 1);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
     }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────
@@ -455,11 +655,7 @@ mod ipc_contract {
                 label: "GPT-5.6".to_string(),
                 menu_label: Some(String::new()),
                 description: Some(" Future model ".to_string()),
-                supported_efforts: vec![
-                    "high".to_string(),
-                    "low".to_string(),
-                    "high".to_string(),
-                ],
+                supported_efforts: vec!["high".to_string(), "low".to_string(), "high".to_string()],
                 default_effort: "low".to_string(),
                 enabled: true,
             },
@@ -502,9 +698,18 @@ mod ipc_contract {
     fn agent_model_registry_ipc_contract_covers_provider_defaults() {
         let built_ins = built_in_agent_models();
         assert_eq!(built_ins.len(), 8);
-        assert_eq!(default_model_for_provider(AgentHarnessKind::Claude), "sonnet");
-        assert_eq!(default_model_for_provider(AgentHarnessKind::Codex), "gpt-5.5");
-        assert_eq!(lightweight_model_for_provider(AgentHarnessKind::Claude), "haiku");
+        assert_eq!(
+            default_model_for_provider(AgentHarnessKind::Claude),
+            "sonnet"
+        );
+        assert_eq!(
+            default_model_for_provider(AgentHarnessKind::Codex),
+            "gpt-5.5"
+        );
+        assert_eq!(
+            lightweight_model_for_provider(AgentHarnessKind::Claude),
+            "haiku"
+        );
         assert_eq!(
             lightweight_model_for_provider(AgentHarnessKind::Codex),
             "gpt-5.4-mini"
@@ -584,7 +789,11 @@ mod ipc_contract {
             "Claude Opus 5",
             "Claude Opus 5",
             None,
-            vec![LogicalEffort::High, LogicalEffort::XHigh, LogicalEffort::Max],
+            vec![
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max,
+            ],
             LogicalEffort::Max,
             true,
         );
