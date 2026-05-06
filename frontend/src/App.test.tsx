@@ -417,6 +417,25 @@ describe("App", () => {
     expect(mainElement).toHaveClass("h-screen", "flex", "flex-col");
   });
 
+  it("selecting a font-scale option closes the dropdown and updates the trigger label", async () => {
+    const user = userEvent.setup();
+    const { useThemeStore } = await import("@/stores/themeStore");
+    const initial = useThemeStore.getState().fontScale;
+    try {
+      render(<App />);
+
+      await user.click(screen.getByTestId("font-scale-selector-trigger"));
+      await user.click(screen.getByTestId("font-scale-option-lg"));
+      // Dropdown closed.
+      expect(screen.queryByTestId("font-scale-option-lg")).not.toBeInTheDocument();
+      // Trigger label reflects the new option (110%).
+      expect(screen.getByTestId("font-scale-selector").textContent).toMatch(/110%/);
+    } finally {
+      // Reset persisted fontScale so order-dependent v27 chrome tests still see 100%.
+      useThemeStore.getState().setFontScale(initial);
+    }
+  });
+
   it("should render the v27 top navigation chrome", () => {
     render(<App />);
     const header = screen.getByRole("banner");

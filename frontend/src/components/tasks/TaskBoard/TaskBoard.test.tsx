@@ -252,4 +252,26 @@ describe("TaskBoard", () => {
       });
     });
   });
+
+  describe("fillWidth prop", () => {
+    it("uses minmax(0, 1fr) columns when fillWidth=true so columns fluidly fill the host", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+      render(<TaskBoard projectId="p1" fillWidth />, { wrapper: createWrapper() });
+
+      const board = await screen.findByTestId("task-board");
+      // The grid template should not contain the 220px floor when fillWidth is on.
+      const tpl = (board as HTMLElement).style.gridTemplateColumns;
+      expect(tpl).toContain("minmax(0, 1fr)");
+      expect(tpl).not.toContain("220px");
+    });
+
+    it("falls back to minmax(220px, 1fr) when fillWidth is unset", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+      render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      const board = await screen.findByTestId("task-board");
+      const tpl = (board as HTMLElement).style.gridTemplateColumns;
+      expect(tpl).toContain("minmax(220px, 1fr)");
+    });
+  });
 });

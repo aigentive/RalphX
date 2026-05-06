@@ -733,4 +733,191 @@ describe("AgentsSidebar", () => {
 
     expect(onArchiveConversation).toHaveBeenCalledWith(activeConversation);
   });
+
+  it("toggles the sidebar search input and clears the query via the X button", async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+
+    expect(screen.queryByTestId("agents-search-input")).toBeNull();
+    await user.click(screen.getByTestId("agents-search-toggle"));
+    const input = screen.getByTestId("agents-search-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "alpha" } });
+    expect(input.value).toBe("alpha");
+
+    await user.click(screen.getByLabelText("Clear search"));
+    expect(input.value).toBe("");
+
+    // Toggling search closed clears the query and removes the input row.
+    fireEvent.change(input, { target: { value: "beta" } });
+    await user.click(screen.getByTestId("agents-search-toggle"));
+    expect(screen.queryByTestId("agents-search-input")).toBeNull();
+  });
+
+  it("toggles the project chevron via the agentSessionStore", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": true },
+      showAllProjects: false,
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar();
+
+    const chevron = screen.getByLabelText("Collapse project");
+    await user.click(chevron);
+    expect(useAgentSessionStore.getState().expandedProjectIds["project-1"]).toBe(false);
+
+    await user.click(screen.getByLabelText("Expand project"));
+    expect(useAgentSessionStore.getState().expandedProjectIds["project-1"]).toBe(true);
+  });
+
+  it("focuses the project when the row title is clicked", async () => {
+    const user = userEvent.setup();
+    const onFocusProject = vi.fn();
+    conversationsByProject.set("project-1", {
+      data: [],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    renderSidebar([project()], { onFocusProject });
+
+    await user.click(screen.getByText("ralphx"));
+    expect(onFocusProject).toHaveBeenCalledWith("project-1");
+  });
+
+  it("renders the active runtime badge when a project is collapsed but has a running agent", () => {
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": false },
+      showAllProjects: false,
+      projectSort: "latest",
+    });
+    const conv = conversation({ id: "conversation-running", title: "Running" });
+    const storeKey = getAgentConversationStoreKey(conv);
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 0,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [storeKey]: conv.id },
+      agentStatus: { [storeKey]: "generating" },
+    });
+
+    renderSidebar([project()], { focusedProjectId: null });
+
+    const projectRow = screen.getByTestId("agents-project-row-project-1");
+    expect(within(projectRow).getByText("1")).toBeInTheDocument();
+  });
+
+  it("selects a conversation row when clicked", async () => {
+    const user = userEvent.setup();
+    const onSelectConversation = vi.fn();
+    const conv = conversation({ id: "conversation-pick", title: "Pick me" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onSelectConversation });
+
+    await user.click(screen.getByText("Pick me"));
+    expect(onSelectConversation).toHaveBeenCalledWith("project-1", conv);
+  });
+
+  it("submits a rename via the Enter key inside the dialog", async () => {
+    const user = userEvent.setup();
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const conv = conversation({ id: "conversation-rename-2", title: "old" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onRenameConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    const titleInput = screen.getByLabelText("Session title");
+    await user.clear(titleInput);
+    await user.type(titleInput, "renamed-via-enter{Enter}");
+    await waitFor(() =>
+      expect(onRenameConversation).toHaveBeenCalledWith(
+        "conversation-rename-2",
+        "renamed-via-enter",
+      ),
+    );
+  });
+
+  it("cancel button in rename dialog closes without invoking onRenameConversation", async () => {
+    const user = userEvent.setup();
+    const onRenameConversation = vi.fn();
+    const conv = conversation({ id: "conversation-cancel-rename", title: "old" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onRenameConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    expect(screen.getByLabelText("Session title")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByLabelText("Session title")).toBeNull());
+    expect(onRenameConversation).not.toHaveBeenCalled();
+  });
+
+  it("restores an archived conversation via the row dropdown", async () => {
+    const user = userEvent.setup();
+    const onRestoreConversation = vi.fn();
+    const archived = conversation({
+      id: "conversation-archived",
+      title: "Old run",
+      archivedAt: "2026-04-22T13:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [archived],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      showArchived: true,
+      onRestoreConversation,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Restore session"));
+    expect(onRestoreConversation).toHaveBeenCalledWith(archived);
+  });
 });
