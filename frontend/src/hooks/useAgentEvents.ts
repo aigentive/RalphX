@@ -10,6 +10,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { chatApi } from "@/api/chat";
 import { useEventBus } from "@/providers/EventProvider";
 import type {
   ChatMessageResponse,
@@ -730,6 +731,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     const TOOL_CALL_MAX_DURATION_MS = 600_000; // 10 minutes per-tool ceiling
     const TOOL_CALL_GRACE_MS = 5_000;        // 5s grace after last tool completion
     const CHECK_INTERVAL_MS = 30_000;        // Check every 30s
+    const projectLivenessChecksInFlight = new Set<string>();
 
     const interval = setInterval(() => {
       const now = Date.now();
@@ -758,6 +760,37 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         const parsedKey = parseStoreKey(key);
         if (parsedKey?.contextType === "ideation") {
           if (ideationState.activeVerificationChildId[parsedKey.contextId]) continue;
+        }
+
+        // Project agent conversations are runtime-keyed by conversation id. Before
+        // clearing their UI status, ask the backend registry whether that process
+        // is still alive; otherwise long but healthy Agents runs can lose Stop
+        // state until the user reselects the conversation.
+        if (parsedKey?.contextType === "project") {
+          if (projectLivenessChecksInFlight.has(key)) continue;
+          projectLivenessChecksInFlight.add(key);
+          void chatApi
+            .isAgentRunning("project", parsedKey.contextId)
+            .then((isRunning) => {
+              const latestState = useChatStore.getState();
+              if (latestState.agentStatus[key] !== "generating") return;
+              if (isRunning) {
+                latestState.updateLastAgentEvent(key);
+                return;
+              }
+              latestState.clearToolCallStartTimes(key);
+              latestState.setAgentStatus(key, "idle");
+            })
+            .catch(() => {
+              const latestState = useChatStore.getState();
+              if (latestState.agentStatus[key] !== "generating") return;
+              latestState.clearToolCallStartTimes(key);
+              latestState.setAgentStatus(key, "idle");
+            })
+            .finally(() => {
+              projectLivenessChecksInFlight.delete(key);
+            });
+          continue;
         }
 
         // Genuinely stalled — silent reset (no toast — bad UX)
