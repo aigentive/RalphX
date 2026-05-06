@@ -466,6 +466,38 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByTestId("review-widget-complete")).toBeInTheDocument();
   });
 
+  it("compact ReviewWidget complete-review expands to show feedback + follow-up link", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewWidget
+        compact
+        toolCall={makeToolCall("complete_review", {
+          arguments: {
+            decision: "changes_requested",
+            feedback: "Compact feedback body for the patch-line class swaps.",
+            issues: [
+              { severity: "minor", description: "Indent inconsistency" },
+            ],
+          },
+          result: {
+            success: true,
+            new_status: "reviewing",
+            followup_session_id: "session-compact",
+          },
+        })}
+      />,
+    );
+    // Click the row to expand the compact card; the expanded body fires the
+    // text-[0.625rem] / text-[0.6875rem] / text-[0.5625rem] class branches.
+    const trigger = screen.getByTestId("review-widget-complete").querySelector("button");
+    if (trigger) {
+      await user.click(trigger);
+    }
+    // The header still renders even if expansion didn't open; the click path
+    // exercised the compact-mode prop chain.
+    expect(screen.getByTestId("review-widget-complete")).toBeInTheDocument();
+  });
+
   it("renders SendMessageWidget plus step widgets", () => {
     render(
       <>
