@@ -1810,7 +1810,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 context_id,
                 runtime_context_id = %runtime_context_id,
                 queued_message_id = %queued.id,
-                "chat_service.send_message: execution paused, queued Claude-backed message instead of spawning"
+                "chat_service.send_message: execution paused, queued agent message instead of spawning"
             );
             return Ok(SendResult {
                 conversation_id: conversation.id.as_str().to_string(),
