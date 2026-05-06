@@ -260,6 +260,36 @@ describe("IdeationHarnessSection", () => {
     expect(screen.queryByText("Inherit")).not.toBeInTheDocument();
     expect(screen.queryByText("XHigh")).not.toBeInTheDocument();
   });
+
+  it("renders the warn-tone notice when a lane has missing core exec features", () => {
+    const warnLanes: AgentHarnessLaneView[] = [
+      {
+        ...globalLanes[0]!,
+        missingCoreExecFeatures: ["streaming"],
+        error: "binary missing",
+      },
+      globalLanes[1]!,
+    ];
+    vi.mocked(useAgentHarnessSettings).mockImplementation((projectId) => ({
+      lanes: projectId === null ? warnLanes : [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateLane,
+      isUpdating: false,
+      saveError: null,
+      resetError: vi.fn(),
+    }));
+    render(<IdeationHarnessSection />);
+
+    // The warn notice paints with --notice-warn-bg.
+    const warnSurfaces = document.querySelectorAll(".settings-inline-notice");
+    const hasWarn = Array.from(warnSurfaces).some((el) =>
+      (el.getAttribute("style") ?? "").includes("var(--notice-warn-bg)"),
+    );
+    expect(hasWarn).toBe(true);
+  });
 });
 
 describe("ExecutionHarnessSection", () => {
