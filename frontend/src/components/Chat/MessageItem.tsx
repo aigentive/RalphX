@@ -230,7 +230,7 @@ export const MessageItem = React.memo(function MessageItem({
           {teammateColor && (
             <span className="w-2 h-2 rounded-full" style={{ backgroundColor: teammateColor }} />
           )}
-          <span className="text-[10px] font-medium" style={{ color: teammateColor ?? "var(--text-muted)" }}>
+          <span className="text-[0.625rem] font-medium" style={{ color: teammateColor ?? "var(--text-muted)" }}>
             {teammateName}
           </span>
         </div>
@@ -243,7 +243,7 @@ export const MessageItem = React.memo(function MessageItem({
             data-testid="message-provider-meta"
           >
             <span
-              className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em]"
+              className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
               style={providerHarnessStyle}
               title={providerTooltip ?? undefined}
               aria-label={providerTooltip ?? providerHarnessLabel ?? undefined}
@@ -253,7 +253,7 @@ export const MessageItem = React.memo(function MessageItem({
             </span>
             {modelEffortLabel && (
               <span
-                className="text-[10px] min-w-0 truncate text-text-primary/50"
+                className="text-[0.625rem] min-w-0 truncate text-text-primary/50"
                 title={providerTooltip ?? undefined}
                 data-testid="message-model-effort"
               >
@@ -321,7 +321,7 @@ export const MessageItem = React.memo(function MessageItem({
 
         <div
           className={cn(
-            "flex items-center gap-1.5 px-1 pb-[10px] text-[10px] text-text-primary/40",
+            "flex items-center gap-1.5 px-1 pb-[10px] text-[0.625rem] text-text-primary/40",
             isUser ? "justify-end" : "justify-start"
           )}
           data-testid="message-meta"

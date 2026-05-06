@@ -118,7 +118,7 @@ export function ArtifactsPanel() {
                   {bucket.isSystem && (
                     <Badge
                       variant="secondary"
-                      className="text-[10px] px-1 py-0"
+                      className="text-[0.625rem] px-1 py-0"
                     >
                       S
                     </Badge>
@@ -259,7 +259,7 @@ export function ArtifactsPanel() {
                   >
                     {artifact.name}
                   </span>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge variant="secondary" className="text-[0.625rem]">
                     {artifact.type}
                   </Badge>
                 </div>

@@ -11,7 +11,7 @@ import { buildTaskCardTranscriptEntriesFromConversation } from "./TaskCardTransc
 function FallbackText({ text }: { text: string }) {
   return (
     <pre
-      className="text-[11px] px-2 py-1.5 rounded overflow-x-auto max-h-64"
+      className="text-[0.6875rem] px-2 py-1.5 rounded overflow-x-auto max-h-64"
       style={{
         backgroundColor: "var(--bg-surface)",
         color: "var(--text-secondary)",
@@ -61,7 +61,7 @@ export function TaskToolCallDelegatedTranscript({
   if (delegatedConversation.isLoading) {
     return (
       <div
-        className="text-[11px] px-2 py-1.5 rounded"
+        className="text-[0.6875rem] px-2 py-1.5 rounded"
         style={{
           backgroundColor: "var(--bg-surface)",
           color: "var(--text-muted)",
@@ -77,7 +77,7 @@ export function TaskToolCallDelegatedTranscript({
       <FallbackText text={fallbackText} />
     ) : (
       <div
-        className="text-[11px] px-2 py-1.5 rounded"
+        className="text-[0.6875rem] px-2 py-1.5 rounded"
         style={{
           backgroundColor: "var(--status-error-muted)",
           color: "var(--status-error)",
@@ -97,7 +97,7 @@ export function TaskToolCallDelegatedTranscript({
   return (
     <div className="space-y-3">
       <div
-        className="text-[10px] uppercase tracking-[0.08em]"
+        className="text-[0.625rem] uppercase tracking-[0.08em]"
         style={{ color: "var(--text-muted)" }}
       >
         Delegated conversation

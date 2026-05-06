@@ -16,6 +16,7 @@
  */
 
 import type { InternalStatus } from "@/types/status";
+import { useThemeStore, type FontScale } from "@/stores/themeStore";
 
 // ============================================================================
 // Types
@@ -66,6 +67,38 @@ export const COMPACT_NODE_HEIGHT = 60;
 
 /** Maximum title characters for compact nodes */
 export const COMPACT_TITLE_MAX_CHARS = 40;
+
+/** Multiplier applied to node dimensions per font-scale toggle. Keeps the
+ * fixed-pixel React Flow layout in sync with the rem-based text scale so
+ * titles/descriptions don't overflow when the user picks 110% / 125%. */
+const FONT_SCALE_NODE_MULTIPLIER: Record<FontScale, number> = {
+  default: 1,
+  lg: 1.1,
+  xl: 1.25,
+};
+
+export interface ScaledNodeDimensions {
+  nodeWidth: number;
+  nodeHeight: number;
+  compactNodeWidth: number;
+  compactNodeHeight: number;
+}
+
+export function getScaledNodeDimensions(scale: FontScale): ScaledNodeDimensions {
+  const k = FONT_SCALE_NODE_MULTIPLIER[scale];
+  return {
+    nodeWidth: Math.round(NODE_WIDTH * k),
+    nodeHeight: Math.round(NODE_HEIGHT * k),
+    compactNodeWidth: Math.round(COMPACT_NODE_WIDTH * k),
+    compactNodeHeight: Math.round(COMPACT_NODE_HEIGHT * k),
+  };
+}
+
+/** React hook — re-renders when the user changes the font-scale toggle. */
+export function useScaledNodeDimensions(): ScaledNodeDimensions {
+  const fontScale = useThemeStore((s) => s.fontScale);
+  return getScaledNodeDimensions(fontScale);
+}
 
 // ============================================================================
 // Glass Morphism Constants

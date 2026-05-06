@@ -189,6 +189,15 @@ impl WorkflowSchema {
                     .with_accent_color("hsl(var(--warning))")
                     .with_can_drag_from(true)
                     .with_can_drop_to(false), // Only review process can add here
+                    StateGroup::new("blocked", "Blocked", vec![InternalStatus::Blocked])
+                        .with_icon("Ban")
+                        .with_accent_color("hsl(var(--warning))")
+                        .with_can_drag_from(true)
+                        .with_can_drop_to(true),
+                    StateGroup::new("paused", "Paused", vec![InternalStatus::Paused])
+                        .with_icon("Pause")
+                        .with_accent_color("hsl(var(--warning))")
+                        .locked(),
                 ]),
                 WorkflowColumn::new("in_progress", "In Progress", InternalStatus::Executing)
                     .with_groups(vec![
@@ -228,8 +237,51 @@ impl WorkflowSchema {
                         .with_icon("CheckCircle")
                         .with_accent_color("hsl(var(--success))")
                         .locked(), // User interacts via Approve/Revise buttons
+                        StateGroup::new("escalated", "Escalated", vec![InternalStatus::Escalated])
+                            .with_icon("AlertTriangle")
+                            .with_accent_color("hsl(var(--warning))")
+                            .locked(),
                     ]),
-                WorkflowColumn::new("done", "Done", InternalStatus::Approved),
+                WorkflowColumn::new("done", "Done", InternalStatus::Approved).with_groups(vec![
+                    StateGroup::new(
+                        "merging",
+                        "Merging",
+                        vec![
+                            InternalStatus::PendingMerge,
+                            InternalStatus::Merging,
+                            InternalStatus::WaitingOnPr,
+                        ],
+                    )
+                    .with_icon("GitMerge")
+                    .locked(),
+                    StateGroup::new(
+                        "needs_attention",
+                        "Escalated",
+                        vec![InternalStatus::MergeIncomplete, InternalStatus::MergeConflict],
+                    )
+                    .with_icon("AlertTriangle")
+                    .with_accent_color("hsl(var(--warning))")
+                    .locked(),
+                    StateGroup::new(
+                        "completed",
+                        "Completed",
+                        vec![InternalStatus::Merged, InternalStatus::Approved],
+                    )
+                    .with_icon("CheckCircle")
+                    .with_accent_color("hsl(var(--success))")
+                    .locked(),
+                    StateGroup::new("cancelled", "Cancelled", vec![InternalStatus::Cancelled])
+                        .with_icon("XCircle")
+                        .locked(),
+                    StateGroup::new("failed", "Failed", vec![InternalStatus::Failed])
+                        .with_icon("XOctagon")
+                        .with_accent_color("hsl(var(--destructive))")
+                        .locked(),
+                    StateGroup::new("stopped", "Stopped", vec![InternalStatus::Stopped])
+                        .with_icon("StopCircle")
+                        .with_accent_color("hsl(var(--destructive))")
+                        .locked(),
+                ]),
             ],
             external_sync: None,
             defaults: WorkflowDefaults::default(),

@@ -26,7 +26,7 @@ export function QueuedTaskRow({ position, task }: QueuedTaskRowProps) {
       className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-white/[0.04] transition-colors"
     >
       <span
-        className="text-[11px] tabular-nums shrink-0 w-4 text-right"
+        className="text-[0.6875rem] tabular-nums shrink-0 w-4 text-right"
         style={{ color: "var(--text-muted)" }}
       >
         {position}
@@ -39,7 +39,7 @@ export function QueuedTaskRow({ position, task }: QueuedTaskRowProps) {
         {task.title}
       </button>
       <span
-        className="text-[11px] shrink-0 max-w-[100px] truncate"
+        className="text-[0.6875rem] shrink-0 max-w-[100px] truncate"
         style={{ color: "var(--text-muted)" }}
       >
         {task.planTitle}

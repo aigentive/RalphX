@@ -58,7 +58,7 @@ export class KanbanPage extends BasePage {
       this.taskCard(id).locator('[data-testid="task-title"]');
 
     // Header elements
-    this.branding = page.locator("text=RalphX");
+    this.branding = page.locator('[data-testid="left-nav-brand"]');
     this.reviewsToggle = page.locator('[data-testid="reviews-toggle"]');
   }
 

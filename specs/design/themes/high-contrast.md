@@ -16,10 +16,10 @@
 | Intent | How |
 |---|---|
 | Maximum luminance contrast | Pure black `#000000` surfaces + pure white `#FFFFFF` text (21:1) |
-| Sharp edges | 2px solid borders on every card/input/notice — no translucent or gradient edges |
+| Sharp edges | Strong `#555/#777/#999` borders and 2px focus/active rings where state needs reinforcement |
 | Shape over hue | Status uses icon shape + text label; fills and strokes reinforce, never replace |
-| Highly visible focus | 3px solid yellow `#FFDD00` focus ring + 2px offset on every focusable element |
-| Color-blind safe palette | Green replaced by high-luminance lime; orange replaced by yellow (orange/brown confuses protanopia on black); red stays red but always paired with a cross icon + "Error" label |
+| Highly visible focus | 3px white focus ring + 2px offset on every focusable element |
+| Color-blind safe palette | v27 uses orange for brand/action and cyan-blue for success/info; status icons/text still carry meaning |
 | Reduced complexity | No subtle tints, no translucent overlays, no drop shadows as signal |
 
 **Philosophy:** if you can tell the state of the UI with a monochrome screenshot, the design has passed.
@@ -35,10 +35,13 @@ All hex values. HSL is not the source of truth in this theme — pure colors dri
 | Token | High-Contrast value | Contrast vs. `--text-primary` |
 |---|---|---|
 | `--bg-base` | `#000000` | 21:1 |
-| `--bg-surface` | `#000000` | 21:1 |
-| `--bg-elevated` | `#000000` (+2px white border for separation) | 21:1 |
-| `--bg-hover` | `#FFFFFF` (inverse — on hover, row flips to light) | 21:1 inverted |
-| `--bg-active` | `#FFDD00` (selected row — yellow) | `--text-inverse` |
+| `--bg-surface` | `#0A0A0A` | 19.8:1 |
+| `--bg-elevated` | `#1A1A1A` | 17.4:1 |
+| `--bg-hover` | `#2A2A2A` | 13.5:1 |
+| `--nav-rail-bg` | `#0A0A0A` | 19.8:1 |
+| `--brand-tile` | `#1A1A1A` | logo-only |
+| `--brand-pill-from` | `#2E2F35` | logo-only |
+| `--brand-pill-to` | `#2E2E34` | logo-only |
 
 **Rule:** Surfaces don't use layered translucent whites in high-contrast — elevation is communicated by borders, not bg lightness.
 
@@ -47,28 +50,28 @@ All hex values. HSL is not the source of truth in this theme — pure colors dri
 | Token | Value | Contrast vs. black |
 |---|---|---|
 | `--text-primary` | `#FFFFFF` | 21:1 |
-| `--text-secondary` | `#E0E0E0` | 16.9:1 |
-| `--text-muted` | `#B0B0B0` (AAA floor — still ≥ 7:1) | 9.1:1 |
-| `--text-inverse` | `#000000` | for use on light/yellow surfaces |
+| `--text-secondary` | `#E5E5E5` | 16.7:1 |
+| `--text-muted` | `#BFBFBF` | 11.4:1 |
+| `--text-subtle` | `#999999` | 7.4:1 |
+| `--text-inverse` | `#1A0E07` | for use on orange surfaces |
 
 ### Accent
 
-The default theme's warm orange (`#FF6B35`) does **not** meet AAA against black (≈4.7:1). In high-contrast we switch to yellow, which is the most luminous hue, universally distinguishable, and common in high-contrast OS themes.
-
 | Token | Value | Contrast vs. black | Use |
 |---|---|---|---|
-| `--accent-primary` | `#FFDD00` | 18:1 | CTA fills, focused borders, icon accents |
-| `--accent-hover` | `#FFEE33` | ≈ 19:1 | CTA hover |
-| `--accent-muted` | `#FFDD00` @ 0.15 (visual only; avoid for text) | — | Subtle selected-row fills |
+| `--accent-primary` | `#FF6A35` | ≈6.9:1 | CTA fills, active rings, icon accents |
+| `--accent-secondary` | `#FF8050` | ≈7.9:1 | CTA hover |
+| `--accent-muted` | `rgba(255,106,53,.18)` | — | Subtle selected-row fills |
+| `--accent-muted-strong` | `rgba(255,106,53,.30)` | — | v27 active row gradient top stop |
 
 ### Status (shape always paired)
 
 | State | Color | Icon | Mandatory text |
 |---|---|---|---|
-| Success | `#00FF66` (lime on black: ≈17:1) | `CheckCircle2` (filled) | "OK" / "Passed" / "Available" |
-| Warning | `#FFDD00` (yellow on black: 18:1) | `TriangleAlert` | "Warning" / "Attention" |
+| Success | `#5BCDFF` | `CheckCircle2` (filled) | "OK" / "Passed" / "Available" |
+| Warning | `#FFD93D` | `TriangleAlert` | "Warning" / "Attention" |
 | Error | `#FF3344` (red on black: ≈6:1) | `XCircle` (filled) **+ bold text** | "Error" / "Failed" |
-| Info | `#66CCFF` (sky on black: ≈11:1) | `Info` | "Info" / "Note" |
+| Info | `#5BCDFF` | `Info` | "Info" / "Note" |
 
 **Red is intentionally duller** so it doesn't vibrate against black. Bold text and the filled X icon carry the error semantics.
 
@@ -76,10 +79,10 @@ The default theme's warm orange (`#FF6B35`) does **not** meet AAA against black 
 
 | Token | Value | Notes |
 |---|---|---|
-| `--border-subtle` | `rgba(255,255,255,0.5)` | Inner dividers |
-| `--border-default` | `#FFFFFF` | Input/card borders |
-| `--border-strong` | `#FFFFFF` @ 2px | Emphasis, card edges |
-| `--border-focus` | `#FFDD00` @ 3px | Keyboard focus |
+| `--border-subtle` | `#555555` | Inner dividers |
+| `--border-default` | `#777777` | Input/card borders |
+| `--border-strong` | `#999999` | Emphasis, card edges |
+| `--border-focus` | `#FFFFFF` @ 3px | Keyboard focus |
 
 ---
 
@@ -103,10 +106,10 @@ The token values `--border-width-default`, `--border-width-focus`, `--radius-lg`
 
 ```
 Primary:
-  bg:     #FFDD00     (yellow)
-  text:   #000000     (black)
+  bg:     #FF6A35     (v27 orange)
+  text:   #1A0E07
   border: 2px solid #000000 (inside button — keeps shape on non-black surfaces)
-  focus:  3px solid #FFDD00 + 2px offset → appears as double-yellow ring
+  focus:  3px solid #FFFFFF + 2px offset
 
 Secondary / ghost:
   bg:     #000000
@@ -125,8 +128,8 @@ Destructive:
 Background: #000000
 Text:       #FFFFFF (size ≥ 15px)
 Border:     2px solid #FFFFFF
-Focus:      3px solid #FFDD00 + 2px offset
-Placeholder: #B0B0B0 (≥ 7:1; still usable)
+Focus:      3px solid #FFFFFF + 2px offset
+Placeholder: #BFBFBF (≥ 7:1; still usable)
 Disabled:    #000000 bg, #666666 text (≥ 4.5:1 kept); no hover
 ```
 
@@ -138,14 +141,14 @@ Unchecked:
   Checkbox:      2px solid #FFFFFF, empty
 
 Checked:
-  Switch track:  #FFDD00 fill, #000000 thumb (black circle on yellow)
-  Checkbox:      #FFDD00 fill, #000000 check icon (2px stroke)
+  Switch track:  #FF6A35 fill, #1A0E07 thumb
+  Checkbox:      #FF6A35 fill, #1A0E07 check icon (2px stroke)
 
 Focus:
-  Always adds 3px #FFDD00 ring with 2px offset
+  Always adds 3px #FFFFFF ring with 2px offset
 ```
 
-**Rule:** the thumb of a yellow switch must be a solid black circle, not a small light dot — visibility over aesthetics.
+**Rule:** the thumb of an accent switch must be a solid dark circle, not a small light dot — visibility over aesthetics.
 
 ### Selects / dropdowns
 
@@ -155,7 +158,7 @@ Open menu: #000000 bg, 2px solid #FFFFFF border
 Items:
   default: #000000 bg, #FFFFFF text
   hover:   #FFFFFF bg, #000000 text (inverse flip)
-  selected: background #FFDD00, text #000000; include ✓ icon
+  selected: background #FF6A35, text #1A0E07; include ✓ icon
 ```
 
 ### Tabs (Global / Project Overrides etc.)
@@ -163,15 +166,15 @@ Items:
 ```
 TabsList: #000000 bg, 2px solid #FFFFFF
 Trigger default: #FFFFFF text, no bg
-Trigger active: #FFDD00 bg, #000000 text, +2px border bottom (visible on any bg)
+Trigger active: #FF6A35 bg, #1A0E07 text, +2px border bottom (visible on any bg)
 ```
 
 ### Cards / notices (InlineNotice)
 
 ```
-ok:    #000000 bg, 2px solid #00FF66 border, CheckCircle2 icon + "OK"
-warn:  #000000 bg, 2px solid #FFDD00 border, TriangleAlert icon + "Warning"
-info:  #000000 bg, 2px solid #66CCFF border, Info icon + "Info"
+ok:    #000000 bg, 2px solid #5BCDFF border, CheckCircle2 icon + "OK"
+warn:  #000000 bg, 2px solid #FFD93D border, TriangleAlert icon + "Warning"
+info:  #000000 bg, 2px solid #5BCDFF border, Info icon + "Info"
 error: #000000 bg, 2px solid #FF3344 border, XCircle icon + "Error", bold title
 ```
 
@@ -181,8 +184,8 @@ Text inside notices is always white; the border color + icon carry the tone. ❌
 
 ```
 User message:
-  bg:     #FFDD00  (yellow — reverses "ownership" signal from the orange in Default)
-  text:   #000000
+  bg:     rgba(255,106,53,.18)
+  text:   #FFFFFF
   border: 2px solid #000000 (stays visible on white/light settings surfaces)
 
 Agent message:
@@ -191,15 +194,15 @@ Agent message:
   border: 2px solid #FFFFFF
 ```
 
-User bubble is loud + black text to signal "this is yours" regardless of color vision.
+User bubble uses the same v27 orange family as the rest of the shell; ownership also comes from alignment and label context.
 
 ### Nav / sidebar
 
 ```
 Item default: #FFFFFF text on #000000
-Item hover:   #FFFFFF bg, #000000 text (inverse)
-Item active:  #FFDD00 bg, #000000 text, font-weight 600
-  + left border: 4px solid #000000 (draws over the yellow, adds shape cue)
+Item hover:   #2A2A2A bg, #E5E5E5 text
+Item active:  #2A2A2A bg, #FF6A35 text, inset 2px #FF6A35 ring
+  + 2px left accent marker
   + aria-current="page"
 ```
 
@@ -211,7 +214,7 @@ Column header always shows:
   - Text label ("Backlog", "Executing", …)
   - Count (e.g. "12")
 Column body background: #000000 with 2px solid #FFFFFF border
-Column header bg: #FFDD00 for ACTIVE column (current focus) only
+Column header bg: #FF6A35 for ACTIVE column (current focus) only
 ```
 
 Column status must be readable from shape alone; color is decoration.
@@ -255,15 +258,14 @@ High-contrast respects the same `prefers-reduced-motion` rule as the Default the
 | Pair | Ratio | Meets AAA? |
 |---|---|---|
 | `#FFFFFF` on `#000000` | 21:1 | ✅ |
-| `#E0E0E0` on `#000000` | 16.9:1 | ✅ |
-| `#B0B0B0` on `#000000` | 9.1:1 | ✅ |
-| `#FFDD00` on `#000000` | 18:1 | ✅ |
-| `#000000` on `#FFDD00` | 18:1 (text on button) | ✅ |
-| `#00FF66` on `#000000` | 17:1 | ✅ |
+| `#E5E5E5` on `#000000` | 16.7:1 | ✅ |
+| `#BFBFBF` on `#000000` | 11.4:1 | ✅ |
+| `#FF6A35` on `#000000` | ≈6.9:1 | ✅ for UI and large text |
+| `#1A0E07` on `#FF6A35` | high contrast for button text | ✅ |
+| `#5BCDFF` on `#000000` | high contrast | ✅ |
 | `#FF3344` on `#000000` | ~6:1 | ✅ for large text; meets UI-component 4.5:1 AAA — still paired with XCircle + bold "Error" |
-| `#66CCFF` on `#000000` | ~11:1 | ✅ |
 
-Any new color introduced must be verified against `#000000` (and `#FFDD00` if used for button text) and added here.
+Any new color introduced must be verified against `#000000` (and `#FF6A35` if used for button text) and added here.
 
 ---
 
@@ -276,14 +278,14 @@ Any new color introduced must be verified against `#000000` (and `#FFDD00` if us
 - [ ] 200% zoom: no overlap, no truncation without a tooltip
 - [ ] Contrast of every new token pair documented in §7
 - [ ] No use of `rgba(*)` backgrounds for elevation
-- [ ] No orange `#FF6B35` anywhere in the DOM when `[data-theme="high-contrast"]` is set (scan via devtools)
+- [ ] No legacy orange `#FF6B35` anywhere in the DOM when `[data-theme="high-contrast"]` is set; use v27 `#FF6A35` or tokens.
 
 ---
 
 ## 9. Open decisions
 
 - **Icon weight:** lucide icons default to 2px stroke — possibly bump to 2.5px in high-contrast for chunkier silhouettes. Defer until user testing.
-- **User bubble color:** yellow is loud; could move to white + 2px black border instead. Defer to first accessibility review.
+- **User bubble color:** v27 orange tint is quieter than filled accent; validate with real conversation density.
 - **Syntax highlighting (code blocks):** must define a high-contrast code theme; current default is dark + pastel. TODO.
 
 ---

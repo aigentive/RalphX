@@ -173,7 +173,7 @@ export function ReviewFeedbackBody({
             type="button"
             className={cn(
               "mt-2 font-medium text-[var(--accent-primary)] hover:text-[var(--accent-primary-hover)]",
-              fullButtonClassName ?? "text-[12px]"
+              fullButtonClassName ?? "text-[0.75rem]"
             )}
             onClick={handleToggle}
           >
@@ -196,7 +196,7 @@ export function ReviewFeedbackBody({
                     {mode === "markdown" ? (
                       <MarkdownBody content={sanitizedNotes} />
                     ) : (
-                      <pre className="whitespace-pre-wrap break-words font-mono text-[12px] text-text-primary/80">
+                      <pre className="whitespace-pre-wrap break-words font-mono text-[0.75rem] text-text-primary/80">
                         {sanitizedNotes}
                       </pre>
                     )}

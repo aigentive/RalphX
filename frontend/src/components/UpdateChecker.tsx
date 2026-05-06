@@ -9,7 +9,6 @@ import { useEffect, useRef } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { Download } from "lucide-react";
 
 const INITIAL_UPDATE_CHECK_DELAY_MS = 3_000;
@@ -58,42 +57,50 @@ function showUpdateNotification(update: Update) {
   toast(
     <div className="flex flex-col gap-2" data-testid="update-available-toast">
       <div className="flex items-center gap-2">
-        <Download className="h-4 w-4 text-[var(--accent-primary)]" />
+        <Download
+          className="h-4 w-4"
+          style={{ color: "var(--accent-primary)" }}
+        />
         <span className="font-medium">Update available</span>
       </div>
-      <p className="text-sm text-muted-foreground">
+      <p
+        className="text-xs"
+        style={{ color: "var(--text-muted)", lineHeight: 1.4 }}
+      >
         Version {update.version} is ready to install.
       </p>
       {notes ? (
-        <p className="line-clamp-2 text-xs text-muted-foreground">
+        <p
+          className="line-clamp-2 text-xs"
+          style={{ color: "var(--text-muted)", lineHeight: 1.4 }}
+        >
           {notes}
         </p>
       ) : null}
       <div className="flex gap-2 mt-1">
-        <Button
-          size="sm"
-          variant="default"
-          onClick={() => installUpdate(update)}
-          className="h-7 px-3 text-xs"
-          style={{ backgroundColor: "var(--accent-primary)" }}
+        <button
+          type="button"
           data-testid="update-install-button"
+          className="git-auth-startup-toast-action inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-semibold"
+          onClick={() => installUpdate(update)}
         >
           Update Now
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => toast.dismiss("update-available")}
-          className="h-7 px-3 text-xs"
+        </button>
+        <button
+          type="button"
           data-testid="update-later-button"
+          className="inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-medium"
+          style={{ color: "var(--text-muted)" }}
+          onClick={() => toast.dismiss("update-available")}
         >
           Later
-        </Button>
+        </button>
       </div>
     </div>,
     {
       duration: Infinity,
       id: "update-available",
+      className: "git-auth-startup-toast",
     }
   );
 }

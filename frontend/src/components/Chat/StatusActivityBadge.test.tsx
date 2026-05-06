@@ -546,4 +546,33 @@ describe("StatusActivityBadge", () => {
 
     expect(screen.getByText("Completing merge...")).toBeDefined();
   });
+
+  // --------------------------------------------------------------------------
+  // Inline layout (compact stacked headers)
+  // --------------------------------------------------------------------------
+
+  it("renders inline waiting layout with Awaiting input copy", () => {
+    render(
+      <StatusActivityBadge
+        {...baseProps}
+        agentStatus="waiting_for_input"
+        layout="inline"
+      />
+    );
+    expect(screen.getByText("Awaiting input")).toBeDefined();
+  });
+
+  it("renders inline generating layout with status testid", () => {
+    const storeKey = "task_execution:task-inline";
+    setLastEvent(storeKey, 500);
+    render(
+      <StatusActivityBadge
+        {...baseProps}
+        agentStatus="generating"
+        storeKey={storeKey}
+        layout="inline"
+      />
+    );
+    expect(screen.getByTestId("chat-session-status-inline")).toBeDefined();
+  });
 });

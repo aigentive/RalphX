@@ -51,7 +51,7 @@ function TeamSummaryRow({ contextKey, isHistorical }: { contextKey: string; isHi
   const runningCount = teammates.filter((m: TeammateState) => m.status === "running" || m.status === "spawning").length;
 
   return (
-    <div className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-secondary)" }}>
+    <div className="flex items-center justify-between text-[0.6875rem]" style={{ color: "var(--text-secondary)" }}>
       <div className="flex items-center gap-1.5">
         <span>{activeCount} active</span>
         <span style={{ color: "var(--text-muted)" }}>·</span>
@@ -60,7 +60,7 @@ function TeamSummaryRow({ contextKey, isHistorical }: { contextKey: string; isHi
         <span>{formatCost(team.totalEstimatedCostUsd)}</span>
       </div>
       {isHistorical && (
-        <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-muted)" }}>
+        <span className="text-[0.625rem] px-1.5 py-0.5 rounded" style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-muted)" }}>
           Session ended
         </span>
       )}
@@ -87,11 +87,11 @@ function TeammateDetailRow({ contextKey, name, onStop }: { contextKey: string; n
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0">
           <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />
-          <span className="text-[12px] font-medium truncate" style={{ color: "var(--text-secondary)" }}>{mate.name}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-secondary)" }}>
+          <span className="text-[0.75rem] font-medium truncate" style={{ color: "var(--text-secondary)" }}>{mate.name}</span>
+          <span className="text-[0.625rem] px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: "var(--bg-elevated)", color: "var(--text-secondary)" }}>
             {mate.model}
           </span>
-          <span className="text-[11px]" style={{ color: dotColor }}>{statusLabel}</span>
+          <span className="text-[0.6875rem]" style={{ color: dotColor }}>{statusLabel}</span>
         </div>
         {mate.status !== "shutdown" && onStop && (
           <button
@@ -106,7 +106,7 @@ function TeammateDetailRow({ contextKey, name, onStop }: { contextKey: string; n
       </div>
       {/* Row 2: activity + tokens/cost (only if activity exists) */}
       {mate.currentActivity && (
-        <div className="flex items-center justify-between text-[11px] pl-3.5">
+        <div className="flex items-center justify-between text-[0.6875rem] pl-3.5">
           <span className="truncate mr-2" style={{ color: "var(--text-muted)" }}>{mate.currentActivity}</span>
           <div className="flex items-center gap-1.5 shrink-0" style={{ color: "var(--text-muted)" }}>
             <span>{formatTokens(mate.tokensUsed)} tok</span>

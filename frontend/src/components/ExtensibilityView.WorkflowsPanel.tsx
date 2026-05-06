@@ -120,7 +120,7 @@ export function WorkflowsPanel() {
                     {workflow.isDefault && (
                       <Badge
                         variant="secondary"
-                        className="text-[10px]"
+                        className="text-[0.625rem]"
                         style={{
                           backgroundColor: "var(--bg-hover)",
                           color: "var(--text-secondary)",

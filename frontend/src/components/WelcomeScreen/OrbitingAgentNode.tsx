@@ -181,7 +181,7 @@ export default function OrbitingAgentNode({
           }}
         >
           <div
-            className="text-[10px] font-medium"
+            className="text-[0.625rem] font-medium"
             style={{
               color: colorToRgba(color, 0.85),
               textShadow: `0 0 4px ${colorToRgba(color, 0.2)}`,
@@ -190,7 +190,7 @@ export default function OrbitingAgentNode({
             {name}
           </div>
           <div
-            className="text-[9px] mt-0.5"
+            className="text-[0.5625rem] mt-0.5"
             style={{ color: "rgba(255, 255, 255, 0.35)" }}
           >
             {role}

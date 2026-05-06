@@ -205,7 +205,7 @@ export function ConversationSelector({
         data-testid="conversation-selector-menu"
       >
         <DropdownMenuLabel
-          className="text-[11px] font-medium tracking-wide uppercase px-3 py-2"
+          className="text-[0.6875rem] font-medium tracking-wide uppercase px-3 py-2"
           style={{ color: "var(--text-muted)" }}
         >
           {isExecutionContext ? "Execution History" : contextType === "review" ? "Review History" : contextType === "merge" ? "Merge History" : "Conversation History"}
@@ -221,7 +221,7 @@ export function ConversationSelector({
               data-testid="conversation-selector-new"
             >
               <Plus className="h-4 w-4" style={{ color: "var(--accent-primary)" }} />
-              <span className="text-[13px] font-medium">New Conversation</span>
+              <span className="text-[0.8125rem] font-medium">New Conversation</span>
             </DropdownMenuItem>
 
             {/* Separator */}
@@ -233,14 +233,14 @@ export function ConversationSelector({
 
         {/* Loading State */}
         {isLoading && (
-          <div className="px-3 py-6 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
+          <div className="px-3 py-6 text-center text-[0.8125rem]" style={{ color: "var(--text-muted)" }}>
             Loading conversations...
           </div>
         )}
 
         {/* Empty State */}
         {!isLoading && sortedConversations.length === 0 && (
-          <div className="px-3 py-6 text-center text-[13px]" style={{ color: "var(--text-muted)" }}>
+          <div className="px-3 py-6 text-center text-[0.8125rem]" style={{ color: "var(--text-muted)" }}>
             No conversations yet
           </div>
         )}
@@ -300,14 +300,14 @@ export function ConversationSelector({
                     {/* Title with status */}
                     <div className="flex items-center gap-2">
                       <div
-                        className="text-[13px] font-medium truncate"
+                        className="text-[0.8125rem] font-medium truncate"
                         style={{ color: isActive ? "var(--text-primary)" : "var(--text-secondary)" }}
                       >
                         {title}
                       </div>
                       {harnessLabel && (
                         <span
-                          className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em]"
+                          className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
                           style={harnessBadgeStyle}
                         >
                           {harnessLabel}
@@ -315,7 +315,7 @@ export function ConversationSelector({
                       )}
                       {agentRunStatus === "running" && (
                         <span
-                          className="text-[10px] font-medium uppercase tracking-wide"
+                          className="text-[0.625rem] font-medium uppercase tracking-wide"
                           style={{ color: "var(--accent-primary)" }}
                         >
                           Running
@@ -325,7 +325,7 @@ export function ConversationSelector({
 
                     {/* Date and status */}
                     <div
-                      className="flex items-center gap-2 mt-0.5 text-[11px]"
+                      className="flex items-center gap-2 mt-0.5 text-[0.6875rem]"
                       style={{ color: "var(--text-muted)" }}
                     >
                       <span>{executionDate}</span>
@@ -344,7 +344,7 @@ export function ConversationSelector({
                       )}
                     </div>
                     <div
-                      className="mt-1 flex items-center gap-2 text-[10px]"
+                      className="mt-1 flex items-center gap-2 text-[0.625rem]"
                       style={{ color: "var(--text-muted)" }}
                     >
                       <span>{providerLineage}</span>
@@ -386,13 +386,13 @@ export function ConversationSelector({
                   <div className="flex-1 min-w-0">
                     {/* Title */}
                     <div
-                      className="text-[13px] font-medium truncate"
+                      className="text-[0.8125rem] font-medium truncate"
                       style={{ color: isActive ? "var(--text-primary)" : "var(--text-secondary)" }}
                     >
                       <span>{title}</span>
                       {harnessLabel && (
                         <span
-                          className="ml-2 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em]"
+                          className="ml-2 rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
                           style={harnessBadgeStyle}
                         >
                           {harnessLabel}
@@ -402,7 +402,7 @@ export function ConversationSelector({
 
                     {/* Date and Message Count */}
                     <div
-                      className="flex items-center gap-2 mt-0.5 text-[11px]"
+                      className="flex items-center gap-2 mt-0.5 text-[0.6875rem]"
                       style={{ color: "var(--text-muted)" }}
                     >
                       <span>{date}</span>
@@ -413,7 +413,7 @@ export function ConversationSelector({
                       </span>
                     </div>
                     <div
-                      className="mt-1 flex items-center gap-2 text-[10px]"
+                      className="mt-1 flex items-center gap-2 text-[0.625rem]"
                       style={{ color: "var(--text-muted)" }}
                     >
                       <span>{providerLineage}</span>

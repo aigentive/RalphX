@@ -63,14 +63,14 @@ export function ActiveMergeCard({ task, onStop, onViewDetails }: ActiveMergeCard
       </span>
       {task.conflictFiles && task.conflictFiles.length > 0 && (
         <span
-          className="text-[11px] shrink-0"
+          className="text-[0.6875rem] shrink-0"
           style={{ color: conflictStyle.color }}
         >
           {task.conflictFiles.length}cf
         </span>
       )}
       <span
-        className="text-[11px] shrink-0 tabular-nums"
+        className="text-[0.6875rem] shrink-0 tabular-nums"
         style={{ color: "var(--text-muted)" }}
       >
         {elapsedTime}

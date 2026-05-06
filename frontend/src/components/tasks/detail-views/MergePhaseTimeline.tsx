@@ -127,34 +127,34 @@ export function MergePhaseTimeline({ phases, phaseList }: MergePhaseTimelineProp
               <PhaseIcon status={status} />
               <div className="flex-1 min-w-0">
                 <span
-                  className="text-[13px] font-medium block"
+                  className="text-[0.8125rem] font-medium block"
                   style={{ color: phaseTextColor(status) }}
                 >
                   {config.label}
                 </span>
                 {config.command && (
-                  <span className="text-[10px] font-mono text-text-primary/25 truncate block max-w-[200px]">
+                  <span className="text-[0.625rem] font-mono text-text-primary/25 truncate block max-w-[200px]">
                     $ {config.command}
                   </span>
                 )}
                 {!config.command && config.description && (
-                  <span className="text-[10px] text-text-primary/25 truncate block max-w-[280px]">
+                  <span className="text-[0.625rem] text-text-primary/25 truncate block max-w-[280px]">
                     {config.description}
                   </span>
                 )}
               </div>
               {event?.message && status === "started" && (
-                <span className="text-[11px] text-text-primary/40 truncate max-w-[200px]">
+                <span className="text-[0.6875rem] text-text-primary/40 truncate max-w-[200px]">
                   {event.message}
                 </span>
               )}
               {status === "failed" && event?.message && (
-                <span className="text-[11px] truncate max-w-[200px]" style={{ color: "var(--status-error)" }}>
+                <span className="text-[0.6875rem] truncate max-w-[200px]" style={{ color: "var(--status-error)" }}>
                   {event.message}
                 </span>
               )}
               {status === "skipped" && (
-                <span className="text-[11px] text-text-primary/25 truncate max-w-[200px]">
+                <span className="text-[0.6875rem] text-text-primary/25 truncate max-w-[200px]">
                   skipped
                 </span>
               )}

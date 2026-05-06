@@ -183,7 +183,7 @@ function DependencyEdgeComponent({
                   background: "var(--bg-surface)",
                   border: "1px solid var(--overlay-weak)",
                   boxShadow: "0 4px 12px var(--overlay-scrim)",
-                  fontSize: "11px",
+                  fontSize: "0.6875rem",
                   fontWeight: 500,
                   color: "var(--text-primary)",
                 }}
@@ -212,7 +212,7 @@ function DependencyEdgeComponent({
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + 16}px)`,
               pointerEvents: "all",
             }}
-            className="nodrag nopan px-1.5 py-0.5 rounded text-[10px] bg-bg-surface/90 border border-border-subtle text-text-muted"
+            className="nodrag nopan px-1.5 py-0.5 rounded text-[0.625rem] bg-bg-surface/90 border border-border-subtle text-text-muted"
           >
             {edgeData.label}
           </div>

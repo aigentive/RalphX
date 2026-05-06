@@ -6,9 +6,7 @@
  * and the Settings entry, in a compact icon-and-label rail.
  */
 
-import { SlidersHorizontal, Users } from "lucide-react";
-import ralphxLogo from "@/assets/ralphx-logo.png";
-import { Button } from "@/components/ui/button";
+import { Settings } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -18,12 +16,8 @@ import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { useProjectStore } from "@/stores/projectStore";
-import {
-  selectHasAnyActiveTeam,
-  selectTotalTeammateCount,
-  useTeamStore,
-} from "@/stores/teamStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
+import { BrandMark } from "./BrandMark";
 import type { ViewType } from "@/types/chat";
 
 export const LEFT_NAV_RAIL_WIDTH = 72;
@@ -57,30 +51,40 @@ function RailItem({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
+        <button
+          type="button"
           onClick={onClick}
           aria-label={label}
           aria-current={isActive ? "page" : undefined}
+          data-theme-button-skip
           data-testid={testId}
           className={cn(
-            "flex flex-col items-center justify-center gap-1 w-14 h-14 px-1 rounded-lg",
-            "transition-all duration-150 active:scale-[0.98] outline-none ring-0 focus:outline-none focus-visible:outline-none"
+            "relative grid h-[44px] w-[44px] place-items-center rounded-[10px] border p-0",
+            "transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] active:scale-[0.98]",
+            "outline-none ring-0 focus:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]",
+            !isActive && "hover:bg-[var(--bg-hover)]",
+            isActive
+              ? "text-[var(--nav-rail-active-color)]"
+              : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
           )}
           style={{
-            background: isActive ? "var(--accent-muted)" : "transparent",
-            border: isActive
-              ? "1px solid var(--accent-border)"
-              : "1px solid transparent",
-            color: isActive ? "var(--accent-primary)" : "var(--text-muted)",
+            color: isActive ? "var(--nav-rail-active-color)" : "var(--nav-rail-inactive-color)",
+            backgroundColor: isActive ? "var(--bg-hover)" : "transparent",
+            borderColor: "transparent",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            boxShadow: isActive ? "var(--nav-rail-active-shadow)" : "none",
           }}
         >
-          <Icon className="w-[18px] h-[18px] flex-shrink-0" />
-          <span className="text-[10px] font-medium leading-none tracking-tight">
-            {label}
-          </span>
-        </Button>
+          {isActive && (
+            <span
+              aria-hidden="true"
+              className="left-nav-rail__active-border absolute left-[-14px] top-1/2 h-[18px] w-0.5 -translate-y-1/2 rounded-r-sm"
+            />
+          )}
+          <Icon className="h-[22px] w-[22px] flex-shrink-0" strokeWidth={1.8} />
+          <span className="sr-only">{label}</span>
+        </button>
       </TooltipTrigger>
       <TooltipContent side="right" className="text-xs">
         {label}
@@ -96,8 +100,6 @@ export function LeftNavRail({
   onOpenSettings,
   hideViews = false,
 }: LeftNavRailProps) {
-  const hasActiveTeam = useTeamStore(selectHasAnyActiveTeam);
-  const teammateCount = useTeamStore(selectTotalTeammateCount);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
@@ -109,85 +111,54 @@ export function LeftNavRail({
 
   return (
     <aside
-      className="flex flex-col items-center justify-between py-3 shrink-0 border-r overflow-hidden"
+      className="flex shrink-0 flex-col items-center gap-1 overflow-hidden border-r px-0 pb-3 pt-[14px]"
       style={{
         width: LEFT_NAV_RAIL_WIDTH,
-        background: "var(--nav-rail-bg)",
-        borderColor: "var(--border-subtle)",
+        backgroundColor: "var(--app-rail-bg)",
+        borderRightColor: "var(--app-rail-border)",
+        borderRightStyle: "solid",
+        borderRightWidth: "1px",
         WebkitAppRegion: "no-drag",
       } as React.CSSProperties}
       role="navigation"
       aria-label="Primary"
       data-testid="left-nav-rail"
     >
-      <div className="flex flex-col items-center gap-3">
-        <div
-          className="flex flex-col items-center gap-1 select-none"
-          data-testid="left-nav-brand"
-        >
-          <img
-            src={ralphxLogo}
-            alt=""
-            aria-hidden="true"
-            className="h-9 w-9 rounded-md object-contain"
-          />
-          <span
-            className="text-[10px] font-semibold tracking-tight leading-none"
-            style={{ color: "var(--text-primary)" }}
-          >
-            RalphX
-          </span>
-        </div>
-
-        <nav className="flex flex-col items-center gap-1">
-        {visibleItems.map(({ view, label, icon, shortcut }) => (
-          <RailItem
-            key={view}
-            view={view}
-            label={label}
-            icon={icon}
-            shortcut={shortcut}
-            isActive={currentView === view}
-            onClick={() => onViewChange(view)}
-            testId={`nav-${view}`}
-          />
-          ))}
-        </nav>
+      <div
+        className="grid h-[44px] w-[44px] select-none place-items-center"
+        data-testid="left-nav-brand"
+        title="RalphX"
+      >
+        <BrandMark />
       </div>
 
-      <div className="flex flex-col items-center gap-2">
-        {hasActiveTeam && !hideViews && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div
-                className="flex items-center gap-1 h-7 px-2 rounded-full"
-                style={{
-                  background: "var(--accent-muted)",
-                  border: "1px solid var(--accent-border)",
-                }}
-                data-testid="left-nav-team-indicator"
-              >
-                <Users
-                  className="w-3 h-3"
-                  style={{ color: "var(--accent-primary)" }}
-                />
-                <span
-                  className="text-[10px] font-semibold leading-none"
-                  style={{ color: "var(--accent-primary)" }}
-                >
-                  {teammateCount}
-                </span>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="right" className="text-xs">
-              {teammateCount} active teammate{teammateCount === 1 ? "" : "s"}
-            </TooltipContent>
-          </Tooltip>
-        )}
+      <div
+        className="mb-3 mt-[14px] h-px w-7 shrink-0"
+        style={{ backgroundColor: "var(--border-default)" }}
+        aria-hidden="true"
+      />
 
+      {!hideViews && (
+        <nav className="flex flex-col items-center gap-1">
+          {visibleItems.map(({ view, label, icon, shortcut }) => (
+            <RailItem
+              key={view}
+              view={view}
+              label={label}
+              icon={icon}
+              shortcut={shortcut}
+              isActive={currentView === view}
+              onClick={() => onViewChange(view)}
+              testId={`nav-${view}`}
+            />
+          ))}
+        </nav>
+      )}
+
+      <div className="mt-auto flex flex-col items-center gap-1">
         <RailItem
           label="Settings"
-          icon={SlidersHorizontal}
+          icon={Settings}
           shortcut="⌘,"
           isActive={false}
           onClick={() => onOpenSettings?.()}

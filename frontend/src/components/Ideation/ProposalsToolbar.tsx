@@ -88,7 +88,7 @@ export function ProposalsToolbar({
     >
       {/* Left: Proposal count and analyzing status */}
       <div className="flex items-center gap-3">
-        <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
           <span style={{ color: "var(--text-primary)" }} className="font-semibold">
             {totalCount}
           </span>
@@ -228,7 +228,7 @@ export function ProposalsToolbar({
             size="sm"
             disabled={!canAccept}
             onClick={onAcceptPlan}
-            className="h-7 px-3 text-[11px] font-semibold gap-1.5 rounded-lg transition-all duration-150"
+            className="h-7 px-3 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-all duration-150"
             style={{
               color: canAccept ? "var(--accent-primary)" : "var(--text-muted)",
               background: canAccept ? withAlpha("var(--accent-primary)", 10) : "transparent",

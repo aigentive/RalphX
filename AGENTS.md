@@ -67,6 +67,7 @@ Primary project docs:
 - Worktree safety (NON-NEGOTIABLE): worktree-mode flows must never silently fall back to the main checkout.
 - Verify before commit: review `git diff` against `HEAD` for every touched file.
 - Frontend Playwright visual runs (NON-NEGOTIABLE): run them from `frontend/`, not repo root.
+- UI design/theme changes (NON-NEGOTIABLE): verify native Tauri/WKWebView in addition to Chromium, and use explicit WebKit-safe bg/border longhands for themed surfaces. Source: `.claude/rules/wkwebview-css-vars.md`.
 - Icon-only buttons: use an accessible name plus the app tooltip component; native `title` alone is not enough. Source: `.claude/rules/icon-only-buttons.md`.
 - Frontend interaction performance (NON-NEGOTIABLE): user-triggered panels/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Source: `.claude/rules/frontend-interaction-performance.md`.
 - Refactor tracker hygiene: when a turn exposes real architectural debt, update `## High-Value Refactor Targets` in the same slice.

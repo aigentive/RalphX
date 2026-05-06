@@ -38,7 +38,7 @@ export const TeamSplitGrid = React.memo(function TeamSplitGrid({
       >
         {coordinatorSlot ?? (
           <div className="flex items-center justify-center h-full">
-            <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+            <span className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
               Coordinator
             </span>
           </div>
@@ -52,7 +52,7 @@ export const TeamSplitGrid = React.memo(function TeamSplitGrid({
       >
         {teammatesSlot ?? (
           <div className="flex items-center justify-center h-full">
-            <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+            <span className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
               Teammates
             </span>
           </div>

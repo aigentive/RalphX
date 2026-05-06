@@ -353,7 +353,7 @@ export function StreamingToolIndicator({
               <div className="flex gap-2">
                 <span className="w-4 flex-shrink-0" />
                 <span
-                  className="font-mono text-[11px] break-all"
+                  className="font-mono text-[0.6875rem] break-all"
                   style={{
                     color: line.hasError ? "var(--status-error)" : "var(--text-secondary)",
                   }}
@@ -367,7 +367,7 @@ export function StreamingToolIndicator({
                 <div className="flex gap-2">
                   <span className="w-4 flex-shrink-0" />
                   <div
-                    className="text-[11px] font-mono"
+                    className="text-[0.6875rem] font-mono"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {line.details.map((detail, i) => (
@@ -387,7 +387,7 @@ export function StreamingToolIndicator({
                 >
                   <span className="w-4 flex-shrink-0" />
                   <span
-                    className="text-[11px] tabular-nums"
+                    className="text-[0.6875rem] tabular-nums"
                     style={{ color: "var(--text-muted)" }}
                   >
                     Running {formatDuration(elapsedSeconds)}

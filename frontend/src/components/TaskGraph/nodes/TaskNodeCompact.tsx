@@ -13,10 +13,10 @@
 
 import { memo, useCallback } from "react";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
-import { GLASS_SURFACE, COMPACT_NODE_WIDTH, COMPACT_TITLE_MAX_CHARS } from "./nodeStyles";
+import { COMPACT_TITLE_MAX_CHARS, useScaledNodeDimensions } from "./nodeStyles";
+import { getBaseCardStyles } from "@/components/tasks/TaskBoard/TaskCard.utils";
 import { TaskNodeContextMenu } from "./TaskNodeContextMenu";
 import type { InternalStatus } from "@/types/status";
-import { getStatusBorderColor } from "@/types/status-icons";
 import type { Task } from "@/types/task";
 import type { TaskNodeData } from "./TaskNode";
 
@@ -75,7 +75,8 @@ function getActivityDotColor(status: string): string {
 
 function TaskNodeCompactComponent({ data, selected }: NodeProps<TaskNodeCompactType>) {
   const { label, taskId, internalStatus, priority, isCriticalPath, isHighlighted, isFocused, handlers, groupInfo } = data;
-  const statusColor = getStatusBorderColor(internalStatus);
+  const cardSurface = getBaseCardStyles(internalStatus as InternalStatus, false, false);
+  const { compactNodeWidth } = useScaledNodeDimensions();
   const showActivityDots = isActiveStatus(internalStatus);
   const activityDotColor = getActivityDotColor(internalStatus);
 
@@ -138,7 +139,7 @@ function TaskNodeCompactComponent({ data, selected }: NodeProps<TaskNodeCompactT
   const nodeContent = (
     <div
       className="relative"
-      style={{ width: COMPACT_NODE_WIDTH }}
+      style={{ width: compactNodeWidth }}
       data-testid="task-node-compact"
       data-status={internalStatus}
       data-critical-path={isCriticalPath}
@@ -163,25 +164,14 @@ function TaskNodeCompactComponent({ data, selected }: NodeProps<TaskNodeCompactT
           ${isHighlighted ? "animate-pulse" : ""}
         `}
         style={{
-          // Glass morphism surface - no background change on selection
-          background: GLASS_SURFACE.background,
-          backdropFilter: GLASS_SURFACE.backdropFilter,
-          WebkitBackdropFilter: GLASS_SURFACE.WebkitBackdropFilter,
-          // Border: solid orange for all selection methods (click, keyboard, timeline)
-          // Use explicit borderTop/Right/Bottom instead of shorthand to prevent conflicts with borderLeft
-          borderTop: (selected || isHighlighted || isFocused)
-            ? "2px solid var(--accent-primary)"
-            : "1px solid var(--overlay-weak)",
-          borderRight: (selected || isHighlighted || isFocused)
-            ? "2px solid var(--accent-primary)"
-            : "1px solid var(--overlay-weak)",
-          borderBottom: (selected || isHighlighted || isFocused)
-            ? "2px solid var(--accent-primary)"
-            : "1px solid var(--overlay-weak)",
-          // Keep status-colored left stripe visible in all states
-          borderLeft: `3px solid ${statusColor}`,
-          boxShadow: GLASS_SURFACE.boxShadow,
-          transition: "background 150ms ease, transform 150ms ease, box-shadow 150ms ease, border-top 150ms ease, border-right 150ms ease, border-bottom 150ms ease",
+          backgroundColor: cardSurface.backgroundColor,
+          borderStyle: "solid",
+          borderWidth: (selected || isHighlighted || isFocused) ? "2px" : "1px",
+          borderColor: (selected || isHighlighted || isFocused)
+            ? "var(--accent-primary)"
+            : (cardSurface.borderColor as string),
+          boxShadow: "none",
+          transition: "background-color 150ms ease, transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
         }}
       >
         {/* Activity dots - top-right corner for active states */}
@@ -218,7 +208,7 @@ function TaskNodeCompactComponent({ data, selected }: NodeProps<TaskNodeCompactT
         <div
           className="font-medium leading-tight line-clamp-2"
           style={{
-            fontSize: "12px",
+            fontSize: "0.75rem",
             color: "var(--text-primary)",
             lineHeight: 1.35,
           }}

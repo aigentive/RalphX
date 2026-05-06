@@ -57,7 +57,7 @@ export function PlanClearAction({
     >
       <div className="flex-1 min-w-0">
         <div
-          className="text-[13px] font-medium leading-tight"
+          className="text-[0.8125rem] font-medium leading-tight"
           style={{ color: isHighlighted ? "var(--accent-primary)" : "var(--text-primary)" }}
         >
           Clear active plan

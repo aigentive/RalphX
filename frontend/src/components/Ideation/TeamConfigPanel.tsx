@@ -31,7 +31,7 @@ const selectStyle: React.CSSProperties = {
   color: "var(--text-primary)",
   borderRadius: "8px",
   padding: "6px 10px",
-  fontSize: "13px",
+  fontSize: "0.8125rem",
   outline: "none",
 };
 
@@ -50,7 +50,7 @@ export function TeamConfigPanel({ config, onChange }: TeamConfigPanelProps) {
     >
       {/* Row 1: Max teammates + Model ceiling */}
       <div className="flex items-center gap-4 mb-3">
-        <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
+        <label className="flex items-center gap-2 text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
           <span>Max teammates:</span>
           <select
             value={config.maxTeammates}
@@ -63,7 +63,7 @@ export function TeamConfigPanel({ config, onChange }: TeamConfigPanelProps) {
           </select>
         </label>
 
-        <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
+        <label className="flex items-center gap-2 text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
           <span>Model ceiling:</span>
           <select
             value={config.modelCeiling}
@@ -79,7 +79,7 @@ export function TeamConfigPanel({ config, onChange }: TeamConfigPanelProps) {
 
       {/* Row 2: Budget + Composition */}
       <div className="flex items-center gap-4 mb-3">
-        <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--text-secondary)" }}>
+        <label className="flex items-center gap-2 text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
           <span>Budget limit:</span>
           <select
             value={config.budgetLimit ?? ""}
@@ -92,7 +92,7 @@ export function TeamConfigPanel({ config, onChange }: TeamConfigPanelProps) {
           </select>
         </label>
 
-        <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--text-secondary)" }}>
+        <div className="flex items-center gap-3 text-[0.8125rem]" style={{ color: "var(--text-secondary)" }}>
           <span>Composition:</span>
           <CompositionRadio
             value={config.compositionMode}
@@ -105,21 +105,21 @@ export function TeamConfigPanel({ config, onChange }: TeamConfigPanelProps) {
       {config.compositionMode === "constrained" && (
         <div className="mt-3 pl-1">
           <p
-            className="text-[12px] mb-1.5"
+            className="text-[0.75rem] mb-1.5"
             style={{ color: "var(--text-secondary)" }}
           >
             Available specialist roles:
           </p>
           <div className="flex flex-col gap-1 ml-1">
-            <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+            <span className="text-[0.75rem]" style={{ color: "var(--text-secondary)" }}>
               ✓ researcher <span style={{ color: "var(--text-muted)" }}>(codebase research)</span>
             </span>
-            <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+            <span className="text-[0.75rem]" style={{ color: "var(--text-secondary)" }}>
               ✓ critic <span style={{ color: "var(--text-muted)" }}>(adversarial stress-testing)</span>
             </span>
           </div>
           <p
-            className="text-[11px] mt-1.5"
+            className="text-[0.6875rem] mt-1.5"
             style={{ color: "var(--text-muted)" }}
           >
             ⓘ Lead will select from these roles only.

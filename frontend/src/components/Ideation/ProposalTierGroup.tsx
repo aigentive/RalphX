@@ -104,19 +104,19 @@ export const ProposalTierGroup = React.memo(function ProposalTierGroup({
             {/* Tier info */}
             <div className="flex items-center gap-2 flex-1">
               <span
-                className="text-[11px] font-semibold uppercase tracking-wider"
+                className="text-[0.6875rem] font-semibold uppercase tracking-wider"
                 style={{ color: isOpen ? "var(--accent-primary)" : "var(--text-muted)" }}
               >
                 Tier {tier}
               </span>
               <span
-                className="text-[11px]"
+                className="text-[0.6875rem]"
                 style={{ color: "var(--text-muted)", opacity: 0.5 }}
               >
                 ·
               </span>
               <span
-                className="text-[12px] font-medium"
+                className="text-[0.75rem] font-medium"
                 style={{ color: "var(--text-secondary)" }}
               >
                 {displayLabel}
@@ -125,7 +125,7 @@ export const ProposalTierGroup = React.memo(function ProposalTierGroup({
 
             {/* Proposal count */}
             <span
-              className="text-[11px] font-medium px-2 py-0.5 rounded-md"
+              className="text-[0.6875rem] font-medium px-2 py-0.5 rounded-md"
               style={{
                 background: "var(--overlay-faint)",
                 border: "1px solid var(--overlay-faint)",

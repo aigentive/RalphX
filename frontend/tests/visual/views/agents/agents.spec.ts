@@ -584,16 +584,18 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("archived sidebar filter matches visual contract", async ({ page }) => {
+  test("v27 sidebar tree and static recent block match visual contract", async ({ page }) => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
 
-    await expect(page.getByTestId("agents-show-archived-pill")).toContainText("1");
-    await page.getByTestId("agents-show-archived-pill").click();
-    await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toBeVisible();
-    await expect(page.getByTestId(`agents-session-${editConversationId}`)).toHaveCount(0);
+    await expect(page.getByTestId("agents-show-archived-pill")).toHaveCount(0);
+    await expect(page.getByTestId("agents-project-sort-pill")).toHaveCount(0);
+    // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
+    await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
+    await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
+    await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toHaveCount(0);
 
-    await expect(page).toHaveScreenshot("agents-archived-sidebar.png", {
+    await expect(page).toHaveScreenshot("agents-v27-sidebar-recent.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });

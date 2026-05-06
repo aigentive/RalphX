@@ -25,7 +25,7 @@ exports[`AnalysisBanner > matches snapshot 1`] = `
     />
   </svg>
   <span
-    class="text-[12px]"
+    class="text-[0.75rem]"
     style="color: var(--accent-primary);"
   >
     Analyzing dependencies — accept will be available when complete

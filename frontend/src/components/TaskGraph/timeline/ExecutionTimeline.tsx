@@ -143,7 +143,7 @@ const TimelineFilterBar = memo(function TimelineFilterBar({
           />
           <span
             style={{
-              fontSize: "11px",
+              fontSize: "0.6875rem",
               fontWeight: 500,
               color: "var(--text-secondary)",
             }}
@@ -204,7 +204,7 @@ const TimelineFilterBar = memo(function TimelineFilterBar({
                 <span
                   className="flex-1"
                   style={{
-                    fontSize: "11px",
+                    fontSize: "0.6875rem",
                     fontWeight: 500,
                     color: isActive ? "var(--text-primary)" : "var(--text-muted)",
                   }}
@@ -216,7 +216,7 @@ const TimelineFilterBar = memo(function TimelineFilterBar({
                 {isActive && option.id !== "all" && (
                   <span
                     style={{
-                      fontSize: "10px",
+                      fontSize: "0.625rem",
                       color: "var(--status-info)",
                     }}
                   >
@@ -233,7 +233,7 @@ const TimelineFilterBar = memo(function TimelineFilterBar({
               onClick={() => handleCategoryToggle("all")}
               className="w-full mt-1 py-1.5 transition-colors"
               style={{
-                fontSize: "10px",
+                fontSize: "0.625rem",
                 color: "var(--text-muted)",
               }}
               onMouseEnter={(e) => {
@@ -288,7 +288,7 @@ const TimelineHeader = memo(function TimelineHeader({
           <>
             <span
               style={{
-                fontSize: "13px",
+                fontSize: "0.8125rem",
                 fontWeight: 500,
                 color: "var(--text-primary)",
                 letterSpacing: "-0.01em",
@@ -298,7 +298,7 @@ const TimelineHeader = memo(function TimelineHeader({
             </span>
             <span
               style={{
-                fontSize: "11px",
+                fontSize: "0.6875rem",
                 fontWeight: 500,
                 color: "var(--text-muted)",
               }}
@@ -397,7 +397,7 @@ const TimelineLoadMore = memo(function TimelineLoadMore({
         disabled={isFetching}
         className="w-full py-2 rounded-md transition-colors disabled:opacity-50"
         style={{
-          fontSize: "11px",
+          fontSize: "0.6875rem",
           fontWeight: 500,
           color: "var(--text-muted)",
         }}
@@ -573,7 +573,7 @@ export const ExecutionTimeline = memo(function ExecutionTimeline({
             />
             <p
               style={{
-                fontSize: "12px",
+                fontSize: "0.75rem",
                 color: "var(--status-error)",
                 marginBottom: "8px",
               }}
@@ -583,7 +583,7 @@ export const ExecutionTimeline = memo(function ExecutionTimeline({
             <button
               onClick={refresh}
               style={{
-                fontSize: "11px",
+                fontSize: "0.6875rem",
                 color: "var(--status-info)",
               }}
               onMouseEnter={(e) => {
@@ -607,7 +607,7 @@ export const ExecutionTimeline = memo(function ExecutionTimeline({
             />
             <p
               style={{
-                fontSize: "12px",
+                fontSize: "0.75rem",
                 fontWeight: 500,
                 color: "var(--text-muted)",
               }}
@@ -616,7 +616,7 @@ export const ExecutionTimeline = memo(function ExecutionTimeline({
             </p>
             <p
               style={{
-                fontSize: "11px",
+                fontSize: "0.6875rem",
                 color: "var(--text-muted)",
                 marginTop: "4px",
               }}

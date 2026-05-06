@@ -60,7 +60,7 @@ function ActionButtonsCard({
           data-testid="review-code-button"
           onClick={onReviewCode}
           variant="ghost"
-          className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+          className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{ color: "var(--status-info)" }}
         >
           <Code className="w-4 h-4" />
@@ -71,7 +71,7 @@ function ActionButtonsCard({
         data-testid="view-diff-button"
         onClick={onViewDiff}
         variant="ghost"
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "var(--text-secondary)",
           backgroundColor: "var(--bg-elevated)",
@@ -84,7 +84,7 @@ function ActionButtonsCard({
         data-testid="reopen-task-button"
         onClick={onReopenTask}
         variant="ghost"
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "var(--text-secondary)",
           backgroundColor: "var(--bg-elevated)",

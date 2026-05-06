@@ -41,7 +41,7 @@ export function PublishFact({
     >
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--text-muted)]" />
       <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+        <div className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
           {label}
         </div>
         <div className="mt-1 flex min-w-0 items-center gap-2">
@@ -72,7 +72,7 @@ export function PublishFact({
           descriptionAction ? (
             <button
               type="button"
-              className="mt-1 block max-w-full truncate bg-transparent p-0 text-left text-[10px] text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
+              className="mt-1 block max-w-full truncate bg-transparent p-0 text-left text-[0.625rem] text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)]"
               onClick={() => void descriptionAction.onClick()}
               aria-label={descriptionAction.label}
               data-theme-button-skip="true"
@@ -81,7 +81,7 @@ export function PublishFact({
               {description}
             </button>
           ) : (
-            <div className="mt-1 truncate text-[10px] text-[var(--text-muted)]">
+            <div className="mt-1 truncate text-[0.625rem] text-[var(--text-muted)]">
               {description}
             </div>
           )

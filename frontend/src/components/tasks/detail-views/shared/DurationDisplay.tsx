@@ -118,7 +118,7 @@ export function DurationDisplay(props: DurationDisplayProps) {
       style={{ color: "var(--text-muted)" }}
     >
       <Clock className="w-3 h-3 shrink-0" />
-      <span className="text-[12px]">{label}</span>
+      <span className="text-[0.75rem]">{label}</span>
     </span>
   );
 }

@@ -65,7 +65,7 @@ const LegendItem = memo(function LegendItem({ status, label }: LegendItemProps) 
           backgroundColor: style.backgroundColor,
         }}
       />
-      <span className="text-[10px] text-[var(--text-secondary)] whitespace-nowrap">
+      <span className="text-[0.625rem] text-[var(--text-secondary)] whitespace-nowrap">
         {label}
       </span>
     </div>
@@ -85,7 +85,7 @@ const CategoryGroup = memo(function CategoryGroup({ category }: CategoryGroupPro
     <div className="flex items-center gap-2">
       {/* Category label */}
       <span
-        className="text-[10px] font-semibold uppercase tracking-wider"
+        className="text-[0.625rem] font-semibold uppercase tracking-wider"
         style={{ color: categoryColor }}
       >
         {categoryLabel}

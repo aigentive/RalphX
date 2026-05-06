@@ -240,11 +240,11 @@ function VerificationRunPicker({
       >
         <History className="w-3 h-3 shrink-0" style={{ color: "var(--text-muted)" }} />
         <div className="min-w-0">
-          <div className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+          <div className="text-[0.6875rem] font-medium" style={{ color: "var(--text-secondary)" }}>
             {triggerTitle}
           </div>
           {triggerDetail && (
-            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            <div className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
               {triggerDetail}
             </div>
           )}
@@ -275,10 +275,10 @@ function VerificationRunPicker({
       >
         <History className="w-3 h-3 shrink-0" style={{ color: "var(--text-muted)" }} />
         <div className="min-w-0 text-left">
-          <div className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+          <div className="text-[0.6875rem] font-medium" style={{ color: "var(--text-secondary)" }}>
             {triggerTitle}
           </div>
-          <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          <div className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
             {triggerDetail}
           </div>
         </div>
@@ -334,12 +334,12 @@ function VerificationRunPicker({
               >
                 <div className="flex flex-col gap-0.5 min-w-0">
                   <span
-                    className="text-[12px] font-medium truncate"
+                    className="text-[0.75rem] font-medium truncate"
                     style={{ color: isActive ? "var(--accent-primary)" : "var(--text-primary)" }}
                   >
                     {title}
                   </span>
-                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                  <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                     {summary}
                   </span>
                 </div>
@@ -762,13 +762,13 @@ export function VerificationPanel({
           {/* Text */}
           <div className="space-y-1.5">
             <h3
-              className="text-[14px] font-semibold"
+              className="text-[0.875rem] font-semibold"
               style={{ color: "var(--text-primary)" }}
             >
               No verification yet
             </h3>
             <p
-              className="text-[12px] leading-relaxed"
+              className="text-[0.75rem] leading-relaxed"
               style={{ color: "var(--text-muted)" }}
             >
               Run the AI verification agent to check your plan for gaps and
@@ -782,7 +782,7 @@ export function VerificationPanel({
               <Button
                 onClick={handleTriggerVerification}
                 data-testid="verify-first-button"
-                className="h-8 gap-2 text-[12px] font-semibold w-full rounded-lg transition-colors duration-150"
+                className="h-8 gap-2 text-[0.75rem] font-semibold w-full rounded-lg transition-colors duration-150"
                 style={{
                   color: "var(--accent-primary)",
                   background: withAlpha("var(--accent-primary)", 10),
@@ -804,7 +804,7 @@ export function VerificationPanel({
                 variant="ghost"
                 onClick={handleSkipVerification}
                 data-testid="skip-verification-button"
-                className="h-8 gap-2 text-[12px] font-medium w-full rounded-lg transition-colors duration-150"
+                className="h-8 gap-2 text-[0.75rem] font-medium w-full rounded-lg transition-colors duration-150"
                 style={{
                   color: "var(--text-muted)",
                   background: "transparent",
@@ -864,10 +864,10 @@ export function VerificationPanel({
           />
           <div className="flex flex-col gap-2 min-w-0 flex-1">
             <div>
-              <p className="text-[12px] font-medium" style={{ color: "var(--status-warning)" }}>
+              <p className="text-[0.75rem] font-medium" style={{ color: "var(--status-warning)" }}>
                 Verification may be stalled
               </p>
-              <p className="text-[11px] mt-0.5" style={{ color: "var(--text-secondary)" }}>
+              <p className="text-[0.6875rem] mt-0.5" style={{ color: "var(--text-secondary)" }}>
                 The verification agent has been running longer than expected. Try retrying the verification.
               </p>
             </div>
@@ -875,7 +875,7 @@ export function VerificationPanel({
               size="sm"
               onClick={handleTriggerVerification}
               data-testid="stale-retry-button"
-              className="h-7 px-2.5 text-[11px] font-semibold gap-1.5 rounded-lg self-start transition-colors duration-150"
+              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg self-start transition-colors duration-150"
               style={{
                 color: "var(--status-warning)",
                 background: withAlpha("var(--status-warning)", 12),
@@ -929,19 +929,19 @@ export function VerificationPanel({
           <div className="relative flex items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
               <div
-                className="text-[11px] font-semibold uppercase tracking-wider"
+                className="text-[0.6875rem] font-semibold uppercase tracking-wider"
                 style={{ color: "var(--text-muted)" }}
               >
                 Current Run
               </div>
               <div
-                className="mt-1 text-[15px] font-semibold"
+                className="mt-1 text-[0.9375rem] font-semibold"
                 style={{ color: "var(--text-primary)" }}
               >
                 Verification is warming up
               </div>
               <p
-                className="mt-2 text-[12px] leading-relaxed"
+                className="mt-2 text-[0.75rem] leading-relaxed"
                 style={{ color: "var(--text-secondary)" }}
               >
                 {verificationChild?.lastAssistantMessage
@@ -956,7 +956,7 @@ export function VerificationPanel({
                 style={{ background: "var(--accent-primary)" }}
               />
               <div
-                className="px-2 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider"
+                className="px-2 py-1 rounded-md text-[0.625rem] font-semibold uppercase tracking-wider"
                 style={{
                   color: "var(--accent-primary)",
                   background: withAlpha("var(--accent-primary)", 10),
@@ -995,7 +995,7 @@ export function VerificationPanel({
           </div>
 
           <div
-            className="mt-4 flex flex-wrap items-center gap-2 text-[11px]"
+            className="mt-4 flex flex-wrap items-center gap-2 text-[0.6875rem]"
             style={{ color: "var(--text-muted)" }}
           >
             {currentVerificationData?.currentRound != null && currentVerificationData?.maxRounds != null && (
@@ -1034,14 +1034,14 @@ export function VerificationPanel({
           }}
         >
           <div
-            className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+            className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-3"
             style={{ color: "var(--text-muted)" }}
           >
             Verification Gaps
           </div>
           {isVerified && (
             <div
-              className="text-[11px] mb-2"
+              className="text-[0.6875rem] mb-2"
               style={{ color: "var(--text-secondary)" }}
             >
               Verified with acceptable gaps — no critical issues remain.
@@ -1068,7 +1068,7 @@ export function VerificationPanel({
               size="sm"
               onClick={handleAddressGaps}
               data-testid="address-gaps-button"
-              className="h-7 px-2.5 text-[11px] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
               style={{
                 color: "var(--accent-primary)",
                 background: withAlpha("var(--accent-primary)", 10),
@@ -1094,7 +1094,7 @@ export function VerificationPanel({
               size="sm"
               onClick={handleTriggerVerification}
               data-testid="re-verify-button"
-              className="h-7 px-2.5 text-[11px] font-medium gap-1.5 rounded-lg transition-colors duration-150"
+              className="h-7 px-2.5 text-[0.6875rem] font-medium gap-1.5 rounded-lg transition-colors duration-150"
               style={{
                 color: "var(--text-secondary)",
                 background: "transparent",
@@ -1120,7 +1120,7 @@ export function VerificationPanel({
               size="sm"
               onClick={handleSkipVerification}
               data-testid="skip-verification-button"
-              className="h-7 px-2.5 text-[11px] font-medium gap-1.5 rounded-lg transition-colors duration-150"
+              className="h-7 px-2.5 text-[0.6875rem] font-medium gap-1.5 rounded-lg transition-colors duration-150"
               style={{
                 color: "var(--text-secondary)",
                 background: "transparent",

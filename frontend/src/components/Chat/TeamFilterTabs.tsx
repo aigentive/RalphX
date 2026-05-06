@@ -77,7 +77,7 @@ function FilterChip({ label, color, isActive, onClick }: FilterChipProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] whitespace-nowrap transition-colors",
+        "flex items-center gap-1.5 px-2 py-0.5 rounded text-[0.6875rem] whitespace-nowrap transition-colors",
         "outline-none focus-visible:ring-1",
       )}
       style={{

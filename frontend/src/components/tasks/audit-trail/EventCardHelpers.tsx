@@ -201,7 +201,7 @@ export function ExpandableContent({
   return (
     <div className="mt-1">
       <p
-        className={`text-[12px] whitespace-pre-wrap break-words text-text-primary/60${italic ? " italic" : ""}`}
+        className={`text-[0.75rem] whitespace-pre-wrap break-words text-text-primary/60${italic ? " italic" : ""}`}
         style={{ lineHeight: "1.5" }}
       >
         {displayText}
@@ -209,7 +209,7 @@ export function ExpandableContent({
       {needsTruncation && (
         <button
           onClick={toggle}
-          className="flex items-center gap-0.5 mt-0.5 text-[11px]"
+          className="flex items-center gap-0.5 mt-0.5 text-[0.6875rem]"
           style={{ color: "var(--accent-primary)" }}
         >
           {expanded ? (
@@ -238,7 +238,7 @@ export function StatusBadge({ status }: { status: string }) {
     : withAlpha("var(--text-muted)", 25);
   return (
     <span
-      className="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+      className="rounded-full px-2 py-0.5 text-[0.625rem] font-semibold"
       style={{
         backgroundColor: config.bgColor,
         color: config.color,

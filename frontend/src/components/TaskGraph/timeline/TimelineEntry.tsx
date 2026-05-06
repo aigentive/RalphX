@@ -192,7 +192,7 @@ export const TimelineEntry = memo(function TimelineEntry({
         <p
           className="truncate"
           style={{
-            fontSize: "12px",
+            fontSize: "0.75rem",
             fontWeight: 400,
             color: "var(--text-primary)",
             lineHeight: 1.4,
@@ -206,7 +206,7 @@ export const TimelineEntry = memo(function TimelineEntry({
           <span
             title={formatFullTimestamp(event.timestamp)}
             style={{
-              fontSize: "10px",
+              fontSize: "0.625rem",
               fontWeight: 500,
               color: "var(--text-muted)",
             }}
@@ -222,7 +222,7 @@ export const TimelineEntry = memo(function TimelineEntry({
                 alignItems: "center",
                 padding: "1px 5px",
                 borderRadius: "4px",
-                fontSize: "9px",
+                fontSize: "0.5625rem",
                 fontWeight: 600,
                 textTransform: "uppercase",
                 letterSpacing: "0.02em",
@@ -240,7 +240,7 @@ export const TimelineEntry = memo(function TimelineEntry({
           <div
             className="flex items-center gap-1 mt-0.5"
             style={{
-              fontSize: "10px",
+              fontSize: "0.625rem",
               color: "var(--text-muted)",
             }}
           >

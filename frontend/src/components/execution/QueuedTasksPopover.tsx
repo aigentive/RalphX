@@ -98,7 +98,7 @@ export function QueuedTasksPopover({
 
         {/* Footer */}
         <div
-          className="px-3 py-2 text-[11px]"
+          className="px-3 py-2 text-[0.6875rem]"
           style={{
             borderTop: "1px solid var(--overlay-weak)",
             color: "var(--text-muted)",

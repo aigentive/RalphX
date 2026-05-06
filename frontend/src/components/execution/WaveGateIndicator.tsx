@@ -45,14 +45,14 @@ export function WaveGateIndicator({
       <div className="flex items-center justify-between mb-1.5">
         <div className="flex items-center gap-1.5">
           <span
-            className="text-[10px] font-semibold uppercase tracking-wider"
+            className="text-[0.625rem] font-semibold uppercase tracking-wider"
             style={{ color: "var(--text-muted)" }}
           >
             Wave {currentWave}/{totalWaves}
           </span>
           {allPassed && (
             <span
-              className="text-[9px] font-medium px-1.5 py-0.5 rounded"
+              className="text-[0.5625rem] font-medium px-1.5 py-0.5 rounded"
               style={{
                 color: "var(--status-success)",
                 backgroundColor: "var(--status-success-muted)",
@@ -95,7 +95,7 @@ export function WaveGateIndicator({
               style={{ color: "var(--status-success)" }}
             />
             <span
-              className="text-[10px]"
+              className="text-[0.625rem]"
               style={{ color: "var(--text-muted)" }}
             >
               {t.name}
@@ -109,7 +109,7 @@ export function WaveGateIndicator({
               style={{ color: "var(--accent-primary)" }}
             />
             <span
-              className="text-[10px]"
+              className="text-[0.625rem]"
               style={{ color: "var(--text-secondary)" }}
             >
               {t.name}

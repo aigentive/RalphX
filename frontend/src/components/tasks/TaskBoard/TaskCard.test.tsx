@@ -125,12 +125,80 @@ describe("TaskCard", () => {
       expect(screen.queryByText("Review PR")).not.toBeInTheDocument();
     });
 
-    it("should render priority stripe via left border", () => {
+    it("should render flat v29a card chrome without a left status stripe", () => {
       const task = createMockTask({ priority: 2 });
       render(<TaskCard task={task} />, { wrapper: DndWrapper });
       const card = screen.getByTestId(`task-card-${task.id}`);
-      // Priority 2 (High) should have a colored left border stripe
-      expect(card.style.borderLeft).toContain("3px solid");
+      expect(card.style.borderLeft).toBe("");
+      expect(card.getAttribute("style")).toContain("background-color: var(--kanban-card-bg, #232329)");
+      expect(card.getAttribute("style")).toContain("border-color: var(--kanban-card-border, #34343C)");
+      expect(card.style.borderStyle).toBe("solid");
+      expect(card.style.borderWidth).toBe("1px");
+    });
+
+    it("should tint completed cards with the v29a full-card success surface", () => {
+      const task = createMockTask({ internalStatus: "approved" });
+      render(<TaskCard task={task} />, { wrapper: DndWrapper });
+      const card = screen.getByTestId(`task-card-${task.id}`);
+      expect(card.getAttribute("style")).toContain("background-color: var(--kanban-card-success-bg");
+      expect(card.getAttribute("style")).toContain("border-color: var(--kanban-card-success-border");
+      expect(card.style.borderStyle).toBe("solid");
+      expect(card.style.borderWidth).toBe("1px");
+    });
+
+    it("should tint merge workflow cards with the v29a warning surface", () => {
+      const task = createMockTask({
+        category: "plan_merge",
+        internalStatus: "pending_merge",
+      });
+      render(<TaskCard task={task} />, { wrapper: DndWrapper });
+      const card = screen.getByTestId(`task-card-${task.id}`);
+      expect(card.getAttribute("style")).toContain("background-color: var(--kanban-card-warning-bg");
+      expect(card.getAttribute("style")).toContain("border-color: var(--kanban-card-warning-border");
+      expect(card.style.borderStyle).toBe("solid");
+      expect(card.style.borderWidth).toBe("1px");
+    });
+
+    it("should preserve status tint when a completed or escalated card is selected", () => {
+      const completedTask = createMockTask({ id: "completed-task", internalStatus: "approved" });
+      const escalatedTask = createMockTask({ id: "escalated-task", internalStatus: "escalated" });
+
+      render(
+        <>
+          <TaskCard task={completedTask} isSelected />
+          <TaskCard task={escalatedTask} isSelected />
+        </>,
+        { wrapper: DndWrapper }
+      );
+
+      const completedCard = screen.getByTestId("task-card-completed-task");
+      expect(completedCard.getAttribute("style")).toContain("background-color: var(--kanban-card-success-bg");
+      expect(completedCard.getAttribute("style")).toContain("border-color: var(--kanban-card-success-border");
+      expect(completedCard.getAttribute("style")).toContain("box-shadow: inset 0 0 0 1px var(--kanban-card-selected-border");
+      expect(completedCard.getAttribute("style")).not.toContain("background-color: var(--kanban-card-selected-bg");
+
+      const escalatedCard = screen.getByTestId("task-card-escalated-task");
+      expect(escalatedCard.getAttribute("style")).toContain("background-color: var(--kanban-card-warning-bg");
+      expect(escalatedCard.getAttribute("style")).toContain("border-color: var(--kanban-card-warning-border");
+      expect(escalatedCard.getAttribute("style")).not.toContain("background-color: var(--kanban-card-selected-bg");
+    });
+
+    it("should not dim non-draggable terminal and escalated cards", () => {
+      const completedTask = createMockTask({ id: "completed-task", internalStatus: "approved" });
+      const escalatedTask = createMockTask({ id: "escalated-task", internalStatus: "escalated" });
+
+      render(
+        <>
+          <TaskCard task={completedTask} />
+          <TaskCard task={escalatedTask} />
+        </>,
+        { wrapper: DndWrapper }
+      );
+
+      expect(screen.getByTestId("task-card-completed-task")).toHaveClass("cursor-default");
+      expect(screen.getByTestId("task-card-completed-task")).not.toHaveClass("opacity-70");
+      expect(screen.getByTestId("task-card-escalated-task")).toHaveClass("cursor-default");
+      expect(screen.getByTestId("task-card-escalated-task")).not.toHaveClass("opacity-70");
     });
 
     it("should truncate long titles", () => {

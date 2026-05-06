@@ -218,7 +218,7 @@ export const TaskSubagentCard = React.memo(function TaskSubagentCard({
 
         {/* Timer / Duration */}
         <span
-          className="text-[10px] tabular-nums flex-shrink-0"
+          className="text-[0.625rem] tabular-nums flex-shrink-0"
           style={{ color: "var(--text-muted)" }}
         >
           {isRunning ? elapsed : (task.totalDurationMs != null ? formatDuration(task.totalDurationMs) : "")}

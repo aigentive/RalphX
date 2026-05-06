@@ -39,7 +39,7 @@ export function CodeBlock({ children, language }: CodeBlockProps) {
     <div className="relative group my-2 max-w-full overflow-hidden">
       {language && (
         <span
-          className="absolute top-1.5 left-3 text-[10px] uppercase tracking-wide"
+          className="absolute top-1.5 left-3 text-[0.625rem] uppercase tracking-wide"
           style={{ color: "var(--text-muted)" }}
         >
           {language}
@@ -54,7 +54,7 @@ export function CodeBlock({ children, language }: CodeBlockProps) {
         }}
       >
         <code
-          className={cn("block p-3 text-[12px]", language && "pt-7")}
+          className={cn("block p-3 text-[0.75rem]", language && "pt-7")}
           style={{
             fontFamily: "var(--font-mono)",
             color: "var(--text-primary)",
@@ -159,7 +159,7 @@ export const markdownComponents = {
     }
     return (
       <code
-        className="px-1 py-px rounded text-[12px] break-all"
+        className="px-1 py-px rounded text-[0.75rem] break-all"
         style={{
           /* Soft inline code chip — distinguishable as code without
              dominating dense paragraphs that contain many spans. */
@@ -190,7 +190,7 @@ export const markdownComponents = {
     </h2>
   ),
   h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h3 className="text-[15px] font-bold mb-2" {...props}>
+    <h3 className="text-[0.9375rem] font-bold mb-2" {...props}>
       {children}
     </h3>
   ),
@@ -241,7 +241,7 @@ export const markdownComponents = {
       }}
     >
       <table
-        className="text-[12px] border-collapse"
+        className="text-[0.75rem] border-collapse"
         style={{ minWidth: "max-content" }} /* Prevent column shrinking */
         {...props}
       >
@@ -276,7 +276,7 @@ export const markdownComponents = {
   ),
   th: ({ children, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
     <th
-      className="px-3 py-2 text-left font-medium text-[11px] uppercase tracking-wide"
+      className="px-3 py-2 text-left font-medium text-[0.6875rem] uppercase tracking-wide"
       style={{
         color: "var(--text-secondary)",
         whiteSpace: "nowrap", /* Prevent text wrapping */

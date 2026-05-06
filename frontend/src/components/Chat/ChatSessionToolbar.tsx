@@ -164,7 +164,7 @@ export function ChatSessionToolbar({
             >
               {harnessLabel && (
                 <span
-                  className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em]"
+                  className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
                   style={harnessStyle}
                   title={providerTooltip ?? undefined}
                   aria-label={providerTooltip ?? harnessLabel}

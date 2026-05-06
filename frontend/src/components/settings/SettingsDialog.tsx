@@ -135,9 +135,15 @@ export default function SettingsDialog({
         <DialogContent
           forceMount
           data-testid="settings-dialog"
-          className={`p-0 gap-0 overflow-hidden flex flex-col max-w-[95vw] w-[95vw] h-[95vh] bg-[var(--dialog-bg)] border border-[var(--dialog-border-color)] duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none ${
+          overlayClassName="settings-layer__scrim"
+          className={`settings-modal p-0 gap-0 overflow-hidden flex flex-col max-w-[95vw] w-[95vw] h-[95vh] bg-[var(--dialog-bg)] border border-[var(--dialog-border-color)] duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none ${
             isClosing ? "pointer-events-none opacity-0 scale-[0.98]" : ""
           }`}
+          style={{
+            backgroundColor: "var(--dialog-bg)",
+            borderColor: "var(--dialog-border-color)",
+            boxShadow: "var(--dialog-shadow)",
+          }}
           hideCloseButton={true}
         >
         <DialogTitle className="sr-only">Settings</DialogTitle>
@@ -145,15 +151,15 @@ export default function SettingsDialog({
           Configure execution, ideation, workspace, and access settings.
         </DialogDescription>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--dialog-border-color)] bg-[var(--dialog-bg)] shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-[var(--text-primary)]">
+        <div className="settings-modal__head shrink-0">
+          <div className="settings-modal__crumbs">
+            <span className="lbl">
               Settings
             </span>
             {activeSectionMeta && (
               <>
-                <span className="text-[var(--text-secondary)] text-sm">/</span>
-                <span className="text-sm text-[var(--text-secondary)]">
+                <span className="sep">/</span>
+                <span className="cur">
                   {activeSectionMeta.label}
                 </span>
               </>
@@ -162,7 +168,7 @@ export default function SettingsDialog({
           <button
             type="button"
             onClick={requestClose}
-            className="rounded-md p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+            className="settings-modal__close focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
             aria-label="Close settings"
           >
             <X className="h-4 w-4" />
@@ -170,16 +176,16 @@ export default function SettingsDialog({
         </div>
 
         {/* Body */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="settings-modal__body flex-1 overflow-hidden">
           {/* Left rail — hidden below lg breakpoint */}
-          <nav className="hidden lg:flex w-[280px] flex-shrink-0 flex-col overflow-y-auto border-r border-[var(--dialog-border-color)] py-3 bg-[var(--dialog-rail-bg)]">
+          <nav className="settings-nav hidden lg:flex flex-shrink-0 flex-col overflow-y-auto">
             {SETTINGS_GROUPS.map((group) => {
               const groupSections = SETTINGS_SECTIONS.filter(
                 (s) => s.groupId === group.id
               );
               return (
-                <div key={group.id} className="mb-4">
-                  <p className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] opacity-60">
+                <div key={group.id} className="settings-nav__group">
+                  <p className="settings-nav__label">
                     {group.label}
                   </p>
                   {groupSections.map((section) => {
@@ -202,11 +208,7 @@ export default function SettingsDialog({
                           }
                         }}
                         aria-current={isActive ? "page" : undefined}
-                        className={`mx-2 flex min-h-[36px] items-center rounded-md px-3 py-1.5 text-sm cursor-pointer transition-colors ${
-                          isActive
-                            ? "bg-[var(--nav-active-bg)] text-[var(--nav-active-text)] font-semibold"
-                            : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                        }`}
+                        className="settings-nav__item"
                       >
                         <span className="block truncate">{section.label}</span>
                       </div>
@@ -222,7 +224,7 @@ export default function SettingsDialog({
             <select
               value={activeSection}
               onChange={(e) => setActiveSection(e.target.value as SettingsSectionId)}
-              className="w-full rounded-md px-3 py-1.5 text-sm text-[var(--text-primary)] bg-[var(--bg-surface)] border border-[var(--border-subtle)] focus:outline-none"
+              className="settings-input w-full focus:outline-none"
             >
               {SETTINGS_GROUPS.map((group) => {
                 const groupSections = SETTINGS_SECTIONS.filter(
@@ -242,9 +244,9 @@ export default function SettingsDialog({
           </div>
 
           {/* Right pane */}
-          <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="settings-pane min-w-0 flex-1 overflow-hidden flex flex-col">
             <ScrollArea className="flex-1">
-              <div className="p-6">
+              <div className="settings-pane__inner">
                 <SettingsSectionContent
                   section={activeSection}
                   executionSettings={executionSettings}

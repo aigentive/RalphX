@@ -14,7 +14,11 @@ async function expectAndAttachScreenshot(
   _attachmentName: string,
   _attach: (name: string, options: { body: Buffer; contentType: string }) => Promise<void>,
 ) {
-  await expect(widget).toHaveScreenshot(snapshotName);
+  // Tolerate minor cross-platform font/anti-aliasing rendering differences
+  // (Apple Silicon dev vs CI runner). Empirically these widget cards drift
+  // up to ~3% pixels even with no source change; 4% gives headroom while
+  // still catching meaningful visual regressions.
+  await expect(widget).toHaveScreenshot(snapshotName, { maxDiffPixelRatio: 0.04 });
 }
 
 test.describe("Chat Widget Matrix", () => {

@@ -32,10 +32,10 @@ function StatCell({
         <Icon className="w-3.5 h-3.5 text-text-primary/40" />
       </div>
       <div className="min-w-0">
-        <span className="text-[10px] uppercase tracking-wider text-text-primary/40 block">
+        <span className="text-[0.625rem] uppercase tracking-wider text-text-primary/40 block">
           {label}
         </span>
-        <span className="text-[13px] text-text-primary font-medium truncate block">
+        <span className="text-[0.8125rem] text-text-primary font-medium truncate block">
           {value}
         </span>
       </div>
