@@ -3714,9 +3714,9 @@ mod tests {
     use super::{
         apply_base_resolution_to_publish_target,
         build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
-        merge_delegated_snapshot_into_result, normalize_agent_runtime_selection,
-        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
-        persist_workspace_base_resolution_if_retargeted,
+        get_agent_conversation_workspace_freshness, merge_delegated_snapshot_into_result,
+        normalize_agent_runtime_selection, normalized_effort_for_supported,
+        parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
         project_plan_branch_publication_into_workspace_response,
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
@@ -3752,6 +3752,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::Arc;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
 
     #[test]
     fn normalized_effort_for_supported_keeps_supported_request_or_default() {
@@ -4403,6 +4405,65 @@ mod tests {
         );
         assert_eq!(blocked_response.effective_base_ref, None);
         assert_eq!(blocked_response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn workspace_freshness_command_blocks_stale_base_without_commit() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-blocked",
+            false,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should return blocked state");
+
+        assert_eq!(response.base_status, "blocked");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref, None);
+        assert_eq!(
+            response.base_block_reason.as_deref(),
+            Some(BLOCK_REASON_MISSING_BASE_COMMIT)
+        );
+        assert_eq!(response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn workspace_freshness_command_reports_retargeted_base() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-retargeted",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should resolve retargeted base");
+
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(response.target_ref, "main");
+        assert!(!response.is_base_ahead);
     }
 
     #[tokio::test]

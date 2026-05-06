@@ -45,6 +45,7 @@ pub struct MockGithubService {
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
     mark_pr_ready_result: Arc<Mutex<Option<AppResult<()>>>>,
     update_pr_details_result: Arc<Mutex<Option<AppResult<()>>>>,
+    update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
 }
@@ -71,6 +72,7 @@ impl MockGithubService {
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
             update_pr_details_result: Arc::new(Mutex::new(None)),
+            update_pr_base_result: Arc::new(Mutex::new(None)),
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
         }
     }
@@ -114,6 +116,12 @@ impl MockGithubService {
     /// Make the next `mark_pr_ready` call fail with the given message.
     pub fn will_fail_mark_ready(&self, msg: impl Into<String>) {
         *self.mark_pr_ready_result.lock().unwrap() =
+            Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
+    /// Make the next `update_pr_base` call fail with the given message.
+    pub fn will_fail_update_pr_base(&self, msg: impl Into<String>) {
+        *self.update_pr_base_result.lock().unwrap() =
             Some(Err(AppError::Infrastructure(msg.into())));
     }
 
@@ -204,6 +212,9 @@ impl GithubServiceTrait for MockGithubService {
 
     async fn update_pr_base(&self, _wd: &Path, _pr_number: i64, _base: &str) -> AppResult<()> {
         *self.update_pr_base_calls.lock().unwrap() += 1;
+        if let Some(result) = self.update_pr_base_result.lock().unwrap().take() {
+            return result;
+        }
         Ok(())
     }
 
