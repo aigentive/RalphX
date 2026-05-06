@@ -349,3 +349,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "helpers_tests.rs"]
+mod helpers_tests;

@@ -874,3 +874,37 @@ async fn test_get_task_context_omits_merged_dependency_from_blocked_by() {
         "resolved blockers must not produce a worker stop hint"
     );
 }
+
+#[tokio::test]
+async fn test_get_task_context_keeps_active_dependency_in_blocked_by() {
+    let task = Task::new(ProjectId::new(), "Dependent Task".to_string());
+    let task_id = task.id.clone();
+
+    let mut blocker = Task::new(task.project_id.clone(), "Executing Blocker".to_string());
+    blocker.internal_status = InternalStatus::Executing;
+    let blocker_id = blocker.id.clone();
+
+    let service = TaskContextService::new(
+        Arc::new(MockTaskRepository::with_tasks(task.clone(), vec![blocker])),
+        Arc::new(MockTaskDependencyRepository::with_blockers(
+            &task_id,
+            vec![blocker_id],
+        )),
+        Arc::new(MockTaskProposalRepository::empty()),
+        Arc::new(MockArtifactRepository::empty()),
+        Arc::new(MockTaskStepRepository::empty()),
+    );
+
+    let context = service.get_task_context(&task_id).await.unwrap();
+
+    assert_eq!(context.blocked_by.len(), 1);
+    assert_eq!(context.blocked_by[0].title, "Executing Blocker");
+    assert_eq!(context.tier, Some(2));
+    assert!(
+        context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("Executing Blocker")),
+        "active blockers should still produce worker dependency hints"
+    );
+}

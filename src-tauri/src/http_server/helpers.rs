@@ -1522,3 +1522,7 @@ async fn compute_validation_cache(
         hint_message,
     })
 }
+
+#[cfg(test)]
+#[path = "helpers_tests.rs"]
+mod helpers_tests;
