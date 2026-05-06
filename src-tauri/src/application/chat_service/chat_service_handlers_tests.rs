@@ -575,6 +575,66 @@ impl TaskStepRepository for StubErrorTaskStepRepo {
     }
 }
 
+struct StatusChangingTaskStepRepo {
+    task_repo: Arc<dyn TaskRepository>,
+    task_id: TaskId,
+    target_status: InternalStatus,
+}
+
+impl StatusChangingTaskStepRepo {
+    async fn move_task_to_target_status(&self) -> AppResult<()> {
+        let Some(mut task) = self.task_repo.get_by_id(&self.task_id).await? else {
+            return Ok(());
+        };
+        task.internal_status = self.target_status;
+        self.task_repo.update(&task).await
+    }
+}
+
+#[async_trait]
+impl TaskStepRepository for StatusChangingTaskStepRepo {
+    async fn create(&self, step: TaskStep) -> AppResult<TaskStep> {
+        Ok(step)
+    }
+    async fn get_by_id(&self, _: &TaskStepId) -> AppResult<Option<TaskStep>> {
+        Ok(None)
+    }
+    async fn get_by_task(&self, task_id: &TaskId) -> AppResult<Vec<TaskStep>> {
+        if task_id == &self.task_id {
+            self.move_task_to_target_status().await?;
+        }
+        Ok(Vec::new())
+    }
+    async fn get_by_task_and_status(
+        &self,
+        _: &TaskId,
+        _: TaskStepStatus,
+    ) -> AppResult<Vec<TaskStep>> {
+        Ok(Vec::new())
+    }
+    async fn update(&self, _: &TaskStep) -> AppResult<()> {
+        Ok(())
+    }
+    async fn delete(&self, _: &TaskStepId) -> AppResult<()> {
+        Ok(())
+    }
+    async fn delete_by_task(&self, _: &TaskId) -> AppResult<()> {
+        Ok(())
+    }
+    async fn count_by_status(&self, _: &TaskId) -> AppResult<HashMap<TaskStepStatus, u32>> {
+        Ok(HashMap::new())
+    }
+    async fn bulk_create(&self, steps: Vec<TaskStep>) -> AppResult<Vec<TaskStep>> {
+        Ok(steps)
+    }
+    async fn reorder(&self, _: &TaskId, _: Vec<TaskStepId>) -> AppResult<()> {
+        Ok(())
+    }
+    async fn reset_all_to_pending(&self, _: &TaskId) -> AppResult<u32> {
+        Ok(0)
+    }
+}
+
 fn make_step(task_id: &TaskId, status: TaskStepStatus) -> TaskStep {
     let mut step = TaskStep::new(task_id.clone(), "test step".into(), 0, "agent".into());
     step.status = status;
@@ -727,6 +787,74 @@ fn test_all_skipped_no_completed() {
 
     let result = run(all_steps_completed(&step_repo, &task_id));
     assert!(result, "All Skipped → helper returns true");
+}
+
+async fn assert_late_execution_finalizer_preserves_status(target_status: InternalStatus) {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new("Review Race".into(), "/tmp/review-race".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Execution finalizer race".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    let task_step_repo: Option<Arc<dyn TaskStepRepository>> =
+        Some(Arc::new(StatusChangingTaskStepRepo {
+            task_repo: Arc::clone(&state.task_repo),
+            task_id: task_id.clone(),
+            target_status,
+        }));
+
+    handle_stream_success::<MockRuntime>(
+        "late-run-id",
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        false,
+        false,
+        &execution_state,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &task_step_repo,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(
+        updated.internal_status, target_status,
+        "late execution finalizer must not overwrite review progress with Failed"
+    );
+}
+
+#[tokio::test]
+async fn test_late_execution_finalizer_cannot_overwrite_pending_review_or_reviewing() {
+    assert_late_execution_finalizer_preserves_status(InternalStatus::PendingReview).await;
+    assert_late_execution_finalizer_preserves_status(InternalStatus::Reviewing).await;
 }
 
 // ========================================

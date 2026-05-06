@@ -190,7 +190,7 @@ pub fn generate_task_context_hints(
     if !blocked_by.is_empty() {
         let incomplete: Vec<_> = blocked_by
             .iter()
-            .filter(|b| !matches!(b.internal_status, InternalStatus::Approved))
+            .filter(|b| b.internal_status.is_active_dependency_blocker())
             .collect();
         if !incomplete.is_empty() {
             let names: Vec<_> = incomplete.iter().map(|task| task.title.as_str()).collect();

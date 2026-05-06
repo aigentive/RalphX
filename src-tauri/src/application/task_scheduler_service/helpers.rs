@@ -269,7 +269,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         for blocker_id in &blocker_ids {
             match self.task_repo.get_by_id(blocker_id).await {
                 Ok(Some(blocker)) => {
-                    if !blocker.internal_status.is_dependency_satisfied() {
+                    if blocker.internal_status.is_active_dependency_blocker() {
                         return true;
                     }
                 }
@@ -292,7 +292,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         let mut reasons = Vec::new();
         for bid in &blocker_ids {
             if let Ok(Some(b)) = self.task_repo.get_by_id(bid).await {
-                if !b.internal_status.is_dependency_satisfied() {
+                if b.internal_status.is_active_dependency_blocker() {
                     let label = if b.internal_status == InternalStatus::Failed {
                         format!("\"{}\" (failed)", b.title)
                     } else {
