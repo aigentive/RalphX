@@ -6,6 +6,7 @@ pub mod activity_event_repository;
 pub mod agent_lane_settings_repository;
 pub mod agent_conversation_workspace_repository;
 pub mod agent_profile_repository;
+pub mod agent_model_registry_repository;
 pub mod agent_run_repository;
 pub mod api_key_repository;
 pub mod app_state_repository;
@@ -53,6 +54,7 @@ pub use activity_event_repository::{
 };
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
+pub use agent_model_registry_repository::AgentModelRegistryRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_run_repository::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};
 pub use api_key_repository::{ApiKeyRepository, CreateKeyParams, RotateKeyParams};

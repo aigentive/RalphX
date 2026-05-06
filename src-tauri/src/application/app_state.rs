@@ -27,11 +27,12 @@ use crate::domain::entities::ChatContextType;
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentProfileRepository, AgentRunRepository, ApiKeyRepository,
-    AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
+    AgentRunRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
+    ArtifactFlowRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, DelegatedSessionRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
     PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
@@ -47,11 +48,11 @@ use crate::error::AppResult;
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
     MemoryActivityEventRepository, MemoryAgentConversationWorkspaceRepository,
-    MemoryAgentLaneSettingsRepository, MemoryAgentProfileRepository, MemoryAgentRunRepository,
-    MemoryApiKeyRepository, MemoryAppStateRepository, MemoryArtifactBucketRepository,
-    MemoryArtifactFlowRepository, MemoryArtifactRepository, MemoryChatAttachmentRepository,
-    MemoryChatConversationRepository, MemoryChatMessageRepository,
-    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
+    MemoryAgentProfileRepository, MemoryAgentRunRepository, MemoryApiKeyRepository,
+    MemoryAppStateRepository, MemoryArtifactBucketRepository, MemoryArtifactFlowRepository,
+    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
+    MemoryChatMessageRepository, MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
@@ -69,10 +70,11 @@ use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
     SqliteActivePlanRepository, SqliteActivityEventRepository,
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
-    SqliteAgentProfileRepository, SqliteAgentRunRepository, SqliteApiKeyRepository,
-    SqliteAppStateRepository, SqliteArtifactBucketRepository, SqliteArtifactFlowRepository,
-    SqliteArtifactRepository, SqliteChatAttachmentRepository, SqliteChatConversationRepository,
-    SqliteChatMessageRepository, SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
+    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository, SqliteAgentRunRepository,
+    SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
+    SqliteArtifactFlowRepository, SqliteArtifactRepository, SqliteChatAttachmentRepository,
+    SqliteChatConversationRepository, SqliteChatMessageRepository,
+    SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
     SqliteGlobalExecutionSettingsRepository, SqliteIdeationEffortSettingsRepository,
     SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
@@ -139,6 +141,8 @@ pub struct AppState {
     pub ideation_model_settings_repo: Arc<dyn IdeationModelSettingsRepository>,
     /// Provider-neutral lane settings repository for multi-harness routing
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
+    /// Provider/model compatibility and custom model registry
+    pub agent_model_registry_repo: Arc<dyn AgentModelRegistryRepository>,
     /// Session link repository for managing parent-child session relationships
     pub session_link_repo: Arc<dyn SessionLinkRepository>,
     /// Task proposal repository
@@ -464,6 +468,9 @@ impl AppState {
             agent_lane_settings_repo: Arc::new(SqliteAgentLaneSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
+                Arc::clone(&shared_conn),
+            )),
             session_link_repo: Arc::new(SqliteSessionLinkRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -643,6 +650,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -752,6 +760,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -871,6 +880,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -980,6 +990,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::clone(&task_proposal_repo),
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),

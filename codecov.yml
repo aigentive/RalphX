@@ -13,6 +13,28 @@ coverage:
         threshold: 0%
         only_pulls: true
 
+ignore:
+  # Rust integration tests, sidecar test modules, and shared test support.
+  - "src-tauri/tests/**"
+  - "src-tauri/src/testing/**"
+  - "src-tauri/src/**/tests.rs"
+  - "src-tauri/src/**/tests/**"
+  - "src-tauri/src/**/*_test.rs"
+  - "src-tauri/src/**/*_tests.rs"
+  # Frontend test sources, snapshots, fixtures, and mocks.
+  - "frontend/tests/**"
+  - "frontend/src/**/__tests__/**"
+  - "frontend/src/**/__snapshots__/**"
+  - "frontend/src/**/*.test.*"
+  - "frontend/src/**/*.spec.*"
+  - "frontend/src/**/*.testSetup.*"
+  - "frontend/src/mocks/**"
+  # Plugin MCP test sources and generated test artifacts.
+  - "plugins/app/**/tests/**"
+  - "plugins/app/**/__tests__/**"
+  - "plugins/app/**/*.test.*"
+  - "plugins/app/**/*.spec.*"
+
 comment:
   layout: "reach, diff, flags, files"
   behavior: default

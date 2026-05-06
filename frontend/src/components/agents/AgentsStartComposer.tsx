@@ -8,6 +8,7 @@ import type {
 import type { Project } from "@/types/project";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
+  AgentEffort,
   AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
@@ -17,6 +18,7 @@ import {
   loadBranchBaseOptions,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import {
   AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
@@ -24,9 +26,11 @@ import {
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
 import {
-  AGENT_MODEL_OPTIONS,
   AGENT_PROVIDER_OPTIONS,
   DEFAULT_AGENT_RUNTIME,
+  agentEffortOptions,
+  agentModelOptions,
+  defaultEffortForModel,
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
@@ -101,6 +105,9 @@ export function AgentsStartComposer({
     normalizeRuntimeSelection(defaultRuntime).provider
   );
   const [modelId, setModelId] = useState(normalizeRuntimeSelection(defaultRuntime).modelId);
+  const [effort, setEffort] = useState<AgentEffort>(
+    normalizeRuntimeSelection(defaultRuntime).effort
+  );
   const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
   const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
@@ -112,10 +119,11 @@ export function AgentsStartComposer({
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
   const animatedHeadingWord = useAnimatedStarterWord();
+  const { registry: modelRegistry } = useAgentModels();
 
   const normalizedRuntime = useMemo(
-    () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME),
-    [defaultRuntime]
+    () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME, modelRegistry),
+    [defaultRuntime, modelRegistry]
   );
 
   useEffect(() => {
@@ -125,9 +133,17 @@ export function AgentsStartComposer({
   useEffect(() => {
     setProvider(normalizedRuntime.provider);
     setModelId(normalizedRuntime.modelId);
+    setEffort(normalizedRuntime.effort);
   }, [normalizedRuntime]);
 
-  const modelOptions = AGENT_MODEL_OPTIONS[provider];
+  const modelOptions = useMemo(
+    () => agentModelOptions(provider, modelRegistry),
+    [modelRegistry, provider]
+  );
+  const effortOptions = useMemo(
+    () => agentEffortOptions(provider, modelId, modelRegistry),
+    [modelId, modelRegistry, provider]
+  );
   const activeProject = useMemo(
     () => projects.find((project) => project.id === projectId) ?? null,
     [projectId, projects]
@@ -154,43 +170,73 @@ export function AgentsStartComposer({
       if (!nextProjectId) {
         return;
       }
-      onRuntimePreferenceChange?.(nextProjectId, normalizeRuntimeSelection(runtime));
+      onRuntimePreferenceChange?.(
+        nextProjectId,
+        normalizeRuntimeSelection(runtime, modelRegistry)
+      );
     },
-    [onRuntimePreferenceChange]
+    [modelRegistry, onRuntimePreferenceChange]
   );
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
       setProjectId(nextProjectId);
-      persistRuntimePreference(nextProjectId, { provider, modelId });
+      persistRuntimePreference(nextProjectId, { provider, modelId, effort });
     },
-    [modelId, persistRuntimePreference, provider]
+    [effort, modelId, persistRuntimePreference, provider]
   );
 
   const handleProviderChange = useCallback(
     (nextProvider: AgentProvider) => {
-      const nextRuntime = normalizeRuntimeSelection({
-        provider: nextProvider,
-        modelId: defaultModelForProvider(nextProvider),
-      });
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider: nextProvider,
+          modelId: defaultModelForProvider(nextProvider, modelRegistry),
+        },
+        modelRegistry
+      );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
+      setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [persistRuntimePreference, projectId]
+    [modelRegistry, persistRuntimePreference, projectId]
   );
 
   const handleModelChange = useCallback(
     (nextModelId: string) => {
-      const nextRuntime = normalizeRuntimeSelection({
-        provider,
-        modelId: nextModelId,
-      });
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId: nextModelId,
+          effort: defaultEffortForModel(provider, nextModelId, modelRegistry),
+        },
+        modelRegistry
+      );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
+      setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [persistRuntimePreference, projectId, provider]
+    [modelRegistry, persistRuntimePreference, projectId, provider]
+  );
+
+  const handleEffortChange = useCallback(
+    (nextEffort: AgentEffort) => {
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId,
+          effort: nextEffort,
+        },
+        modelRegistry
+      );
+      setProvider(nextRuntime.provider);
+      setModelId(nextRuntime.modelId);
+      setEffort(nextRuntime.effort);
+      persistRuntimePreference(projectId, nextRuntime);
+    },
+    [modelId, modelRegistry, persistRuntimePreference, projectId, provider]
   );
 
   const handleFilesSelected = (files: File[]) => {
@@ -303,7 +349,7 @@ export function AgentsStartComposer({
       await onSubmit({
         projectId,
         content: message.trim(),
-        runtime: { provider, modelId },
+        runtime: { provider, modelId, effort },
         mode,
         base: selectedStartFrom?.selection ?? fallbackStartFrom,
         files: attachments.map((attachment) => attachment.file),
@@ -435,8 +481,17 @@ export function AgentsStartComposer({
               value: modelId,
               onValueChange: handleModelChange,
               options: modelOptions,
+              allowCustomValue: true,
+              customPlaceholder: "Custom model ID",
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
+            }}
+            effort={{
+              value: effort,
+              onValueChange: (value) => handleEffortChange(value as AgentEffort),
+              options: effortOptions,
+              testId: "agents-start-effort",
+              className: "max-w-[148px] flex-none",
             }}
           />
 

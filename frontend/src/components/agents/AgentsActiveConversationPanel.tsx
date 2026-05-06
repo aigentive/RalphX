@@ -10,6 +10,7 @@ import {
   type IntegratedChatComposerRenderProps,
 } from "@/components/Chat/IntegratedChatPanel";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import type {
   AgentArtifactTab,
   AgentProvider,
@@ -34,8 +35,9 @@ import {
   AGENT_CONVERSATION_MODE_OPTIONS,
 } from "./agentConversationMode";
 import {
-  AGENT_MODEL_OPTIONS,
   AGENT_PROVIDER_OPTIONS,
+  agentEffortOptions,
+  agentModelOptions,
 } from "./agentOptions";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
@@ -68,6 +70,7 @@ interface AgentsActiveConversationPanelProps {
   hasAutoOpenArtifacts: boolean;
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
+  onActiveEffortChange: (effort: string) => void;
   onActiveModelChange: (modelId: string) => void;
   onAgentUserMessageSent: (event: {
     content: string;
@@ -103,6 +106,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   hasAutoOpenArtifacts,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
+  onActiveEffortChange,
   onActiveModelChange,
   onAgentUserMessageSent,
   onFocusIdeationSession,
@@ -121,6 +125,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
+  const { registry: modelRegistry } = useAgentModels();
   const panelIdeationSessionId =
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
@@ -186,6 +191,23 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       testId: "agents-composer-chat-focus",
     };
   }, [chatFocus.type, chatFocusOptions, onSelectChatFocus]);
+  const workspaceModelOptions = useMemo(
+    () => agentModelOptions(normalizedActiveRuntime.provider, modelRegistry),
+    [modelRegistry, normalizedActiveRuntime.provider]
+  );
+  const workspaceEffortOptions = useMemo(
+    () =>
+      agentEffortOptions(
+        normalizedActiveRuntime.provider,
+        normalizedActiveRuntime.modelId,
+        modelRegistry
+      ),
+    [
+      modelRegistry,
+      normalizedActiveRuntime.modelId,
+      normalizedActiveRuntime.provider,
+    ]
+  );
 
   return (
     <div className="flex-1 min-w-0 h-full flex flex-col">
@@ -210,6 +232,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   conversationId: selectedConversationId,
                   providerHarness: normalizedActiveRuntime.provider,
                   modelId: normalizedActiveRuntime.modelId,
+                  logicalEffort: normalizedActiveRuntime.effort,
                 },
               }
             : {})}
@@ -295,8 +318,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         model: {
                           value: normalizedActiveRuntime.modelId,
                           onValueChange: onActiveModelChange,
-                          options:
-                            AGENT_MODEL_OPTIONS[normalizedActiveRuntime.provider],
+                          options: workspaceModelOptions,
+                          allowCustomValue: true,
+                          customPlaceholder: "Custom model ID",
+                        },
+                        effort: {
+                          value: normalizedActiveRuntime.effort,
+                          onValueChange: onActiveEffortChange,
+                          options: workspaceEffortOptions,
+                          testId: "agents-conversation-effort",
                         },
                       };
                     }
@@ -325,8 +355,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         value: childModelId ?? "",
                         onValueChange: () => undefined,
                         options: childProvider
-                          ? AGENT_MODEL_OPTIONS[childProvider]
+                          ? agentModelOptions(childProvider, modelRegistry)
                           : [],
+                        disabled: true,
+                      },
+                      effort: {
+                        value: "",
+                        onValueChange: () => undefined,
+                        options: [],
                         disabled: true,
                       },
                     };

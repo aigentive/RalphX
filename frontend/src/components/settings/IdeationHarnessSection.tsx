@@ -25,7 +25,16 @@ import {
   type KnownHarness,
   IDEATION_LANES,
 } from "@/api/ideation-harness";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import { useAgentHarnessSettings } from "@/hooks/useIdeationHarnessSettings";
+import {
+  agentEffortOptionsForModel,
+  agentModelOptionsForProvider,
+  defaultEffortForModel,
+  defaultModelForProvider,
+  type AgentModelRegistry,
+  type AgentProvider,
+} from "@/lib/agent-models";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import {
   loadHarnessExpanded,
@@ -40,18 +49,17 @@ import {
 // Preset definitions
 // ============================================================================
 
+interface ModelPreset {
+  value: string;
+  display: string;
+  description?: string;
+}
+
 const CLAUDE_MODEL_PRESETS = [
   { value: "sonnet", display: "sonnet" },
   { value: "opus", display: "opus" },
   { value: "haiku", display: "haiku" },
-] as const;
-
-const CODEX_MODEL_PRESETS = [
-  { value: "gpt-5.4", display: "gpt-5.4 (Current)" },
-  { value: "gpt-5.4-mini", display: "gpt-5.4-mini" },
-  { value: "gpt-5.3-codex", display: "gpt-5.3-codex" },
-  { value: "gpt-5.3-codex-spark", display: "gpt-5.3-codex-spark" },
-] as const;
+] as const satisfies readonly ModelPreset[];
 
 const SELECT_TRIGGER_CLASS = "h-9 items-center";
 
@@ -135,11 +143,34 @@ function InlineNotice({ tone, title, children }: InlineNoticeProps) {
   );
 }
 
-function getModelPresets(harness: string) {
-  return harness === "codex" ? CODEX_MODEL_PRESETS : CLAUDE_MODEL_PRESETS;
+function isAgentProvider(value: string): value is AgentProvider {
+  return value === "claude" || value === "codex";
 }
 
-function getEffortOptions(isGlobal: boolean) {
+function getModelPresets(
+  harness: string,
+  modelRegistry: AgentModelRegistry,
+): readonly ModelPreset[] {
+  if (!isAgentProvider(harness)) {
+    return CLAUDE_MODEL_PRESETS;
+  }
+  return agentModelOptionsForProvider(harness, modelRegistry).map(
+    ({ id, menuLabel, description }) => ({
+      value: id,
+      display: menuLabel,
+      ...(description ? { description } : {}),
+    })
+  );
+}
+
+function getEffortOptions(
+  isGlobal: boolean,
+  harness: string,
+  model: string | null,
+  modelRegistry: AgentModelRegistry,
+) {
+  const provider = isAgentProvider(harness) ? harness : "claude";
+  const modelId = model ?? defaultModelForProvider(provider, modelRegistry);
   return [
     {
       value: "inherit",
@@ -148,11 +179,14 @@ function getEffortOptions(isGlobal: boolean) {
         ? "Uses the app default from config"
         : "Uses the global default for this lane",
     },
-    { value: "low", label: "Low", description: "Fastest responses, minimal reasoning" },
-    { value: "medium", label: "Medium", description: "Balanced speed and quality" },
-    { value: "high", label: "High", description: "Deeper reasoning, slower responses" },
-    { value: "xhigh", label: "Maximum", description: "Highest quality, longest response time" },
-  ] as const;
+    ...agentEffortOptionsForModel(provider, modelId, modelRegistry).map(
+      ({ id, label, description }) => ({
+        value: id,
+        label,
+        description,
+      })
+    ),
+  ];
 }
 
 function effortLabel(value: string | null | undefined): string {
@@ -161,7 +195,8 @@ function effortLabel(value: string | null | undefined): string {
     case "low": return "Low";
     case "medium": return "Medium";
     case "high": return "High";
-    case "xhigh": return "Maximum";
+    case "xhigh": return "Extra High";
+    case "max": return "Max";
     default: return value;
   }
 }
@@ -181,11 +216,12 @@ interface ModelSelectProps {
   laneLabel: string;
   isGlobal: boolean;
   testId: string;
+  modelRegistry: AgentModelRegistry;
 }
 
 function modelSelectValue(
   value: string | null,
-  presets: readonly { value: string; display: string }[],
+  presets: readonly ModelPreset[],
 ): string {
   if (!value) {
     return MODEL_DEFAULT_VALUE;
@@ -204,8 +240,9 @@ function ModelSelect({
   laneLabel,
   isGlobal,
   testId,
+  modelRegistry,
 }: ModelSelectProps) {
-  const presets = getModelPresets(harness);
+  const presets = getModelPresets(harness, modelRegistry);
   const currentValue = modelSelectValue(value, presets);
   const defaultLabel = isGlobal ? "Harness default" : "Use global default";
   const defaultDescription = isGlobal
@@ -257,7 +294,12 @@ function ModelSelect({
         </SelectItem>
         {presets.map((preset) => (
           <SelectItem key={preset.value} value={preset.value} textValue={preset.display}>
-            <span className="text-[var(--text-primary)]">{preset.display}</span>
+            <div className="flex flex-col">
+              <span className="text-[var(--text-primary)]">{preset.display}</span>
+              {preset.description && (
+                <span className="text-xs text-[var(--text-muted)]">{preset.description}</span>
+              )}
+            </div>
           </SelectItem>
         ))}
         {hasCustomValue && value && (
@@ -376,6 +418,7 @@ type HarnessSectionScope = "ideation" | "execution";
 function defaultsForHarness(
   lane: AgentLane,
   harness: KnownHarness,
+  modelRegistry: AgentModelRegistry,
 ): {
   harness: Harness;
   model: string | null;
@@ -393,11 +436,17 @@ function defaultsForHarness(
     };
   }
 
+  const defaultCodexModel = defaultModelForProvider("codex", modelRegistry);
+  const defaultCodexEffort = defaultEffortForModel(
+    "codex",
+    defaultCodexModel,
+    modelRegistry,
+  );
   if (lane === "ideation_primary") {
     return {
       harness,
-      model: "gpt-5.4",
-      effort: "xhigh",
+      model: defaultCodexModel,
+      effort: defaultCodexEffort,
       approvalPolicy: CODEX_LOCKED_APPROVAL_POLICY,
       sandboxMode: CODEX_LOCKED_SANDBOX_MODE,
     };
@@ -416,8 +465,8 @@ function defaultsForHarness(
   if (EXECUTION_LANES.includes(lane)) {
     return {
       harness,
-      model: "gpt-5.4",
-      effort: "xhigh",
+      model: defaultCodexModel,
+      effort: defaultCodexEffort,
       approvalPolicy: CODEX_LOCKED_APPROVAL_POLICY,
       sandboxMode: CODEX_LOCKED_SANDBOX_MODE,
     };
@@ -490,6 +539,7 @@ interface HarnessRowProps {
       sandboxMode: string | null;
     }>,
   ) => void;
+  modelRegistry: AgentModelRegistry;
 }
 
 function SummaryPill({ children }: { children: React.ReactNode }) {
@@ -509,13 +559,19 @@ function HarnessRow({
   onToggleExpanded,
   onHarnessChange,
   onLaneChange,
+  modelRegistry,
 }: HarnessRowProps) {
   const meta = LANE_META[lane.lane];
   const configuredHarness = lane.configuredHarness ?? lane.effectiveHarness;
   const showWarning = !!lane.error || lane.missingCoreExecFeatures.length > 0;
   const showCodexControls = configuredHarness === "codex";
   const codexPolicyLocked = showCodexControls;
-  const effortOptions = getEffortOptions(isGlobal);
+  const effortOptions = getEffortOptions(
+    isGlobal,
+    configuredHarness,
+    lane.row?.model ?? null,
+    modelRegistry,
+  );
 
   // Effective model: this lane's configured model, falling back to global lane's configured model
   const effectiveModel = lane.row?.model ?? globalLane?.row?.model ?? null;
@@ -655,10 +711,11 @@ function HarnessRow({
               value={lane.row?.model ?? null}
               harness={configuredHarness}
               disabled={disabled}
-              onChange={(nextValue) => onLaneChange({ model: nextValue })}
+              onChange={(nextValue) => onLaneChange({ model: nextValue, effort: null })}
               laneLabel={meta.label}
               isGlobal={isGlobal}
               testId={`model-${lane.lane}`}
+              modelRegistry={modelRegistry}
             />
             {showEffectiveModel && (
               <p className="text-[0.6875rem] text-[var(--text-muted)]">
@@ -794,6 +851,7 @@ function HarnessSubsection({
   globalLanes,
   isGlobal,
   tabValue,
+  modelRegistry,
 }: {
   projectId: string | null;
   projectName: string | null;
@@ -801,6 +859,7 @@ function HarnessSubsection({
   globalLanes: AgentHarnessLaneView[];
   isGlobal: boolean;
   tabValue: HarnessTabValue;
+  modelRegistry: AgentModelRegistry;
 }) {
   const [showError, setShowError] = useState(false);
   const {
@@ -864,7 +923,7 @@ function HarnessSubsection({
     updateLane(
       {
         lane,
-        ...defaultsForHarness(lane, harness),
+        ...defaultsForHarness(lane, harness, modelRegistry),
       },
       { onError: () => setShowError(true) },
     );
@@ -955,6 +1014,7 @@ function HarnessSubsection({
                     onToggleExpanded={() => toggleLane(lane.lane)}
                     onHarnessChange={(value) => handleHarnessChange(lane.lane, value)}
                     onLaneChange={(patch) => handleLaneSettingsChange(lane, patch)}
+                    modelRegistry={modelRegistry}
                   />
                 );
               })}
@@ -982,6 +1042,7 @@ function AgentHarnessSection({
   const activeProject = useProjectStore(selectActiveProject);
   const projectId = activeProject?.id ?? null;
   const projectName = activeProject?.name ?? null;
+  const { registry: modelRegistry } = useAgentModels();
 
   // Fetch global lanes for effective value resolution in project rows
   const { lanes: globalLanes } = useAgentHarnessSettings(null);
@@ -1027,6 +1088,7 @@ function AgentHarnessSection({
             globalLanes={globalLanes}
             isGlobal={true}
             tabValue="global"
+            modelRegistry={modelRegistry}
           />
         </TabsContent>
         <TabsContent value="project" className="mt-4">
@@ -1037,6 +1099,7 @@ function AgentHarnessSection({
             globalLanes={globalLanes}
             isGlobal={false}
             tabValue="project"
+            modelRegistry={modelRegistry}
           />
         </TabsContent>
       </Tabs>

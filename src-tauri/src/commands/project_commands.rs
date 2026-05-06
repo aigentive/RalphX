@@ -143,12 +143,10 @@ pub async fn get_project(
 
 /// Check if git is initialized in the given directory
 fn is_git_initialized(path: &str) -> bool {
-    Command::new(resolve_git_cli_path())
-        .args(["rev-parse", "--git-dir"])
-        .current_dir(path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let mut cmd = Command::new(resolve_git_cli_path());
+    cmd.args(["rev-parse", "--git-dir"]).current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut cmd);
+    cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Initialize git in the given directory if not already initialized
@@ -163,9 +161,10 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
     }
 
     // Initialize git
-    let output = Command::new(resolve_git_cli_path())
-        .args(["init"])
-        .current_dir(path)
+    let mut init_cmd = Command::new(resolve_git_cli_path());
+    init_cmd.args(["init"]).current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut init_cmd);
+    let output = init_cmd
         .output()
         .map_err(|e| format!("Failed to run git init: {}", e))?;
 
@@ -175,17 +174,24 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
     }
 
     // Create initial commit so HEAD exists (needed for diff operations)
-    let _ = Command::new(resolve_git_cli_path())
+    let mut commit_cmd = Command::new(resolve_git_cli_path());
+    commit_cmd
         .args([
             "commit",
             "--allow-empty",
             "-m",
             "Initial commit (auto-created by RalphX)",
         ])
-        .current_dir(path)
-        .output();
+        .current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut commit_cmd);
+    let _ = commit_cmd.output();
 
     Ok(())
+}
+
+#[doc(hidden)]
+pub fn ensure_git_initialized_for_test(path: &str) -> Result<(), String> {
+    ensure_git_initialized(path)
 }
 
 /// Async, idempotent version of ensure_git_initialized for use in HTTP handlers.
@@ -207,9 +213,12 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
     let git_dir = std::path::Path::new(path).join(".git");
     if !git_dir.exists() {
         // Run git init
-        let output = TokioCommand::new(resolve_git_cli_path())
-            .args(["init"])
-            .current_dir(path)
+        let mut init_cmd = TokioCommand::new(resolve_git_cli_path());
+        init_cmd.args(["init"]).current_dir(path);
+        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
+            init_cmd.as_std_mut(),
+        );
+        let output = init_cmd
             .output()
             .await
             .map_err(|e| format!("Failed to run git init: {}", e))?;
@@ -221,9 +230,10 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
     }
 
     // Check if HEAD has any commits (git log returns success only if commits exist)
-    let has_commits = TokioCommand::new(resolve_git_cli_path())
-        .args(["log", "--oneline", "-1"])
-        .current_dir(path)
+    let mut log_cmd = TokioCommand::new(resolve_git_cli_path());
+    log_cmd.args(["log", "--oneline", "-1"]).current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(log_cmd.as_std_mut());
+    let has_commits = log_cmd
         .output()
         .await
         .map(|o| o.status.success())
@@ -231,16 +241,19 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
 
     if !has_commits {
         // Create empty initial commit so HEAD is valid for worktree operations
-        let commit_result = TokioCommand::new(resolve_git_cli_path())
+        let mut commit_cmd = TokioCommand::new(resolve_git_cli_path());
+        commit_cmd
             .args([
                 "commit",
                 "--allow-empty",
                 "-m",
                 "Initial commit (auto-created by RalphX)",
             ])
-            .current_dir(path)
-            .output()
-            .await;
+            .current_dir(path);
+        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
+            commit_cmd.as_std_mut(),
+        );
+        let commit_result = commit_cmd.output().await;
         if let Ok(output) = &commit_result {
             if !output.status.success() {
                 tracing::warn!(

@@ -1,7 +1,6 @@
 use super::*;
 use crate::domain::entities::ReviewScopeMetadata;
 use crate::domain::review::{evaluate_merge_scope_backstop, MergeScopeBackstopViolation};
-use crate::domain::state_machine::transition_handler::TaskCore;
 
 impl<'a> TransitionHandler<'a> {
     pub(super) async fn evaluate_merge_scope_backstop(
@@ -32,22 +31,10 @@ impl<'a> TransitionHandler<'a> {
 
     pub(super) async fn route_merge_scope_violation_to_revision(
         &self,
-        tc: TaskCore<'_>,
+        task_id: &TaskId,
+        task_id_str: &str,
         metadata: serde_json::Value,
     ) -> bool {
-        let (task, task_id, task_id_str, task_repo) =
-            (tc.task, tc.task_id, tc.task_id_str, tc.task_repo);
-        merge_helpers::merge_metadata_into(task, &metadata);
-        task.touch();
-        if let Err(e) = task_repo.update(task).await {
-            tracing::warn!(
-                task_id = task_id_str,
-                error = %e,
-                "Failed to persist merge scope guard metadata before retrying revision"
-            );
-            return false;
-        }
-
         let Some(transition_service) = &self.machine.context.services.transition_service else {
             tracing::warn!(
                 task_id = task_id_str,
@@ -57,7 +44,7 @@ impl<'a> TransitionHandler<'a> {
         };
 
         match transition_service
-            .transition_task(task_id, InternalStatus::RevisionNeeded)
+            .reroute_merge_scope_drift_to_revision(task_id, metadata, true, "system")
             .await
         {
             Ok(_) => {

@@ -1,3 +1,4 @@
+use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,9 +19,7 @@ pub(crate) fn resolve_git_cli_path() -> PathBuf {
 }
 
 pub(crate) fn resolve_node_cli_path() -> PathBuf {
-    find_env_override_path("RALPHX_NODE_PATH").unwrap_or_else(|| {
-        resolve_cli_path("node", &["/opt/homebrew/bin/node", "/usr/local/bin/node"])
-    })
+    find_node_cli_path().unwrap_or_else(|| PathBuf::from("node"))
 }
 
 pub(crate) fn resolve_shell_cli_path() -> PathBuf {
@@ -140,14 +139,66 @@ pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
     )
 }
 
+pub(crate) fn prepend_resolved_node_bin_to_path(cmd: &mut std::process::Command) {
+    let Some(node_bin_dir) = resolved_node_bin_dir() else {
+        return;
+    };
+
+    let current_path = command_env_var(cmd, "PATH").or_else(|| env::var_os("PATH"));
+    let already_first = current_path
+        .as_ref()
+        .and_then(|value| env::split_paths(value).next())
+        .map(|value| value == node_bin_dir)
+        .unwrap_or(false);
+    if already_first {
+        return;
+    }
+
+    let mut paths = vec![node_bin_dir];
+    if let Some(existing) = current_path.as_ref() {
+        paths.extend(env::split_paths(existing));
+    }
+
+    if let Ok(joined) = env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
 fn resolve_cli_path(tool_name: &'static str, fixed_candidates: &[&'static str]) -> PathBuf {
     find_cli_path(tool_name, fixed_candidates).unwrap_or_else(|| PathBuf::from(tool_name))
 }
 
+fn find_node_cli_path() -> Option<PathBuf> {
+    find_env_override_path("RALPHX_NODE_PATH").or_else(|| {
+        find_cli_path_with_candidates(
+            "node",
+            &["/opt/homebrew/bin/node", "/usr/local/bin/node"],
+            &node_env_candidates(),
+        )
+    })
+}
+
 fn find_cli_path(tool_name: &'static str, fixed_candidates: &[&'static str]) -> Option<PathBuf> {
+    find_cli_path_with_candidates(tool_name, fixed_candidates, &[])
+}
+
+fn find_cli_path_with_candidates(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+) -> Option<PathBuf> {
     if let Ok(path) = which::which(tool_name) {
-        if has_safe_absolute_shape(&path) && path.file_name() == Some(OsStr::new(tool_name)) {
+        if matches_tool_path(tool_name, &path) {
             return Some(path);
+        }
+    }
+
+    for candidate in extra_candidates {
+        // Extra candidates are derived from trusted env-path conventions such as NVM_BIN
+        // and VOLTA_HOME/bin, then validated before probing.
+        // codeql[rust/path-injection]
+        if matches_tool_path(tool_name, candidate) && candidate.exists() {
+            return Some(candidate.clone());
         }
     }
 
@@ -155,7 +206,7 @@ fn find_cli_path(tool_name: &'static str, fixed_candidates: &[&'static str]) -> 
         let path = PathBuf::from(candidate);
         // Fixed, app-owned candidate list for GUI launches with stripped PATH.
         // codeql[rust/path-injection]
-        if path.exists() {
+        if matches_tool_path(tool_name, &path) && path.exists() {
             return Some(path);
         }
     }
@@ -166,6 +217,24 @@ fn find_cli_path(tool_name: &'static str, fixed_candidates: &[&'static str]) -> 
 fn find_env_override_path(env_var: &'static str) -> Option<PathBuf> {
     let path = PathBuf::from(std::env::var(env_var).ok()?);
     has_safe_absolute_shape(&path).then_some(path)
+}
+
+fn find_env_dir(env_var: &'static str) -> Option<PathBuf> {
+    let path = PathBuf::from(std::env::var(env_var).ok()?);
+    has_safe_absolute_shape(&path).then_some(path)
+}
+
+fn node_env_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(nvm_bin) = find_env_dir("NVM_BIN") {
+        candidates.push(nvm_bin.join("node"));
+    }
+    if let Some(volta_home) = find_env_dir("VOLTA_HOME") {
+        candidates.push(volta_home.join("bin").join("node"));
+    }
+
+    candidates
 }
 
 fn find_login_shell_cli(tool_name: &'static str) -> Option<PathBuf> {
@@ -197,6 +266,20 @@ fn safe_cli_path_from_shell_output(tool_name: &str, output: &str) -> Option<Path
     })
 }
 
+fn command_env_var(cmd: &std::process::Command, key: &str) -> Option<OsString> {
+    cmd.get_envs().find_map(|(env_key, env_value)| {
+        (env_key == OsStr::new(key)).then(|| env_value.map(OsString::from))?
+    })
+}
+
+fn matches_tool_path(tool_name: &str, path: &Path) -> bool {
+    has_safe_absolute_shape(path) && path.file_name() == Some(OsStr::new(tool_name))
+}
+
+fn resolved_node_bin_dir() -> Option<PathBuf> {
+    find_node_cli_path()?.parent().map(Path::to_path_buf)
+}
+
 fn has_safe_absolute_shape(path: &Path) -> bool {
     if !path.is_absolute() {
         return false;
@@ -216,9 +299,43 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_subprocess_env_path_from_parts, safe_cli_path_from_shell_output};
+    use super::{
+        agent_subprocess_env_path_from_parts, prepend_resolved_node_bin_to_path,
+        resolve_node_cli_path, safe_cli_path_from_shell_output,
+    };
     use std::ffi::OsStr;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
     fn shell_output_accepts_safe_absolute_matching_tool_path() {
@@ -252,5 +369,118 @@ mod tests {
         assert!(path.contains("/usr/local/bin"));
         assert!(path.contains("/Users/example/.cargo/bin"));
         assert!(path.contains("/Users/example/.asdf/shims"));
+    }
+
+    #[test]
+    fn resolve_node_cli_path_uses_nvm_bin_when_path_is_stripped() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let nvm_bin = temp_dir.path().join("nvm-bin");
+        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+        std::fs::write(nvm_bin.join("node"), "").expect("write fake node");
+
+        let _path = EnvGuard::set_os("PATH", "");
+        let _nvm_bin = EnvGuard::set_os("NVM_BIN", &nvm_bin);
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+        assert_eq!(resolve_node_cli_path(), nvm_bin.join("node"));
+    }
+
+    #[test]
+    fn resolve_node_cli_path_uses_volta_home_when_path_is_stripped() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let volta_home = temp_dir.path().join("volta-home");
+        let volta_bin = volta_home.join("bin");
+        std::fs::create_dir_all(&volta_bin).expect("create volta bin");
+        std::fs::write(volta_bin.join("node"), "").expect("write fake node");
+
+        let _path = EnvGuard::set_os("PATH", "");
+        let _volta_home = EnvGuard::set_os("VOLTA_HOME", &volta_home);
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+        assert_eq!(resolve_node_cli_path(), volta_bin.join("node"));
+    }
+
+    #[test]
+    fn prepend_resolved_node_bin_to_path_preserves_existing_path() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.env("PATH", "/usr/bin:/bin");
+
+        prepend_resolved_node_bin_to_path(&mut cmd);
+
+        let path_value = cmd
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
+            })
+            .expect("PATH env");
+        assert_eq!(
+            PathBuf::from("/tmp/fake-node-bin"),
+            std::env::split_paths(&path_value)
+                .next()
+                .expect("first PATH entry")
+        );
+        assert_eq!(
+            std::env::split_paths(&path_value).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/tmp/fake-node-bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+    }
+    #[test]
+    fn prepend_resolved_node_bin_to_path_is_noop_when_node_bin_is_already_first() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.env("PATH", "/tmp/fake-node-bin:/usr/bin:/bin");
+
+        prepend_resolved_node_bin_to_path(&mut cmd);
+
+        let path_value = cmd
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
+            })
+            .expect("PATH env");
+        assert_eq!(
+            std::env::split_paths(&path_value).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/tmp/fake-node-bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepend_resolved_node_bin_to_path_uses_inherited_path_when_command_path_is_unset() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
+        let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+
+        prepend_resolved_node_bin_to_path(&mut cmd);
+
+        let path_value = cmd
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
+            })
+            .expect("PATH env");
+        assert_eq!(
+            std::env::split_paths(&path_value).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/tmp/fake-node-bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
     }
 }

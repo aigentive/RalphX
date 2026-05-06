@@ -10,6 +10,7 @@ export type ScheduledJob = {
 export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unknown>> = {
   execution: () => import("./sections/ExecutionSection"),
   "execution-harnesses": () => import("./IdeationHarnessSection"),
+  models: () => import("./AgentModelsSection"),
   "global-execution": () => import("./sections/GlobalExecutionSection"),
   review: () => import("./sections/ReviewPolicySection"),
   repository: () => import("./RepositorySettingsSection"),

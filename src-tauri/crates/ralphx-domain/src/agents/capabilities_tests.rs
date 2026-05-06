@@ -48,6 +48,21 @@ fn test_mock_capabilities() {
 }
 
 #[test]
+fn test_codex_capabilities_include_current_model_family() {
+    let caps = ClientCapabilities::codex();
+    let model_ids: Vec<&str> = caps.models.iter().map(|m| m.id.as_str()).collect();
+
+    assert_eq!(caps.client_type, ClientType::Codex);
+    assert_eq!(caps.max_context_tokens, 1_000_000);
+    assert_eq!(caps.default_model().unwrap().id, "gpt-5.5");
+    assert!(model_ids.contains(&"gpt-5.5"));
+    assert!(model_ids.contains(&"gpt-5.4"));
+    assert!(model_ids.contains(&"gpt-5.4-mini"));
+    assert!(model_ids.contains(&"gpt-5.3-codex"));
+    assert!(model_ids.contains(&"gpt-5.3-codex-spark"));
+}
+
+#[test]
 fn test_has_model_true() {
     let caps = ClientCapabilities::claude_code();
     assert!(caps.has_model("claude-sonnet-4-5-20250929"));

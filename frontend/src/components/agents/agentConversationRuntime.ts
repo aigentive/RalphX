@@ -37,6 +37,7 @@ export function runtimeFromConversation(
     return {
       provider: "claude",
       modelId: "sonnet",
+      effort: "medium",
     };
   }
 
@@ -44,6 +45,7 @@ export function runtimeFromConversation(
     return {
       provider: "codex",
       modelId: DEFAULT_AGENT_RUNTIME.modelId,
+      effort: DEFAULT_AGENT_RUNTIME.effort,
     };
   }
 

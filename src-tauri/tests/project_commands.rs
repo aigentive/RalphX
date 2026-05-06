@@ -808,6 +808,144 @@ fn has_commits(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+#[test]
+fn test_ipc_contract_ensure_git_initialized_sync_no_git_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path_str = tmp.path().to_str().unwrap();
+
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("git init");
+    configure_git_identity(tmp.path());
+    std::fs::remove_dir_all(tmp.path().join(".git")).expect("remove .git");
+
+    assert!(!tmp.path().join(".git").exists(), "precondition: no .git");
+
+    ensure_git_initialized_for_test(path_str).expect("must succeed");
+
+    assert!(
+        tmp.path().join(".git").exists(),
+        ".git must exist after initialization"
+    );
+}
+
+#[test]
+fn test_ipc_contract_ensure_git_initialized_sync_no_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path_str = tmp.path().to_str().unwrap();
+
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("git init");
+    configure_git_identity(tmp.path());
+
+    assert!(
+        tmp.path().join(".git").exists(),
+        "precondition: .git exists"
+    );
+    assert!(!has_commits(tmp.path()), "precondition: no commits");
+
+    ensure_git_initialized_for_test(path_str).expect("must succeed");
+
+    assert!(
+        !has_commits(tmp.path()),
+        "sync helper treats an existing .git directory as initialized and does not backfill HEAD"
+    );
+}
+
+#[test]
+fn test_ipc_contract_ensure_git_initialized_sync_already_has_commits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path_str = tmp.path().to_str().unwrap();
+
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("git init");
+    configure_git_identity(tmp.path());
+    std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "Pre-existing commit"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("initial commit");
+
+    assert!(has_commits(tmp.path()), "precondition: has commits");
+
+    let before = std::process::Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("rev-list");
+    let before_count: u32 = String::from_utf8_lossy(&before.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    ensure_git_initialized_for_test(path_str).expect("must succeed");
+
+    let after = std::process::Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("rev-list after");
+    let after_count: u32 = String::from_utf8_lossy(&after.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    assert_eq!(
+        before_count, after_count,
+        "No new commits must be added when repo already has commits"
+    );
+}
+
+#[test]
+fn test_ipc_contract_ensure_git_initialized_sync_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path_str = tmp.path().to_str().unwrap();
+
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("git init for identity config");
+    configure_git_identity(tmp.path());
+    std::fs::remove_dir_all(tmp.path().join(".git")).expect("remove .git");
+
+    ensure_git_initialized_for_test(path_str).expect("first call must succeed");
+
+    let first_commit_count = std::process::Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("rev-list after first sync init");
+    let first_count: u32 = String::from_utf8_lossy(&first_commit_count.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+
+    ensure_git_initialized_for_test(path_str).expect("second call must succeed");
+
+    let second_commit_count = std::process::Command::new("git")
+        .args(["rev-list", "--count", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("rev-list after second sync init");
+    let second_count: u32 = String::from_utf8_lossy(&second_commit_count.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    assert_eq!(
+        first_count, second_count,
+        "sync helper should be idempotent regardless of whether the first empty commit succeeded"
+    );
+}
+
 /// State 1: Directory exists, no .git → ensure_git_initialized_async must
 /// create .git and produce an initial commit.
 #[tokio::test]

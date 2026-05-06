@@ -91,7 +91,7 @@ async fn lane_row_with_claude_harness_overrides_model_and_effort() {
     );
     assert_eq!(resolved.model, "opus");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
-    assert_eq!(resolved.claude_effort.as_deref(), Some("max"));
+    assert_eq!(resolved.claude_effort.as_deref(), Some("xhigh"));
     assert_eq!(resolved.approval_policy.as_deref(), Some("on_request"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("workspace_write"));
     assert_eq!(
@@ -159,7 +159,7 @@ async fn codex_lane_selection_uses_codex_lane_settings() {
     );
     assert_eq!(resolved.model, "gpt-5.4");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
-    assert_eq!(resolved.claude_effort.as_deref(), Some("max"));
+    assert_eq!(resolved.claude_effort.as_deref(), Some("xhigh"));
     assert_eq!(resolved.approval_policy.as_deref(), Some("on_request"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("workspace_write"));
     assert_eq!(
@@ -170,7 +170,7 @@ async fn codex_lane_selection_uses_codex_lane_settings() {
 }
 
 #[tokio::test]
-async fn codex_primary_lane_without_model_or_effort_uses_phase1_defaults() {
+async fn codex_primary_lane_without_model_or_effort_uses_registry_defaults() {
     let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
         Arc::new(MemoryAgentLaneSettingsRepository::new());
 
@@ -200,7 +200,7 @@ async fn codex_primary_lane_without_model_or_effort_uses_phase1_defaults() {
     .await;
 
     assert_eq!(resolved.effective_harness, AgentHarnessKind::Codex);
-    assert_eq!(resolved.model, "gpt-5.4");
+    assert_eq!(resolved.model, "gpt-5.5");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
@@ -208,7 +208,7 @@ async fn codex_primary_lane_without_model_or_effort_uses_phase1_defaults() {
 }
 
 #[tokio::test]
-async fn codex_verifier_lane_without_model_or_effort_uses_phase1_defaults() {
+async fn codex_verifier_lane_without_model_or_effort_uses_registry_defaults() {
     let lane_repo: Arc<dyn AgentLaneSettingsRepository> =
         Arc::new(MemoryAgentLaneSettingsRepository::new());
 
@@ -355,7 +355,7 @@ async fn execution_worker_harness_override_ignores_mismatched_lane_harness_setti
     assert_eq!(resolved.configured_logical_effort, None);
     assert_eq!(resolved.configured_approval_policy, None);
     assert_eq!(resolved.configured_sandbox_mode, None);
-    assert_eq!(resolved.model, "gpt-5.4");
+    assert_eq!(resolved.model, "gpt-5.5");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
@@ -392,7 +392,7 @@ async fn execution_worker_codex_without_model_uses_generic_codex_defaults() {
     .await;
 
     assert_eq!(resolved.effective_harness, AgentHarnessKind::Codex);
-    assert_eq!(resolved.model, "gpt-5.4");
+    assert_eq!(resolved.model, "gpt-5.5");
     assert_eq!(resolved.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));
@@ -418,7 +418,7 @@ async fn project_chat_codex_override_without_model_gets_codex_defaults() {
     assert_eq!(resolved.effective_harness, AgentHarnessKind::Codex);
     assert_eq!(resolved.configured_approval_policy, None);
     assert_eq!(resolved.configured_sandbox_mode, None);
-    assert_eq!(resolved.model, "gpt-5.4");
+    assert_eq!(resolved.model, "gpt-5.5");
     assert_eq!(resolved.logical_effort, None);
     assert_eq!(resolved.approval_policy.as_deref(), Some("never"));
     assert_eq!(resolved.sandbox_mode.as_deref(), Some("danger-full-access"));

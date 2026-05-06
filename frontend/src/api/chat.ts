@@ -1100,6 +1100,7 @@ export interface StartAgentConversationInput {
   conversationId?: string | null;
   providerHarness?: string | null;
   modelId?: string | null;
+  logicalEffort?: string | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
 }
@@ -1463,6 +1464,7 @@ export async function startAgentConversation(
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
         ...(input.providerHarness ? { providerHarness: input.providerHarness } : {}),
         ...(input.modelId ? { modelOverride: input.modelId } : {}),
+        ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.base
           ? {
@@ -1521,6 +1523,7 @@ export async function sendAgentMessage(
     conversationId?: string | null;
     providerHarness?: string | null;
     modelId?: string | null;
+    logicalEffort?: string | null;
   }
 ): Promise<SendAgentMessageResult> {
   const raw = await typedInvoke(
@@ -1535,6 +1538,7 @@ export async function sendAgentMessage(
         ...(options?.conversationId ? { conversationId: options.conversationId } : {}),
         ...(options?.providerHarness ? { providerHarness: options.providerHarness } : {}),
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
+        ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
       },
     },
     SendAgentMessageResponseSchema

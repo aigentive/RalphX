@@ -20,10 +20,12 @@ import {
 } from "./agentWorkspacePublishState";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
+import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
+  modelRegistry: AgentModelRegistry;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
 }
@@ -31,6 +33,7 @@ interface UseAgentsWorkspaceModelArgs {
 export function useAgentsWorkspaceModel({
   activeConversation,
   optimisticWorkspacesByConversationId,
+  modelRegistry,
   runtimeByConversationId,
   selectedConversationId,
 }: UseAgentsWorkspaceModelArgs) {
@@ -56,7 +59,7 @@ export function useAgentsWorkspaceModel({
       runtimeFromConversation(activeConversation) ??
       null
     : null;
-  const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime);
+  const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime, modelRegistry);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
   const activeWorkspaceHasPublishedPr = hasPublishedWorkspacePr(activeWorkspace);

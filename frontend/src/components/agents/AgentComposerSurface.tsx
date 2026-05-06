@@ -14,6 +14,7 @@ import {
   ChevronDown,
   Cpu,
   FolderOpen,
+  Gauge,
   Loader2,
   Paperclip,
   Plus,
@@ -91,6 +92,17 @@ interface ModelFieldConfig {
   onValueChange: (value: string) => void;
   options: ComposerOption[];
   disabled?: boolean;
+  allowCustomValue?: boolean;
+  customPlaceholder?: string | undefined;
+  testId?: string;
+  className?: string;
+}
+
+interface EffortFieldConfig {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: ComposerOption[];
+  disabled?: boolean;
   testId?: string;
   className?: string;
 }
@@ -131,6 +143,7 @@ export interface AgentComposerSurfaceProps {
   project: ProjectFieldConfig;
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
+  effort: EffortFieldConfig;
   onSend: (message: string) => Promise<void> | void;
   onStop?: (() => Promise<unknown> | void) | undefined;
   placeholder?: string;
@@ -163,6 +176,7 @@ export function AgentComposerSurface({
   project,
   provider,
   model,
+  effort,
   onSend,
   onStop,
   placeholder = "Ask the agent to plan, build, debug, or review something",
@@ -491,6 +505,7 @@ export function AgentComposerSurface({
               <ComposerRuntimePill
                 provider={provider}
                 model={model}
+                effort={effort}
                 className="flex-none"
               />
             </div>
@@ -829,10 +844,12 @@ function ComposerModeMenuSection({
 function ComposerRuntimePill({
   provider,
   model,
+  effort,
   className,
 }: {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
+  effort: EffortFieldConfig;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -840,11 +857,20 @@ function ComposerRuntimePill({
     provider.options.find((o) => o.id === provider.value)?.label ?? provider.value;
   const modelLabel =
     model.options.find((o) => o.id === model.value)?.label ?? model.value;
+  const effortLabel =
+    effort.options.find((o) => o.id === effort.value)?.label ?? effort.value;
+  const runtimeSummary = [
+    providerLabel,
+    modelLabel,
+    effortLabel ? `${effortLabel} effort` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   // Skip the pill entirely when we have nothing to show (e.g., child chat
   // session whose effective runtime hasn't loaded yet). Avoids an empty
   // "·" placeholder.
-  if (!providerLabel && !modelLabel) {
+  if (!providerLabel && !modelLabel && !effortLabel) {
     return null;
   }
 
@@ -854,7 +880,7 @@ function ComposerRuntimePill({
         <button
           type="button"
           data-testid="agent-composer-runtime-pill"
-          aria-label={`Runtime: ${providerLabel} · ${modelLabel}. Click to change.`}
+          aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
           className={cn(
             "flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors",
             className
@@ -869,6 +895,12 @@ function ComposerRuntimePill({
             <span className="text-[var(--text-secondary)]">{providerLabel}</span>
             <span className="px-1 text-[var(--text-muted)]">·</span>
             <span>{modelLabel}</span>
+            {effortLabel && (
+              <>
+                <span className="px-1 text-[var(--text-muted)]">·</span>
+                <span>{effortLabel}</span>
+              </>
+            )}
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
         </button>
@@ -906,7 +938,26 @@ function ComposerRuntimePill({
             model.onValueChange(value);
             setOpen(false);
           }}
+          allowCustomValue={model.allowCustomValue ?? false}
+          customPlaceholder={model.customPlaceholder}
         />
+        {effort.options.length > 0 && (
+          <>
+            <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+            <ComposerOptionList
+              label="Effort"
+              value={effort.value}
+              options={effort.options}
+              disabled={effort.disabled ?? false}
+              testId={effort.testId ?? "agent-composer-runtime-effort"}
+              icon={Gauge}
+              onValueChange={(value) => {
+                effort.onValueChange(value);
+                setOpen(false);
+              }}
+            />
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -920,6 +971,8 @@ function ComposerOptionList({
   testId,
   icon: Icon,
   onValueChange,
+  allowCustomValue = false,
+  customPlaceholder = "Custom value",
 }: {
   label: string;
   value: string;
@@ -928,7 +981,26 @@ function ComposerOptionList({
   testId?: string;
   icon: ComponentType<{ className?: string }>;
   onValueChange: (value: string) => void;
+  allowCustomValue?: boolean;
+  customPlaceholder?: string | undefined;
 }) {
+  const [customValue, setCustomValue] = useState("");
+  const hasCurrentOption = options.some((option) => option.id === value);
+
+  useEffect(() => {
+    if (!hasCurrentOption) {
+      setCustomValue(value);
+    }
+  }, [hasCurrentOption, value]);
+
+  const commitCustomValue = useCallback(() => {
+    const nextValue = customValue.trim();
+    if (!nextValue || disabled) {
+      return;
+    }
+    onValueChange(nextValue);
+  }, [customValue, disabled, onValueChange]);
+
   return (
     <div className="py-1">
       <div className="flex items-center gap-1.5 px-2 py-1">
@@ -970,6 +1042,35 @@ function ComposerOptionList({
           );
         })}
       </div>
+      {allowCustomValue && (
+        <div className="mt-1.5 flex items-center gap-1.5 px-1">
+          <Input
+            value={customValue}
+            onChange={(event) => setCustomValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitCustomValue();
+              }
+            }}
+            disabled={disabled}
+            placeholder={customPlaceholder}
+            data-testid={testId ? `${testId}-custom-input` : undefined}
+            className="h-8 min-w-0 flex-1 rounded-md border-[var(--border-default)] bg-[var(--bg-surface)] px-2 text-[12px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={disabled || customValue.trim().length === 0}
+            onClick={commitCustomValue}
+            data-testid={testId ? `${testId}-custom-apply` : undefined}
+            className="h-8 rounded-md px-2 text-[12px]"
+          >
+            Use
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

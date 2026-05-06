@@ -660,6 +660,7 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {

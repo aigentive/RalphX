@@ -930,6 +930,9 @@ describe("chat api", () => {
     const result = await startAgentConversation({
       projectId: "project-1",
       content: "What changed?",
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
       mode: "chat",
       base: {
         kind: "current_branch",
@@ -942,6 +945,9 @@ describe("chat api", () => {
       input: {
         projectId: "project-1",
         content: "What changed?",
+        providerHarness: "codex",
+        modelOverride: "gpt-5.5",
+        logicalEffort: "xhigh",
         mode: "chat",
         baseRefKind: "current_branch",
         baseRef: "feature/agent-screen",
@@ -1072,6 +1078,7 @@ describe("chat api", () => {
       conversationId: "c1",
       providerHarness: "codex",
       modelId: "gpt-5.4",
+      logicalEffort: "high",
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -1082,6 +1089,7 @@ describe("chat api", () => {
         conversationId: "c1",
         providerHarness: "codex",
         modelOverride: "gpt-5.4",
+        logicalEffort: "high",
       },
     });
   });

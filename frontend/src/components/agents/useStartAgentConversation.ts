@@ -9,6 +9,7 @@ import type {
   AgentConversationWorkspaceMode,
 } from "@/api/chat";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 
@@ -58,6 +59,7 @@ export function useStartAgentConversation({
   setOptimisticWorkspacesByConversationId,
   setRuntimeForConversation,
 }: UseStartAgentConversationArgs) {
+  const { registry: modelRegistry } = useAgentModels();
   const handleStartAgentConversation = useCallback(
     async ({
       projectId: targetProjectId,
@@ -74,7 +76,7 @@ export function useStartAgentConversation({
       base: AgentConversationBaseSelection | null;
       files: File[];
     }) => {
-      const normalizedRuntime = normalizeRuntimeSelection(runtime);
+      const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
       const seedConversationState = (
         conversation: ChatConversation,
         workspace: AgentConversationWorkspace | null | undefined,
@@ -131,6 +133,7 @@ export function useStartAgentConversation({
         conversationId: resultConversationSeed.id,
         providerHarness: normalizedRuntime.provider,
         modelId: normalizedRuntime.modelId,
+        logicalEffort: normalizedRuntime.effort,
         mode,
         ...(base ? { base } : {}),
       });
@@ -149,6 +152,7 @@ export function useStartAgentConversation({
     [
       handleAutoManagedTitle,
       invalidateProjectConversations,
+      modelRegistry,
       queryClient,
       selectConversation,
       setActiveConversation,

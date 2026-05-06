@@ -303,21 +303,44 @@ fn test_agent_run_status_response_serializes_model_absent() {
 
 #[cfg(test)]
 mod ipc_contract {
+    use ralphx_lib::application::AppState;
+    use ralphx_lib::commands::agent_model_commands::{
+        delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
+        UpsertCustomAgentModelInput,
+    };
     use ralphx_lib::commands::unified_chat_commands::{
         CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
         StartAgentConversationInput, SwitchAgentConversationModeInput,
         UpdateAgentConversationTitleInput,
     };
+    use ralphx_lib::domain::agents::{
+        built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,
+        default_model_for_provider, lightweight_model_for_provider, AgentHarnessKind,
+        AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource, LogicalEffort,
+    };
+    use ralphx_lib::domain::repositories::AgentModelRegistryRepository;
+    use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    fn agent_model_command_app() -> tauri::App<tauri::test::MockRuntime> {
+        mock_builder()
+            .manage(AppState::new_test())
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────
 
     #[test]
     fn send_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","target":null}"#;
+        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh","target":null}"#;
         let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task_execution");
         assert_eq!(input.context_id, "task-123");
         assert_eq!(input.content, "Hello agent");
+        assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
         assert!(input.target.is_none());
     }
 
@@ -393,10 +416,12 @@ mod ipc_contract {
 
     #[test]
     fn start_agent_conversation_input_accepts_chat_mode_without_base() {
-        let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.4"}"#;
+        let json = r#"{"projectId":"project-1","content":"What changed?","mode":"chat","providerHarness":"codex","modelOverride":"gpt-5.5","logicalEffort":"xhigh"}"#;
         let input: StartAgentConversationInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.project_id, "project-1");
         assert_eq!(input.mode.as_deref(), Some("chat"));
+        assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
     }
@@ -409,5 +434,237 @@ mod ipc_contract {
         assert_eq!(input.mode, "edit");
         assert_eq!(input.base_ref_kind.as_deref(), Some("project_default"));
         assert_eq!(input.base_ref.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn agent_model_commands_round_trip_through_ipc_state() {
+        let app = agent_model_command_app();
+
+        let initial = list_agent_models(app.state::<AppState>())
+            .await
+            .expect("models should list");
+        assert!(initial.iter().any(|model| model.model_id == "gpt-5.5"));
+        assert!(initial
+            .iter()
+            .any(|model| model.default_effort == "max" || model.default_effort == "xhigh"));
+
+        let saved = upsert_custom_agent_model(
+            UpsertCustomAgentModelInput {
+                provider: "codex".to_string(),
+                model_id: "gpt-5.6".to_string(),
+                label: "GPT-5.6".to_string(),
+                menu_label: Some(String::new()),
+                description: Some(" Future model ".to_string()),
+                supported_efforts: vec![
+                    "high".to_string(),
+                    "low".to_string(),
+                    "high".to_string(),
+                ],
+                default_effort: "low".to_string(),
+                enabled: true,
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("custom model should save");
+        assert_eq!(saved.provider, "codex");
+        assert_eq!(saved.model_id, "gpt-5.6");
+        assert_eq!(saved.source, "custom");
+        assert_eq!(saved.supported_efforts, vec!["low", "high"]);
+
+        let after_save = list_agent_models(app.state::<AppState>())
+            .await
+            .expect("models should list after save");
+        assert!(after_save
+            .iter()
+            .any(|model| model.model_id == "gpt-5.6" && model.default_effort == "low"));
+
+        let deleted = delete_custom_agent_model(
+            "codex".to_string(),
+            "gpt-5.6".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("custom model should delete");
+        assert!(deleted);
+
+        let missing = delete_custom_agent_model(
+            "codex".to_string(),
+            "gpt-5.6".to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("missing delete should return false");
+        assert!(!missing);
+    }
+
+    #[test]
+    fn agent_model_registry_ipc_contract_covers_provider_defaults() {
+        let built_ins = built_in_agent_models();
+        assert_eq!(built_ins.len(), 8);
+        assert_eq!(default_model_for_provider(AgentHarnessKind::Claude), "sonnet");
+        assert_eq!(default_model_for_provider(AgentHarnessKind::Codex), "gpt-5.5");
+        assert_eq!(lightweight_model_for_provider(AgentHarnessKind::Claude), "haiku");
+        assert_eq!(
+            lightweight_model_for_provider(AgentHarnessKind::Codex),
+            "gpt-5.4-mini"
+        );
+        assert_eq!(
+            default_effort_for_provider(AgentHarnessKind::Claude),
+            LogicalEffort::Medium
+        );
+        assert_eq!(
+            default_effort_for_provider(AgentHarnessKind::Codex),
+            LogicalEffort::XHigh
+        );
+        assert_eq!(
+            default_efforts_for_provider(AgentHarnessKind::Claude),
+            &[
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High
+            ]
+        );
+
+        let custom = AgentModelDefinition::custom(
+            AgentHarnessKind::Codex,
+            " gpt-5.6 ",
+            "",
+            "",
+            Some(" next model ".to_string()),
+            vec![
+                LogicalEffort::XHigh,
+                LogicalEffort::Low,
+                LogicalEffort::XHigh,
+            ],
+            LogicalEffort::Max,
+            true,
+        );
+        let disabled_default = AgentModelDefinition::custom(
+            AgentHarnessKind::Codex,
+            "gpt-5.5",
+            "Disabled GPT-5.5",
+            "Disabled GPT-5.5",
+            None,
+            vec![LogicalEffort::Low],
+            LogicalEffort::Low,
+            false,
+        );
+        let snapshot = AgentModelRegistrySnapshot::merged(vec![custom, disabled_default]);
+
+        let custom = snapshot
+            .find_enabled(AgentHarnessKind::Codex, "gpt-5.6")
+            .expect("custom model should be enabled");
+        assert_eq!(custom.label, "gpt-5.6");
+        assert_eq!(custom.menu_label, "gpt-5.6");
+        assert_eq!(custom.description.as_deref(), Some("next model"));
+        assert_eq!(
+            custom.supported_efforts,
+            vec![LogicalEffort::Low, LogicalEffort::XHigh]
+        );
+        assert_eq!(custom.default_effort, LogicalEffort::XHigh);
+        assert_eq!(custom.source, AgentModelSource::Custom);
+        assert!(snapshot
+            .find_enabled(AgentHarnessKind::Codex, "gpt-5.5")
+            .is_none());
+        assert_eq!(
+            snapshot
+                .default_for_provider(AgentHarnessKind::Codex)
+                .map(|model| model.model_id.as_str()),
+            Some("gpt-5.4")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_model_memory_repository_ipc_contract_round_trips() {
+        let repo = MemoryAgentModelRegistryRepository::new();
+        let model = AgentModelDefinition::custom(
+            AgentHarnessKind::Claude,
+            "claude-opus-5",
+            "Claude Opus 5",
+            "Claude Opus 5",
+            None,
+            vec![LogicalEffort::High, LogicalEffort::XHigh, LogicalEffort::Max],
+            LogicalEffort::Max,
+            true,
+        );
+
+        let saved = repo.upsert_custom_model(&model).await.unwrap();
+        let saved_again = repo.upsert_custom_model(&model).await.unwrap();
+        let rows = repo.list_custom_models().await.unwrap();
+
+        assert_eq!(saved.source, AgentModelSource::Custom);
+        assert_eq!(saved.created_at, saved_again.created_at);
+        assert!(saved_again.updated_at >= saved.updated_at);
+        assert_eq!(rows.len(), 1);
+        assert!(repo
+            .delete_custom_model(AgentHarnessKind::Claude, "claude-opus-5")
+            .await
+            .unwrap());
+        assert!(!repo
+            .delete_custom_model(AgentHarnessKind::Claude, "claude-opus-5")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn agent_model_sqlite_repository_ipc_contract_round_trips() {
+        let state = AppState::new_sqlite_test();
+        let model = AgentModelDefinition::custom(
+            AgentHarnessKind::Codex,
+            "gpt-5.6",
+            "GPT-5.6",
+            "GPT-5.6",
+            Some("Future model".to_string()),
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+            ],
+            LogicalEffort::XHigh,
+            true,
+        );
+        let saved = state
+            .agent_model_registry_repo
+            .upsert_custom_model(&model)
+            .await
+            .unwrap();
+        let updated = AgentModelDefinition::custom(
+            AgentHarnessKind::Codex,
+            "gpt-5.6",
+            "GPT-5.6 Preview",
+            "GPT-5.6 Preview",
+            None,
+            vec![LogicalEffort::Low, LogicalEffort::Medium],
+            LogicalEffort::Medium,
+            false,
+        );
+        let saved_again = state
+            .agent_model_registry_repo
+            .upsert_custom_model(&updated)
+            .await
+            .unwrap();
+        let rows = state
+            .agent_model_registry_repo
+            .list_custom_models()
+            .await
+            .unwrap();
+
+        assert_eq!(saved.source, AgentModelSource::Custom);
+        assert_eq!(saved_again.created_at, saved.created_at);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "GPT-5.6 Preview");
+        assert!(!rows[0].enabled);
+        assert!(state
+            .agent_model_registry_repo
+            .delete_custom_model(AgentHarnessKind::Codex, "gpt-5.6")
+            .await
+            .unwrap());
+        assert!(!state
+            .agent_model_registry_repo
+            .delete_custom_model(AgentHarnessKind::Codex, "gpt-5.6")
+            .await
+            .unwrap());
     }
 }

@@ -48,6 +48,7 @@ interface UseChatActionsProps {
     conversationId?: string | null;
     providerHarness?: string | null;
     modelId?: string | null;
+    logicalEffort?: string | null;
   } | undefined;
   /** Optional callback after a user message is accepted by the backend. */
   onUserMessageSent?: ((payload: {

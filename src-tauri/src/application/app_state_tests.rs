@@ -328,8 +328,7 @@ async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_
 }
 
 #[tokio::test]
-async fn test_resolve_ideation_background_agent_runtime_errors_without_registered_harness_client()
-{
+async fn test_resolve_ideation_background_agent_runtime_errors_without_registered_harness_client() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let mut state = AppState::new_test().with_agent_client(default_mock.clone());
     state.agent_clients.harness_clients.clear();
@@ -362,8 +361,7 @@ async fn test_resolve_ideation_background_agent_runtime_errors_without_registere
 }
 
 #[tokio::test]
-async fn test_resolve_session_namer_runtime_uses_default_client_even_when_ideation_lane_is_codex()
-{
+async fn test_resolve_session_namer_runtime_uses_default_client_even_when_ideation_lane_is_codex() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let state = AppState::new_test()

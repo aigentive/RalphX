@@ -230,6 +230,7 @@ pub fn apply_common_spawn_env(cmd: &mut Command) {
         "TAURI_API_URL",
         crate::utils::backend_endpoint::backend_http_base_url(),
     );
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
 }
 
 /// Normalize legacy short agent ids to the current canonical ids.
@@ -1146,6 +1147,7 @@ impl SpawnableCommand {
             stdin.write_all(prompt.as_bytes()).await?;
             stdin.write_all(b"\n").await?; // CLI reads lines — newline signals end of input
             stdin.flush().await?; // Ensure bytes are delivered to the process
+
             // stdin is intentionally NOT dropped — kept open for future messages
         }
 
@@ -1757,7 +1759,8 @@ mod create_mcp_config_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
 
     /// build_spawnable_command calls ensure_claude_spawn_allowed() which returns
     /// Err in tests — exercise the function up to that guard.
@@ -1821,6 +1824,32 @@ mod tests {
 
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
+    }
+
+    #[test]
+    fn test_apply_common_spawn_env_prepends_resolved_node_bin_to_path() {
+        let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
+            .parent()
+            .map(PathBuf::from)
+            .expect("resolved node bin");
+
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("PATH", "/usr/bin:/bin");
+        apply_common_spawn_env(&mut cmd);
+
+        let envs = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|val| (key.to_os_string(), val.to_os_string())))
+            .collect::<Vec<_>>();
+        let path_value = envs
+            .iter()
+            .find(|(key, _)| key == OsStr::new("PATH"))
+            .map(|(_, value)| value.clone())
+            .expect("PATH env");
+        let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
+
+        assert_eq!(path_entries.first(), Some(&expected_node_bin));
     }
 
     /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the

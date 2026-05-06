@@ -3,13 +3,17 @@ use ralphx_lib::commands::diff_commands::{
     get_file_diff_for_state, get_task_file_changes_for_state,
 };
 use ralphx_lib::commands::git_commands::{
-    get_task_commits_for_state, CommitInfoResponse, TaskDiffStatsResponse,
+    get_task_commits_for_state, retry_merge_for_test, CommitInfoResponse, TaskDiffStatsResponse,
 };
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    ArtifactId, IdeationSessionId, InternalStatus, PlanBranch, Project, Task, TaskCategory,
+    ArtifactId, IdeationSessionId, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranch,
+    Project, ReviewScopeMetadata, Task, TaskCategory, TaskId,
 };
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -137,6 +141,64 @@ fn setup_regular_task_merge_repo_with_advanced_base() -> (tempfile::TempDir, Str
     (dir, merge_sha)
 }
 
+fn setup_scope_drift_repo() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("create temp dir");
+    let repo = dir.path();
+
+    run_git(repo, &["init", "-b", "main"]);
+    run_git(repo, &["config", "user.email", "test@test.com"]);
+    run_git(repo, &["config", "user.name", "Test"]);
+
+    std::fs::write(repo.join("README.md"), "# test repo\n").expect("write readme");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "initial commit"]);
+
+    run_git(repo, &["checkout", "-b", "task/scope-drift"]);
+    std::fs::create_dir_all(repo.join("backend/app/services")).expect("create services dir");
+    std::fs::write(
+        repo.join("backend/app/services/applicability_evaluator.rb"),
+        "class ApplicabilityEvaluator\nend\n",
+    )
+    .expect("write drift file");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "feat: out of scope drift"]);
+    run_git(repo, &["checkout", "main"]);
+
+    dir
+}
+
+async fn wait_for_status_without_retry_guard(
+    app_state: &AppState,
+    task_id: &TaskId,
+    expected: InternalStatus,
+) -> Task {
+    let mut last = None;
+    for _ in 0..50 {
+        let task = app_state
+            .task_repo
+            .get_by_id(task_id)
+            .await
+            .expect("get task")
+            .expect("task exists");
+        let metadata: serde_json::Value =
+            serde_json::from_str(task.metadata.as_deref().unwrap_or("{}"))
+                .expect("task metadata is JSON");
+        if task.internal_status == expected && metadata.get("merge_retry_in_progress").is_none() {
+            return task;
+        }
+        last = Some((
+            task.internal_status,
+            metadata.get("merge_retry_in_progress").cloned(),
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "task did not reach expected status {:?} with retry guard cleared; last state was {:?}",
+        expected, last
+    );
+}
+
 async fn setup_regular_merged_task_state(repo: &Path, merge_sha: String) -> (AppState, Task) {
     let app_state = AppState::new_test();
 
@@ -163,6 +225,65 @@ async fn setup_regular_merged_task_state(repo: &Path, merge_sha: String) -> (App
         .expect("create task");
 
     (app_state, task)
+}
+
+#[tokio::test]
+async fn retry_merge_scope_backstop_routes_to_reexecution() {
+    let repo = setup_scope_drift_repo();
+    let repo_path = repo.path();
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_max_concurrent(10);
+
+    let mut project = Project::new(
+        "Scope Drift Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.merge_strategy = MergeStrategy::Merge;
+    project.merge_validation_mode = MergeValidationMode::Off;
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let mut task = Task::new(
+        project.id.clone(),
+        "Scope drift retry should revise".to_string(),
+    );
+    task.internal_status = InternalStatus::MergeIncomplete;
+    task.task_branch = Some("task/scope-drift".to_string());
+    task.worktree_path = Some(repo_path.to_string_lossy().to_string());
+    task.metadata = Some(
+        ReviewScopeMetadata::new(
+            vec!["frontend/src".to_string()],
+            Vec::new(),
+            Some("unrelated_drift".to_string()),
+            Some("backend service file was never classified during review".to_string()),
+        )
+        .update_task_metadata(None)
+        .expect("scope metadata"),
+    );
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.expect("create task");
+
+    retry_merge_for_test(
+        task_id.clone(),
+        None,
+        &app_state,
+        Arc::clone(&execution_state),
+    )
+    .await
+    .expect("retry merge");
+
+    let updated =
+        wait_for_status_without_retry_guard(&app_state, &task_id, InternalStatus::ReExecuting)
+            .await;
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap_or("{}"))
+            .expect("task metadata is JSON");
+    assert_eq!(metadata["error_code"], "merge_scope_drift_guard");
 }
 
 #[test]

@@ -1,7 +1,10 @@
 use super::{
-    build_codex_mcp_overrides, build_spawnable_codex_exec_command, compose_codex_prompt,
-    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
+    build_codex_exec_args, build_codex_mcp_overrides, build_spawnable_codex_exec_command,
+    compose_codex_prompt, configure_spawn, CodexCliCapabilities, CodexExecCliConfig,
+    CodexMcpRuntimeContext,
 };
+use crate::domain::agents::LogicalEffort;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 fn full_codex_capabilities() -> CodexCliCapabilities {
@@ -43,6 +46,51 @@ fn build_codex_exec_command_sets_agent_tool_path() {
 
     assert!(path.contains("/opt/homebrew/bin"));
     assert!(path.contains("/usr/local/bin"));
+}
+
+#[test]
+fn build_codex_exec_args_preserves_gpt55_xhigh_selection() {
+    let args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            model: Some("gpt-5.5".to_string()),
+            reasoning_effort: Some(LogicalEffort::XHigh),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex exec args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-m" && pair[1] == "gpt-5.5"));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"xhigh\""));
+}
+
+#[test]
+fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
+    for (effort, expected) in [
+        (LogicalEffort::Low, "low"),
+        (LogicalEffort::Medium, "medium"),
+        (LogicalEffort::High, "high"),
+        (LogicalEffort::XHigh, "xhigh"),
+    ] {
+        let args = build_codex_exec_args(
+            &full_codex_capabilities(),
+            &CodexExecCliConfig {
+                model: Some("gpt-5.5".to_string()),
+                reasoning_effort: Some(effort),
+                ..CodexExecCliConfig::default()
+            },
+        )
+        .expect("build codex exec args");
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c"
+                && pair[1] == format!("model_reasoning_effort=\"{expected}\"")));
+    }
 }
 
 #[test]
@@ -355,6 +403,28 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         args_override.contains("--lead-session-id"),
         "expected lead-session-id CLI arg in overrides: {args_override}"
     );
+}
+
+#[test]
+fn configure_spawn_prepends_resolved_node_bin_to_path() {
+    let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
+        .parent()
+        .map(PathBuf::from)
+        .expect("resolved node bin");
+
+    let mut cmd = tokio::process::Command::new("/usr/bin/env");
+    cmd.env("PATH", "/usr/bin:/bin");
+    configure_spawn(&mut cmd, None);
+
+    let path_value = cmd
+        .as_std()
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
+        })
+        .expect("PATH env");
+    let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
+    assert_eq!(path_entries.first(), Some(&expected_node_bin));
 }
 
 #[test]

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ideationApi } from "@/api/ideation";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
@@ -74,6 +75,7 @@ export function useAgentsViewController({
     splitContainerRef,
   } = useAgentArtifactResize();
   const { data: projects = [], isLoading: isLoadingProjects } = useProjects();
+  const { registry: modelRegistry } = useAgentModels();
   const {
     clearAgentConversationSelection,
     focusedProjectId,
@@ -157,6 +159,7 @@ export function useAgentsViewController({
     terminalUnavailableReason,
   } = useAgentsWorkspaceModel({
     activeConversation,
+    modelRegistry,
     optimisticWorkspacesByConversationId,
     runtimeByConversationId,
     selectedConversationId,
@@ -372,9 +375,12 @@ export function useAgentsViewController({
   });
   const handleStartRuntimePreferenceChange = useCallback(
     (targetProjectId: string, runtime: AgentRuntimeSelection) => {
-      setLastRuntimeForProject(targetProjectId, normalizeRuntimeSelection(runtime));
+      setLastRuntimeForProject(
+        targetProjectId,
+        normalizeRuntimeSelection(runtime, modelRegistry),
+      );
     },
-    [setLastRuntimeForProject],
+    [modelRegistry, setLastRuntimeForProject],
   );
 
   const { handlePublishWorkspace, publishingConversationId } =
@@ -391,6 +397,7 @@ export function useAgentsViewController({
     activeProjectOptions,
     defaultRuntime,
     handleActiveConversationModeChange,
+    handleActiveEffortChange,
     handleActiveModelChange,
     switchingConversationModeId,
   } = useAgentsActiveComposerControls({
@@ -401,6 +408,7 @@ export function useAgentsViewController({
     defaultProjectId,
     invalidateProjectConversations,
     lastRuntimeByProjectId,
+    modelRegistry,
     normalizedActiveRuntime,
     projects,
     queryClient,
@@ -445,6 +453,7 @@ export function useAgentsViewController({
       isLoadingProjects,
       normalizedActiveRuntime,
       onActiveConversationModeChange: handleActiveConversationModeChange,
+      onActiveEffortChange: handleActiveEffortChange,
       onActiveModelChange: handleActiveModelChange,
       onAgentUserMessageSent: handleAgentUserMessageSent,
       onCreateProject,

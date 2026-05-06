@@ -13,6 +13,11 @@ const LazyExecutionHarnessSection = lazy(() =>
 const LazyGlobalExecutionSection = lazy(() =>
   import("./sections/GlobalExecutionSection"),
 );
+const LazyAgentModelsSection = lazy(() =>
+  import("./AgentModelsSection").then((module) => ({
+    default: module.AgentModelsSection,
+  })),
+);
 const LazyReviewPolicySection = lazy(() =>
   import("./sections/ReviewPolicySection"),
 );
@@ -101,6 +106,7 @@ export function SettingsSectionContent({
           />
         ) : null)}
       {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
+      {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
       {section === "review" && <LazyReviewPolicySection />}
       {section === "repository" && <LazyRepositorySettingsSection />}

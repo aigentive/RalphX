@@ -308,6 +308,7 @@ export function useChat(
       conversationId?: string | null;
       providerHarness?: string | null;
       modelId?: string | null;
+      logicalEffort?: string | null;
     };
   }
 ) {

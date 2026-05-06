@@ -609,10 +609,9 @@ description: Workspace bridge instructions
     #[test]
     fn live_agent_internal_skill_configs_are_valid() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        for agent_name in ["ralphx-chat-project"] {
-            validate_agent_internal_skills(&root, agent_name)
-                .unwrap_or_else(|error| panic!("{agent_name} internal skills invalid: {error}"));
-        }
+        let agent_name = "ralphx-chat-project";
+        validate_agent_internal_skills(&root, agent_name)
+            .unwrap_or_else(|error| panic!("{agent_name} internal skills invalid: {error}"));
     }
 
     #[test]

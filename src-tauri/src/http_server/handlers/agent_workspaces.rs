@@ -196,7 +196,7 @@ pub async fn complete_agent_workspace_repair(
                             &conversation_id,
                             pr_number,
                             pr_url.as_deref(),
-                            pr_status.as_deref(),
+                            pr_status,
                             Some("pushed"),
                         )
                         .await
@@ -248,7 +248,7 @@ pub async fn complete_agent_workspace_repair(
                             &conversation_id,
                             pr_number,
                             pr_url.as_deref(),
-                            pr_status.as_deref(),
+                            pr_status,
                             Some("failed"),
                         )
                         .await
@@ -307,7 +307,7 @@ pub async fn complete_agent_workspace_repair(
                     &conversation_id,
                     pr_number,
                     pr_url.as_deref(),
-                    pr_status.as_deref(),
+                    pr_status,
                     Some("failed"),
                 )
                 .await

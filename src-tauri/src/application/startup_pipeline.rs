@@ -211,8 +211,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Some(Arc::clone(&pr_poller_registry)),
     );
 
-    let transition_service =
-        Arc::new(startup_transition_factory.build(core_runtime_deps.clone(), app_handle.clone()));
+    let transition_service = startup_transition_factory
+        .build(core_runtime_deps.clone(), app_handle.clone())
+        .into_arc();
 
     if let Some(github_service) = github_service.as_ref() {
         tracing::info!("Running startup PR creation recovery...");
@@ -340,8 +341,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         chat_resumption.run().await;
     }
 
-    let reconcile_transition_service =
-        Arc::new(startup_transition_factory.build(core_runtime_deps, app_handle.clone()));
+    let reconcile_transition_service = startup_transition_factory
+        .build(core_runtime_deps, app_handle.clone())
+        .into_arc();
 
     let reconcile_runner = build_startup_reconciliation_runner(StartupReconciliationDeps {
         task_repo: Arc::clone(&task_repo),

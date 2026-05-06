@@ -7,6 +7,7 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "project-analysis", heading: "Setup & Validation" },
   { id: "execution", heading: "Execution" },
   { id: "execution-harnesses", heading: "Execution Pipeline Agents" },
+  { id: "models", heading: "Models" },
   { id: "global-execution", heading: "Global Capacity" },
   { id: "review", heading: "Review Policy" },
   { id: "ideation-workflow", heading: "Planning & Verification" },

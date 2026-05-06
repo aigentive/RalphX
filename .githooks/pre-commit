@@ -19,6 +19,95 @@ HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+NODE_EXEC=""
+NPM_EXEC=""
+NODE_BIN_DIR=""
+
+resolve_node_tool_path() {
+  local tool_name="$1"
+  local shell_path candidate nvmrc_path version
+
+  if command -v "$tool_name" >/dev/null 2>&1; then
+    command -v "$tool_name"
+    return 0
+  fi
+
+  if [ -n "${NVM_BIN:-}" ] && [ -x "$NVM_BIN/$tool_name" ]; then
+    printf '%s\n' "$NVM_BIN/$tool_name"
+    return 0
+  fi
+
+  if [ -n "${VOLTA_HOME:-}" ] && [ -x "$VOLTA_HOME/bin/$tool_name" ]; then
+    printf '%s\n' "$VOLTA_HOME/bin/$tool_name"
+    return 0
+  fi
+
+  for nvmrc_path in "$REPO_ROOT/.nvmrc" "$REPO_ROOT/frontend/.nvmrc"; do
+    if [ -f "$nvmrc_path" ] && [ -n "${HOME:-}" ]; then
+      version="$(head -n 1 "$nvmrc_path" | tr -d '[:space:]')"
+      version="${version#v}"
+      if [ -n "$version" ]; then
+        candidate="$HOME/.nvm/versions/node/v$version/bin/$tool_name"
+        if [ -x "$candidate" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      fi
+    fi
+  done
+
+  for candidate in "/opt/homebrew/bin/$tool_name" "/usr/local/bin/$tool_name"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  shell_path="$(/bin/zsh -lc "command -v $tool_name" 2>/dev/null | tail -n 1 || true)"
+  if [ -n "$shell_path" ] && [ -x "$shell_path" ]; then
+    printf '%s\n' "$shell_path"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_node_tooling() {
+  local candidate
+
+  if [ -n "$NODE_EXEC" ] && [ -n "$NPM_EXEC" ] && [ -n "$NODE_BIN_DIR" ]; then
+    return 0
+  fi
+
+  NODE_EXEC="$(resolve_node_tool_path node || true)"
+  NPM_EXEC="$(resolve_node_tool_path npm || true)"
+
+  if [ -z "$NODE_EXEC" ] && [ -n "$NPM_EXEC" ]; then
+    candidate="$(dirname "$NPM_EXEC")/node"
+    if [ -x "$candidate" ]; then
+      NODE_EXEC="$candidate"
+    fi
+  fi
+
+  if [ -z "$NPM_EXEC" ] && [ -n "$NODE_EXEC" ]; then
+    candidate="$(dirname "$NODE_EXEC")/npm"
+    if [ -x "$candidate" ]; then
+      NPM_EXEC="$candidate"
+    fi
+  fi
+
+  if [ -z "$NODE_EXEC" ] || [ -z "$NPM_EXEC" ]; then
+    echo "ERROR: Node.js tooling is required for RalphX frontend hooks but could not be found."
+    echo "Searched PATH, NVM_BIN, VOLTA_HOME/bin, .nvmrc-backed ~/.nvm installs, Homebrew paths, and a login shell."
+    echo "Install Node or expose it through PATH/NVM_BIN/VOLTA_HOME, then retry."
+    exit 1
+  fi
+
+  NODE_BIN_DIR="$(dirname "$NODE_EXEC")"
+  export NODE_EXEC NPM_EXEC NODE_BIN_DIR
+  export PATH="$NODE_BIN_DIR:$PATH"
+}
+
 # ----------------------------------------------------------------------------
 # Guard 1 — node_modules in staged paths
 # ----------------------------------------------------------------------------
@@ -39,7 +128,8 @@ fi
 tauri_version_files=$(echo "$staged" | grep -E '^(frontend/package\.json|frontend/package-lock\.json|src-tauri/Cargo\.toml|src-tauri/Cargo\.lock)$' || true)
 
 if [ -n "$tauri_version_files" ]; then
-    if ! mismatch_report="$(node "$HOOK_DIR/../scripts/check-tauri-package-alignment.mjs" "$REPO_ROOT")"; then
+    ensure_node_tooling
+    if ! mismatch_report="$("$NODE_EXEC" "$HOOK_DIR/../scripts/check-tauri-package-alignment.mjs" "$REPO_ROOT")"; then
         echo "ERROR: Refusing to commit Tauri version drift:"
         echo "$mismatch_report" | sed 's/^/  /'
         echo ""
@@ -81,11 +171,12 @@ ensure_frontend_dependencies() {
       rm -f node_modules
     fi
 
+    ensure_node_tooling
     printf '\033[1m[pre-commit]\033[0m dependency manifests changed; installing worktree frontend deps…\n'
     if [ -f package-lock.json ]; then
-      npm ci --prefer-offline --no-audit --no-fund
+      "$NPM_EXEC" ci --prefer-offline --no-audit --no-fund
     else
-      npm install --prefer-offline --no-audit --no-fund
+      "$NPM_EXEC" install --prefer-offline --no-audit --no-fund
     fi
     return
   fi
@@ -121,19 +212,25 @@ ensure_frontend_dependencies() {
 }
 
 cd frontend
+ensure_node_tooling
 ensure_frontend_dependencies
 
 printf '\033[1m[pre-commit]\033[0m design-token guards…\n'
 ./scripts/check-design-tokens.sh
 
 printf '\n\033[1m[pre-commit]\033[0m typecheck…\n'
-npm run -s typecheck
+"$NPM_EXEC" run -s typecheck
 
 printf '\n\033[1m[pre-commit]\033[0m lint (staged .ts/.tsx only)…\n'
 staged_src=$(echo "$staged_frontend" | sed -n 's|^frontend/||p' | grep -E '^src/.*\.tsx?$' || true)
 if [ -n "$staged_src" ]; then
+  if [ ! -x ./node_modules/.bin/eslint ]; then
+    echo "ERROR: frontend/node_modules/.bin/eslint is missing after dependency setup."
+    echo "Install frontend dependencies and retry the commit."
+    exit 1
+  fi
   # shellcheck disable=SC2086
-  npx eslint --max-warnings=0 $staged_src
+  ./node_modules/.bin/eslint --max-warnings=0 $staged_src
 else
   printf '(no staged .ts/.tsx files in src/)\n'
 fi
