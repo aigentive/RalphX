@@ -214,4 +214,77 @@ describe("GitAuthRepairPanel — Sign in", () => {
     await user.click(screen.getByTestId("git-auth-login-gh"));
     await waitFor(() => expect(sonner.toast.error).toHaveBeenCalled());
   });
+
+  it("Recheck triggers resume mutation and success toast when diagnostics are healthy", async () => {
+    const user = userEvent.setup();
+    const sonner = await import("sonner");
+    // Healthy state — SSH remote, gh authenticated, no blocking issue
+    const healthyDiagnostics = {
+      fetchUrl: "git@github.com:owner/repo.git",
+      pushUrl: "git@github.com:owner/repo.git",
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    };
+    mocks.diagnostics.data = healthyDiagnostics;
+    mocks.diagnostics.refetch = vi
+      .fn()
+      .mockResolvedValue({ data: healthyDiagnostics, isError: false });
+    mocks.ghAuth.data = true;
+    mocks.ghAuth.refetch = vi.fn().mockResolvedValue({ data: true });
+    mocks.resumeDeferred.mutateAsync.mockReset();
+    mocks.resumeDeferred.mutateAsync.mockResolvedValue(true);
+
+    render(<GitAuthRepairPanel projectId="proj-1" showWhenHealthy />);
+    await user.click(screen.getByTestId("git-auth-recheck"));
+
+    await waitFor(() => expect(mocks.resumeDeferred.mutateAsync).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(sonner.toast.success).toHaveBeenCalledWith(
+        "Deferred startup recovery resumed",
+      ),
+    );
+  });
+
+  it("Use Terminal copies the gh login command to the clipboard and shows success toast", async () => {
+    const user = userEvent.setup();
+    const sonner = await import("sonner");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(<GitAuthRepairPanel projectId="proj-1" />);
+    await user.click(screen.getByTestId("git-auth-terminal-copy"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]?.[0]).toContain("gh auth login");
+    await waitFor(() =>
+      expect(sonner.toast.success).toHaveBeenCalledWith(
+        "Terminal sign-in command copied",
+      ),
+    );
+  });
+
+  it("Use Terminal surfaces an error toast when clipboard write fails", async () => {
+    const user = userEvent.setup();
+    const sonner = await import("sonner");
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(<GitAuthRepairPanel projectId="proj-1" />);
+    await user.click(screen.getByTestId("git-auth-terminal-copy"));
+
+    await waitFor(() =>
+      expect(sonner.toast.error).toHaveBeenCalledWith(
+        "Failed to copy GitHub sign-in command",
+      ),
+    );
+  });
 });

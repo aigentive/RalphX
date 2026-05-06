@@ -3,10 +3,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@/lib/tauri";
 import { createMockTask } from "@/test/mock-data";
+import { useUiStore } from "@/stores/uiStore";
 import { TaskBoard } from "./TaskBoard";
 import type { TaskListResponse } from "@/types/task";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -250,6 +251,42 @@ describe("TaskBoard", () => {
       await waitFor(() => {
         expect(screen.getByTestId("task-board-error")).toBeInTheDocument();
       });
+    });
+  });
+
+  describe("toolbar interactions", () => {
+    it("clears boardSearchQuery when search bar close button is clicked", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+
+      // Seed the uiStore with a non-null search query so the close handler is meaningful
+      act(() => {
+        useUiStore.getState().setBoardSearchQuery("hello");
+      });
+      expect(useUiStore.getState().boardSearchQuery).toBe("hello");
+
+      render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      const closeBtn = await screen.findByRole("button", { name: /close search/i });
+      fireEvent.click(closeBtn);
+
+      await waitFor(() => {
+        expect(useUiStore.getState().boardSearchQuery).toBeNull();
+      });
+    });
+
+    it("invokes onOpenPlanQuickSwitcher when PlanSelectorInline trigger fires", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+      const onOpenPlanQuickSwitcher = vi.fn();
+
+      render(
+        <TaskBoard projectId="p1" onOpenPlanQuickSwitcher={onOpenPlanQuickSwitcher} />,
+        { wrapper: createWrapper() },
+      );
+
+      const trigger = await screen.findByTestId("plan-selector-inline-trigger");
+      fireEvent.click(trigger);
+
+      expect(onOpenPlanQuickSwitcher).toHaveBeenCalledWith("kanban_inline");
     });
   });
 

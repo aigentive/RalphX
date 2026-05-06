@@ -942,6 +942,129 @@ describe("AgentsSidebar", () => {
     expect(screen.getByText("running")).toBeInTheDocument();
   });
 
+  it("prepends a pinnedConversation that is not in the loaded conversations list", () => {
+    const loaded = conversation({ id: "conversation-loaded", title: "Loaded" });
+    const pinned = conversation({ id: "conversation-pinned", title: "Pinned run" });
+    conversationsByProject.set("project-1", {
+      data: [loaded],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      pinnedConversation: pinned,
+      selectedConversationId: pinned.id,
+    });
+
+    const rows = screen.getAllByTestId(/agents-session-/);
+    expect(rows.map((row) => row.getAttribute("data-testid"))).toEqual([
+      "agents-session-conversation-pinned",
+      "agents-session-conversation-loaded",
+    ]);
+  });
+
+  it("does not duplicate a pinnedConversation already present in the loaded list", () => {
+    const shared = conversation({ id: "conversation-shared", title: "Shared run" });
+    conversationsByProject.set("project-1", {
+      data: [shared],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      pinnedConversation: shared,
+      selectedConversationId: shared.id,
+    });
+
+    const rows = screen.getAllByTestId(/agents-session-/);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveAttribute("data-testid", "agents-session-conversation-shared");
+  });
+
+  it("closes the rename dialog via Escape (onOpenChange false branch)", async () => {
+    const user = userEvent.setup();
+    const onRenameConversation = vi.fn();
+    const conv = conversation({ id: "conversation-esc-rename", title: "old" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onRenameConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    expect(screen.getByLabelText("Session title")).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByLabelText("Session title")).toBeNull());
+    expect(onRenameConversation).not.toHaveBeenCalled();
+  });
+
+  it("renders the done status dot when the active runtime status is completed", () => {
+    const conv = conversation({ id: "conversation-done", title: "Done run" });
+    const storeKey = getAgentConversationStoreKey(conv);
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [storeKey]: conv.id },
+      agentStatus: { [storeKey]: "completed" },
+    });
+
+    renderSidebar();
+
+    // SessionRuntimeLabel only renders for "running" — "done" returns null (line 859).
+    expect(screen.queryByText("running")).not.toBeInTheDocument();
+
+    // SessionStatusDot for "done" uses --status-success (line 889 branch).
+    const row = screen.getByTestId("agents-session-conversation-done");
+    const dot = row.querySelector('span[aria-hidden="true"].rounded-full');
+    expect(dot).not.toBeNull();
+    expect(dot?.getAttribute("style") ?? "").toContain("var(--status-success)");
+  });
+
+  it("renders no status dot for blocked failed/error/needs_approval statuses", () => {
+    const conv = conversation({ id: "conversation-blocked", title: "Blocked run" });
+    const storeKey = getAgentConversationStoreKey(conv);
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [storeKey]: conv.id },
+      agentStatus: { [storeKey]: "failed" },
+    });
+
+    renderSidebar();
+
+    // "blocked" state — neither running label nor success/accent dot rendered (lines 851, 859).
+    expect(screen.queryByText("running")).not.toBeInTheDocument();
+    const row = screen.getByTestId("agents-session-conversation-blocked");
+    const dot = row.querySelector('span[aria-hidden="true"].rounded-full');
+    // SessionStatusDot returns null for "blocked", so no rounded-full status dot present.
+    expect(dot).toBeNull();
+  });
+
   it("rename Submit no-ops when the dialog is closed before submitting", async () => {
     const user = userEvent.setup();
     const onRenameConversation = vi.fn().mockResolvedValue(undefined);

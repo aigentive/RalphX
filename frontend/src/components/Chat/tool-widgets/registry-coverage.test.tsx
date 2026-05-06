@@ -305,6 +305,39 @@ describe("chat widget families without prior direct coverage", () => {
     expect(screen.getByText("Heading")).toBeInTheDocument();
   });
 
+  it("ArtifactWidget MarkdownPreview covers H3+/code-fence/indented-code branches in compact mode", async () => {
+    const user = userEvent.setup();
+    render(
+      <ArtifactWidget
+        compact
+        toolCall={makeToolCall("mcp__ralphx__get_artifact", {
+          result: {
+            title: "Branch Coverage Doc",
+            artifact_type: "design_doc",
+            // First 5 non-empty preview lines exercise:
+            //   1: ### Deep Heading       -> H3+ branch (lines 121-130)
+            //   2: ```                     -> code-fence skip branch (line 134-135)
+            //   3: "    indented code"    -> indented-code branch (lines 139-150)
+            //   4: ## Sub                  -> H2 branch
+            //   5: regular paragraph       -> paragraph fallback branch
+            content:
+              "### Deep Heading\n```\n    indented code line\n## Sub\nregular paragraph",
+            version: 2,
+          },
+        })}
+      />,
+    );
+    // Expand if needed (WidgetCard may render collapsed by default).
+    if (!screen.queryByText("Deep Heading")) {
+      const trigger = screen.getByText("Branch Coverage Doc");
+      await user.click(trigger);
+    }
+    expect(screen.getByText("Deep Heading")).toBeInTheDocument();
+    expect(screen.getByText("indented code line")).toBeInTheDocument();
+    expect(screen.getByText("Sub")).toBeInTheDocument();
+    expect(screen.getByText("regular paragraph")).toBeInTheDocument();
+  });
+
   it("renders ContextWidget and IssuesSummaryWidget from parsed MCP results", async () => {
     const user = userEvent.setup();
     render(
