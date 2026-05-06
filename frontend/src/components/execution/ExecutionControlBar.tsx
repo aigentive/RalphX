@@ -229,7 +229,7 @@ export function ExecutionControlBar({
           role="region"
           aria-label="Execution controls"
           aria-live="polite"
-          className="z-10 flex h-full items-center justify-between px-4 text-[11.5px]"
+          className="z-10 flex h-full items-center justify-between px-4 text-[0.7188rem]"
           style={{
             backgroundColor: "transparent",
             borderRadius: 0,
@@ -390,7 +390,7 @@ export function ExecutionControlBar({
               <StatusSeparator />
               <div
                 data-testid="queued-message-count"
-                className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11.5px]"
+                className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.7188rem]"
                 style={{
                   color: "var(--status-warning)",
                   backgroundColor: "var(--status-warning-muted)",
@@ -438,7 +438,7 @@ export function ExecutionControlBar({
                 {ideationWaiting > 0 && (
                   <span
                     data-testid="ideation-waiting-badge"
-                    className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-medium"
+                    className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium"
                     style={{
                       color: "var(--status-warning)",
                       backgroundColor: "var(--status-warning-muted)",
@@ -596,7 +596,7 @@ export function ExecutionControlBar({
               style={{ color: STATUS_COLORS.running }}
             />
             <span
-              className="text-[13px] truncate"
+              className="text-[0.8125rem] truncate"
               style={{ color: "var(--text-secondary)" }}
             >
               {currentTaskName}
@@ -617,7 +617,7 @@ export function ExecutionControlBar({
                 disabled={!canPauseToggle}
                 aria-label={isStopped ? "Start execution" : isPaused ? "Resume execution" : "Pause execution"}
                 aria-pressed={isPaused && !isStopped}
-                className="h-6 gap-1.5 rounded-[6px] px-2.5 text-[11.5px] font-medium transition-all duration-150 active:scale-[0.98]"
+                className="h-6 gap-1.5 rounded-[6px] px-2.5 text-[0.7188rem] font-medium transition-all duration-150 active:scale-[0.98]"
                 style={{
                   backgroundColor: "var(--bg-elevated)",
                   borderColor: "var(--border-default)",
@@ -667,7 +667,7 @@ export function ExecutionControlBar({
                 disabled={!canStop}
                 aria-label={isStopped ? "Execution already stopped" : "Stop all running tasks"}
                 aria-disabled={!canStop}
-                className="h-6 gap-1.5 rounded-[6px] px-2.5 text-[11.5px] font-medium transition-all duration-150 active:scale-[0.98]"
+                className="h-6 gap-1.5 rounded-[6px] px-2.5 text-[0.7188rem] font-medium transition-all duration-150 active:scale-[0.98]"
                 style={{
                   backgroundColor: "var(--bg-elevated)",
                   borderColor: "var(--border-default)",

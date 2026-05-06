@@ -79,11 +79,11 @@ export function AcceptedSessionBanner({
               <CheckCircle2 className="w-4 h-4" style={{ color: "var(--status-success)" }} />
             </div>
             <div className="flex flex-col leading-tight">
-              <span className="text-[15px] font-semibold" style={{ color: "var(--text-primary)" }}>
+              <span className="text-[0.9375rem] font-semibold" style={{ color: "var(--text-primary)" }}>
                 Plan accepted
               </span>
               {convertedAt && (
-                <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                   {formatTimestamp(convertedAt)}
                 </span>
               )}
@@ -93,7 +93,7 @@ export function AcceptedSessionBanner({
           <button
             data-testid="view-work-button"
             onClick={onViewWork}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[13px] font-semibold transition-all duration-150"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[0.8125rem] font-semibold transition-all duration-150"
             style={{
               background: "var(--status-success)",
               color: "var(--text-inverse)",
@@ -118,14 +118,14 @@ export function AcceptedSessionBanner({
           className="flex items-center gap-4 pt-3"
           style={{ borderTop: `1px solid ${withAlpha("var(--status-success)", 15)}` }}
         >
-          <span className="text-[13px] font-medium" style={{ color: "var(--text-secondary)" }}>
+          <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-secondary)" }}>
             {counts.total} {counts.total === 1 ? "task" : "tasks"}
           </span>
 
           {counts.active > 0 && (
             <div className="flex items-center gap-1.5">
               <Zap className="w-3.5 h-3.5" style={{ color: "var(--accent-primary)" }} />
-              <span className="text-[12px] font-medium" style={{ color: "var(--accent-primary)" }}>
+              <span className="text-[0.75rem] font-medium" style={{ color: "var(--accent-primary)" }}>
                 {counts.active} in progress
               </span>
             </div>
@@ -134,7 +134,7 @@ export function AcceptedSessionBanner({
           {counts.done > 0 && (
             <div className="flex items-center gap-1.5">
               <CircleCheck className="w-3.5 h-3.5" style={{ color: "var(--status-success)" }} />
-              <span className="text-[12px] font-medium" style={{ color: "var(--status-success)" }}>
+              <span className="text-[0.75rem] font-medium" style={{ color: "var(--status-success)" }}>
                 {counts.done} completed
               </span>
             </div>
@@ -143,7 +143,7 @@ export function AcceptedSessionBanner({
           {counts.idle > 0 && counts.active === 0 && counts.done === 0 && (
             <div className="flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
-              <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
                 {counts.idle} queued
               </span>
             </div>

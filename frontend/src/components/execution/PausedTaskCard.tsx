@@ -189,7 +189,7 @@ function UserPauseCard({
           {task.title}
         </button>
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded shrink-0"
           style={{
             color: "var(--status-warning)",
             backgroundColor: "var(--status-warning-muted)",
@@ -221,7 +221,7 @@ function UserPauseCard({
 
       {/* Line 2: "Paused by user" · time since · previous status */}
       <div
-        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[11px] min-w-0"
+        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[0.6875rem] min-w-0"
         style={{ color: "var(--text-muted)" }}
       >
         <span>Paused by user</span>
@@ -290,7 +290,7 @@ function ProviderErrorCard({
           {task.title}
         </button>
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded shrink-0"
           style={{
             color: catStyle.color,
             backgroundColor: catStyle.bgColor,
@@ -322,7 +322,7 @@ function ProviderErrorCard({
 
       {/* Line 2: Error reason · Countdown · Resume attempts */}
       <div
-        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[11px] min-w-0"
+        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[0.6875rem] min-w-0"
         style={{ color: "var(--text-muted)" }}
       >
         <span className="truncate min-w-0" title={meta.message}>
@@ -344,7 +344,7 @@ function ProviderErrorCard({
           <>
             <span className="shrink-0" style={{ color: "var(--text-muted)" }}>·</span>
             <span
-              className="text-[10px] font-medium px-1 rounded shrink-0"
+              className="text-[0.625rem] font-medium px-1 rounded shrink-0"
               style={{
                 color: "var(--status-success)",
                 backgroundColor: "var(--status-success-muted)",

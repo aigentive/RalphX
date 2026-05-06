@@ -74,7 +74,7 @@ export function CollapsedQuickAdd({ onActivate }: CollapsedQuickAddProps) {
           className="collapsed-quick-add-label"
           style={{
             marginLeft: "6px",
-            fontSize: "12px",
+            fontSize: "0.75rem",
             fontWeight: 500,
             color: "var(--text-muted)",
             whiteSpace: "nowrap",

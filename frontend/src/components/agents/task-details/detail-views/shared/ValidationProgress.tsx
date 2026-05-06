@@ -77,24 +77,24 @@ export function ValidationStepRow({ step }: { step: MergeValidationStepEvent }) 
       >
         {statusIcon}
         <span
-          className="text-[10px] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded"
+          className="text-[0.625rem] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded"
           style={NEUTRAL_BADGE_STYLE}
         >
           validate
         </span>
-        <span className="text-[12px] text-text-primary/80 font-mono truncate flex-1" title={step.label}>
+        <span className="text-[0.75rem] text-text-primary/80 font-mono truncate flex-1" title={step.label}>
           {step.label}
         </span>
         {isCached && (
           <span
-            className="text-[9px] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded shrink-0"
+            className="text-[0.5625rem] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded shrink-0"
             style={NEUTRAL_BADGE_STYLE}
           >
             Cached
           </span>
         )}
         {step.duration_ms != null && (
-          <span className="flex items-center gap-1 text-[11px] text-text-primary/40 shrink-0">
+          <span className="flex items-center gap-1 text-[0.6875rem] text-text-primary/40 shrink-0">
             <Clock className="w-3 h-3" />
             {formatDuration(step.duration_ms)}
           </span>
@@ -111,12 +111,12 @@ export function ValidationStepRow({ step }: { step: MergeValidationStepEvent }) 
           style={{ scrollbarWidth: "thin" }}
         >
           {step.stdout && step.stdout.trim() && (
-            <pre className="text-[11px] font-mono text-text-primary/50 whitespace-pre-wrap break-all leading-relaxed">
+            <pre className="text-[0.6875rem] font-mono text-text-primary/50 whitespace-pre-wrap break-all leading-relaxed">
               {step.stdout}
             </pre>
           )}
           {step.stderr && step.stderr.trim() && (
-            <pre className="text-[11px] font-mono text-text-primary/50 whitespace-pre-wrap break-all leading-relaxed">
+            <pre className="text-[0.6875rem] font-mono text-text-primary/50 whitespace-pre-wrap break-all leading-relaxed">
               {step.stderr}
             </pre>
           )}
@@ -163,16 +163,16 @@ export function StepsGroup({ steps, phase, label }: {
       >
         {statusIcon}
         <span
-          className="text-[10px] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded"
+          className="text-[0.625rem] uppercase font-semibold tracking-wider px-1.5 py-0.5 rounded"
           style={NEUTRAL_BADGE_STYLE}
         >
           {phase}
         </span>
-        <span className="text-[12px] text-text-primary/80 flex-1">
+        <span className="text-[0.75rem] text-text-primary/80 flex-1">
           {label}
         </span>
         {totalMs > 0 && (
-          <span className="flex items-center gap-1 text-[11px] text-text-primary/40 shrink-0">
+          <span className="flex items-center gap-1 text-[0.6875rem] text-text-primary/40 shrink-0">
             <Clock className="w-3 h-3" />
             {formatDuration(totalMs)}
           </span>
@@ -210,16 +210,16 @@ export function StepsGroup({ steps, phase, label }: {
                   ) : (
                     <CheckCircle2 className="w-3 h-3" style={{ color: stepIconColor }} />
                   )}
-                  <span className="text-[11px] text-text-primary/60 truncate flex-1" title={step.label}>
+                  <span className="text-[0.6875rem] text-text-primary/60 truncate flex-1" title={step.label}>
                     {step.label}
                   </span>
                   {step.duration_ms != null && (
-                    <span className="text-[10px] text-text-primary/30 shrink-0">
+                    <span className="text-[0.625rem] text-text-primary/30 shrink-0">
                       {formatDuration(step.duration_ms)}
                     </span>
                   )}
                 </div>
-                <code className="block text-[10px] font-mono text-text-primary/40 pl-5 truncate" title={step.command}>
+                <code className="block text-[0.625rem] font-mono text-text-primary/40 pl-5 truncate" title={step.command}>
                   $ {step.command}
                 </code>
                 {hasOutput && (
@@ -228,12 +228,12 @@ export function StepsGroup({ steps, phase, label }: {
                     style={{ scrollbarWidth: "thin" }}
                   >
                     {step.stdout && step.stdout.trim() && (
-                      <pre className="text-[10px] font-mono text-text-primary/40 whitespace-pre-wrap break-all leading-relaxed">
+                      <pre className="text-[0.625rem] font-mono text-text-primary/40 whitespace-pre-wrap break-all leading-relaxed">
                         {step.stdout}
                       </pre>
                     )}
                     {step.stderr && step.stderr.trim() && (
-                      <pre className="text-[10px] font-mono text-text-primary/40 whitespace-pre-wrap break-all leading-relaxed">
+                      <pre className="text-[0.625rem] font-mono text-text-primary/40 whitespace-pre-wrap break-all leading-relaxed">
                         {step.stderr}
                       </pre>
                     )}
@@ -319,7 +319,7 @@ export function ValidationProgress({
       <SectionTitle>
         {title}
         {source === "live" && (
-          <span className="ml-2 text-[10px] font-normal text-text-primary/30">(live)</span>
+          <span className="ml-2 text-[0.625rem] font-normal text-text-primary/30">(live)</span>
         )}
       </SectionTitle>
       <div>

@@ -117,7 +117,7 @@ export function VerificationBadge({
 
   const badge = (
     <span
-      className="inline-flex items-center gap-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0 select-none"
+      className="inline-flex items-center gap-1.5 text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0 select-none"
       style={{
         background: config.bg,
         border: `1px solid ${config.border}`,
@@ -183,7 +183,7 @@ export function VerificationBadge({
     <TooltipProvider>
       <Tooltip>
         <TooltipTrigger asChild>{badge}</TooltipTrigger>
-        <TooltipContent className="max-w-xs text-[11px]">
+        <TooltipContent className="max-w-xs text-[0.6875rem]">
           {tooltipText}
         </TooltipContent>
       </Tooltip>

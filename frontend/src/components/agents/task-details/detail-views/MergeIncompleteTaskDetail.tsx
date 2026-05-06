@@ -145,11 +145,11 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
   if (!mergeError) {
     return (
       <div className="space-y-3">
-        <p className="text-[13px] text-text-primary/60">
+        <p className="text-[0.8125rem] text-text-primary/60">
           The merge failed due to a git error that is not a merge conflict.
           This can happen when:
         </p>
-        <ul className="list-disc list-inside space-y-1.5 text-[13px] text-text-primary/50">
+        <ul className="list-disc list-inside space-y-1.5 text-[0.8125rem] text-text-primary/50">
           <li>The task branch was deleted or corrupted</li>
           <li>A git lock file is preventing operations</li>
           <li>Network issues interrupted a fetch operation</li>
@@ -166,7 +166,7 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
     <>
       <div className="space-y-3">
         {hookBlockCopy && (
-          <div className="rounded-md px-3 py-2 text-[13px] text-text-primary/70 bg-[var(--overlay-faint)]">
+          <div className="rounded-md px-3 py-2 text-[0.8125rem] text-text-primary/70 bg-[var(--overlay-faint)]">
             {hookBlockCopy.explanation}
             {mergeError?.hookFailureRepeatCount != null && mergeError.hookFailureRepeatCount > 0 && (
               <span className="ml-1 text-text-primary/50">
@@ -178,7 +178,7 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
         {mergeError.error && (
           <div className="space-y-2">
             <div
-              className="rounded-md px-3 py-2 font-mono text-[12px] text-text-primary/80 whitespace-pre-wrap"
+              className="rounded-md px-3 py-2 font-mono text-[0.75rem] text-text-primary/80 whitespace-pre-wrap"
               style={{ backgroundColor: "var(--status-error-muted)" }}
             >
               {errorPreview}
@@ -186,7 +186,7 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
             {errorIsTruncated && (
               <button
                 type="button"
-                className="text-[12px] font-medium text-[var(--accent-primary)] hover:text-[var(--accent-primary-hover)]"
+                className="text-[0.75rem] font-medium text-[var(--accent-primary)] hover:text-[var(--accent-primary-hover)]"
                 onClick={() => setSelectedErrorOutput(mergeError.error)}
               >
                 View full output
@@ -195,7 +195,7 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
           </div>
         )}
         {(resolvedSource || resolvedTarget || mergeError.sourceBranch || mergeError.targetBranch) && (
-          <div className="text-[13px] text-text-primary/60">
+          <div className="text-[0.8125rem] text-text-primary/60">
             <BranchFlow
               source={resolvedSource ?? mergeError.sourceBranch ?? "unknown"}
               target={resolvedTarget ?? mergeError.targetBranch ?? "unknown"}
@@ -203,7 +203,7 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
           </div>
         )}
         {mergeError.diagnosticInfo && (
-          <div className="text-[12px] text-text-primary/50 whitespace-pre-wrap">
+          <div className="text-[0.75rem] text-text-primary/50 whitespace-pre-wrap">
             {mergeError.diagnosticInfo}
           </div>
         )}
@@ -229,7 +229,7 @@ function ErrorContextCard({ mergeError, resolvedSource, resolvedTarget }: { merg
           </DialogHeader>
           <div className="px-6 pb-6">
             <div className="max-h-[56vh] overflow-y-auto rounded-lg bg-[var(--overlay-faint)] p-4">
-              <pre className="whitespace-pre-wrap break-words font-mono text-[12px] text-text-primary/80">
+              <pre className="whitespace-pre-wrap break-words font-mono text-[0.75rem] text-text-primary/80">
                 {selectedErrorOutput}
               </pre>
             </div>
@@ -258,11 +258,11 @@ function RecoverySteps({
     <div className="space-y-3">
       {hookBlockedReason === "hook_environment_failure" ? (
         <>
-          <p className="text-[13px] text-text-primary/60">
+          <p className="text-[0.8125rem] text-text-primary/60">
             A repository commit hook could not bootstrap its environment in the merge worktree.
             Fix the hook dependencies or worktree setup, then retry the merge.
           </p>
-          <ol className="list-decimal list-inside space-y-2 text-[13px] text-text-primary/50">
+          <ol className="list-decimal list-inside space-y-2 text-[0.8125rem] text-text-primary/50">
             <li>Check the hook output for missing tools, dependencies, permissions, or symlinks</li>
             <li>Repair the worktree setup or install the missing dependencies outside the task agent flow</li>
             <li>
@@ -272,10 +272,10 @@ function RecoverySteps({
         </>
       ) : hookBlockedReason === "repeated_hook_failure" ? (
         <>
-          <p className="text-[13px] text-text-primary/60">
+          <p className="text-[0.8125rem] text-text-primary/60">
             The same repository hook failure repeated after re-execution, so RalphX stopped the automatic loop.
           </p>
-          <ol className="list-decimal list-inside space-y-2 text-[13px] text-text-primary/50">
+          <ol className="list-decimal list-inside space-y-2 text-[0.8125rem] text-text-primary/50">
             <li>Review the full hook output to decide whether this is code feedback or environment setup</li>
             <li>Fix the root cause manually or update the hook/worktree setup</li>
             <li>
@@ -285,11 +285,11 @@ function RecoverySteps({
         </>
       ) : hasValidationFailures ? (
         <>
-          <p className="text-[13px] text-text-primary/60">
+          <p className="text-[0.8125rem] text-text-primary/60">
             Your validation commands (build, type checks, linting) failed,
             so the merge could not be completed. To recover:
           </p>
-          <ol className="list-decimal list-inside space-y-2 text-[13px] text-text-primary/50">
+          <ol className="list-decimal list-inside space-y-2 text-[0.8125rem] text-text-primary/50">
             <li>
               Fix the build, type, or lint errors in your codebase
             </li>
@@ -310,10 +310,10 @@ function RecoverySteps({
         </>
       ) : (
         <>
-          <p className="text-[13px] text-text-primary/60">
+          <p className="text-[0.8125rem] text-text-primary/60">
             To recover, try the following steps:
           </p>
-          <ol className="list-decimal list-inside space-y-2 text-[13px] text-text-primary/50">
+          <ol className="list-decimal list-inside space-y-2 text-[0.8125rem] text-text-primary/50">
             <li>
               Check if the branch exists:{" "}
               <code className="text-text-primary/70 bg-[var(--overlay-faint)] px-1 rounded">
@@ -436,7 +436,7 @@ function RecoveryTimeline({ events }: { events: MergeRecoveryEvent[] }) {
     };
     return (
       <span
-        className="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide text-text-primary/70"
+        className="text-[0.625rem] px-2 py-0.5 rounded-full font-medium uppercase tracking-wide text-text-primary/70"
         style={{
           backgroundColor: colors[source as keyof typeof colors] ?? "var(--overlay-moderate)",
         }}
@@ -479,28 +479,28 @@ function RecoveryTimeline({ events }: { events: MergeRecoveryEvent[] }) {
               {/* Header: kind + timestamp */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[13px] font-medium text-text-primary/90">
+                  <span className="text-[0.8125rem] font-medium text-text-primary/90">
                     {getKindLabel(event.kind)}
                   </span>
                   {getSourceBadge(event.source)}
                   {event.attempt !== undefined && (
-                    <span className="text-[11px] text-text-primary/40">
+                    <span className="text-[0.6875rem] text-text-primary/40">
                       Attempt #{event.attempt}
                     </span>
                   )}
                 </div>
-                <span className="text-[11px] text-text-primary/40 font-mono">
+                <span className="text-[0.6875rem] text-text-primary/40 font-mono">
                   {formatTimestamp(event.at)}
                 </span>
               </div>
 
               {/* Message */}
               <div className="space-y-1.5">
-                <p className="text-[13px] text-text-primary/70 break-words">{preview}</p>
+                <p className="text-[0.8125rem] text-text-primary/70 break-words">{preview}</p>
                 {isTruncated && (
                   <button
                     type="button"
-                    className="text-[12px] font-medium text-[var(--accent-primary)] hover:text-[var(--accent-primary-hover)]"
+                    className="text-[0.75rem] font-medium text-[var(--accent-primary)] hover:text-[var(--accent-primary-hover)]"
                     onClick={() =>
                       setSelectedMessage({
                         title: getKindLabel(event.kind),
@@ -514,7 +514,7 @@ function RecoveryTimeline({ events }: { events: MergeRecoveryEvent[] }) {
               </div>
 
               {/* Additional metadata */}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-primary/50">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[0.6875rem] text-text-primary/50">
                 {event.blocking_task_id && (
                   <div>
                     <span className="text-text-primary/40">Blocker: </span>
@@ -560,7 +560,7 @@ function RecoveryTimeline({ events }: { events: MergeRecoveryEvent[] }) {
           </DialogHeader>
           <div className="px-6 pb-6">
             <div className="max-h-[56vh] overflow-y-auto rounded-lg bg-[var(--overlay-faint)] p-4">
-              <pre className="whitespace-pre-wrap break-words font-mono text-[12px] text-text-primary/80">
+              <pre className="whitespace-pre-wrap break-words font-mono text-[0.75rem] text-text-primary/80">
                 {selectedMessage?.message}
               </pre>
             </div>
@@ -587,7 +587,7 @@ function RecoveryBadges({
     <div className="flex gap-2 flex-wrap">
       {hasAutoRetry && (
         <span
-          className="text-[11px] px-2.5 py-1 rounded-full font-medium"
+          className="text-[0.6875rem] px-2.5 py-1 rounded-full font-medium"
           style={{
             backgroundColor: "var(--accent-muted)",
             color: "var(--accent-primary)",
@@ -598,7 +598,7 @@ function RecoveryBadges({
       )}
       {hasDeferred && (
         <span
-          className="text-[11px] px-2.5 py-1 rounded-full font-medium"
+          className="text-[0.6875rem] px-2.5 py-1 rounded-full font-medium"
           style={{
             backgroundColor: "var(--status-warning-muted)",
             color: "var(--status-warning)",
@@ -609,7 +609,7 @@ function RecoveryBadges({
       )}
       {lastAttemptFailed && (
         <span
-          className="text-[11px] px-2.5 py-1 rounded-full font-medium"
+          className="text-[0.6875rem] px-2.5 py-1 rounded-full font-medium"
           style={{
             backgroundColor: "var(--status-error-muted)",
             color: "var(--status-error)",
@@ -646,7 +646,7 @@ function ActionButtons({
         data-testid="retry-merge-button"
         onClick={onRetry}
         disabled={isProcessing}
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
           backgroundColor: "var(--accent-primary)",
@@ -664,7 +664,7 @@ function ActionButtons({
           data-testid="retry-skip-validation-button"
           onClick={onRetrySkipValidation}
           disabled={isProcessing}
-          className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+          className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
           style={{
             color: "white",
             backgroundColor: statusTint("warning", 85),
@@ -682,7 +682,7 @@ function ActionButtons({
         data-testid="resolve-merge-button"
         onClick={onResolve}
         disabled={isProcessing}
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
           backgroundColor: "var(--status-success)",
@@ -699,7 +699,7 @@ function ActionButtons({
         data-testid="cancel-task-button"
         onClick={onCancel}
         disabled={isProcessing}
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
           backgroundColor: "#ff4545",
@@ -891,9 +891,9 @@ export function MergeIncompleteTaskDetail({
             <DetailCard variant="warning">
               <div className="flex items-center gap-2">
                 <GitPullRequestClosed className="w-4 h-4" style={{ color: "var(--status-warning)" }} />
-                <span className="text-[13px] text-text-primary/70">PR closed without merging</span>
+                <span className="text-[0.8125rem] text-text-primary/70">PR closed without merging</span>
                 {planBranch.prNumber != null && (
-                  <span className="text-[12px] text-text-primary/40">PR #{planBranch.prNumber}</span>
+                  <span className="text-[0.75rem] text-text-primary/40">PR #{planBranch.prNumber}</span>
                 )}
               </div>
             </DetailCard>
@@ -901,7 +901,7 @@ export function MergeIncompleteTaskDetail({
             <DetailCard variant="error">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4" style={{ color: "var(--status-error)" }} />
-                <span className="text-[13px] text-text-primary/70">
+                <span className="text-[0.8125rem] text-text-primary/70">
                   PR operation failed (PR #{planBranch.prNumber})
                 </span>
               </div>
@@ -910,7 +910,7 @@ export function MergeIncompleteTaskDetail({
             <DetailCard variant="error">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4" style={{ color: "var(--status-error)" }} />
-                <span className="text-[13px] text-text-primary/70">PR operation failed</span>
+                <span className="text-[0.8125rem] text-text-primary/70">PR operation failed</span>
               </div>
             </DetailCard>
           )}
@@ -936,7 +936,7 @@ export function MergeIncompleteTaskDetail({
           </>
         ) : (
           <DetailCard>
-            <p className="text-[13px] text-text-primary/50 italic">
+            <p className="text-[0.8125rem] text-text-primary/50 italic">
               No recorded recovery attempts for this task.
             </p>
           </DetailCard>
@@ -977,7 +977,7 @@ export function MergeIncompleteTaskDetail({
       {/* Error Display */}
       {error && (
         <div
-          className="p-3 rounded-lg text-[13px]"
+          className="p-3 rounded-lg text-[0.8125rem]"
           style={{
             backgroundColor: statusTint("error", 12),
             color: "var(--status-error)",

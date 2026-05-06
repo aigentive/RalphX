@@ -62,16 +62,16 @@ function TemplateVariablesInfo() {
           }}
         >
           <div className="flex items-start gap-2">
-            <code className="text-[11px] text-[var(--accent-primary)] whitespace-nowrap">{"{project_root}"}</code>
-            <span className="text-[11px] text-[var(--text-muted)]">Project working directory</span>
+            <code className="text-[0.6875rem] text-[var(--accent-primary)] whitespace-nowrap">{"{project_root}"}</code>
+            <span className="text-[0.6875rem] text-[var(--text-muted)]">Project working directory</span>
           </div>
           <div className="flex items-start gap-2">
-            <code className="text-[11px] text-[var(--accent-primary)] whitespace-nowrap">{"{worktree_path}"}</code>
-            <span className="text-[11px] text-[var(--text-muted)]">Task worktree directory (when available)</span>
+            <code className="text-[0.6875rem] text-[var(--accent-primary)] whitespace-nowrap">{"{worktree_path}"}</code>
+            <span className="text-[0.6875rem] text-[var(--text-muted)]">Task worktree directory (when available)</span>
           </div>
           <div className="flex items-start gap-2">
-            <code className="text-[11px] text-[var(--accent-primary)] whitespace-nowrap">{"{task_branch}"}</code>
-            <span className="text-[11px] text-[var(--text-muted)]">Task branch name (when available)</span>
+            <code className="text-[0.6875rem] text-[var(--accent-primary)] whitespace-nowrap">{"{task_branch}"}</code>
+            <span className="text-[0.6875rem] text-[var(--text-muted)]">Task branch name (when available)</span>
           </div>
         </div>
       )}

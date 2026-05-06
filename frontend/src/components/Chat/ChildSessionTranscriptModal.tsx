@@ -88,7 +88,7 @@ export function ChildSessionTranscriptModal({
               <span>Ideation conversation</span>
               <span
                 className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                  "rounded-full px-2 py-0.5 text-[0.6875rem] font-medium",
                   status === "Running"
                     ? "bg-[var(--status-success-muted)] text-[var(--status-success)]"
                     : "bg-[var(--bg-hover)] text-[var(--text-muted)]",

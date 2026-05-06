@@ -37,7 +37,8 @@ import {
   COLLAPSED_TIER_HEIGHT,
 } from "../groups/groupBuilder";
 import { getPlanGroupNodeId, getTierGroupNodeId } from "../groups/groupTypes";
-import { NODE_WIDTH, NODE_HEIGHT, COMPACT_NODE_WIDTH, COMPACT_NODE_HEIGHT } from "../nodes/nodeStyles";
+import { getScaledNodeDimensions } from "../nodes/nodeStyles";
+import { useThemeStore } from "@/stores/themeStore";
 import type { NodeMode } from "../controls/GraphControls";
 
 // ============================================================================
@@ -472,6 +473,7 @@ function computeLayoutWithCache(
   onToggleTierCollapse: ((tierGroupId: string) => void) | undefined,
   onToggleAllTiers: ((planArtifactId: string, action: "expand" | "collapse") => void) | undefined,
   cache: React.MutableRefObject<CachedLayout | null>,
+  scaledDims: { nodeWidth: number; nodeHeight: number; compactNodeWidth: number; compactNodeHeight: number },
   projectId?: string,
   onNavigateToTask?: (taskId: string) => void,
   onCancelAll?: (sessionId: string) => void,
@@ -481,13 +483,13 @@ function computeLayoutWithCache(
   const getNodeDimensions = (nodeId: string) => {
     const mode = config.nodeModeLookup?.get(nodeId) ?? "standard";
     return {
-      width: mode === "compact" ? COMPACT_NODE_WIDTH : NODE_WIDTH,
-      height: mode === "compact" ? COMPACT_NODE_HEIGHT : NODE_HEIGHT,
+      width: mode === "compact" ? scaledDims.compactNodeWidth : scaledDims.nodeWidth,
+      height: mode === "compact" ? scaledDims.compactNodeHeight : scaledDims.nodeHeight,
     };
   };
   // Default dimensions for group bounding box calculations (use standard as safe fallback)
-  const defaultNodeWidth = NODE_WIDTH;
-  const defaultNodeHeight = NODE_HEIGHT;
+  const defaultNodeWidth = scaledDims.nodeWidth;
+  const defaultNodeHeight = scaledDims.nodeHeight;
 
   const planGroupingEnabled = grouping.byPlan;
   const includeUncategorized = grouping.showUncategorized || !planGroupingEnabled;
@@ -570,6 +572,7 @@ function computeLayoutWithCache(
       allNodeIds,
       allEdgePairs,
       config,
+      scaledDims,
       layoutPlanGroups,
       layoutTierGroups,
       collapsedPlanIds,
@@ -1093,11 +1096,23 @@ export function useTaskGraphLayout(
   // Layout cache - persists across renders, reused when graph structure unchanged
   const layoutCache = useRef<CachedLayout | null>(null);
 
+  // Scale node dimensions with the active font-scale toggle so 110%/125%
+  // text doesn't overflow the fixed-pixel React Flow nodes.
+  const fontScale = useThemeStore((s) => s.fontScale);
+  const scaledDims = useMemo(() => getScaledNodeDimensions(fontScale), [fontScale]);
+  const lastFontScale = useRef(fontScale);
+
   // Compute layout using cache when structure is unchanged
   /* eslint-disable react-hooks/refs -- layoutCache is intentionally read during render to reuse structural dagre output and avoid graph relayout churn */
   const layout = useMemo(() => {
     if (graphNodes.length === 0) {
       return { nodes: [], edges: [], groupNodes: [] };
+    }
+    // Invalidate the structural cache when font scale changes so positions
+    // get recomputed against the new node dimensions.
+    if (lastFontScale.current !== fontScale) {
+      layoutCache.current = null;
+      lastFontScale.current = fontScale;
     }
     return computeLayoutWithCache(
       graphNodes,
@@ -1112,6 +1127,7 @@ export function useTaskGraphLayout(
       onToggleTierCollapse,
       onToggleAllTiers,
       layoutCache,
+      scaledDims,
       projectId,
       onNavigateToTask,
       onCancelAll,
@@ -1129,6 +1145,8 @@ export function useTaskGraphLayout(
     onToggleCollapse,
     onToggleTierCollapse,
     onToggleAllTiers,
+    scaledDims,
+    fontScale,
     projectId,
     onNavigateToTask,
     onCancelAll,
@@ -1223,6 +1241,7 @@ function computePositions(
   nodeIds: string[],
   edges: { source: string; target: string }[],
   config: LayoutConfig,
+  scaledDims: { nodeWidth: number; nodeHeight: number; compactNodeWidth: number; compactNodeHeight: number },
   planGroups: LayoutPlanGroup[] = [],
   tierGroups: LayoutTierGroup[] = [],
   collapsedPlanIds: Set<string> = new Set(),
@@ -1234,8 +1253,8 @@ function computePositions(
   const getNodeDims = (id: string) => {
     const mode = nodeModeLookup?.get(id) ?? "standard";
     return {
-      width: mode === "compact" ? COMPACT_NODE_WIDTH : NODE_WIDTH,
-      height: mode === "compact" ? COMPACT_NODE_HEIGHT : NODE_HEIGHT,
+      width: mode === "compact" ? scaledDims.compactNodeWidth : scaledDims.nodeWidth,
+      height: mode === "compact" ? scaledDims.compactNodeHeight : scaledDims.nodeHeight,
     };
   };
 

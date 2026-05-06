@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   GIT_AUTH_STARTUP_TOAST_DURATION,
@@ -75,17 +75,11 @@ describe("hasStartupGitAuthIssue", () => {
 
 describe("createStartupGitAuthToastOptions", () => {
   it("keeps git auth startup warnings visible until the user acts", () => {
-    const openModal = vi.fn();
-    const options = createStartupGitAuthToastOptions("project-1", openModal);
+    const options = createStartupGitAuthToastOptions("project-1");
 
     expect(options.duration).toBe(GIT_AUTH_STARTUP_TOAST_DURATION);
     expect(options.duration).toBe(Infinity);
     expect(options.id).toBe("git-auth-startup:project-1");
     expect(options.className).toBe("git-auth-startup-toast");
-    expect(options.classNames?.actionButton).toBe("git-auth-startup-toast-action");
-
-    options.action.onClick();
-
-    expect(openModal).toHaveBeenCalledWith("settings", { section: "repository" });
   });
 });

@@ -62,7 +62,7 @@ export function IdeationSessionCard({
           {session.title}
         </span>
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded shrink-0"
           style={{
             color: "var(--accent-primary)",
             backgroundColor: "var(--accent-muted)",
@@ -74,7 +74,7 @@ export function IdeationSessionCard({
 
       {/* Line 2: Elapsed · Team mode */}
       <div
-        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[11px] min-w-0"
+        className="flex items-center gap-1.5 mt-0.5 pl-[22px] text-[0.6875rem] min-w-0"
         style={{ color: "var(--text-muted)" }}
       >
         <MessageSquare className="w-3 h-3 shrink-0" style={{ color: "var(--text-muted)" }} />
@@ -87,7 +87,7 @@ export function IdeationSessionCard({
               ·
             </span>
             <span
-              className="text-[10px] font-medium px-1 rounded shrink-0"
+              className="text-[0.625rem] font-medium px-1 rounded shrink-0"
               style={{
                 color: "var(--text-secondary)",
                 backgroundColor: "var(--overlay-moderate)",

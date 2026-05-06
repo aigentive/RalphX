@@ -76,18 +76,18 @@ function HistoricalLensCard({ viewMode }: { viewMode: TaskDetailViewMode }) {
           <div className="flex items-center gap-2">
             <Clock className="w-4 h-4 text-text-primary/45 shrink-0" />
             <div className="min-w-0">
-              <div className="text-[13px] font-medium text-text-primary/80">
+              <div className="text-[0.8125rem] font-medium text-text-primary/80">
                 Historical State
               </div>
-              <div className="text-[12px] text-text-primary/45">
+              <div className="text-[0.75rem] text-text-primary/45">
                 {titleCaseStatus(viewMode.status)}
               </div>
-              <div className="text-[12px] text-text-primary/35">
+              <div className="text-[0.75rem] text-text-primary/35">
                 {formatTimestamp(viewMode.timestamp)}
               </div>
             </div>
           </div>
-          <p className="text-[12px] leading-relaxed text-text-primary/45">
+          <p className="text-[0.75rem] leading-relaxed text-text-primary/45">
             Branch and merge values show the latest task context.
           </p>
         </div>
@@ -109,7 +109,7 @@ function MergeCard({
             <div className="flex items-center gap-2">
               <GitBranch className="w-4 h-4 text-text-primary/40 shrink-0" />
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wider text-text-primary/35">
+                <div className="text-[0.6875rem] uppercase tracking-wider text-text-primary/35">
                   Target
                 </div>
                 <BranchBadge branch={merge.target} variant="target" size="sm" />
@@ -120,17 +120,17 @@ function MergeCard({
             <div className="flex items-center gap-2">
               <GitCommit className="w-4 h-4 text-text-primary/40 shrink-0" />
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-text-primary/35">
+                <div className="text-[0.6875rem] uppercase tracking-wider text-text-primary/35">
                   Commit
                 </div>
-                <span className="text-[12px] font-mono text-text-primary/70">
+                <span className="text-[0.75rem] font-mono text-text-primary/70">
                   {shortSha(merge.commitSha)}
                 </span>
               </div>
             </div>
           )}
           {merge.mergedAt && (
-            <div className="text-[12px] text-text-primary/40">
+            <div className="text-[0.75rem] text-text-primary/40">
               Merged {formatTimestamp(merge.mergedAt)}
             </div>
           )}

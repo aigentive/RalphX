@@ -81,10 +81,10 @@ function WorkSummaryCard({
             <Clock className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
           </div>
           <div>
-            <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+            <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
               Submitted
             </span>
-            <span className="text-[13px] text-text-primary/70 font-medium">
+            <span className="text-[0.8125rem] text-text-primary/70 font-medium">
               {formatRelativeTime(submittedAt)}
             </span>
           </div>
@@ -112,11 +112,11 @@ function WorkSummaryCard({
             />
           </div>
           <div>
-            <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+            <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
               Steps
             </span>
             <span
-              className="text-[13px] font-medium"
+              className="text-[0.8125rem] font-medium"
               style={{ color: allComplete ? "var(--status-success)" : withAlpha("var(--text-primary)", 70) }}
             >
               {totalSteps > 0

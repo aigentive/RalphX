@@ -29,8 +29,8 @@ const VARIANT_COLORS: Record<BranchVariant, string> = {
 };
 
 const SIZE_CONFIG: Record<BranchSize, { fontSize: string }> = {
-  sm: { fontSize: "11px" },
-  md: { fontSize: "13px" },
+  sm: { fontSize: "0.6875rem" },
+  md: { fontSize: "0.8125rem" },
 };
 
 export function BranchBadge({

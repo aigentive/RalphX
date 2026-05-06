@@ -65,7 +65,7 @@ export function ThemeSelector({
     >
       <button
         type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[12.5px] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
         style={{
           backgroundColor: open ? "var(--bg-hover)" : "var(--bg-elevated)",
           borderColor: open ? "var(--border-strong)" : "var(--border-default)",
@@ -112,7 +112,7 @@ export function ThemeSelector({
                   setTheme(option.value);
                   setOpen(false);
                 }}
-                className="inline-flex items-center gap-2.5 rounded-[6px] px-2 py-1.5 text-left text-[12.5px] font-medium transition-colors duration-150 outline-none hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+                className="inline-flex items-center gap-2.5 rounded-[6px] px-2 py-1.5 text-left text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
                 style={{ color: isActive ? "var(--text-primary)" : "var(--text-secondary)" }}
                 data-testid={`theme-option-${option.value}`}
               >

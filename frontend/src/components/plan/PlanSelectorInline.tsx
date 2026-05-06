@@ -70,7 +70,7 @@ export function PlanSelectorInline({
       size="sm"
       onClick={handleOpenPalette}
       className={cn(
-        "h-[30px] min-w-0 max-w-[380px] gap-2 rounded-[6px] px-2.5 text-[12.5px] font-medium shadow-none",
+        "h-[30px] min-w-0 max-w-[380px] gap-2 rounded-[6px] px-2.5 text-[0.7812rem] font-medium shadow-none",
         !hasActivePlan && "text-muted-foreground"
       )}
       style={{
@@ -92,7 +92,7 @@ export function PlanSelectorInline({
               </span>
               {activePlan?.taskStats && (
                 <span
-                  className="shrink-0 text-[11px] font-medium"
+                  className="shrink-0 text-[0.6875rem] font-medium"
                   style={{
                     color: "var(--text-muted)",
                     fontFamily:

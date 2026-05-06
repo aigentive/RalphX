@@ -132,7 +132,7 @@ export function AgentsSidebar({
       >
         <button
           type="button"
-          className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2 pr-2.5 text-[12.5px] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2 pr-2.5 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
           onClick={onCreateAgent}
           aria-label="New agent"
           data-testid="agents-new-agent"
@@ -214,7 +214,7 @@ export function AgentsSidebar({
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Search"
-              className="w-full h-7 pl-8 pr-8 text-[12px] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
+              className="w-full h-7 pl-8 pr-8 text-[0.75rem] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
               style={{
                 color: "var(--text-primary)",
                 caretColor: "var(--accent-primary)",
@@ -291,7 +291,7 @@ export function AgentsSidebar({
           type="button"
           onClick={onCreateProject}
           data-testid="agents-add-project"
-          className="inline-flex w-full items-center justify-center gap-2 rounded-[6px] border border-dashed px-3 py-2 text-[12.5px] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-[6px] border border-dashed px-3 py-2 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
           style={{
             color: "var(--text-muted)",
             borderColor: "var(--border-strong)",
@@ -406,7 +406,7 @@ function ProjectSessionGroup({
     <div className="my-1 flex flex-col gap-0.5" data-testid={`agents-project-${project.id}`}>
         <div className="group/project">
           <div
-            className="agents-project-row relative grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[13.5px] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] hover:bg-[var(--bg-elevated)]"
+            className="agents-project-row relative grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] hover:bg-[var(--bg-elevated)]"
             data-testid={`agents-project-row-${project.id}`}
             aria-current={isCurrentProject ? "true" : undefined}
           >
@@ -437,14 +437,14 @@ function ProjectSessionGroup({
             </button>
             {totalConversationCount > 0 && (
               <span
-                className="agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[10.5px] leading-[1.6]"
+                className="agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6]"
               >
                 {totalConversationCount}
               </span>
             )}
             {totalConversationCount === 0 && !expanded && activeRuntimeCount > 0 && (
               <span
-                className="grid min-w-[18px] place-items-center rounded-full px-1.5 text-[10.5px] font-medium leading-[1.6]"
+                className="grid min-w-[18px] place-items-center rounded-full px-1.5 text-[0.6562rem] font-medium leading-[1.6]"
                 style={{ color: "var(--accent-primary)", background: withAlpha("var(--accent-primary)", 15) }}
               >
                 {activeRuntimeCount}
@@ -643,12 +643,12 @@ function ProjectSessionGroup({
                       >
                         <span className="min-w-0 flex flex-col gap-px">
                           <span
-                            className="agents-session-title min-w-0 truncate text-[13px] leading-[1.35] tracking-[-0.005em]"
+                            className="agents-session-title min-w-0 truncate text-[0.8125rem] leading-[1.35] tracking-[-0.005em]"
                           >
                             {title}
                           </span>
                           <span
-                            className="agents-session-meta min-w-0 truncate text-[11px] leading-[1.35]"
+                            className="agents-session-meta min-w-0 truncate text-[0.6875rem] leading-[1.35]"
                             style={{
                               fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
                             }}
@@ -715,7 +715,7 @@ function ProjectSessionGroup({
                   <div className="py-0.5">
                     <button
                       type="button"
-                      className="inline-flex items-center pl-[26px] text-[10.75px] font-medium transition-colors"
+                      className="inline-flex items-center pl-[26px] text-[0.6719rem] font-medium transition-colors"
                       onClick={() => void conversations.fetchNextPage()}
                       disabled={conversations.isFetchingNextPage}
                       data-testid={`agents-load-more-${project.id}`}
@@ -730,7 +730,7 @@ function ProjectSessionGroup({
                 )}
 
                 {conversations.isLoading && (
-                  <div className="py-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                     Loading...
                   </div>
                 )}
@@ -757,18 +757,23 @@ function StaticRecentRuns() {
     <div
       className="shrink-0 border-t px-3 pb-1.5 pt-3"
       data-testid="agents-static-recent"
-      style={{ borderColor: "var(--app-sidebar-border)" }}
+      aria-hidden="true"
+      title="Coming soon"
+      style={{
+        borderColor: "var(--app-sidebar-border)",
+        display: "none",
+      }}
     >
       <div className="mb-2 flex items-center justify-between px-1">
         <span
-          className="text-[10.5px] font-semibold uppercase leading-none tracking-[0.12em]"
+          className="text-[0.6562rem] font-semibold uppercase leading-none tracking-[0.12em]"
           style={{ color: "var(--text-muted)" }}
         >
           Recent
         </span>
         <button
           type="button"
-          className="rounded-[4px] px-1 text-[11px] font-medium leading-none outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          className="rounded-[4px] px-1 text-[0.6875rem] font-medium leading-none outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
           style={{ color: "var(--text-muted)", boxShadow: "none" }}
         >
           View all
@@ -788,7 +793,7 @@ function StaticRecentRuns() {
             />
             <span className="min-w-0">
               <span
-                className="block whitespace-normal break-words text-[12.5px] font-medium leading-[1.4] [text-overflow:clip]"
+                className="block whitespace-normal break-words text-[0.7812rem] font-medium leading-[1.4] [text-overflow:clip]"
                 style={{
                   overflow: "visible",
                   textOverflow: "clip",
@@ -799,7 +804,7 @@ function StaticRecentRuns() {
                 {run.title}
               </span>
               <span
-                className="block truncate text-[10.5px] leading-[1.4]"
+                className="block truncate text-[0.6562rem] leading-[1.4]"
                 style={{
                   color: "var(--text-muted)",
                   fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",

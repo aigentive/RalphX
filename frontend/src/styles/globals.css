@@ -249,12 +249,40 @@ a:not([class*="no-underline"]):hover {
   font-weight: 500;
 }
 
+/* Ideation PlanItem — hover/menu-open use CSS so they clear automatically
+   when selection moves to another item. Inline-style hover painting got
+   stuck because clicking didn't trigger a mouseleave. */
+.plan-item-row:hover:not([aria-current="true"]):not([data-menu-open="true"]) {
+  background-color: var(--overlay-faint);
+}
+.plan-item-row[data-menu-open="true"]:not([aria-current="true"]) {
+  background-color: var(--overlay-faint);
+}
+
 .agents-session-meta {
   color: var(--text-muted);
 }
 
 .agents-session-runtime-label {
   color: var(--accent-primary);
+}
+
+/* Sonner toasts — force rem-based font sizing so the font-scale toggle
+   (100% / 110% / 125%) flows through to toast text + buttons. Sonner's
+   defaults are pixel-based and bypass the html font-size scale. */
+[data-sonner-toaster],
+[data-sonner-toast] {
+  font-size: 0.8125rem !important;
+}
+[data-sonner-toast] [data-title] {
+  font-size: 0.8125rem !important;
+}
+[data-sonner-toast] [data-description] {
+  font-size: 0.75rem !important;
+}
+[data-sonner-toast] [data-button],
+[data-sonner-toast] [data-cancel] {
+  font-size: 0.75rem !important;
 }
 
 .git-auth-startup-toast {
@@ -353,7 +381,7 @@ a:not([class*="no-underline"]):hover {
   background-color: var(--bg-surface) !important;
   border-right: 1px solid var(--border-subtle) !important;
   padding: 0 8px !important;
-  font-size: 12px !important;
+  font-size: 0.75rem !important;
   user-select: none;
 }
 .diff-viewer-container .diff-view-line {
@@ -361,7 +389,7 @@ a:not([class*="no-underline"]):hover {
 }
 .diff-viewer-container .diff-view-line-content {
   color: var(--text-primary) !important;
-  font-size: 13px !important;
+  font-size: 0.8125rem !important;
   line-height: 1.5 !important;
   padding: 0 16px !important;
 }
@@ -394,7 +422,7 @@ a:not([class*="no-underline"]):hover {
 .diff-viewer-container .diff-view-hunk-header {
   background-color: var(--bg-elevated) !important;
   color: var(--text-secondary) !important;
-  font-size: 12px !important;
+  font-size: 0.75rem !important;
   padding: 8px 16px !important;
   border-top: 1px solid var(--border-subtle) !important;
   border-bottom: 1px solid var(--border-subtle) !important;
@@ -624,7 +652,7 @@ a:not([class*="no-underline"]):hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .settings-modal__crumbs .lbl { color: var(--text-muted); }
@@ -676,7 +704,7 @@ a:not([class*="no-underline"]):hover {
 }
 
 .settings-nav__label {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: .14em;
   text-transform: uppercase;
@@ -692,7 +720,7 @@ a:not([class*="no-underline"]):hover {
   border-radius: 6px;
   border: 1px solid transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-align: left;
   cursor: pointer;
   transition: background-color 120ms cubic-bezier(.2,.8,.2,1), color 120ms cubic-bezier(.2,.8,.2,1), border-color 120ms cubic-bezier(.2,.8,.2,1);
@@ -762,14 +790,14 @@ a:not([class*="no-underline"]):hover {
 }
 
 .settings-pane-head__title {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -.005em;
 }
 
 .settings-pane-head__sub {
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   color: var(--text-muted);
   margin-top: 2px;
 }
@@ -788,7 +816,7 @@ a:not([class*="no-underline"]):hover {
 }
 
 .settings-section__label {
-  font-size: 10.5px;
+  font-size: 0.6562rem;
   font-weight: 600;
   letter-spacing: .14em;
   text-transform: uppercase;
@@ -796,7 +824,7 @@ a:not([class*="no-underline"]):hover {
 }
 
 .settings-section__chip {
-  font-size: 10px;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: .12em;
   text-transform: uppercase;
@@ -822,13 +850,13 @@ a:not([class*="no-underline"]):hover {
 }
 
 .settings-row__label {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: var(--text-primary);
 }
 
 .settings-row__help {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin-top: 2px;
 }
@@ -848,7 +876,7 @@ a:not([class*="no-underline"]):hover {
   border: 1px solid var(--dialog-control-border) !important;
   border-radius: 6px;
   color: var(--text-primary);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
   font-variant-numeric: tabular-nums;
   letter-spacing: -.005em;
@@ -896,7 +924,7 @@ a:not([class*="no-underline"]):hover {
   padding: 0 12px;
   border-radius: 6px;
   border: 1px solid var(--dialog-control-border) !important;
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   font-weight: 500;
   box-shadow: none !important;
 }
@@ -932,7 +960,7 @@ a:not([class*="no-underline"]):hover {
 
 .settings-readonly-value {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   color: var(--text-secondary);
   letter-spacing: -.005em;
   text-align: right;
@@ -947,7 +975,7 @@ a:not([class*="no-underline"]):hover {
   border: 1px solid var(--dialog-warn-border);
   border-radius: 999px;
   color: var(--dialog-warn);
-  font-size: 12px;
+  font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: -.005em;
 }
@@ -1008,20 +1036,20 @@ a:not([class*="no-underline"]):hover {
 }
 
 .settings-diag-card__title {
-  font-size: 13px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: -.005em;
 }
 
 .settings-diag-card__sub {
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin-top: 1px;
 }
 
 .settings-diag-card__body {
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   color: var(--text-secondary);
   line-height: 1.5;
   display: flex;

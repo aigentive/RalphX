@@ -178,7 +178,7 @@ export function TaskPickerDialog({
                     </div>
                   )}
                   <div
-                    className="text-[10px] mt-1 uppercase tracking-wide"
+                    className="text-[0.625rem] mt-1 uppercase tracking-wide"
                     style={{ color: "var(--text-muted)", opacity: 0.7 }}
                   >
                     {task.category}

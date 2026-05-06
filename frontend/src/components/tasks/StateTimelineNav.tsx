@@ -162,7 +162,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
 
           {/* Label */}
           <span
-            className="text-[11px] font-semibold tracking-tight transition-colors duration-200"
+            className="text-[0.6875rem] font-semibold tracking-tight transition-colors duration-200"
             style={{
               color: isActive ? colorRef : withAlpha("var(--text-primary)", 45),
             }}
@@ -174,7 +174,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
       <TooltipContent
         side="bottom"
         sideOffset={8}
-        className="px-3 py-1.5 text-[11px] font-medium rounded-lg"
+        className="px-3 py-1.5 text-[0.6875rem] font-medium rounded-lg"
         style={{
           backgroundColor: "var(--bg-elevated)",
           backdropFilter: "blur(20px)",
@@ -192,7 +192,7 @@ function TimelineBadge({ entry, isSelected, onClick }: TimelineBadgeProps) {
           <span>{formatRelativeTime(entry.timestamp)}</span>
           {entry.isCurrent && (
             <span
-              className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase"
+              className="px-1.5 py-0.5 rounded text-[0.5625rem] font-bold uppercase"
               style={{
                 backgroundColor: bgRef,
                 color: colorRef,
@@ -361,7 +361,7 @@ export function StateTimelineNav({
         className="flex items-center gap-2.5 px-4 py-3 text-text-primary/40"
       >
         <Loader2 className="w-4 h-4 animate-spin" />
-        <span className="text-[11px] font-medium">Loading history...</span>
+        <span className="text-[0.6875rem] font-medium">Loading history...</span>
       </div>
     );
   }
@@ -371,7 +371,7 @@ export function StateTimelineNav({
     return (
       <div
         data-testid="timeline-error"
-        className="flex items-center gap-2 px-4 py-3 text-[11px] font-medium"
+        className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] font-medium"
         style={{ color: "var(--status-error)" }}
       >
         <History className="w-4 h-4" />
@@ -412,7 +412,7 @@ export function StateTimelineNav({
           style={{ borderRight: "1px solid var(--border-subtle)" }}
         >
           <History className="w-4 h-4 text-text-primary/35" />
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-text-primary/35">
+          <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-text-primary/35">
             History
           </span>
         </div>
@@ -449,12 +449,12 @@ export function StateTimelineNav({
             className="ml-auto pl-3 flex items-center gap-2"
             style={{ borderLeft: "1px solid var(--border-subtle)" }}
           >
-            <span className="text-[10px] font-medium text-text-primary/40">
+            <span className="text-[0.625rem] font-medium text-text-primary/40">
               Viewing past state
             </span>
             <button
               onClick={() => onStateSelect(null)}
-              className="px-2 py-1 rounded-md text-[10px] font-semibold transition-colors"
+              className="px-2 py-1 rounded-md text-[0.625rem] font-semibold transition-colors"
               style={{
                 backgroundColor: "var(--accent-muted)",
                 color: "var(--accent-primary)",

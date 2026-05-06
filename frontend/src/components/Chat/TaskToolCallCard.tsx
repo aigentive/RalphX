@@ -231,7 +231,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
         {/* Agent-specific: isolation badge */}
         {isAgentCall && taskArgs.isolation && (
           <span
-            className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0"
+            className="text-[0.625rem] px-1.5 py-0.5 rounded flex-shrink-0"
             style={{
               backgroundColor: "var(--status-info-muted)",
               color: "var(--status-info)",
@@ -244,7 +244,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
         {/* Agent-specific: background indicator */}
         {isAgentCall && taskArgs.run_in_background && (
           <span
-            className="text-[10px] px-1.5 py-0.5 rounded flex-shrink-0"
+            className="text-[0.625rem] px-1.5 py-0.5 rounded flex-shrink-0"
             style={{
               backgroundColor: withAlpha("var(--accent-primary)", 12),
               color: "var(--accent-primary)",
@@ -267,7 +267,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
           style={{ paddingLeft: "2.25rem" /* align under title, past chevron+bot icons */ }}
         >
           <span
-            className="text-[11px] truncate block"
+            className="text-[0.6875rem] truncate block"
             style={{ color: "var(--text-muted)" }}
           >
             {subtitle}
@@ -317,7 +317,7 @@ export const TaskToolCallCard = React.memo(function TaskToolCallCard({
           {/* Error message */}
           {hasError && toolCall.error && (
             <pre
-              className="text-[11px] px-2 py-1.5 rounded overflow-x-auto max-h-48"
+              className="text-[0.6875rem] px-2 py-1.5 rounded overflow-x-auto max-h-48"
               style={{
                 backgroundColor: "var(--status-error-muted)",
                 color: "var(--status-error)",

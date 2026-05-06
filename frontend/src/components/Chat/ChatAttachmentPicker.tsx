@@ -260,7 +260,7 @@ export function ChatAttachmentPicker({
               border: "2px dashed var(--accent-primary)",
             }}
           >
-            <span className="text-[13px] font-medium" style={{ color: "var(--accent-primary)" }}>
+            <span className="text-[0.8125rem] font-medium" style={{ color: "var(--accent-primary)" }}>
               Drop files here
             </span>
           </div>

@@ -381,7 +381,7 @@ export function AgentComposerSurface({
     }
     return (
       <div
-        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-medium"
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.625rem] font-medium"
         style={{ color: "var(--text-muted)" }}
       >
         <span>{shouldShowStop ? "Stop the active run" : "Press Enter to send"}</span>
@@ -417,7 +417,7 @@ export function AgentComposerSurface({
           onBlur={() => setIsFocused(false)}
           disabled={isReadOnly || (isSubmitting && !canQueue)}
           placeholder={effectivePlaceholder}
-          className="block min-h-[116px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[15px] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[16px]"
+          className="block min-h-[116px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"
           style={{
             color: "var(--text-primary)",
             boxShadow: "none",
@@ -498,7 +498,7 @@ export function AgentComposerSurface({
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button h-10 shrink-0 rounded-[12px] px-4 text-[12px] font-semibold tracking-[-0.01em]",
+                "agent-composer-action-button h-10 shrink-0 rounded-[12px] px-4 text-[0.75rem] font-semibold tracking-[-0.01em]",
                 shouldShowStop ? "min-w-[100px]" : "min-w-[118px]"
               )}
               style={{
@@ -606,7 +606,7 @@ function ComposerActionMenu({
           <button
             type="button"
             disabled={attachmentDisabled}
-            className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors disabled:opacity-50"
+            className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors disabled:opacity-50"
             style={{ color: "var(--text-primary)" }}
             onClick={() => {
               onOpenAttachmentPicker();
@@ -662,10 +662,10 @@ function ComposerModeChip({
         borderColor: "var(--form-border)",
       }}
     >
-      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+      <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
         Mode
       </span>
-      <span className="text-[13px] font-medium text-[var(--text-primary)]">
+      <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
         {activeOption?.label ?? "—"}
       </span>
     </button>
@@ -701,10 +701,10 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
           className="flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors disabled:opacity-50"
           style={triggerStyle}
         >
-          <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+          <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
             Chat
           </span>
-          <span className="flex items-center gap-1.5 text-[13px] font-medium">
+          <span className="flex items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
             <span>{activeOption?.label ?? "—"}</span>
           </span>
@@ -748,7 +748,7 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
                   : undefined
               }
               data-active={selected ? "true" : "false"}
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition-colors"
               style={optionStyle}
               onMouseEnter={(e) => {
                 if (!selected) {
@@ -784,7 +784,7 @@ function ComposerModeMenuSection({
 }) {
   return (
     <div className="py-1">
-      <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+      <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
         Mode
       </div>
       <div className="space-y-1">
@@ -809,11 +809,11 @@ function ComposerModeMenuSection({
                 {isSelected && <Check className="h-4 w-4 text-[var(--accent-primary)]" />}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-medium text-[var(--text-primary)]">
+                <span className="block text-[0.8125rem] font-medium text-[var(--text-primary)]">
                   {option.label}
                 </span>
                 {option.description && (
-                  <span className="mt-0.5 block text-[11px] leading-snug text-[var(--text-muted)]">
+                  <span className="mt-0.5 block text-[0.6875rem] leading-snug text-[var(--text-muted)]">
                     {option.description}
                   </span>
                 )}
@@ -865,7 +865,7 @@ function ComposerRuntimePill({
           }}
         >
           <Cpu className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
-          <span className="truncate text-[13px] font-medium text-[var(--text-primary)]">
+          <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
             <span className="text-[var(--text-secondary)]">{providerLabel}</span>
             <span className="px-1 text-[var(--text-muted)]">·</span>
             <span>{modelLabel}</span>
@@ -933,7 +933,7 @@ function ComposerOptionList({
     <div className="py-1">
       <div className="flex items-center gap-1.5 px-2 py-1">
         <Icon className="h-3 w-3 text-[var(--text-muted)]" />
-        <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+        <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
           {label}
         </span>
       </div>
@@ -947,7 +947,7 @@ function ComposerOptionList({
               disabled={disabled}
               data-testid={testId ? `${testId}-${option.id}` : undefined}
               className={cn(
-                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[12px] transition-colors disabled:opacity-50",
+                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[0.75rem] transition-colors disabled:opacity-50",
                 isSelected ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--bg-hover)]"
               )}
               onClick={() => onValueChange(option.id)}
@@ -988,7 +988,7 @@ export function AgentComposerProjectCreateButton({
     <Button
       type="button"
       variant="ghost"
-      className="h-7 shrink-0 rounded-[10px] px-2 text-[10px] font-medium"
+      className="h-7 shrink-0 rounded-[10px] px-2 text-[0.625rem] font-medium"
       style={{
         color: "var(--text-secondary)",
         background: "transparent",
@@ -1036,7 +1036,7 @@ export function AgentComposerProjectLine({
     <button
       type="button"
       className={cn(
-        "flex min-w-0 max-w-[min(100%,430px)] items-center gap-2 rounded-full px-2 py-1 text-[12px] transition-colors",
+        "flex min-w-0 max-w-[min(100%,430px)] items-center gap-2 rounded-full px-2 py-1 text-[0.75rem] transition-colors",
         !disabled && "hover:bg-[var(--bg-hover)]",
         "disabled:cursor-not-allowed disabled:opacity-60"
       )}
@@ -1047,7 +1047,7 @@ export function AgentComposerProjectLine({
       aria-label="Project"
     >
       <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-      <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.14em]">
+      <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-[0.14em]">
         Project
       </span>
       <span
@@ -1129,7 +1129,7 @@ export function AgentComposerProjectLine({
                         </span>
                         {option.description && option.description !== option.label && (
                           <span
-                            className="mt-0.5 block whitespace-normal break-all font-mono text-[10px] leading-snug"
+                            className="mt-0.5 block whitespace-normal break-all font-mono text-[0.625rem] leading-snug"
                             style={{ color: isSelected ? "currentColor" : "var(--text-muted)" }}
                           >
                             {option.description}

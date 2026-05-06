@@ -116,7 +116,7 @@ function InlineNotice({ tone, title, children }: InlineNoticeProps) {
   const { style, icon } = NOTICE_STYLES[tone];
   return (
     <div
-      className="settings-inline-notice flex items-start gap-2 rounded-md border px-3 py-2 text-[11px] leading-relaxed"
+      className="settings-inline-notice flex items-start gap-2 rounded-md border px-3 py-2 text-[0.6875rem] leading-relaxed"
       style={style}
     >
       {icon}
@@ -494,7 +494,7 @@ interface HarnessRowProps {
 
 function SummaryPill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+    <span className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[0.6875rem] text-[var(--text-secondary)]">
       {children}
     </span>
   );
@@ -560,7 +560,7 @@ function HarnessRow({
             )}
           </span>
           <div className="flex-1 min-w-0">
-            <span className="text-[15px] font-semibold text-[var(--text-primary)] leading-tight group-hover:text-[var(--accent-primary)] transition-colors">
+            <span className="text-[0.9375rem] font-semibold text-[var(--text-primary)] leading-tight group-hover:text-[var(--accent-primary)] transition-colors">
               {meta.label}
             </span>
             <p className="text-xs text-[var(--text-muted)] mt-1">
@@ -621,12 +621,12 @@ function HarnessRow({
               )}
             </>
           ) : (
-            <span className="text-[11px] text-[var(--text-muted)] italic">
+            <span className="text-[0.6875rem] text-[var(--text-muted)] italic">
               Inherited from global
             </span>
           )}
           <span
-            className={`ml-auto inline-flex items-center gap-1 text-[11px] ${
+            className={`ml-auto inline-flex items-center gap-1 text-[0.6875rem] ${
               showWarning
                 ? "text-[var(--warning)]"
                 : "text-[var(--status-success)]"
@@ -661,7 +661,7 @@ function HarnessRow({
               testId={`model-${lane.lane}`}
             />
             {showEffectiveModel && (
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[0.6875rem] text-[var(--text-muted)]">
                 Effective:{" "}
                 <span className="text-[var(--text-secondary)]">
                   {effectiveModel ?? "(harness default)"}
@@ -698,7 +698,7 @@ function HarnessRow({
               </SelectContent>
             </Select>
             {showEffectiveEffort && (
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[0.6875rem] text-[var(--text-muted)]">
                 Effective:{" "}
                 <span className="text-[var(--text-secondary)]">
                   {effortLabel(effectiveEffort)}
@@ -911,7 +911,7 @@ function HarnessSubsection({
           <button
             type="button"
             onClick={() => setAllExpanded(!allExpanded)}
-            className="shrink-0 text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--accent-primary)] transition-colors"
+            className="shrink-0 text-[0.6875rem] font-medium text-[var(--text-secondary)] hover:text-[var(--accent-primary)] transition-colors"
           >
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>

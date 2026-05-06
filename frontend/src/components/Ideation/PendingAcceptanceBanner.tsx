@@ -65,7 +65,7 @@ export function PendingAcceptanceBanner({ sessionId }: PendingAcceptanceBannerPr
           >
             <AlertTriangle className="w-3 h-3" style={{ color: "var(--status-warning)" }} />
           </div>
-          <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>
+          <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-primary)" }}>
             Plan pending your confirmation
           </span>
         </div>
@@ -75,7 +75,7 @@ export function PendingAcceptanceBanner({ sessionId }: PendingAcceptanceBannerPr
           <button
             onClick={handleReject}
             disabled={isLoading}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[0.6875rem] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{
               color: "var(--status-error)",
               border: "1px solid var(--status-error-border)",
@@ -100,7 +100,7 @@ export function PendingAcceptanceBanner({ sessionId }: PendingAcceptanceBannerPr
           <button
             onClick={handleAccept}
             disabled={isLoading}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[0.6875rem] font-semibold transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{
               color: "var(--text-on-accent)",
               background: accept.isPending ? withAlpha("var(--accent-primary)", 85) : "var(--accent-primary)",

@@ -84,7 +84,7 @@ export const CoordinatorPane = React.memo(function CoordinatorPane({
         className="flex-1 overflow-y-auto px-3 py-2 space-y-2"
       >
         {leadMessages.length === 0 ? (
-          <p className="text-[11px] text-center py-8" style={{ color: "var(--text-muted)" }}>
+          <p className="text-[0.6875rem] text-center py-8" style={{ color: "var(--text-muted)" }}>
             No messages yet
           </p>
         ) : (
@@ -94,23 +94,23 @@ export const CoordinatorPane = React.memo(function CoordinatorPane({
               <div key={msg.id} className="flex flex-col gap-0.5">
                 <div className="flex items-baseline gap-1.5">
                   <span
-                    className="text-[11px] font-medium"
+                    className="text-[0.6875rem] font-medium"
                     style={{ color: isFromLead ? "var(--accent-primary)" : "var(--text-secondary)" }}
                   >
                     {msg.from}
                   </span>
                   {msg.to && (
                     <>
-                      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>→</span>
-                      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{msg.to}</span>
+                      <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>→</span>
+                      <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>{msg.to}</span>
                     </>
                   )}
-                  <span className="text-[9px] ml-auto" style={{ color: "var(--text-muted)" }}>
+                  <span className="text-[0.5625rem] ml-auto" style={{ color: "var(--text-muted)" }}>
                     {formatTimestamp(msg.timestamp)}
                   </span>
                 </div>
                 <p
-                  className="text-[12px] leading-relaxed"
+                  className="text-[0.75rem] leading-relaxed"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   {msg.content}
@@ -135,7 +135,7 @@ export const CoordinatorPane = React.memo(function CoordinatorPane({
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={`Message ${team.leadName}...`}
-          className="flex-1 text-[12px] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
+          className="flex-1 text-[0.75rem] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
           style={{
             color: "var(--text-primary)",
             boxShadow: "none",
@@ -146,7 +146,7 @@ export const CoordinatorPane = React.memo(function CoordinatorPane({
           type="button"
           onClick={handleSend}
           disabled={!inputValue.trim() || !onSendMessage}
-          className="text-[11px] px-2 py-0.5 rounded disabled:opacity-30 transition-opacity"
+          className="text-[0.6875rem] px-2 py-0.5 rounded disabled:opacity-30 transition-opacity"
           style={{
             backgroundColor: "var(--accent-primary)",
             color: "white",

@@ -38,21 +38,21 @@ const BranchStatusIndicator = memo(function BranchStatusIndicator({
   switch (status) {
     case "active":
       return (
-        <span className="inline-flex items-center gap-1 text-[11px] text-[var(--status-success)]">
+        <span className="inline-flex items-center gap-1 text-[0.6875rem] text-[var(--status-success)]">
           <span className="w-1.5 h-1.5 rounded-full bg-[var(--status-success)]" />
           Active
         </span>
       );
     case "merged":
       return (
-        <span className="inline-flex items-center gap-1 text-[11px] text-[var(--status-info)]">
+        <span className="inline-flex items-center gap-1 text-[0.6875rem] text-[var(--status-info)]">
           <Check className="w-3 h-3" />
           Merged
         </span>
       );
     case "abandoned":
       return (
-        <span className="inline-flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
+        <span className="inline-flex items-center gap-1 text-[0.6875rem] text-[var(--text-muted)]">
           <X className="w-3 h-3" />
           Abandoned
         </span>
@@ -83,12 +83,12 @@ export const PlanGroupSettings = memo(function PlanGroupSettings({
         <div className="flex flex-col gap-2 pt-2 border-t border-[var(--border-subtle)]">
           {/* Branch name */}
           <div className="flex flex-col gap-0.5">
-            <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            <span className="text-[0.625rem] uppercase tracking-wider text-[var(--text-muted)]">
               Branch
             </span>
             <span
               className={cn(
-                "text-[11px] font-mono text-[var(--text-secondary)]",
+                "text-[0.6875rem] font-mono text-[var(--text-secondary)]",
                 "bg-[var(--bg-surface)] px-1.5 py-0.5 rounded"
               )}
             >
@@ -98,7 +98,7 @@ export const PlanGroupSettings = memo(function PlanGroupSettings({
 
           {/* Status */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            <span className="text-[0.625rem] uppercase tracking-wider text-[var(--text-muted)]">
               Status
             </span>
             <BranchStatusIndicator status={planBranch.status} />
@@ -106,10 +106,10 @@ export const PlanGroupSettings = memo(function PlanGroupSettings({
 
           {/* Source branch */}
           <div className="flex items-center justify-between">
-            <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            <span className="text-[0.625rem] uppercase tracking-wider text-[var(--text-muted)]">
               Source
             </span>
-            <span className="text-[11px] font-mono text-[var(--text-muted)]">
+            <span className="text-[0.6875rem] font-mono text-[var(--text-muted)]">
               {planBranch.sourceBranch}
             </span>
           </div>
@@ -117,10 +117,10 @@ export const PlanGroupSettings = memo(function PlanGroupSettings({
           {/* Merge target */}
           {planBranch.baseBranchOverride && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+              <span className="text-[0.625rem] uppercase tracking-wider text-[var(--text-muted)]">
                 Merge Target
               </span>
-              <span className="text-[11px] font-mono text-[var(--text-muted)]">
+              <span className="text-[0.6875rem] font-mono text-[var(--text-muted)]">
                 {planBranch.baseBranchOverride}
               </span>
             </div>
@@ -131,7 +131,7 @@ export const PlanGroupSettings = memo(function PlanGroupSettings({
             <button
               className={cn(
                 "flex items-center gap-1.5 mt-1",
-                "text-[11px] text-[var(--accent-primary)]",
+                "text-[0.6875rem] text-[var(--accent-primary)]",
                 "hover:underline cursor-pointer"
               )}
               onClick={() => onNavigateToMergeTask(planBranch.mergeTaskId!)}

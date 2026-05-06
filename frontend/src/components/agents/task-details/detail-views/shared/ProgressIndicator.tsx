@@ -35,7 +35,7 @@ export function ProgressIndicator({
       <div className="flex items-center justify-between">
         {showSteps && (
           <span
-            className="text-[12px]"
+            className="text-[0.75rem]"
             style={{ color: "var(--text-muted)" }}
           >
             Step{" "}
@@ -55,7 +55,7 @@ export function ProgressIndicator({
           </span>
         )}
         <span
-          className="text-[12px] font-medium ml-auto tabular-nums"
+          className="text-[0.75rem] font-medium ml-auto tabular-nums"
           style={{ color }}
         >
           {Math.round(percentComplete)}%

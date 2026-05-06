@@ -200,8 +200,8 @@ html[data-theme="high-contrast"] main {
   --card-foreground:    var(--text-primary);
   --popover:            #1A1A1A;
   --popover-foreground: var(--text-primary);
-  --primary:            var(--accent-primary);
-  --primary-foreground: var(--text-inverse);
+  --primary:            #FF6A35;
+  --primary-foreground: #1A0E07;
   --secondary:            #0A0A0A;
   --secondary-foreground: var(--text-primary);
   --muted:            #0A0A0A;
@@ -219,12 +219,12 @@ html[data-theme="high-contrast"] main {
   --ring:   #FFFFFF;
   --sidebar:                    #0A0A0A;
   --sidebar-foreground:         var(--text-primary);
-  --sidebar-primary:            var(--accent-primary);
-  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-primary:            #FF6A35;
+  --sidebar-primary-foreground: #1A0E07;
   --sidebar-accent:             #2A2A2A;
   --sidebar-accent-foreground:  var(--text-primary);
   --sidebar-border:             #555555;
-  --sidebar-ring:               var(--accent-primary);
+  --sidebar-ring:               #FF6A35;
 }
 
 [data-theme="high-contrast"] [data-testid="kanban-toolbar"] {
@@ -608,15 +608,15 @@ html[data-theme="high-contrast"] main {
   background-color: var(--accent-primary) !important;
 }
 
-/* Ideation plan browser rail — right fence separates rail from main.
-   Soft near-black fill and 15% white stroke so the rail reads as a
-   separate zone without competing with the pure-black main canvas. */
-[data-theme="high-contrast"] [data-testid="plan-browser"] {
-  border-right: 1px solid hsla(0 0% 100% / 0.15) !important;
-  background-color: #0e0e0e !important;
-}
+/* Ideation plan browser rail — match the AgentsSidebar chrome across
+   themes. HC defensively repaints the literal `--app-sidebar-bg` /
+   `--app-sidebar-border` values per the WKWebView CSS-vars rule so the
+   sidebar surface stays opaque and the right fence stays visible. */
 [data-theme="high-contrast"] [data-testid="plan-browser"] > div {
-  background-color: #0e0e0e !important;
+  background-color: #0A0A0A !important;
+  border-right-color: #555555 !important;
+  border-right-style: solid !important;
+  border-right-width: 1px !important;
 }
 
 /* Session group collapsible triggers (Accepted / Done / Archived) — HC
@@ -833,23 +833,14 @@ html[data-theme="high-contrast"] main {
   border-color: var(--border-subtle) !important;
 }
 
-/* HC TaskGraph cards — the default GLASS_SURFACE bg is 85% bg-elevated
-   + 15% transparent, letting the dot grid bleed through the node on
-   pure black. Paint the card fully opaque and force the top/right/
-   bottom perimeter to pure white (the default `--overlay-weak` at 10%
-   is invisible on pure black). The status-colored left stripe (inline
-   `borderLeft`) is preserved because we only override the specific
-   directional properties. Selected/highlighted/focused nodes keep the
-   inline yellow `--accent-primary` border via `:not(.selected)`. */
+/* HC TaskGraph cards — match the kanban card surface tokens so graph
+   nodes pick up the same status-tinted bg + border as kanban cards.
+   The colored left-border stripe is removed; status comes through bg
+   tint and border only. Selected/highlighted/focused nodes keep the
+   inline yellow `--accent-primary` border via inline style. */
 [data-theme="high-contrast"] .react-flow__node [data-testid="task-node"] > div {
-  background: #000000 !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-}
-[data-theme="high-contrast"] .react-flow__node:not(.selected) [data-testid="task-node"]:not([data-highlighted="true"]):not([data-focused="true"]) > div {
-  border-top-color: #ffffff !important;
-  border-right-color: #ffffff !important;
-  border-bottom-color: #ffffff !important;
 }
 
 /* HC TaskGraph dot grid — React Flow's Background uses
@@ -940,4 +931,8 @@ html[data-theme="high-contrast"] main {
 /* Non-clickable entries (events without taskId) — same visual weight. */
 [data-theme="high-contrast"] [data-testid="execution-timeline"] [class*="rounded-md"]:not([role="button"]):not(button) {
   margin-bottom: 6px;
+}
+
+[data-theme="high-contrast"] [data-testid="task-overlay-backdrop"] {
+  background-color: #000000 !important;
 }

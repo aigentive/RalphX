@@ -1642,7 +1642,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         {isFetchingOlderMessages && (
           <div className="absolute top-2 left-0 right-0 flex justify-center pointer-events-none">
             <span
-              className="rounded-full px-3 py-1 text-[11px]"
+              className="rounded-full px-3 py-1 text-[0.6875rem]"
               style={{
                 backgroundColor: "color-mix(in srgb, var(--bg-surface) 94%, transparent)",
                 border: "1px solid var(--border-subtle)",

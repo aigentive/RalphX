@@ -50,7 +50,7 @@ export function AttentionMergeCard({ task, onViewDetails, onRetry }: AttentionMe
         {task.title}
       </button>
       <span
-        className="text-[11px] shrink-0 max-w-[120px] truncate"
+        className="text-[0.6875rem] shrink-0 max-w-[120px] truncate"
         style={{ color: "var(--text-muted)" }}
       >
         {errorContext}

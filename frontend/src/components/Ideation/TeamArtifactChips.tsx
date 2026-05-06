@@ -57,7 +57,7 @@ export const TeamArtifactChips = React.memo(function TeamArtifactChips({
     <div className="mt-3">
       {/* Section header */}
       <span
-        className="text-[11px] font-medium tracking-wide block mb-2"
+        className="text-[0.6875rem] font-medium tracking-wide block mb-2"
         style={{ color: "var(--text-muted)" }}
       >
         Team Research &middot; {artifacts.length} artifact{artifacts.length !== 1 ? "s" : ""}
@@ -77,7 +77,7 @@ export const TeamArtifactChips = React.memo(function TeamArtifactChips({
               onClick={() => onSelect(artifact.id)}
               className={cn(
                 "flex items-center gap-1.5 h-7 px-2.5 rounded-full",
-                "text-[12px] font-medium",
+                "text-[0.75rem] font-medium",
                 "transition-all duration-150 ease-out",
                 "cursor-pointer select-none",
               )}

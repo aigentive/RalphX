@@ -66,7 +66,7 @@ function CheckpointIndicator() {
   return (
     <Badge
       data-testid="checkpoint-indicator"
-      className="text-[9px] px-1.5 py-px"
+      className="text-[0.5625rem] px-1.5 py-px"
       style={{
         backgroundColor: "var(--status-warning-muted)",
         color: "var(--status-warning)",
@@ -288,7 +288,7 @@ export function TaskCard({
           data-testid="task-title"
           className="min-w-0 flex-1 truncate"
           style={{
-            fontSize: "13px",
+            fontSize: "0.8125rem",
             fontWeight: 500,
             color: "var(--text-primary)",
             lineHeight: 1.35,
@@ -313,7 +313,7 @@ export function TaskCard({
           <div
             className="line-clamp-2 [&_*]:!mb-0 [&_*]:!mt-0"
             style={{
-              fontSize: "11.5px",
+              fontSize: "0.7188rem",
               color: "var(--text-muted)",
               lineHeight: 1.45,
               letterSpacing: 0,
@@ -357,7 +357,7 @@ export function TaskCard({
               background: "var(--bg-hover)",
               border: "1px solid var(--border-default)",
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-              fontSize: "10.5px",
+              fontSize: "0.6562rem",
               fontWeight: 500,
               color: "var(--text-secondary)",
               textTransform: "capitalize",
@@ -420,7 +420,7 @@ export function TaskCard({
                   >
                     <GitBranch className="w-3 h-3 flex-shrink-0" />
                     <span
-                      className="text-[10px] truncate max-w-[80px]"
+                      className="text-[0.625rem] truncate max-w-[80px]"
                       style={{
                         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                       }}
@@ -447,7 +447,7 @@ export function TaskCard({
                     style={{ color: prIndicatorColor }}
                   >
                     <GitPullRequest className="w-3 h-3 flex-shrink-0" />
-                    <span className="text-[10px]">{prIndicatorLabel}</span>
+                    <span className="text-[0.625rem]">{prIndicatorLabel}</span>
                   </div>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
@@ -475,7 +475,7 @@ export function TaskCard({
             {/* Duration badge - shown when executing */}
             {(task.internalStatus === "executing" || task.internalStatus === "re_executing") && executionState.duration !== null && (
               <div
-                className="flex items-center gap-1 text-[11px]"
+                className="flex items-center gap-1 text-[0.6875rem]"
                 style={{ color: "var(--text-secondary)" }}
               >
                 <Clock className="w-3 h-3" />

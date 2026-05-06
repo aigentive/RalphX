@@ -105,7 +105,7 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
             />
           </div>
           <span
-            className="text-[10px] tabular-nums shrink-0"
+            className="text-[0.625rem] tabular-nums shrink-0"
             style={{ color: "var(--text-muted)" }}
           >
             {percentComplete}%
@@ -129,7 +129,7 @@ export function StepProgressBar({ taskId, compact = false, internalStatus }: Ste
           ))}
           {hiddenDotCount > 0 && (
             <span
-              className="text-[10px] shrink-0"
+              className="text-[0.625rem] shrink-0"
               style={{ color: "var(--text-muted)" }}
               aria-label={`${hiddenDotCount} more steps`}
             >

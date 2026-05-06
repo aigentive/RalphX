@@ -143,7 +143,7 @@ function SeverityBadge({ severity, compact = false }: SeverityBadgeProps) {
     >
       <Icon className="w-3 h-3" style={{ color: config.color }} />
       {!compact && (
-        <span className="text-[10px] font-medium" style={{ color: config.color }}>
+        <span className="text-[0.625rem] font-medium" style={{ color: config.color }}>
           {config.label}
         </span>
       )}
@@ -167,7 +167,7 @@ function StatusBadge({ status, compact = false }: StatusBadgeProps) {
     >
       <Icon className="w-3 h-3" style={{ color: config.color }} />
       {!compact && (
-        <span className="text-[10px] font-medium" style={{ color: config.color }}>
+        <span className="text-[0.625rem] font-medium" style={{ color: config.color }}>
           {config.label}
         </span>
       )}
@@ -200,7 +200,7 @@ function IssueCard({ issue, compact = false, onClick, isLast = false }: IssueCar
           <StatusBadge status={issue.status} compact />
           {issue.category && (
             <span
-              className="text-[10px] px-1.5 py-0.5 rounded"
+              className="text-[0.625rem] px-1.5 py-0.5 rounded"
               style={{
                 backgroundColor: "var(--bg-hover)",
                 color: "var(--text-secondary)",
@@ -213,7 +213,7 @@ function IssueCard({ issue, compact = false, onClick, isLast = false }: IssueCar
 
         {/* Title */}
         <h4
-          className={`font-medium ${compact ? "text-[12px]" : "text-[13px]"}`}
+          className={`font-medium ${compact ? "text-[0.75rem]" : "text-[0.8125rem]"}`}
           style={{ color: "var(--text-primary)" }}
         >
           {issue.title}
@@ -222,7 +222,7 @@ function IssueCard({ issue, compact = false, onClick, isLast = false }: IssueCar
         {/* Description (if not compact) */}
         {!compact && issue.description && (
           <p
-            className="text-[12px] mt-1 line-clamp-2"
+            className="text-[0.75rem] mt-1 line-clamp-2"
             style={{ color: "var(--text-secondary)" }}
           >
             {issue.description}
@@ -234,7 +234,7 @@ function IssueCard({ issue, compact = false, onClick, isLast = false }: IssueCar
           <div className="flex items-center gap-1.5 mt-2">
             <FileCode className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
             <span
-              className="text-[11px] font-mono"
+              className="text-[0.6875rem] font-mono"
               style={{ color: "var(--text-muted)" }}
             >
               {issue.filePath}:{issue.lineNumber}
@@ -249,13 +249,13 @@ function IssueCard({ issue, compact = false, onClick, isLast = false }: IssueCar
             style={{ borderTop: "1px solid var(--border-subtle)" }}
           >
             <span
-              className="text-[10px] uppercase tracking-wider"
+              className="text-[0.625rem] uppercase tracking-wider"
               style={{ color: "var(--text-muted)" }}
             >
               Resolution
             </span>
             <p
-              className="text-[11px] mt-0.5"
+              className="text-[0.6875rem] mt-0.5"
               style={{ color: "var(--text-secondary)" }}
             >
               {issue.resolutionNotes}
@@ -299,13 +299,13 @@ function IssueGroup({
           <ChevronRight className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
         )}
         <span
-          className="text-[11px] uppercase tracking-wider font-medium"
+          className="text-[0.6875rem] uppercase tracking-wider font-medium"
           style={{ color: "var(--text-muted)" }}
         >
           {title}
         </span>
         <span
-          className="text-[11px] font-medium ml-1"
+          className="text-[0.6875rem] font-medium ml-1"
           style={{ color: "var(--text-muted)" }}
         >
           ({issues.length})
@@ -417,7 +417,7 @@ export function IssueProgressBar({
           )}
         </div>
         <span
-          className="text-[10px] tabular-nums shrink-0"
+          className="text-[0.625rem] tabular-nums shrink-0"
           style={{ color: "var(--text-muted)" }}
         >
           {Math.round(percentResolved)}%
@@ -425,7 +425,7 @@ export function IssueProgressBar({
       </div>
 
       {/* Status counts */}
-      <div className="flex items-center gap-3 text-[10px]">
+      <div className="flex items-center gap-3 text-[0.625rem]">
         {verified > 0 && (
           <span style={{ color: "var(--text-muted)" }}>
             {verified} verified
@@ -455,7 +455,7 @@ export function IssueProgressBar({
 
       {/* Severity breakdown */}
       {showSeverityBreakdown && (
-        <div className="flex items-center gap-3 text-[10px] pt-1">
+        <div className="flex items-center gap-3 text-[0.625rem] pt-1">
           {progress.bySeverity.critical.total > 0 && (
             <span style={{ color: SEVERITY_CONFIG.critical.color }}>
               {progress.bySeverity.critical.open}/{progress.bySeverity.critical.total} critical
@@ -561,7 +561,7 @@ export function IssueList({
 
   if (issues.length === 0) {
     return (
-      <p className="text-[12px] italic py-2" style={{ color: "var(--text-muted)" }}>
+      <p className="text-[0.75rem] italic py-2" style={{ color: "var(--text-muted)" }}>
         {emptyMessage}
       </p>
     );

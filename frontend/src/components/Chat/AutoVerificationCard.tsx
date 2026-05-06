@@ -40,7 +40,7 @@ export function AutoVerificationCard({ content }: AutoVerificationCardProps) {
           style={{ color: "var(--text-muted)" }}
         />
         <span
-          className="text-[11px] leading-none"
+          className="text-[0.6875rem] leading-none"
           style={{ color: "var(--text-muted)", fontFamily: "var(--font-body)" }}
         >
           Auto-verification
@@ -55,7 +55,7 @@ export function AutoVerificationCard({ content }: AutoVerificationCardProps) {
       </button>
       {expanded && (
         <div
-          className="mt-1 mx-4 w-full max-w-[480px] rounded-lg px-3 py-2 text-[11px] leading-relaxed"
+          className="mt-1 mx-4 w-full max-w-[480px] rounded-lg px-3 py-2 text-[0.6875rem] leading-relaxed"
           style={{
             background: "var(--bg-surface)",
             color: "var(--text-secondary)",

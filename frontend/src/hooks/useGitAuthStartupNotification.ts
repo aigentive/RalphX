@@ -1,4 +1,5 @@
 import { createElement, useEffect, useMemo, useRef } from "react";
+import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -17,21 +18,11 @@ function isGithubHttpsRemote(url: string | null | undefined) {
   return url?.trim().startsWith("https://github.com/") ?? false;
 }
 
-export function createStartupGitAuthToastOptions(
-  projectId: string,
-  openModal: (modal: "settings", options: { section: "repository" }) => void,
-) {
+export function createStartupGitAuthToastOptions(projectId: string) {
   return {
     duration: GIT_AUTH_STARTUP_TOAST_DURATION,
     id: `git-auth-startup:${projectId}`,
     className: "git-auth-startup-toast",
-    classNames: {
-      actionButton: "git-auth-startup-toast-action",
-    },
-    action: {
-      label: "Open Settings",
-      onClick: () => openModal("settings", { section: "repository" }),
-    },
   };
 }
 
@@ -106,26 +97,69 @@ export function useGitAuthStartupNotification() {
     }
 
     notifiedKeys.current.add(notificationKey);
-    toast.warning(
+    toast(
       createElement(
         "div",
-        { "data-testid": "git-auth-startup-toast" },
-        createElement("div", null, "Repository access needs attention"),
+        {
+          "data-testid": "git-auth-startup-toast",
+          className: "flex flex-col gap-2",
+        },
         createElement(
           "div",
+          { className: "flex items-center gap-2" },
+          createElement(AlertTriangle, {
+            className: "h-4 w-4",
+            style: { color: "var(--status-warning)" },
+          }),
+          createElement(
+            "span",
+            { className: "font-medium" },
+            "Repository access needs attention",
+          ),
+        ),
+        createElement(
+          "p",
           {
             "data-testid": "git-auth-startup-toast-description",
+            className: "text-xs",
             style: {
-              color: "var(--text-secondary)",
-              fontSize: "12px",
-              lineHeight: "16px",
-              marginTop: "4px",
+              color: "var(--text-muted)",
+              lineHeight: 1.4,
             },
           },
           `Startup Git/GitHub recovery was paused for ${project.name}. Repair repository access before starting agents or publishing work.`,
         ),
+        createElement(
+          "div",
+          { className: "flex gap-2 mt-1" },
+          createElement(
+            "button",
+            {
+              type: "button",
+              "data-testid": "git-auth-startup-toast-action",
+              className:
+                "git-auth-startup-toast-action inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-semibold",
+              onClick: () => {
+                openModal("settings", { section: "repository" });
+                toast.dismiss(`git-auth-startup:${project.id}`);
+              },
+            },
+            "Open Settings",
+          ),
+          createElement(
+            "button",
+            {
+              type: "button",
+              className:
+                "inline-flex h-7 items-center rounded-[6px] px-3 text-xs font-medium",
+              style: { color: "var(--text-muted)" },
+              onClick: () => toast.dismiss(`git-auth-startup:${project.id}`),
+            },
+            "Later",
+          ),
+        ),
       ),
-      createStartupGitAuthToastOptions(project.id, openModal),
+      createStartupGitAuthToastOptions(project.id),
     );
   }, [
     diagnosticsQuery.isLoading,

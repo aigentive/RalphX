@@ -118,7 +118,7 @@ function ConflictFilesList({
             )}
             <FileWarning className="w-4 h-4 shrink-0" style={{ color: "var(--status-warning)" }} />
             <span
-              className="text-[13px] font-mono text-text-primary/70 truncate text-left"
+              className="text-[0.8125rem] font-mono text-text-primary/70 truncate text-left"
               title={file}
             >
               {file}
@@ -273,7 +273,7 @@ function MergeProgressSteps({
         <div className="relative">
           {displayStep !== undefined && <MergeStepIcon status={displayStep.status} isHistorical={isHistorical} />}
         </div>
-        <span className="text-[13px] font-medium flex-1 text-text-primary/60">
+        <span className="text-[0.8125rem] font-medium flex-1 text-text-primary/60">
           {displayStep?.label ?? "Merge"}
         </span>
         {expanded
@@ -298,7 +298,7 @@ function MergeProgressSteps({
                 <MergeStepIcon status={step.status} isHistorical={isHistorical} />
               </div>
               <span
-                className="text-[13px] font-medium"
+                className="text-[0.8125rem] font-medium"
                 style={{
                   color: step.status === "completed"
                     ? withAlpha("var(--text-primary)", 60)
@@ -357,7 +357,7 @@ function PrModeCard({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <GitPullRequest className="w-4 h-4" style={{ color: "var(--status-success)" }} />
-            <span className="text-[13px] font-medium text-text-primary/80">
+            <span className="text-[0.8125rem] font-medium text-text-primary/80">
               PR #{planBranch.prNumber}
             </span>
           </div>
@@ -374,7 +374,7 @@ function PrModeCard({
                 className="w-3.5 h-3.5 animate-spin text-text-primary/40"
               />
             )}
-            <span className="text-[12px] text-text-primary/40">{statusText}</span>
+            <span className="text-[0.75rem] text-text-primary/40">{statusText}</span>
           </div>
         )}
 
@@ -383,7 +383,7 @@ function PrModeCard({
           <button
             type="button"
             onClick={handleOpenInGithub}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer"
             style={{
               backgroundColor: statusTint("success", 12),
               color: "var(--status-success)",
@@ -628,7 +628,7 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
       <button
         type="button"
         onClick={handleOpenPrInGithub}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer shrink-0"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer shrink-0"
         style={{
           backgroundColor: statusTint("info", 14),
           color: "var(--status-info)",
@@ -871,7 +871,7 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
             <DetailCard>
               <div className="flex items-center gap-2.5 py-1.5">
                 <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--status-info)" }} />
-                <span className="text-[13px] text-text-primary/50">
+                <span className="text-[0.8125rem] text-text-primary/50">
                   Waiting for merge progress...
                 </span>
               </div>
@@ -900,7 +900,7 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
             {isConflictDetectionEnabled && isLoadingConflicts && conflictFiles.length === 0 ? (
               <div className="flex items-center gap-2 py-2">
                 <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--status-warning)" }} />
-                <span className="text-[13px] text-text-primary/50">Detecting conflicts...</span>
+                <span className="text-[0.8125rem] text-text-primary/50">Detecting conflicts...</span>
               </div>
             ) : (
               <ConflictFilesList files={conflictFiles} taskId={task.id} />
@@ -920,7 +920,7 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
                 data-testid="stop-merge-action"
                 onClick={handleStop}
                 disabled={stopMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   backgroundColor: statusTint("error", 15),
                   color: "var(--status-error)",
@@ -931,7 +931,7 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               </button>
             </div>
             {actionError && (
-              <p className="mt-2 text-[12px]" style={{ color: "var(--status-error)" }}>
+              <p className="mt-2 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
                 {actionError}
               </p>
             )}

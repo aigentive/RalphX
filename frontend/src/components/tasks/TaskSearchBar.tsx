@@ -50,7 +50,7 @@ export function TaskSearchBar({
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search tasks..."
         className="min-w-0 flex-1 bg-transparent border-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 [&:focus]:outline-none [&:focus-visible]:outline-none text-foreground placeholder:text-muted-foreground"
-        style={{ outline: 'none', fontSize: '12.5px', lineHeight: 1.2 }}
+        style={{ outline: 'none', fontSize: '0.7812rem', lineHeight: 1.2 }}
       />
 
       {/* Loading spinner */}
@@ -60,7 +60,7 @@ export function TaskSearchBar({
 
       {/* Result count */}
       {!isSearching && value && (
-        <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+        <span className="text-[0.6875rem] text-muted-foreground whitespace-nowrap">
           {resultText}
         </span>
       )}

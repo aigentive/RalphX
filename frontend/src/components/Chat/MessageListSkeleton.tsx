@@ -149,7 +149,7 @@ export function MessageListSkeleton() {
 
           {/* Subtle loading text */}
           <p
-            className="text-[11px] tracking-wide uppercase"
+            className="text-[0.6875rem] tracking-wide uppercase"
             style={{
               color: "var(--text-muted)",
               fontFamily: "var(--font-body)",

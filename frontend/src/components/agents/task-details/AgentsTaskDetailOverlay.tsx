@@ -206,7 +206,7 @@ function PriorityBadge({ priority }: { priority: number }) {
   return (
     <span
       data-testid="task-overlay-priority"
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold tracking-tight"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[0.6875rem] font-semibold tracking-tight"
       style={{ backgroundColor: colors.bg, color: colors.text }}
       title={`Priority P${priority}`}
     >
@@ -223,7 +223,7 @@ function CategoryBadge({ label }: { label: string }) {
   return (
     <span
       data-testid="task-overlay-category"
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[0.6875rem] font-medium"
       style={{
         backgroundColor: "var(--overlay-faint)",
         color: "var(--text-secondary)",
@@ -241,7 +241,7 @@ function StatusBadge({ status }: { status: InternalStatus }) {
     <Badge
       data-testid="task-overlay-status"
       data-status={status}
-      className="rounded px-1.5 py-0.5 text-[10px] font-medium border-0"
+      className="rounded px-1.5 py-0.5 text-[0.625rem] font-medium border-0"
       style={{ backgroundColor: config.bg, color: config.text }}
     >
       {config.label}
@@ -548,7 +548,7 @@ export function AgentsTaskDetailOverlay({
                 type="button"
                 data-testid="task-overlay-back"
                 onClick={onBack ?? onCloseOverride}
-                className="mb-2 inline-flex items-center gap-1 -ml-1 px-1.5 py-0.5 rounded-md text-[12px] font-medium transition-colors hover:bg-[var(--overlay-faint)]"
+                className="mb-2 inline-flex items-center gap-1 -ml-1 px-1.5 py-0.5 rounded-md text-[0.75rem] font-medium transition-colors hover:bg-[var(--overlay-faint)]"
                 style={{ color: "var(--text-secondary)" }}
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
@@ -566,7 +566,7 @@ export function AgentsTaskDetailOverlay({
                 }}
               >
                 <Archive className="w-3.5 h-3.5" style={{ color: "var(--accent-primary)" }} />
-                <span className="text-[12px] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
+                <span className="text-[0.75rem] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
               </div>
             )}
             <div className="pr-28">
@@ -702,10 +702,10 @@ export function AgentsTaskDetailOverlay({
               className="px-4 py-1.5 flex items-center gap-2 shrink-0"
             >
               <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                 Viewing: {STATUS_CONFIG[historyState.status]?.label ?? historyState.status}
               </span>
-              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 {new Date(historyState.timestamp).toLocaleString()}
               </span>
             </div>

@@ -13,7 +13,7 @@ interface DescriptionBlockProps {
 export function DescriptionBlock({ description, testId }: DescriptionBlockProps) {
   if (!description) {
     return (
-      <p className="text-[13px] italic text-text-primary/30">
+      <p className="text-[0.8125rem] italic text-text-primary/30">
         No description provided
       </p>
     );
@@ -22,7 +22,7 @@ export function DescriptionBlock({ description, testId }: DescriptionBlockProps)
   return (
     <div
       data-testid={testId}
-      className="text-[13px] text-text-primary/65 leading-relaxed"
+      className="text-[0.8125rem] text-text-primary/65 leading-relaxed"
       style={{ wordBreak: "break-word" }}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>

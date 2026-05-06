@@ -78,7 +78,7 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
     <div className="relative inline-flex shrink-0" data-testid="font-scale-selector">
       <button
         type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[12.5px] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
         style={{
           backgroundColor: open ? "var(--bg-hover)" : "var(--bg-elevated)",
           borderColor: open ? "var(--border-strong)" : "var(--border-default)",
@@ -90,8 +90,8 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
         data-testid="font-scale-selector-trigger"
         onClick={() => onOpenChange(!open)}
       >
-        <span className="inline-flex items-baseline gap-px text-[13px] font-semibold leading-none tracking-normal">
-          A<b className="text-[15px]">a</b>
+        <span className="inline-flex items-baseline gap-px text-[0.8125rem] font-semibold leading-none tracking-normal">
+          A<b className="text-[0.9375rem]">a</b>
         </span>
         <span>{current.label}</span>
         <ChevronDown
@@ -122,7 +122,7 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
                 role="menuitemradio"
                 aria-checked={isActive}
                 data-testid={`font-scale-option-${option.value}`}
-                className="inline-flex items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[12.5px] font-medium transition-colors duration-150 outline-none hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+                className="inline-flex items-center gap-2 rounded-[6px] px-2 py-1.5 text-left text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
                 style={{ color: isActive ? "var(--text-primary)" : "var(--text-secondary)" }}
                 onClick={() => {
                   setFontScale(option.value);
@@ -172,7 +172,7 @@ export function AppTopBar({
       <WindowTrafficLights />
 
       <nav
-        className="inline-flex min-w-0 items-center gap-2 text-[12.5px]"
+        className="inline-flex min-w-0 items-center gap-2 text-[0.7812rem]"
         aria-label="Breadcrumb"
         style={{ color: "var(--text-muted)" }}
       >
@@ -203,21 +203,27 @@ export function AppTopBar({
       >
         <button
           type="button"
-          className="inline-flex h-8 w-[320px] items-center gap-2.5 rounded-[6px] border px-3 text-[13px] transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+          disabled
+          aria-disabled="true"
+          aria-hidden="true"
+          tabIndex={-1}
+          className="inline-flex h-8 w-[320px] items-center gap-2.5 rounded-[6px] border px-3 text-[0.8125rem] outline-none"
           style={{
             backgroundColor: "var(--bg-elevated)",
             borderColor: "var(--border-default)",
             color: "var(--text-secondary)",
+            display: "none",
           }}
-          aria-label="Search runs, projects, agents"
+          aria-label="Search runs, projects, agents (coming soon)"
           data-testid="topbar-command-search"
+          title="Coming soon"
         >
           <Search className="h-3.5 w-3.5 shrink-0" />
           <span className="flex-1 truncate text-left" style={{ color: "var(--text-muted)" }}>
             Search runs, projects, agents...
           </span>
           <kbd
-            className="rounded-[4px] border px-1.5 py-px text-[10.5px] font-medium leading-none"
+            className="rounded-[4px] border px-1.5 py-px text-[0.6562rem] font-medium leading-none"
             style={{
               backgroundColor: "var(--bg-hover)",
               borderColor: "var(--border-default)",
@@ -247,7 +253,7 @@ export function AppTopBar({
               <GitPullRequest className="h-[15px] w-[15px]" />
               {pendingReviewCount > 0 && (
                 <span
-                  className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[9.5px] font-bold leading-none"
+                  className="absolute right-px top-px grid h-3.5 min-w-3.5 place-items-center rounded-full px-1 text-[0.5938rem] font-bold leading-none"
                   style={{
                     background: "var(--accent-primary)",
                     color: "var(--text-on-accent)",

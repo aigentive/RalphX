@@ -190,8 +190,8 @@ html[data-theme="light"] body {
   --card-foreground:    var(--text-primary);
   --popover:            #FFFFFF;
   --popover-foreground: var(--text-primary);
-  --primary:            var(--accent-primary);
-  --primary-foreground: var(--text-inverse);
+  --primary:            #FF6A35;
+  --primary-foreground: #1A0E07;
   --secondary:            #F8F8FA;
   --secondary-foreground: var(--text-primary);
   --muted:            #F8F8FA;
@@ -202,15 +202,15 @@ html[data-theme="light"] body {
   --destructive-foreground: var(--text-inverse);
   --border: #D9D9DD;
   --input:  #D9D9DD;
-  --ring:   var(--accent-primary);
+  --ring:   #FF6A35;
   --sidebar:                    #F4F4F6;
   --sidebar-foreground:         var(--text-primary);
-  --sidebar-primary:            var(--accent-primary);
-  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-primary:            #FF6A35;
+  --sidebar-primary-foreground: #1A0E07;
   --sidebar-accent:             #F1F1F4;
   --sidebar-accent-foreground:  var(--text-primary);
   --sidebar-border:             #E5E5E8;
-  --sidebar-ring:               var(--accent-primary);
+  --sidebar-ring:               #FF6A35;
 
   /* Settings modal — v30 literal tokens for WKWebView parity */
   --dialog-overlay-bg: rgba(0,0,0,.18);
@@ -478,10 +478,43 @@ html[data-theme="light"] body {
 
 [data-theme="light"] [data-testid="kanban-split-layout"],
 [data-theme="light"] [data-testid="kanban-split-left"],
-[data-theme="light"] [data-testid="task-board-root"] {
+[data-theme="light"] [data-testid="task-board-root"],
+[data-theme="light"] [data-testid="graph-split-layout"],
+[data-theme="light"] [data-testid="graph-split-left"] {
   background-color: #FFFFFF !important;
 }
 
 [data-theme="light"] .task-board > [data-testid^="column-"] {
   background-color: #FFFFFF !important;
 }
+
+[data-theme="light"] [data-testid="task-overlay-backdrop"] {
+  background-color: #FFFFFF !important;
+}
+
+/* Ideation plan-browser sidebar — match AgentsSidebar chrome literally
+   so WKWebView always paints the right tint even if the inline `var()`
+   gets dropped. Mirrors the [data-theme="light"] [data-testid="agents-sidebar"]
+   block. */
+[data-theme="light"] [data-testid="plan-browser"] > div {
+  background-color: #F8F8FA !important;
+  border-right-color: #E5E5E8 !important;
+  border-right-style: solid !important;
+  border-right-width: 1px !important;
+}
+
+/* Git & GitHub access ghost buttons — fill with white on light theme so
+   they don't disappear into the warning-tinted card behind. */
+[data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost {
+  background-color: #FFFFFF !important;
+  border-color: #D9D9DD !important;
+  color: #18181D !important;
+}
+[data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost:hover {
+  background-color: #F4F4F6 !important;
+  border-color: #C8C8CD !important;
+}
+[data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost svg {
+  color: #18181D !important;
+}
+

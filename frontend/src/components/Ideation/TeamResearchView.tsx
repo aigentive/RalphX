@@ -79,7 +79,7 @@ const markdownComponents = {
       return (
         <code
           className={cn(
-            "block p-3 rounded-md text-[13px] font-mono overflow-x-auto",
+            "block p-3 rounded-md text-[0.8125rem] font-mono overflow-x-auto",
             "bg-white/[0.02] border border-white/[0.04]",
             className
           )}
@@ -91,7 +91,7 @@ const markdownComponents = {
     }
     return (
       <code
-        className="px-1.5 py-0.5 rounded text-[13px] font-mono bg-white/[0.04] text-text-primary"
+        className="px-1.5 py-0.5 rounded text-[0.8125rem] font-mono bg-white/[0.04] text-text-primary"
         {...props}
       >
         {children}
@@ -273,13 +273,13 @@ function ArtifactCard({ artifact }: { artifact: TeamArtifactSummary }) {
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <span
-                  className="text-[13px] font-medium truncate tracking-[-0.01em]"
+                  className="text-[0.8125rem] font-medium truncate tracking-[-0.01em]"
                   style={{ color: "var(--text-primary)" }}
                 >
                   {artifact.name}
                 </span>
                 <span
-                  className="text-[10px] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0"
+                  className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0"
                   style={{
                     background: "var(--overlay-faint)",
                     border: "1px solid var(--overlay-faint)",
@@ -293,7 +293,7 @@ function ArtifactCard({ artifact }: { artifact: TeamArtifactSummary }) {
               {/* Collapsed: show author for scannable context */}
               {!isOpen && artifact.author_teammate && (
                 <span
-                  className="text-[11px] mt-0.5 block truncate"
+                  className="text-[0.6875rem] mt-0.5 block truncate"
                   style={{ color: "var(--text-muted)" }}
                 >
                   by {artifact.author_teammate}
@@ -303,7 +303,7 @@ function ArtifactCard({ artifact }: { artifact: TeamArtifactSummary }) {
               {/* Expanded: show author if available */}
               {isOpen && author && (
                 <span
-                  className="text-[11px] mt-0.5 block"
+                  className="text-[0.6875rem] mt-0.5 block"
                   style={{ color: "var(--text-muted)" }}
                 >
                   by {author}
@@ -338,29 +338,29 @@ function ArtifactCard({ artifact }: { artifact: TeamArtifactSummary }) {
                 className="w-3.5 h-3.5 animate-spin"
                 style={{ color: "var(--accent-primary)" }}
               />
-              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                 Loading full content...
               </span>
             </div>
           ) : cardState.error ? (
             <div className="py-4 text-center">
-              <span className="text-[12px]" style={{ color: "var(--status-error)" }}>
+              <span className="text-[0.75rem]" style={{ color: "var(--status-error)" }}>
                 {cardState.error}
               </span>
               <p
-                className="text-[13px] leading-relaxed mt-2"
+                className="text-[0.8125rem] leading-relaxed mt-2"
                 style={{ color: "var(--text-secondary)" }}
               >
                 {artifact.content_preview}
               </p>
             </div>
           ) : fullContent ? (
-            <div className="text-[13px] leading-relaxed">
+            <div className="text-[0.8125rem] leading-relaxed">
               <MemoizedMarkdown content={fullContent} />
             </div>
           ) : (
             <p
-              className="text-[13px] italic py-4 text-center"
+              className="text-[0.8125rem] italic py-4 text-center"
               style={{ color: "var(--text-muted)" }}
             >
               No content available
@@ -382,10 +382,10 @@ export function TeamResearchView({ artifacts }: TeamResearchViewProps) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
         <FileText className="w-10 h-10 mb-3" style={{ color: "var(--text-muted)" }} />
-        <span className="text-[13px] font-medium" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-muted)" }}>
           No team research artifacts yet
         </span>
-        <span className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.6875rem] mt-1" style={{ color: "var(--text-muted)" }}>
           Artifacts will appear here once team research completes
         </span>
       </div>
@@ -397,13 +397,13 @@ export function TeamResearchView({ artifacts }: TeamResearchViewProps) {
       {/* Section header */}
       <div className="flex items-center gap-2">
         <span
-          className="text-[11px] font-medium tracking-wide uppercase"
+          className="text-[0.6875rem] font-medium tracking-wide uppercase"
           style={{ color: "var(--text-muted)" }}
         >
           Team Research
         </span>
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md"
           style={{
             background: "var(--overlay-faint)",
             border: "1px solid var(--overlay-faint)",

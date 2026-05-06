@@ -206,7 +206,7 @@ function PriorityBadge({ priority }: { priority: number }) {
   return (
     <span
       data-testid="task-overlay-priority"
-      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-mono font-medium"
       style={{ backgroundColor: colors.bg, color: colors.text }}
     >
       P{priority}
@@ -220,7 +220,7 @@ function StatusBadge({ status }: { status: InternalStatus }) {
     <Badge
       data-testid="task-overlay-status"
       data-status={status}
-      className="rounded px-1.5 py-0.5 text-[10px] font-medium border-0"
+      className="rounded px-1.5 py-0.5 text-[0.625rem] font-medium border-0"
       style={{ backgroundColor: config.bg, color: config.text }}
     >
       {config.label}
@@ -526,7 +526,7 @@ export function TaskDetailOverlay({
                 }}
               >
                 <Archive className="w-3.5 h-3.5" style={{ color: "var(--accent-primary)" }} />
-                <span className="text-[12px] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
+                <span className="text-[0.75rem] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
               </div>
             )}
             <div className="pr-28">
@@ -545,7 +545,7 @@ export function TaskDetailOverlay({
                 <PriorityBadge priority={task.priority} />
                 <span
                   data-testid="task-overlay-category"
-                  className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                  className="px-1.5 py-0.5 rounded text-[0.625rem] font-medium"
                   style={{
                     backgroundColor: "var(--overlay-weak)",
                     border: "1px solid var(--overlay-moderate)",
@@ -680,10 +680,10 @@ export function TaskDetailOverlay({
               className="px-4 py-1.5 flex items-center gap-2 shrink-0"
             >
               <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                 Viewing: {STATUS_CONFIG[historyState.status]?.label ?? historyState.status}
               </span>
-              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 {new Date(historyState.timestamp).toLocaleString()}
               </span>
             </div>

@@ -44,7 +44,7 @@ export function TaskCardTranscriptView({
         <div key={entry.id} className="space-y-2" data-testid="task-card-transcript-message">
           {entry.speakerLabel && (
             <div
-              className="text-[10px] uppercase tracking-[0.08em]"
+              className="text-[0.625rem] uppercase tracking-[0.08em]"
               style={{ color: "var(--text-muted)" }}
             >
               {entry.speakerLabel}

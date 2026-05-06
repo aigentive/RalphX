@@ -32,7 +32,7 @@ export function ProactiveSyncNotificationBanner({
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium text-[var(--text-primary)] mb-0.5">Plan updated</p>
-          <p className="text-[11px] text-[var(--text-secondary)]">
+          <p className="text-[0.6875rem] text-[var(--text-secondary)]">
             {affectedCount} proposal{affectedCount !== 1 ? "s" : ""} may need revision.
           </p>
         </div>
@@ -41,7 +41,7 @@ export function ProactiveSyncNotificationBanner({
             variant="ghost"
             size="sm"
             onClick={onReview}
-            className="h-6 px-2 text-[11px] text-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/10"
+            className="h-6 px-2 text-[0.6875rem] text-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/10"
           >
             <Eye className="w-3 h-3 mr-1" /> Review
           </Button>
@@ -49,7 +49,7 @@ export function ProactiveSyncNotificationBanner({
             variant="ghost"
             size="sm"
             onClick={onUndo}
-            className="h-6 px-2 text-[11px] hover:bg-white/[0.06]"
+            className="h-6 px-2 text-[0.6875rem] hover:bg-white/[0.06]"
           >
             <Undo2 className="w-3 h-3 mr-1" /> Undo
           </Button>

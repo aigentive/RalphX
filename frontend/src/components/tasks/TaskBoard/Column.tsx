@@ -71,6 +71,9 @@ interface ColumnProps {
   isCollapsed?: boolean;
   /** Callback to toggle collapse state */
   onToggleCollapse?: () => void;
+  /** When `true` (compact host like a task tab), drop the 220px minWidth so
+   * columns fluidly fill the constrained width via the parent grid `1fr`. */
+  fillWidth?: boolean;
 }
 
 function InvalidDropIcon() {
@@ -172,7 +175,7 @@ function formatColumnHeaderCount(
   return `(${taskCount})`;
 }
 
-export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse }: ColumnProps) {
+export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, fillWidth = false }: ColumnProps) {
   const { setNodeRef } = useDroppable({ id: column.id });
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { active } = useDndContext();
@@ -474,7 +477,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
           <span
             className="select-none"
             style={{
-              fontSize: "11px",
+              fontSize: "0.6875rem",
               fontWeight: 600,
               color: "var(--text-secondary)",
               textTransform: "uppercase",
@@ -489,7 +492,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
           </span>
           <span
             style={{
-              fontSize: "10px",
+              fontSize: "0.625rem",
               fontWeight: 500,
               color: "var(--text-muted)",
               fontVariantNumeric: "tabular-nums",
@@ -521,7 +524,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
       className="flex-shrink-0 flex flex-col h-full"
       style={{
         width: "100%",
-        minWidth: "220px",
+        minWidth: fillWidth ? 0 : "220px",
         maxWidth: "none",
         scrollSnapAlign: "start",
         paddingLeft: 0,
@@ -540,7 +543,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
         <h3
           className="flex-1 m-0 truncate"
           style={{
-            fontSize: "10.5px",
+            fontSize: "0.6562rem",
             fontWeight: 600,
             color: "var(--text-secondary)",
             textTransform: "uppercase",
@@ -553,7 +556,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
         {/* Count - simple, muted */}
         <span
           style={{
-            fontSize: "10.5px",
+            fontSize: "0.6562rem",
             fontWeight: 500,
             color: "var(--text-subtle)",
             fontVariantNumeric: "tabular-nums",

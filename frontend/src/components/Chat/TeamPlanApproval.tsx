@@ -156,11 +156,11 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
           style={{ backgroundColor: "var(--bg-surface)" }}
         >
           <Users className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
-          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
             Team Plan — {plan.process}
           </span>
           <span
-            className="ml-auto text-[10px] px-1.5 py-0.5 rounded"
+            className="ml-auto text-[0.625rem] px-1.5 py-0.5 rounded"
             style={{
               backgroundColor: "var(--bg-elevated)",
               color: "var(--text-muted)",
@@ -190,11 +190,11 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
         }}
       >
         <Users className="w-3.5 h-3.5" style={{ color: "var(--accent-primary)" }} />
-        <span className="text-[11px] font-medium" style={{ color: "var(--accent-primary)" }}>
+        <span className="text-[0.6875rem] font-medium" style={{ color: "var(--accent-primary)" }}>
           Team Plan — {plan.process}
         </span>
         <span
-          className="ml-auto text-[10px] px-1.5 rounded"
+          className="ml-auto text-[0.625rem] px-1.5 rounded"
           style={{
             backgroundColor: "var(--bg-elevated)",
             color: "var(--text-secondary)",
@@ -215,11 +215,11 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
               className="w-1.5 h-1.5 rounded-full shrink-0"
               style={{ backgroundColor: "var(--text-muted)" }}
             />
-            <span className="text-[11px] font-medium" style={{ color: "var(--text-secondary)" }}>
+            <span className="text-[0.6875rem] font-medium" style={{ color: "var(--text-secondary)" }}>
               {mate.role}
             </span>
             <span
-              className="text-[10px] px-1 rounded"
+              className="text-[0.625rem] px-1 rounded"
               style={{
                 backgroundColor: "var(--bg-elevated)",
                 color: "var(--text-muted)",
@@ -229,7 +229,7 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
             </span>
             {mate.prompt_summary && (
               <span
-                className="text-[10px] truncate flex-1"
+                className="text-[0.625rem] truncate flex-1"
                 style={{ color: "var(--text-muted)" }}
               >
                 {mate.prompt_summary}
@@ -242,7 +242,7 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
       {/* Error */}
       {error && (
         <div className="px-3 pb-1">
-          <span className="text-[10px]" style={{ color: "var(--status-error)" }}>
+          <span className="text-[0.625rem]" style={{ color: "var(--status-error)" }}>
             {error}
           </span>
         </div>
@@ -254,7 +254,7 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
         style={{ borderTop: "1px solid var(--border-subtle)" }}
       >
         {/* Countdown */}
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
           Expires in {formatCountdown(remainingMs)}
         </span>
 
@@ -264,7 +264,7 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
             size="sm"
             onClick={handleReject}
             disabled={isApproving}
-            className="text-[11px] h-7 gap-1"
+            className="text-[0.6875rem] h-7 gap-1"
           >
             <X className="w-3 h-3" />
             Reject
@@ -273,7 +273,7 @@ export const TeamPlanApproval = React.memo(function TeamPlanApproval({
             size="sm"
             onClick={handleApprove}
             disabled={isApproving}
-            className="text-[11px] h-7 gap-1"
+            className="text-[0.6875rem] h-7 gap-1"
             style={{
               backgroundColor: "var(--accent-primary)",
               color: "white",

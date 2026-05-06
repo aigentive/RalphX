@@ -413,7 +413,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                   onTabChange(id);
                 }}
                 className={cn(
-                  "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[12px] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
+                  "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[0.75rem] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
                   id === "tasks" ? "hidden xl:flex" : ""
                 )}
                 style={{
@@ -431,7 +431,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 <span>{label}</span>
                 {count > 0 && (
                   <span
-                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                    className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
                     style={{
                       background: isActive
                         ? withAlpha("var(--accent-primary)", 15)
@@ -898,6 +898,7 @@ function TaskArtifactSurface({
             projectId={projectId}
             ideationSessionId={sessionId}
             onTaskSelect={handleTaskSelect}
+            fillWidth
           />
         </Suspense>
         {detailOverlay}

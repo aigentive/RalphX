@@ -100,7 +100,7 @@ function ReviewStepItem({
 
       {/* Label */}
       <span
-        className="text-[13px] font-medium"
+        className="text-[0.8125rem] font-medium"
         style={{
           color:
             status === "completed"
@@ -371,7 +371,7 @@ export function ReviewingTaskDetail({
                   onChange={(e) => setFeedback(e.target.value)}
                   placeholder="Describe the changes needed..."
                   disabled={requestChangesMutation.isPending}
-                  className="min-h-[100px] text-[13px] resize-none rounded-xl"
+                  className="min-h-[100px] text-[0.8125rem] resize-none rounded-xl"
                   style={{
                     backgroundColor: "var(--overlay-scrim)",
                     border: "1px solid var(--overlay-moderate)",
@@ -385,7 +385,7 @@ export function ReviewingTaskDetail({
                 data-testid="stop-review-action"
                 onClick={handleStop}
                 disabled={isActionLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   backgroundColor: statusTint("error", 15),
                   color: "var(--status-error)",
@@ -399,7 +399,7 @@ export function ReviewingTaskDetail({
                 data-testid="request-changes-action"
                 onClick={handleRequestChanges}
                 disabled={requestChangesMutation.isPending || (showFeedback && feedback.trim().length === 0)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[0.75rem] font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   backgroundColor: "var(--status-warning-muted)",
                   color: "var(--status-warning)",
@@ -425,14 +425,14 @@ export function ReviewingTaskDetail({
                     setFeedback("");
                     setActionError(null);
                   }}
-                  className="text-[12px] text-text-primary/40 hover:text-text-primary/60 transition-colors cursor-pointer"
+                  className="text-[0.75rem] text-text-primary/40 hover:text-text-primary/60 transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
               )}
             </div>
             {actionError && (
-              <p className="mt-1 text-[12px]" style={{ color: "var(--status-error)" }}>
+              <p className="mt-1 text-[0.75rem]" style={{ color: "var(--status-error)" }}>
                 {actionError}
               </p>
             )}

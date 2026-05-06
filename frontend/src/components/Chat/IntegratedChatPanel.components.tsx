@@ -85,7 +85,7 @@ export function EmptyState() {
         />
       </div>
       <p
-        className="text-[13px] font-medium"
+        className="text-[0.8125rem] font-medium"
         style={{ color: "var(--text-primary)" }}
       >
         Start a conversation
@@ -118,7 +118,7 @@ export function HistoryEmptyState() {
         />
       </div>
       <p
-        className="text-[13px] font-medium"
+        className="text-[0.8125rem] font-medium"
         style={{ color: "var(--text-primary)" }}
       >
         No chat for this state
@@ -245,13 +245,13 @@ export function FailedRunBanner({ errorMessage, onDismiss }: FailedRunBannerProp
       />
       <div className="flex-1 min-w-0">
         <span
-          className="text-[13px] font-medium block"
+          className="text-[0.8125rem] font-medium block"
           style={{ color: "var(--status-error)" }}
         >
           Agent run failed
         </span>
         <span
-          className="text-[12px] block mt-0.5 break-words"
+          className="text-[0.75rem] block mt-0.5 break-words"
           style={{ color: "var(--status-error)" }}
         >
           {errorMessage.slice(0, 200)}
@@ -299,7 +299,7 @@ export function PreviousRunBanner({ agentRunStatus, contextType }: PreviousRunBa
       }}
     >
       <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-      <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+      <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
         Previous {contextLabel} run ({statusLabel})
       </span>
     </div>
@@ -355,7 +355,7 @@ export function ContextIndicator({
         style={{ color: "var(--text-muted)" }}
       />
       <span
-        className="text-[13px] font-medium truncate"
+        className="text-[0.8125rem] font-medium truncate"
         style={{ color: "var(--text-primary)" }}
       >
         {label}

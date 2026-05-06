@@ -106,7 +106,7 @@ function RoundTimeline({
   return (
     <div className="mb-5">
       <div
-        className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+        className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-3"
         style={{ color: "var(--text-muted)" }}
       >
         Gap Score by Round
@@ -152,7 +152,7 @@ function RoundTimeline({
               {/* Bar */}
               <div className="w-full flex flex-col items-center gap-1">
                 <span
-                  className="text-[10px] font-medium tabular-nums"
+                  className="text-[0.625rem] font-medium tabular-nums"
                   style={{ color: isSelected ? "var(--text-primary)" : "var(--text-muted)" }}
                 >
                   {round.gapScore}
@@ -168,7 +168,7 @@ function RoundTimeline({
               </div>
               {/* Round label */}
               <span
-                className="text-[10px]"
+                className="text-[0.625rem]"
                 style={{ color: isSelected ? "var(--text-secondary)" : "var(--text-muted)" }}
               >
                 R{round.round}
@@ -187,7 +187,7 @@ function GapBreakdown({ gaps }: { gaps: VerificationGap[] }) {
   return (
     <div>
       <div
-        className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+        className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-3"
         style={{ color: "var(--text-muted)" }}
       >
         Final Gaps ({gaps.length})
@@ -204,7 +204,7 @@ function GapBreakdown({ gaps }: { gaps: VerificationGap[] }) {
                   style={{ background: config.color }}
                 />
                 <span
-                  className="text-[11px] font-medium"
+                  className="text-[0.6875rem] font-medium"
                   style={{ color: config.color }}
                 >
                   {config.label} ({severityGaps.length})
@@ -217,19 +217,19 @@ function GapBreakdown({ gaps }: { gaps: VerificationGap[] }) {
                     className="rounded-md px-2.5 py-2"
                     style={{ background: config.bg }}
                   >
-                    <div className="text-[12px]" style={{ color: "var(--text-primary)" }}>
+                    <div className="text-[0.75rem]" style={{ color: "var(--text-primary)" }}>
                       {gap.description}
                     </div>
                     {gap.whyItMatters && (
                       <div
-                        className="text-[11px] mt-0.5"
+                        className="text-[0.6875rem] mt-0.5"
                         style={{ color: "var(--text-secondary)" }}
                       >
                         {gap.whyItMatters}
                       </div>
                     )}
                     <div
-                      className="text-[10px] mt-1 font-medium uppercase tracking-wide"
+                      className="text-[0.625rem] mt-1 font-medium uppercase tracking-wide"
                       style={{ color: "var(--text-muted)" }}
                     >
                       {gap.category}
@@ -261,7 +261,7 @@ function AddressedGaps({
       <button
         type="button"
         onClick={() => setShowResolved((v) => !v)}
-        className="flex items-center gap-1.5 text-[11px] font-medium transition-colors"
+        className="flex items-center gap-1.5 text-[0.6875rem] font-medium transition-colors"
         style={{ color: "var(--status-success)" }}
         aria-expanded={showResolved}
         aria-controls={`verification-round-${roundNumber}-resolved`}
@@ -288,11 +288,11 @@ function AddressedGaps({
                   style={{ background: "var(--status-success)" }}
                 />
                 <div className="flex-1 min-w-0">
-                  <div className="text-[12px] leading-snug" style={{ color: "var(--text-primary)" }}>
+                  <div className="text-[0.75rem] leading-snug" style={{ color: "var(--text-primary)" }}>
                     {gap.description}
                   </div>
                   <div
-                    className="text-[10px] mt-0.5 opacity-60"
+                    className="text-[0.625rem] mt-0.5 opacity-60"
                     style={{ color: "var(--status-success)" }}
                   >
                     {sev?.label ?? gap.severity} · {gap.category}
@@ -326,7 +326,7 @@ function RoundLineage({
   return (
     <div>
       <div
-        className="text-[11px] font-semibold uppercase tracking-wider mb-3"
+        className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-3"
         style={{ color: "var(--text-muted)" }}
       >
         Round Lineage
@@ -367,36 +367,36 @@ function RoundLineage({
                   happens by clicking the chart bar above. */}
               <div className="flex items-center gap-2 py-1">
                 <span
-                  className="text-[12px] font-semibold"
+                  className="text-[0.75rem] font-semibold"
                   style={{ color: isLatest ? "var(--text-primary)" : "var(--text-secondary)" }}
                 >
                   R{round.round}
                 </span>
                 <span
-                  className="text-[11px] tabular-nums font-medium"
+                  className="text-[0.6875rem] tabular-nums font-medium"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {round.gapScore}
                 </span>
                 {hasDelta && delta !== 0 && (
                   <span
-                    className="text-[10px] font-semibold tabular-nums"
+                    className="text-[0.625rem] font-semibold tabular-nums"
                     style={{ color: delta < 0 ? "var(--status-success)" : "var(--status-error)" }}
                   >
                     {delta > 0 ? "+" : ""}{delta}
                   </span>
                 )}
-                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                   {round.gapCount} gaps
                 </span>
                 {resolved.length > 0 && (
-                  <span className="text-[10px]" style={{ color: "var(--status-success)" }}>
+                  <span className="text-[0.625rem]" style={{ color: "var(--status-success)" }}>
                     {resolved.length} fixed
                   </span>
                 )}
                 {isLatest && (
                   <span
-                    className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-px rounded"
+                    className="text-[0.5625rem] font-semibold uppercase tracking-wider px-1.5 py-px rounded"
                     style={{ background: withAlpha(dotColor, 12), color: dotColor }}
                   >
                     Latest
@@ -426,13 +426,13 @@ function RoundLineage({
                             />
                             <div className="flex-1 min-w-0">
                               <div
-                                className="text-[11px] leading-snug"
+                                className="text-[0.6875rem] leading-snug"
                                 style={{ color: "var(--text-primary)" }}
                               >
                                 {gap.description}
                               </div>
                               <div
-                                className="text-[10px] mt-0.5 opacity-50"
+                                className="text-[0.625rem] mt-0.5 opacity-50"
                                 style={{ color: sev?.color ?? "var(--text-muted)" }}
                               >
                                 {sev?.label ?? gap.severity} · {gap.category}
@@ -444,7 +444,7 @@ function RoundLineage({
                     </div>
                   ) : (
                     <div
-                      className="text-[11px] py-1"
+                      className="text-[0.6875rem] py-1"
                       style={{ color: "var(--text-muted)" }}
                     >
                       No gaps remained after this round.
@@ -519,7 +519,7 @@ export function VerificationHistory({
       {/* No rounds yet */}
       {rounds.length === 0 && !hasGaps && (
         <p
-          className="text-[12px] py-4 text-center"
+          className="text-[0.75rem] py-4 text-center"
           style={{ color: "var(--text-muted)" }}
         >
           No verification rounds recorded.

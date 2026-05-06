@@ -37,7 +37,7 @@ export function GhAuthLoginPrompt({ prompt }: { prompt: GhAuthLoginPromptPayload
             type="button"
             variant="secondary"
             size="sm"
-            className="h-7 gap-1.5 px-2 text-[11px]"
+            className="h-7 gap-1.5 px-2 text-[0.6875rem]"
             onClick={() => void openUrl(prompt.url!)}
             data-testid="gh-auth-open-github"
           >

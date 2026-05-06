@@ -191,7 +191,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
             </div>
             <span
               style={{
-                fontSize: "12.5px",
+                fontSize: "0.7812rem",
                 fontWeight: 500,
                 letterSpacing: 0,
               }}
@@ -243,7 +243,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
           className="flex-1 min-w-0 bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
           style={{
             color: "var(--text-primary)",
-            fontSize: "13px",
+            fontSize: "0.8125rem",
             fontWeight: 500,
             letterSpacing: 0,
             boxShadow: "none",
@@ -264,7 +264,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
           >
             <span
               style={{
-                fontSize: "9px",
+                fontSize: "0.5625rem",
                 fontWeight: 600,
                 color: "var(--text-muted)",
                 letterSpacing: 0,
@@ -275,7 +275,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
             </span>
             <span
               style={{
-                fontSize: "9px",
+                fontSize: "0.5625rem",
                 color: "var(--text-muted)",
                 opacity: 0.5,
               }}
@@ -316,7 +316,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
             className="w-full bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 resize-none"
             style={{
               color: "var(--text-secondary)",
-              fontSize: "12px",
+              fontSize: "0.75rem",
               lineHeight: 1.5,
               letterSpacing: 0,
               marginTop: "8px",
@@ -364,7 +364,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
         >
           <span
             style={{
-              fontSize: "11px",
+              fontSize: "0.6875rem",
               fontWeight: 500,
               color: "var(--accent-primary)",
               letterSpacing: 0,
@@ -387,7 +387,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
               borderRadius: "5px",
               backgroundColor: "transparent",
               border: "none",
-              fontSize: "11px",
+              fontSize: "0.6875rem",
               fontWeight: 500,
               color: "var(--text-muted)",
               cursor: "pointer",
@@ -415,7 +415,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
               borderRadius: "5px",
               backgroundColor: title.trim() ? "var(--accent-primary)" : "var(--overlay-weak)",
               border: "none",
-              fontSize: "11px",
+              fontSize: "0.6875rem",
               fontWeight: 600,
               color: title.trim() ? "white" : "var(--text-muted)",
               cursor: title.trim() ? "pointer" : "default",
@@ -446,7 +446,7 @@ export function InlineTaskAdd({ projectId, columnId: _columnId, onCreated, onExp
                       padding: "1px 3px",
                       borderRadius: "2px",
                       backgroundColor: title.trim() ? "var(--overlay-moderate)" : "var(--overlay-faint)",
-                      fontSize: "9px",
+                      fontSize: "0.5625rem",
                       fontWeight: 500,
                       opacity: 0.7,
                     }}

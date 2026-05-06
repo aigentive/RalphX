@@ -65,6 +65,11 @@ export interface TaskBoardProps {
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
+  /** When `true` (compact host like a task tab / chat-panel split), expanded
+   * columns redistribute via `1fr` to fill the constrained width. When `false`
+   * (full kanban screen), expanded columns keep a fixed width — collapsing one
+   * just shifts the rest left and leaves empty space on the right. */
+  fillWidth?: boolean;
 }
 
 export function TaskBoard({
@@ -72,6 +77,7 @@ export function TaskBoard({
   ideationSessionId: ideationSessionIdProp,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
+  fillWidth: fillWidthProp,
 }: TaskBoardProps) {
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
@@ -99,6 +105,11 @@ export function TaskBoard({
   const openModal = useUiStore((s) => s.openModal);
   const showArchived = useUiStore((s) => s.showArchived);
   const setShowArchived = useUiStore((s) => s.setShowArchived);
+  // Default: full kanban screen → keep column widths fixed when one collapses
+  // (empty space appears on the right). When a task tab is open the host
+  // (or this fallback) flips to fillWidth, redistributing through `1fr`.
+  const selectedTaskId = useUiStore((s) => s.selectedTaskId);
+  const fillWidth = fillWidthProp ?? selectedTaskId != null;
   const showMergeTasks = true;
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const boardSearchQuery = useUiStore((s) => s.boardSearchQuery);
@@ -434,7 +445,7 @@ export function TaskBoard({
             pressed={showArchived}
             onPressedChange={setShowArchived}
             aria-label="Toggle show archived tasks"
-            className="h-[30px] max-w-[380px] gap-2 rounded-[6px] px-2.5 text-[12.5px] font-medium transition-colors"
+            className="h-[30px] max-w-[380px] gap-2 rounded-[6px] px-2.5 text-[0.7812rem] font-medium transition-colors"
             style={{
               backgroundColor: showArchived ? "var(--bg-hover)" : "transparent",
               borderColor: showArchived ? "var(--border-default)" : "transparent",
@@ -446,7 +457,7 @@ export function TaskBoard({
             <Database className="h-[13px] w-[13px] shrink-0" />
             <span className="truncate">Archived</span>
             <span
-              className="shrink-0 text-[11px]"
+              className="shrink-0 text-[0.6875rem]"
               style={{
                 color: showArchived ? "var(--text-secondary)" : "var(--text-muted)",
                 fontFamily:
@@ -483,7 +494,29 @@ export function TaskBoard({
             gridTemplateColumns:
               showNoPlanState || showEmptyState
                 ? undefined
-                : `repeat(${displayColumns.length}, minmax(220px, 1fr))`,
+                : (() => {
+                    const anyCollapsed = displayColumns.some(
+                      (c) => !activeTask && isCollapsed(c.id)
+                    );
+                    // Full-width split when nothing is collapsed (or in compact
+                    // host) so columns fill the viewport via `1fr`. Once any
+                    // column collapses on the bare kanban screen, freeze
+                    // expanded columns to a fixed width — collapsing just
+                    // shifts the rest left and leaves space on the right.
+                    const useFixedWidths = !fillWidth && anyCollapsed;
+                    return displayColumns
+                      .map((column) =>
+                        !activeTask && isCollapsed(column.id)
+                          ? "128px"
+                          : useFixedWidths
+                            ? "320px"
+                            : fillWidth
+                              ? "minmax(0, 1fr)"
+                              : "minmax(220px, 1fr)"
+                      )
+                      .join(" ");
+                  })(),
+            justifyContent: "start",
             gridAutoRows: "1fr",
             gap: showNoPlanState || showEmptyState ? undefined : "1px",
             alignItems: "stretch",
@@ -606,6 +639,7 @@ export function TaskBoard({
                     executionPlanId={effectiveExecutionPlanId}
                     isCollapsed={columnCollapsed}
                     onToggleCollapse={() => toggleCollapse(column.id)}
+                    fillWidth={fillWidth}
                     {...(onTaskSelect !== undefined && { onTaskSelect })}
                   />
                 );

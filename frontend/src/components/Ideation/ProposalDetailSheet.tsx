@@ -78,10 +78,10 @@ function MetadataChip({ label, value, accent }: { label: string; value: string; 
         border: accent ? "1px solid var(--accent-border)" : "1px solid var(--overlay-weak)",
       }}
     >
-      <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+      <span className="text-[0.625rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
         {label}
       </span>
-      <span className="text-[12px] font-medium" style={{ color: accent ? "var(--accent-primary)" : "var(--text-primary)" }}>
+      <span className="text-[0.75rem] font-medium" style={{ color: accent ? "var(--accent-primary)" : "var(--text-primary)" }}>
         {value}
       </span>
     </div>
@@ -175,7 +175,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
               style={{ background: "var(--accent-primary)" }}
             />
             <h2
-              className="text-[13px] font-semibold truncate"
+              className="text-[0.8125rem] font-semibold truncate"
               style={{ color: "var(--text-primary)" }}
             >
               Proposal Details
@@ -234,14 +234,14 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
             {/* Title */}
             <div>
               <h3
-                className="text-[15px] font-semibold leading-snug tracking-[-0.01em]"
+                className="text-[0.9375rem] font-semibold leading-snug tracking-[-0.01em]"
                 style={{ color: "var(--text-primary)" }}
               >
                 {proposal.title}
               </h3>
               {enrichment?.isOnCriticalPath && (
                 <span
-                  className="inline-block mt-1.5 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider"
+                  className="inline-block mt-1.5 px-2 py-0.5 rounded text-[0.625rem] font-semibold uppercase tracking-wider"
                   style={{
                     background: withAlpha("var(--accent-primary)", 10),
                     border: "1px solid var(--accent-border)",
@@ -256,11 +256,11 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
             {/* Description */}
             {proposal.description && (
               <div className="space-y-1.5">
-                <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.6875rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Description
                 </span>
                 <div
-                  className="text-[13px] leading-relaxed"
+                  className="text-[0.8125rem] leading-relaxed"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   <MarkdownText text={proposal.description} />
@@ -277,10 +277,10 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
                   border: `1px solid ${priorityColor.border}`,
                 }}
               >
-                <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.625rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Priority
                 </span>
-                <span className="text-[12px] font-semibold" style={{ color: priorityColor.text }}>
+                <span className="text-[0.75rem] font-semibold" style={{ color: priorityColor.text }}>
                   {config.label}
                 </span>
               </div>
@@ -291,11 +291,11 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
             {/* Priority Reason */}
             {proposal.priorityReason && (
               <div className="space-y-1.5">
-                <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.6875rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Priority Rationale
                 </span>
                 <p
-                  className="text-[12px] leading-relaxed italic"
+                  className="text-[0.75rem] leading-relaxed italic"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   "{proposal.priorityReason}"
@@ -306,20 +306,20 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
             {/* Implementation Steps */}
             {proposal.steps.length > 0 && (
               <div className="space-y-2">
-                <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.6875rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Implementation Steps
                 </span>
                 <ol className="space-y-2">
                   {proposal.steps.map((step, index) => (
                     <li key={index} className="flex items-start gap-3">
                       <span
-                        className="flex-shrink-0 text-[11px] font-mono font-semibold mt-0.5 w-4 text-right"
+                        className="flex-shrink-0 text-[0.6875rem] font-mono font-semibold mt-0.5 w-4 text-right"
                         style={{ color: "var(--accent-primary)" }}
                       >
                         {index + 1}.
                       </span>
                       <div
-                        className="text-[13px] leading-snug min-w-0 flex-1"
+                        className="text-[0.8125rem] leading-snug min-w-0 flex-1"
                         style={{ color: "var(--text-secondary)" }}
                       >
                         <MarkdownText text={step} />
@@ -333,7 +333,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
             {/* Acceptance Criteria */}
             {proposal.acceptanceCriteria.length > 0 && (
               <div className="space-y-2">
-                <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.6875rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Acceptance Criteria
                 </span>
                 <ul className="space-y-1.5">
@@ -344,7 +344,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
                         style={{ color: withAlpha("var(--accent-primary)", 50) }}
                       />
                       <div
-                        className="text-[13px] leading-snug min-w-0 flex-1"
+                        className="text-[0.8125rem] leading-snug min-w-0 flex-1"
                         style={{ color: "var(--text-secondary)" }}
                       >
                         <MarkdownText text={criterion} />
@@ -358,7 +358,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
             {/* Dependencies */}
             {enrichment && enrichment.dependsOnDetails.length > 0 && (
               <div className="space-y-2">
-                <span className="text-[11px] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                <span className="text-[0.6875rem] font-medium uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
                   Depends On ({enrichment.dependsOnDetails.length})
                 </span>
                 <ul className="space-y-1.5">
@@ -371,11 +371,11 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
                         border: "1px solid var(--overlay-weak)",
                       }}
                     >
-                      <div className="text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>
+                      <div className="text-[0.75rem] font-medium" style={{ color: "var(--text-secondary)" }}>
                         {dep.title}
                       </div>
                       {dep.reason && (
-                        <div className="text-[11px] mt-0.5 italic" style={{ color: "var(--text-muted)" }}>
+                        <div className="text-[0.6875rem] mt-0.5 italic" style={{ color: "var(--text-muted)" }}>
                           {dep.reason}
                         </div>
                       )}
@@ -394,10 +394,10 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
                   border: "1px solid var(--accent-muted)",
                 }}
               >
-                <span className="text-[12px] font-semibold" style={{ color: "var(--accent-primary)" }}>
+                <span className="text-[0.75rem] font-semibold" style={{ color: "var(--accent-primary)" }}>
                   →{enrichment.blocksCount}
                 </span>
-                <span className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
+                <span className="text-[0.75rem]" style={{ color: "var(--text-secondary)" }}>
                   Blocks {enrichment.blocksCount} proposal{enrichment.blocksCount !== 1 ? "s" : ""}
                 </span>
               </div>
@@ -408,7 +408,7 @@ export const ProposalDetailSheet = React.memo(function ProposalDetailSheet({
               <button
                 data-testid="view-task-from-detail"
                 onClick={() => onNavigateToTask(proposal.createdTaskId!)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[13px] font-medium transition-colors duration-150"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-[0.8125rem] font-medium transition-colors duration-150"
                 style={{
                   background: withAlpha("var(--accent-primary)", 8),
                   border: "1px solid var(--accent-border)",

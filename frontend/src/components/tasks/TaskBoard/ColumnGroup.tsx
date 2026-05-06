@@ -100,7 +100,7 @@ export function ColumnGroup({
             <span
               className="flex-1 truncate"
               style={{
-                fontSize: "11.5px",
+                fontSize: "0.7188rem",
                 fontWeight: 600,
                 color: "var(--text-secondary)",
                 letterSpacing: "0.02em",
@@ -112,7 +112,7 @@ export function ColumnGroup({
             {/* Count - simple */}
             <span
               style={{
-                fontSize: "11px",
+                fontSize: "0.6875rem",
                 fontWeight: 500,
                 color: "var(--text-muted)",
                 fontVariantNumeric: "tabular-nums",

@@ -288,7 +288,7 @@ function buildHunks(lines: DiffLine[]): DiffHunk[] {
 function renderHeader(content: string) {
   return (
     <div
-      className="px-3 py-1 text-[11px] font-mono"
+      className="px-3 py-1 text-[0.6875rem] font-mono"
       style={{
         backgroundColor: "var(--overlay-weak)",
         color: withAlpha("var(--text-primary)", 60),
@@ -434,13 +434,13 @@ export function SimpleDiffView({ oldContent, newContent, variant = "standard" }:
   return (
     <div className="h-full overflow-y-auto">
       <div
-        className="font-mono text-[13px] leading-[20px]"
+        className="font-mono text-[0.8125rem] leading-[20px]"
         style={{ backgroundColor: "var(--bg-base)" }}
       >
         <div className="px-3 py-2 border-b" style={{ borderColor: "var(--overlay-weak)" }}>
           <Button
             variant="ghost"
-            className="h-7 px-2 text-[11px]"
+            className="h-7 px-2 text-[0.6875rem]"
             onClick={() => setWrapLines((prev) => !prev)}
           >
             {wrapLines ? "Disable wrap" : "Wrap lines"}
@@ -474,7 +474,7 @@ export function SimpleDiffView({ oldContent, newContent, variant = "standard" }:
                       )}
                       <button
                         type="button"
-                        className="mt-2 text-[11px] text-text-primary/50 hover:text-text-primary/70"
+                        className="mt-2 text-[0.6875rem] text-text-primary/50 hover:text-text-primary/70"
                         onClick={() => toggleGap(gapId)}
                       >
                         Hide unchanged lines
@@ -483,7 +483,7 @@ export function SimpleDiffView({ oldContent, newContent, variant = "standard" }:
                   ) : (
                     <button
                       type="button"
-                      className="text-[11px] text-text-primary/50 hover:text-text-primary/70"
+                      className="text-[0.6875rem] text-text-primary/50 hover:text-text-primary/70"
                       onClick={() => toggleGap(gapId)}
                     >
                       Show {gapLines.length} unchanged lines

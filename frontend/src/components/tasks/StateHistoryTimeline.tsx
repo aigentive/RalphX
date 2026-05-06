@@ -164,7 +164,7 @@ function ReviewEntryIssues({
     <div className="mt-2">
       <button
         onClick={onToggle}
-        className="flex items-center gap-1.5 text-[11px] w-full text-left"
+        className="flex items-center gap-1.5 text-[0.6875rem] w-full text-left"
         style={{ color: "var(--text-muted)" }}
       >
         <ChevronIcon className="w-3 h-3" />
@@ -192,7 +192,7 @@ function ReviewEntryIssues({
           {newIssues.length > 0 && (
             <div>
               <div
-                className="text-[10px] uppercase tracking-wider mb-1.5"
+                className="text-[0.625rem] uppercase tracking-wider mb-1.5"
                 style={{ color: "var(--text-muted)" }}
               >
                 Issues Found
@@ -209,7 +209,7 @@ function ReviewEntryIssues({
           {verifiedIssues.length > 0 && (
             <div className="mt-2">
               <div
-                className="text-[10px] uppercase tracking-wider mb-1.5"
+                className="text-[0.625rem] uppercase tracking-wider mb-1.5"
                 style={{ color: "var(--status-success)" }}
               >
                 Verified
@@ -241,7 +241,7 @@ function CompactIssueCard({ issue }: CompactIssueCardProps) {
         <SeverityBadge severity={issue.severity} compact />
         <StatusBadge status={issue.status} compact />
         <span
-          className="text-[11px] truncate flex-1"
+          className="text-[0.6875rem] truncate flex-1"
           style={{ color: "var(--text-secondary)" }}
         >
           {issue.title}
@@ -249,7 +249,7 @@ function CompactIssueCard({ issue }: CompactIssueCardProps) {
       </div>
       {issue.filePath && (
         <div
-          className="text-[10px] font-mono mt-0.5"
+          className="text-[0.625rem] font-mono mt-0.5"
           style={{ color: "var(--status-info)" }}
         >
           {issue.filePath}
@@ -276,13 +276,13 @@ function IssueSummaryHeader({ progress }: IssueSummaryHeaderProps) {
     >
       <div className="flex items-center justify-between mb-2">
         <span
-          className="text-[11px] uppercase tracking-wider font-medium"
+          className="text-[0.6875rem] uppercase tracking-wider font-medium"
           style={{ color: "var(--text-muted)" }}
         >
           Issue Progress
         </span>
         <span
-          className="text-[12px] font-medium tabular-nums"
+          className="text-[0.75rem] font-medium tabular-nums"
           style={{ color: "var(--text-secondary)" }}
         >
           {progress.verified + progress.addressed + progress.wontfix}/{progress.total} resolved

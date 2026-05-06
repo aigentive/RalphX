@@ -174,6 +174,20 @@ html[data-theme="dark"] main {
   background-color: #2E2E36 !important;
 }
 
+[data-theme="dark"] [data-testid="task-overlay-backdrop"] {
+  background-color: #18181D !important;
+}
+
+/* Ideation plan-browser sidebar — match AgentsSidebar chrome literally
+   so WKWebView always paints the right tint even if the inline `var()`
+   gets dropped. Mirrors --app-sidebar-bg / --app-sidebar-border. */
+[data-theme="dark"] [data-testid="plan-browser"] > div {
+  background-color: #1E1E23 !important;
+  border-right-color: #2E2E36 !important;
+  border-right-style: solid !important;
+  border-right-width: 1px !important;
+}
+
 [data-theme="dark"] [data-testid^="column-"]:not([data-testid="column-header"]),
 [data-theme="dark"] [data-testid^="skeleton-column-"] {
   background-color: #18181D !important;

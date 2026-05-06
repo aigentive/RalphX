@@ -61,7 +61,7 @@ export const TeamSplitHeader = React.memo(function TeamSplitHeader({
           variant="ghost"
           size="sm"
           onClick={handleBack}
-          className="gap-1.5 h-7 px-2 text-[13px]"
+          className="gap-1.5 h-7 px-2 text-[0.8125rem]"
           style={{ color: "var(--text-secondary)" }}
         >
           <ChevronLeft className="w-4 h-4" />
@@ -69,14 +69,14 @@ export const TeamSplitHeader = React.memo(function TeamSplitHeader({
         </Button>
 
         <span
-          className="text-[13px] font-medium"
+          className="text-[0.8125rem] font-medium"
           style={{ color: "var(--text-primary)" }}
         >
           {team?.teamName ?? "Team"}
         </span>
 
         <span
-          className="text-[10px] px-1.5 py-0.5 rounded"
+          className="text-[0.625rem] px-1.5 py-0.5 rounded"
           style={{
             backgroundColor: "var(--border-subtle)",
             color: "var(--text-muted)",
@@ -86,7 +86,7 @@ export const TeamSplitHeader = React.memo(function TeamSplitHeader({
         </span>
 
         <span
-          className="text-[11px] font-mono"
+          className="text-[0.6875rem] font-mono"
           style={{ color: "var(--text-muted)" }}
         >
           {costLabel}
@@ -99,7 +99,7 @@ export const TeamSplitHeader = React.memo(function TeamSplitHeader({
           variant="ghost"
           size="sm"
           onClick={onStopAll}
-          className="gap-1.5 h-7 text-[11px]"
+          className="gap-1.5 h-7 text-[0.6875rem]"
           style={{ color: "var(--status-error)" }}
         >
           <Square className="w-3 h-3" />
