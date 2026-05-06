@@ -726,4 +726,73 @@ mod tests {
             .expect("old workspace should remain checked out");
         assert_eq!(checked_out, workspace.branch_name);
     }
+
+    #[tokio::test]
+    async fn rollover_agent_conversation_workspace_blocks_retarget_when_old_head_not_contained() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Retarget Rollover".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let main_sha = git(&repo_path, &["rev-parse", "main"]);
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-retarget-rollover-test".to_string());
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("unmerged.txt"),
+            "not merged to main\n",
+        )
+        .expect("fixture file should be written");
+        git(
+            Path::new(&workspace.worktree_path),
+            &["add", "unmerged.txt"],
+        );
+        git(
+            Path::new(&workspace.worktree_path),
+            &["commit", "-m", "workspace-only change"],
+        );
+
+        workspace.base_ref = "feature/deleted-base".to_string();
+        workspace.base_display_name = Some("Current branch (feature/deleted-base)".to_string());
+        workspace.base_commit = Some(main_sha);
+        workspace.publication_pr_status = Some("merged".to_string());
+        let old_worktree_path = PathBuf::from(&workspace.worktree_path);
+
+        let error = rollover_agent_conversation_workspace(&project, &workspace)
+            .await
+            .expect_err("old branch head outside default should block rollover");
+
+        assert!(
+            error
+                .to_string()
+                .contains("old workspace branch HEAD is not contained"),
+            "blocked rollover should explain old branch containment failure: {error}"
+        );
+        assert!(
+            old_worktree_path.exists(),
+            "blocked rollover must not delete the old worktree"
+        );
+        let checked_out = GitService::get_current_branch(&old_worktree_path)
+            .await
+            .expect("old workspace should remain checked out");
+        assert_eq!(checked_out, workspace.branch_name);
+    }
 }

@@ -3712,17 +3712,30 @@ pub async fn update_agent_conversation_title(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_agent_workspace_publish_repair_message_for_target,
+        apply_base_resolution_to_publish_target,
+        build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
         merge_delegated_snapshot_into_result, normalize_agent_runtime_selection,
         normalized_effort_for_supported, parse_wrapped_mcp_result_object,
+        persist_workspace_base_resolution_if_retargeted,
         project_plan_branch_publication_into_workspace_response,
+        publish_agent_conversation_workspace_for_app_state,
+        retarget_existing_workspace_pr_base_if_needed,
         send_agent_workspace_publish_repair_message_for_target,
         switch_agent_conversation_mode_for_state, AgentConversationResponse,
+        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
         AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
         SwitchAgentConversationModeInput,
     };
+    use crate::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use crate::application::agent_conversation_workspace_base::{
+        BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
+    };
+    use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{chat_service::MockChatService, AppState};
+    use crate::commands::ExecutionState;
     use crate::domain::agents::{
         AgentHarnessKind, AgentModelDefinition, LogicalEffort, ProviderSessionRef,
     };
@@ -3730,10 +3743,15 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversation,
         ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
-        PlanBranchId, PlanBranchStatus, ProjectId,
+        PlanBranchId, PlanBranchStatus, Project, ProjectId,
     };
+    use crate::domain::services::GithubServiceTrait;
+    use crate::error::AppError;
+    use crate::tests::mock_github_service::MockGithubService;
     use serde_json::json;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::Arc;
 
     #[test]
     fn normalized_effort_for_supported_keeps_supported_request_or_default() {
@@ -4038,6 +4056,420 @@ mod tests {
             options[0].working_directory_override.as_deref(),
             Some(Path::new("/tmp/project-repo"))
         );
+    }
+
+    fn retargeted_base_resolution() -> BaseResolutionResult {
+        BaseResolutionResult {
+            status: BaseStatus::Retargeted,
+            old_base_ref: "feature/deleted-base".to_string(),
+            effective_base_ref: Some("main".to_string()),
+            effective_checkout_ref: Some("origin/main".to_string()),
+            effective_base_commit: Some("main-sha".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            block_reason: None,
+        }
+    }
+
+    fn blocked_base_resolution(reason: &str) -> BaseResolutionResult {
+        BaseResolutionResult {
+            status: BaseStatus::Blocked,
+            old_base_ref: "feature/deleted-base".to_string(),
+            effective_base_ref: None,
+            effective_checkout_ref: None,
+            effective_base_commit: None,
+            display_name: None,
+            block_reason: Some(reason.to_string()),
+        }
+    }
+
+    fn command_test_workspace() -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-command-base"),
+            ProjectId::from_string("project-command-base".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "feature/deleted-base".to_string(),
+            Some("Current branch (feature/deleted-base)".to_string()),
+            Some("old-base-sha".to_string()),
+            "ralphx/test/agent-command".to_string(),
+            "/tmp/agent-command-workspace".to_string(),
+        )
+    }
+
+    fn command_publish_target() -> AgentConversationWorkspacePublishTarget {
+        AgentConversationWorkspacePublishTarget {
+            worktree_path: PathBuf::from("/tmp/project-repo"),
+            branch_name: "ralphx/test/agent-command".to_string(),
+            base_ref: "feature/deleted-base".to_string(),
+            base_display_name: Some("Current branch (feature/deleted-base)".to_string()),
+            plan_branch: None,
+        }
+    }
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should spawn");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn setup_publish_repo(repo_path: &Path) -> String {
+        std::fs::create_dir_all(repo_path).expect("repo root should be created");
+        git(repo_path, &["init", "-b", "main"]);
+        git(repo_path, &["config", "user.email", "test@example.com"]);
+        git(repo_path, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_path.join("README.md"), "base\n")
+            .expect("fixture file should be written");
+        git(repo_path, &["add", "README.md"]);
+        git(repo_path, &["commit", "-m", "base"]);
+        git(repo_path, &["rev-parse", "HEAD"])
+    }
+
+    async fn setup_publish_command_state(
+        suffix: &str,
+        capture_base_commit: bool,
+        publication_pr_number: Option<i64>,
+        github: Arc<MockGithubService>,
+    ) -> (
+        tempfile::TempDir,
+        AppState,
+        ChatConversationId,
+        Arc<MockGithubService>,
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        let main_sha = setup_publish_repo(&repo_path);
+
+        let mut project = Project::new(
+            format!("Publish Base {suffix}"),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string(format!("conversation-publish-{suffix}"));
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+        workspace.base_ref = "feature/deleted-base".to_string();
+        workspace.base_display_name = Some("Current branch (feature/deleted-base)".to_string());
+        workspace.base_commit = capture_base_commit.then_some(main_sha);
+        workspace.publication_pr_number = publication_pr_number;
+        workspace.publication_pr_url = publication_pr_number
+            .map(|number| format!("https://github.com/mock/repo/pull/{number}"));
+        workspace.publication_pr_status = publication_pr_number.map(|_| "open".to_string());
+
+        let mut state = AppState::new_test();
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should be persisted");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        (temp, state, conversation_id, github)
+    }
+
+    #[test]
+    fn base_resolution_updates_publish_target_or_blocks_with_reason() {
+        let resolution = retargeted_base_resolution();
+        let mut target = command_publish_target();
+
+        apply_base_resolution_to_publish_target(&mut target, &resolution)
+            .expect("retargeted base should update publish target");
+
+        assert_eq!(target.base_ref, "main");
+        assert_eq!(
+            target.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+
+        let blocked = blocked_base_resolution("cannot verify base");
+        let error = apply_base_resolution_to_publish_target(&mut target, &blocked)
+            .expect_err("blocked base should stop publish target update");
+        assert_eq!(error, "cannot verify base");
+    }
+
+    #[tokio::test]
+    async fn persisting_retargeted_base_resolution_updates_workspace_metadata() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should be persisted");
+
+        persist_workspace_base_resolution_if_retargeted(
+            &state,
+            &mut workspace,
+            &retargeted_base_resolution(),
+        )
+        .await
+        .expect("retargeted workspace metadata should persist");
+
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(workspace.base_commit.as_deref(), Some("main-sha"));
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "main");
+        assert_eq!(
+            stored.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+    }
+
+    #[tokio::test]
+    async fn retargeting_existing_workspace_pr_updates_github_base() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(123);
+        let target = command_publish_target();
+
+        retarget_existing_workspace_pr_base_if_needed(
+            &state,
+            &target,
+            &workspace,
+            &retargeted_base_resolution(),
+        )
+        .await
+        .expect("existing PR should be retargeted");
+
+        let mock_state = github.state();
+        assert_eq!(mock_state.update_pr_base_calls, 1);
+        assert_eq!(
+            mock_state.last_update_pr_base_args,
+            Some((123, "main".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn retargeting_existing_workspace_pr_blocks_when_github_is_missing_or_fails() {
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(123);
+        let target = command_publish_target();
+        let resolution = retargeted_base_resolution();
+
+        let missing_error = retarget_existing_workspace_pr_base_if_needed(
+            &AppState::new_test(),
+            &target,
+            &workspace,
+            &resolution,
+        )
+        .await
+        .expect_err("missing GitHub service should block existing PR retarget");
+        assert_eq!(
+            missing_error,
+            existing_pr_retarget_block_reason(123, &resolution)
+        );
+
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        {
+            github.state().update_pr_base_result =
+                Some(Err(AppError::Infrastructure("denied".to_string())));
+        }
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let failure_error =
+            retarget_existing_workspace_pr_base_if_needed(&state, &target, &workspace, &resolution)
+                .await
+                .expect_err("GitHub retarget failure should block existing PR");
+        assert_eq!(
+            failure_error,
+            existing_pr_retarget_block_reason(123, &resolution)
+        );
+        assert_eq!(github.state().update_pr_base_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn retargeting_workspace_without_existing_pr_is_a_noop() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        let target = command_publish_target();
+
+        retarget_existing_workspace_pr_base_if_needed(
+            &state,
+            &target,
+            &workspace,
+            &retargeted_base_resolution(),
+        )
+        .await
+        .expect("workspace without PR should not require GitHub");
+    }
+
+    #[test]
+    fn freshness_response_includes_effective_and_blocked_base_state() {
+        let status = PublishBranchFreshnessStatus {
+            target_ref: "origin/main".to_string(),
+            captured_base_commit: Some("old-base-sha".to_string()),
+            target_base_commit: "main-sha".to_string(),
+            is_base_ahead: true,
+        };
+        let retargeted = retargeted_base_resolution();
+        let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            "conversation-command-base".to_string(),
+            "feature/deleted-base".to_string(),
+            Some("Current branch (feature/deleted-base)".to_string()),
+            Some(&retargeted),
+            status.clone(),
+            true,
+            Some(2),
+        );
+
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(response.base_block_reason, None);
+        assert!(response.has_uncommitted_changes);
+        assert_eq!(response.unpublished_commit_count, Some(2));
+
+        let fallback = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            "conversation-command-base".to_string(),
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            status,
+            false,
+            Some(0),
+        );
+        assert_eq!(fallback.base_status, "valid");
+        assert_eq!(fallback.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            fallback.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+
+        let workspace = command_test_workspace();
+        let blocked = blocked_base_resolution(BLOCK_REASON_MISSING_BASE_COMMIT);
+        let blocked_response = AgentConversationWorkspaceFreshnessResponse::blocked(
+            "conversation-command-base".to_string(),
+            &workspace,
+            &blocked,
+            true,
+            Some(1),
+        );
+        assert_eq!(blocked_response.base_status, "blocked");
+        assert_eq!(
+            blocked_response.base_block_reason.as_deref(),
+            Some(BLOCK_REASON_MISSING_BASE_COMMIT)
+        );
+        assert_eq!(blocked_response.effective_base_ref, None);
+        assert_eq!(blocked_response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_blocks_before_pr_mutation_when_base_commit_is_missing() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "missing-base",
+            false,
+            Some(321),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("missing base commit should block publish");
+
+        assert_eq!(error, BLOCK_REASON_MISSING_BASE_COMMIT);
+        assert_eq!(github.state().update_pr_base_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_blocks_when_existing_pr_base_retarget_fails() {
+        let github = Arc::new(MockGithubService::new());
+        {
+            github.state().update_pr_base_result =
+                Some(Err(AppError::Infrastructure("denied".to_string())));
+        }
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("pr-retarget-fails", true, Some(654), github).await;
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("failed PR base retarget should block publish");
+
+        assert!(error.contains("Existing PR #654 targets the deleted branch"));
+        assert_eq!(
+            github.state().last_update_pr_base_args,
+            Some((654, "main".to_string()))
+        );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use super::agent_conversation_workspace_base::{
-    resolve_workspace_base, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
-    BLOCK_REASON_NOT_CONTAINED,
+    apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
+    BLOCK_REASON_MISSING_BASE_COMMIT, BLOCK_REASON_NOT_CONTAINED,
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
@@ -67,6 +67,144 @@ fn workspace(base_ref: &str, base_commit: Option<String>) -> AgentConversationWo
         "ralphx/test/agent".to_string(),
         "/tmp/agent-workspace".to_string(),
     )
+}
+
+#[test]
+fn base_status_strings_match_api_contract() {
+    assert_eq!(BaseStatus::Valid.as_str(), "valid");
+    assert_eq!(BaseStatus::Retargeted.as_str(), "retargeted");
+    assert_eq!(BaseStatus::Blocked.as_str(), "blocked");
+}
+
+#[test]
+fn blocked_base_resolution_accessors_return_validation_errors() {
+    let blocked = BaseResolutionResult {
+        status: BaseStatus::Blocked,
+        old_base_ref: "feature/deleted-base".to_string(),
+        effective_base_ref: None,
+        effective_checkout_ref: None,
+        effective_base_commit: None,
+        display_name: None,
+        block_reason: Some("custom block reason".to_string()),
+    };
+
+    assert!(blocked
+        .effective_base_ref()
+        .expect_err("blocked base ref should error")
+        .to_string()
+        .contains("custom block reason"));
+    assert!(blocked
+        .effective_checkout_ref()
+        .expect_err("blocked checkout ref should error")
+        .to_string()
+        .contains("custom block reason"));
+    assert!(blocked
+        .effective_base_commit()
+        .expect_err("blocked base commit should error")
+        .to_string()
+        .contains("custom block reason"));
+
+    let blocked_without_reason = BaseResolutionResult {
+        block_reason: None,
+        ..blocked
+    };
+    assert!(blocked_without_reason
+        .effective_base_ref()
+        .expect_err("blocked base ref should use fallback reason")
+        .to_string()
+        .contains("Agent workspace base is blocked"));
+}
+
+#[test]
+fn apply_workspace_base_resolution_updates_retargeted_metadata() {
+    let mut target = workspace("feature/deleted-base", Some("old-base".to_string()));
+    let resolution = BaseResolutionResult {
+        status: BaseStatus::Retargeted,
+        old_base_ref: "feature/deleted-base".to_string(),
+        effective_base_ref: Some("main".to_string()),
+        effective_checkout_ref: Some("origin/main".to_string()),
+        effective_base_commit: Some("new-main-sha".to_string()),
+        display_name: Some("Project default (main)".to_string()),
+        block_reason: None,
+    };
+
+    let changed = apply_workspace_base_resolution(&mut target, &resolution)
+        .expect("retargeted metadata should apply");
+
+    assert!(changed);
+    assert_eq!(
+        target.base_ref_kind,
+        IdeationAnalysisBaseRefKind::ProjectDefault
+    );
+    assert_eq!(target.base_ref, "main");
+    assert_eq!(
+        target.base_display_name.as_deref(),
+        Some("Project default (main)")
+    );
+    assert_eq!(target.base_commit.as_deref(), Some("new-main-sha"));
+}
+
+#[test]
+fn apply_workspace_base_resolution_keeps_valid_and_rejects_blocked() {
+    let mut target = workspace("main", Some("main-sha".to_string()));
+    let valid = BaseResolutionResult::valid(
+        "main".to_string(),
+        "origin/main".to_string(),
+        "main-sha".to_string(),
+        Some("Project default (main)".to_string()),
+    );
+    let changed = apply_workspace_base_resolution(&mut target, &valid)
+        .expect("valid metadata should be accepted");
+    assert!(!changed);
+    assert_eq!(target.base_ref, "main");
+
+    let blocked = BaseResolutionResult {
+        status: BaseStatus::Blocked,
+        old_base_ref: "feature/deleted-base".to_string(),
+        effective_base_ref: None,
+        effective_checkout_ref: None,
+        effective_base_commit: None,
+        display_name: None,
+        block_reason: Some("cannot verify base".to_string()),
+    };
+    let error = apply_workspace_base_resolution(&mut target, &blocked)
+        .expect_err("blocked metadata should not apply");
+    assert!(error.to_string().contains("cannot verify base"));
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_blocks_empty_saved_base_ref() {
+    let (_temp, project, main_sha) = setup_remote_repo();
+    let mut workspace = workspace(" origin/ ", Some(main_sha));
+    workspace.project_id = project.id.clone();
+
+    let resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .expect("base should classify as blocked");
+
+    assert_eq!(resolution.status, BaseStatus::Blocked);
+    assert_eq!(
+        resolution.block_reason.as_deref(),
+        Some("Agent conversation workspace base ref is empty")
+    );
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_blocks_when_configured_default_branch_is_missing() {
+    let (_temp, mut project, main_sha) = setup_remote_repo();
+    project.base_branch = Some("missing-default".to_string());
+    let mut workspace = workspace("feature/deleted-base", Some(main_sha));
+    workspace.project_id = project.id.clone();
+
+    let resolution = resolve_workspace_base(&project, &workspace)
+        .await
+        .expect("base should classify as blocked");
+
+    assert_eq!(resolution.status, BaseStatus::Blocked);
+    assert_eq!(
+        resolution.block_reason.as_deref(),
+        Some("Project default branch 'missing-default' cannot be resolved")
+    );
 }
 
 #[tokio::test]
