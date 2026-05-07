@@ -19,12 +19,22 @@ on:
         required: true
         type: boolean
         default: false
+      linux_runner:
+        description: "Runner to use for release metadata jobs"
+        required: true
+        type: choice
+        default: depot
+        options:
+          - depot
+          - github-hosted
+          - self-hosted
       arm_runner:
         description: "Runner to use for the macOS ARM release build"
         required: true
         type: choice
-        default: self-hosted
+        default: depot
         options:
+          - depot
           - self-hosted
           - github-hosted
       macos_runner_size:
@@ -46,7 +56,7 @@ concurrency:
 jobs:
   metadata:
     name: Resolve release metadata
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"depot-ubuntu-24.04"') }}
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
@@ -84,21 +94,27 @@ jobs:
             exit 1
           fi
 
-          arm_runs_on='"macos-15"'
-          arm_runner_kind="${raw_arm_runner}"
+          arm_runs_on='"depot-macos-15"'
+          arm_runner_kind="depot"
           intel_runs_on='"macos-15-intel"'
           intel_runner_kind="github-hosted"
           if [[ "${raw_macos_runner_size}" == "larger" ]]; then
-            arm_runs_on='"macos-15-xlarge"'
             intel_runs_on='"macos-15-large"'
             intel_runner_kind="github-hosted-larger"
             if [[ "${raw_arm_runner}" == "github-hosted" ]]; then
+              arm_runs_on='"macos-15-xlarge"'
               arm_runner_kind="github-hosted-larger"
             fi
+          elif [[ "${raw_arm_runner}" == "github-hosted" ]]; then
+            arm_runs_on='"macos-15"'
+            arm_runner_kind="github-hosted"
           fi
           if [[ "${raw_arm_runner}" == "self-hosted" ]]; then
             arm_runs_on='["self-hosted","macOS","ARM64","ralphx-release"]'
             arm_runner_kind="self-hosted"
+          elif [[ "${raw_arm_runner}" != "depot" && "${raw_arm_runner}" != "github-hosted" ]]; then
+            echo "Invalid arm_runner: ${raw_arm_runner}" >&2
+            exit 1
           fi
 
           build_matrix="$(

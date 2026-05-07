@@ -35,12 +35,22 @@ on:
         required: false
         type: string
         default: ""
+      linux_runner:
+        description: "Runner to use for Daily Release prep and Release Build metadata jobs"
+        required: true
+        type: choice
+        default: depot
+        options:
+          - depot
+          - github-hosted
+          - self-hosted
       arm_runner:
         description: "Runner to use for the macOS ARM release build"
         required: true
         type: choice
-        default: self-hosted
+        default: depot
         options:
+          - depot
           - self-hosted
           - github-hosted
       macos_runner_size:
@@ -78,7 +88,7 @@ jobs:
   prepare-and-dispatch:
     name: Prepare daily release
     if: ${{ github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"depot-ubuntu-24.04"') }}
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
@@ -92,7 +102,8 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
       DRAFT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
       PRERELEASE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
-      ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'self-hosted' }}
+      LINUX_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_runner || 'depot' }}
+      ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'depot' }}
       MACOS_RUNNER_SIZE: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_runner_size || 'standard' }}
     steps:
       - name: Checkout main
@@ -288,6 +299,7 @@ jobs:
             -f "version=${version}" \
             -f "draft=${DRAFT_RELEASE}" \
             -f "prerelease=${PRERELEASE_RELEASE}" \
+            -f "linux_runner=${LINUX_RUNNER}" \
             -f "arm_runner=${ARM_RUNNER}" \
             -f "macos_runner_size=${MACOS_RUNNER_SIZE}"
 

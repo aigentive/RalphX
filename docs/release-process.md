@@ -94,8 +94,9 @@ Manual testing:
 3. Use `dry_run=true` to verify Codex proposal, version bump, and note generation without committing, tagging, pushing, or dispatching the build.
 4. Optionally set `release_bump` to force `patch`, `minor`, or `major`; `major` is the required approval path for a normal `1.0.0` jump.
 5. Optionally set `release_version` to force an exact version such as `0.42.0`, `0.100.42`, or `v1.0.0`; do not combine it with `release_bump`.
-6. Optionally set `arm_runner` to choose `self-hosted` or `github-hosted` for the Apple Silicon build.
-7. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
+6. Optionally set `linux_runner` to choose `depot`, `github-hosted`, or `self-hosted` for the Daily Release prep job and the dispatched Release Build metadata job.
+7. Optionally set `arm_runner` to choose `depot`, `self-hosted`, or `github-hosted` for the Apple Silicon build.
+8. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
 
 Skipping scheduled release for maintenance-only commits:
 
@@ -103,8 +104,15 @@ Skipping scheduled release for maintenance-only commits:
 - The scheduled workflow skips only when all commits after the latest reachable release tag carry one of those markers.
 - Pushing to `main` can still run CI/CodeQL; this marker only affects the `Daily Release` workflow.
 
-Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the self-hosted ARM release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
+Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the Depot Linux release runner, the Depot ARM macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
 If Codex proposes a major version without a manual bump/version override, the workflow fails before version bump, tag creation, build dispatch, or publish.
+
+Runner labels:
+
+- `linux_runner=depot` → `depot-ubuntu-24.04`; `github-hosted` → `ubuntu-latest`; `self-hosted` → `["self-hosted","Linux","X64","ralphx-release"]`.
+- `arm_runner=depot` → `depot-macos-15`; `github-hosted` → `macos-15` or `macos-15-xlarge`; `self-hosted` → `["self-hosted","macOS","ARM64","ralphx-release"]`.
+- Auto-triggered `Release Publish` runs on `depot-ubuntu-24.04`; manual publish dispatch can choose `depot`, `github-hosted`, or `self-hosted`.
+- The Intel macOS artifact remains on GitHub-hosted Intel macOS (`macos-15-intel` or `macos-15-large`) because Depot macOS runners are Apple Silicon.
 
 ---
 
@@ -233,8 +241,11 @@ After the tag is on `origin`, trigger `Release Build` manually from `main`:
    - `version`: `0.2.0`
    - `draft`: choose whether the public release should stay a draft
    - `prerelease`: choose whether the release should be marked as a prerelease
-   - `arm_runner`: `self-hosted` or `github-hosted`
-   - `macos_runner_size`: `standard` or `larger`; `larger` uses paid GitHub-hosted macOS larger runners for release builds
+   - `linux_runner`: `depot`, `github-hosted`, or `self-hosted`
+   - `arm_runner`: `depot`, `self-hosted`, or `github-hosted`
+   - `macos_runner_size`: `standard` or `larger`; `larger` uses paid GitHub-hosted macOS larger runners for GitHub-hosted macOS release builds
+
+The Intel macOS artifact still builds on GitHub-hosted Intel macOS because Depot macOS runners are Apple Silicon. Use `macos_runner_size=larger` when that Intel job should use `macos-15-large` instead of `macos-15-intel`.
 
 What `Release Build` does:
 
@@ -251,9 +262,10 @@ What `Release Build` does:
 
 1. Go to `aigentive/ralphx.app` → Actions → `Release Publish`
 2. Confirm the auto-triggered run finished successfully
-3. Then go to `aigentive/ralphx.app` → Releases
-4. Find the release created or updated by the workflow
-5. Review the artifacts:
+3. For manual publish reruns, optionally set `linux_runner` to `depot`, `github-hosted`, or `self-hosted`; auto-triggered publish runs use Depot.
+4. Then go to `aigentive/ralphx.app` → Releases
+5. Find the release created or updated by the workflow
+6. Review the artifacts:
    - `RalphX_x.x.x_aarch64.dmg` - Apple Silicon
    - `RalphX_x.x.x_x86_64.dmg` - Intel
    - `RalphX_x.x.x_aarch64.app.tar.gz` - Apple Silicon updater bundle
