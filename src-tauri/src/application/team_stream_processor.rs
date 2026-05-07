@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use crate::application::chat_service::tool_result_preview::{
-    build_tool_result_preview_payload, tool_detail_ref,
+    build_live_tool_result_preview, tool_detail_ref,
 };
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
@@ -566,14 +566,12 @@ pub fn start_teammate_stream<R: Runtime>(
                                                 )
                                             })
                                         });
-                                    let result_preview = original_tool_name.and_then(|name| {
-                                        build_tool_result_preview_payload(
-                                            Some(name),
-                                            &result,
-                                            detail_ref,
-                                        )
-                                    });
-                                    if result_preview.is_some() {
+                                    let result_preview = build_live_tool_result_preview(
+                                        original_tool_name,
+                                        &result,
+                                        detail_ref,
+                                    );
+                                    if result_preview.is_previewed() {
                                         flush_teammate_message(
                                             &chat_message_repo,
                                             &assistant_message_id,
@@ -583,10 +581,6 @@ pub fn start_teammate_stream<R: Runtime>(
                                         )
                                         .await;
                                     }
-                                    let event_result = result_preview
-                                        .as_ref()
-                                        .map(|preview| preview.result.clone())
-                                        .unwrap_or_else(|| result.clone());
 
                                     let _ = app_handle.emit(
                                         "agent:tool_call",
@@ -595,12 +589,12 @@ pub fn start_teammate_stream<R: Runtime>(
                                             "tool_name": format!("result:{}", tool_use_id),
                                             "tool_id": tool_use_id,
                                             "arguments": serde_json::Value::Null,
-                                            "result": event_result,
-                                            "result_preview_truncated": result_preview.as_ref().map(|_| true),
-                                            "result_preview_original_bytes": result_preview.as_ref().map(|preview| preview.original_bytes),
-                                            "result_preview_line_count": result_preview.as_ref().map(|preview| preview.line_count),
-                                            "result_preview_omitted_lines": result_preview.as_ref().map(|preview| preview.omitted_lines),
-                                            "detail_ref": result_preview.as_ref().and_then(|preview| preview.detail_ref.clone()),
+                                            "result": result_preview.result,
+                                            "result_preview_truncated": result_preview.preview.as_ref().map(|_| true),
+                                            "result_preview_original_bytes": result_preview.preview.as_ref().map(|preview| preview.original_bytes),
+                                            "result_preview_line_count": result_preview.preview.as_ref().map(|preview| preview.line_count),
+                                            "result_preview_omitted_lines": result_preview.preview.as_ref().map(|preview| preview.omitted_lines),
+                                            "detail_ref": result_preview.preview.as_ref().and_then(|preview| preview.detail_ref.clone()),
                                             "context_type": context_type,
                                             "context_id": context_id,
                                             "parent_tool_use_id": parent_tool_use_id,

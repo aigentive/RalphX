@@ -20,6 +20,18 @@ pub(crate) struct ToolResultPreviewPayload {
     pub detail_ref: Option<JsonValue>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LiveToolResultPreview {
+    pub result: JsonValue,
+    pub preview: Option<ToolResultPreviewPayload>,
+}
+
+impl LiveToolResultPreview {
+    pub(crate) fn is_previewed(&self) -> bool {
+        self.preview.is_some()
+    }
+}
+
 fn tool_result_preview_text(value: &JsonValue) -> String {
     match value {
         JsonValue::String(text) => text.clone(),
@@ -150,6 +162,20 @@ pub(crate) fn build_tool_result_preview_payload(
         omitted_lines: preview.omitted_lines,
         detail_ref,
     })
+}
+
+pub(crate) fn build_live_tool_result_preview(
+    tool_name: Option<&str>,
+    result: &JsonValue,
+    detail_ref: Option<JsonValue>,
+) -> LiveToolResultPreview {
+    let preview = tool_name
+        .and_then(|name| build_tool_result_preview_payload(Some(name), result, detail_ref));
+    let result = preview
+        .as_ref()
+        .map(|preview| preview.result.clone())
+        .unwrap_or_else(|| result.clone());
+    LiveToolResultPreview { result, preview }
 }
 
 pub(crate) fn preview_tool_result_object(

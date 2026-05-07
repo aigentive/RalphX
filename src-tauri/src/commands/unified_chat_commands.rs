@@ -3590,8 +3590,6 @@ pub async fn get_agent_conversation_messages_page(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<Option<AgentConversationMessagesPageResponse>, String> {
-    use crate::domain::entities::ChatConversationId;
-
     let conversation_id = ChatConversationId::from_string(&conversation_id);
     let limit = limit.unwrap_or(40).clamp(1, 200);
     let offset = offset.unwrap_or(0);
@@ -3607,6 +3605,15 @@ pub async fn get_agent_conversation_messages_page(
         );
     }
 
+    get_agent_conversation_messages_page_for_app_state(&state, conversation_id, limit, offset).await
+}
+
+pub async fn get_agent_conversation_messages_page_for_app_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    limit: u32,
+    offset: u32,
+) -> Result<Option<AgentConversationMessagesPageResponse>, String> {
     let Some(conversation) = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)

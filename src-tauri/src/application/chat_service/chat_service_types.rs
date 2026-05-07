@@ -189,13 +189,9 @@ pub struct AgentUsageUpdatedPayload {
     pub context_id: String,
 }
 
-/// Payload for agent:tool_call event
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentToolCallPayload {
-    pub tool_name: String,
-    pub tool_id: Option<String>,
-    pub arguments: serde_json::Value,
-    pub result: Option<serde_json::Value>,
+/// Optional preview metadata for agent:tool_call result payloads.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AgentToolCallPreviewFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_preview_truncated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -206,6 +202,34 @@ pub struct AgentToolCallPayload {
     pub result_preview_omitted_lines: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_ref: Option<serde_json::Value>,
+}
+
+impl AgentToolCallPreviewFields {
+    pub(crate) fn from_tool_result_preview(
+        preview: Option<&super::tool_result_preview::ToolResultPreviewPayload>,
+    ) -> Self {
+        let Some(preview) = preview else {
+            return Self::default();
+        };
+        Self {
+            result_preview_truncated: Some(true),
+            result_preview_original_bytes: Some(preview.original_bytes),
+            result_preview_line_count: Some(preview.line_count),
+            result_preview_omitted_lines: Some(preview.omitted_lines),
+            detail_ref: preview.detail_ref.clone(),
+        }
+    }
+}
+
+/// Payload for agent:tool_call event
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentToolCallPayload {
+    pub tool_name: String,
+    pub tool_id: Option<String>,
+    pub arguments: serde_json::Value,
+    pub result: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub preview: AgentToolCallPreviewFields,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,

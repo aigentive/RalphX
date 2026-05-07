@@ -91,6 +91,65 @@ describe("chat api", () => {
     });
   });
 
+  it("preserves camelCase preview metadata and ignores invalid detail refs on parsed tool calls", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "t1",
+        name: "bash",
+        arguments: { command: "cat big.log" },
+        result: "line 1",
+        resultPreviewTruncated: true,
+        resultPreviewLineCount: 12,
+        resultPreviewOmittedLines: 2,
+        resultPreviewOriginalBytes: 1200,
+        detailRef: {
+          conversationId: "conv-1",
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      id: "t1",
+      resultPreviewTruncated: true,
+      resultPreviewLineCount: 12,
+      resultPreviewOmittedLines: 2,
+      resultPreviewOriginalBytes: 1200,
+    });
+    expect(parsed[0]?.detailRef).toBeUndefined();
+  });
+
+  it("preserves tool call errors and snake/camel diff context variants", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "t1",
+        name: "edit",
+        arguments: {},
+        error: "edit failed",
+        diff_context: {
+          file_path: "src/main.rs",
+          old_content: "old",
+        },
+      },
+      {
+        id: "t2",
+        name: "write",
+        arguments: {},
+        diffContext: {
+          filePath: "src/lib.rs",
+          oldContent: "before",
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      error: "edit failed",
+      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+    });
+    expect(parsed[1]).toMatchObject({
+      diffContext: { filePath: "src/lib.rs", oldContent: "before" },
+    });
+  });
+
   it("parses content blocks", () => {
     const parsed = parseContentBlocks('[{"type":"text","text":"hello"}]');
     expect(parsed).toHaveLength(1);
@@ -139,6 +198,27 @@ describe("chat api", () => {
         toolCallId: "tool-1",
         contentBlockIndex: 2,
       },
+    });
+  });
+
+  it("preserves diff context on parsed content block tool uses", () => {
+    const parsed = parseContentBlocks([
+      {
+        type: "tool_use",
+        id: "tool-1",
+        name: "edit",
+        input: { file_path: "src/main.rs" },
+        diff_context: {
+          file_path: "src/main.rs",
+          old_content: "old",
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      arguments: { file_path: "src/main.rs" },
+      diffContext: { filePath: "src/main.rs", oldContent: "old" },
     });
   });
 
@@ -543,6 +623,24 @@ describe("chat api", () => {
       name: "bash",
       result: "full output",
     });
+  });
+
+  it("returns null when a preview detail ref no longer has a full result", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await getAgentMessageToolCallDetail({
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      contentBlockIndex: 1,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_message_tool_call_detail", {
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      toolCallId: null,
+      contentBlockIndex: 1,
+    });
+    expect(result).toBeNull();
   });
 
   it("gets conversation stats with camelCase totals and buckets", async () => {

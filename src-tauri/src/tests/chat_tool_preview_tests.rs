@@ -1,8 +1,9 @@
 use serde_json::json;
 
 use crate::application::chat_service::tool_result_preview::{
-    build_tool_result_preview_payload, tool_detail_ref,
+    build_live_tool_result_preview, build_tool_result_preview_payload, tool_detail_ref,
 };
+use crate::application::chat_service::{AgentToolCallPayload, AgentToolCallPreviewFields};
 use crate::commands::unified_chat_commands::preview_tool_payloads_for_message;
 
 #[test]
@@ -135,4 +136,135 @@ fn live_preview_payloads_keep_delegation_results_structured() {
     let preview = build_tool_result_preview_payload(Some("Task"), &result, None);
 
     assert!(preview.is_none());
+}
+
+#[test]
+fn preview_tool_payloads_handles_non_array_payloads_and_non_tool_blocks() {
+    let (tool_calls, content_blocks) = preview_tool_payloads_for_message(
+        "conv-1",
+        "msg-1",
+        Some(json!({ "not": "an-array" })),
+        Some(json!([
+            { "type": "text", "text": "not a tool" },
+            "not an object",
+            { "type": "tool_use", "name": "read", "result": null }
+        ])),
+    );
+
+    assert_eq!(tool_calls.unwrap(), json!({ "not": "an-array" }));
+    let blocks = content_blocks.unwrap();
+    assert!(blocks[0].get("result_preview_truncated").is_none());
+    assert!(blocks[2].get("result_preview_truncated").is_none());
+}
+
+#[test]
+fn preview_tool_payloads_ignores_already_previewed_results() {
+    let tool_calls = json!([
+        {
+            "id": "tool-1",
+            "name": "bash",
+            "arguments": {},
+            "result": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11",
+            "result_preview_truncated": true
+        }
+    ]);
+
+    let (previewed_tool_calls, _) =
+        preview_tool_payloads_for_message("conv-1", "msg-1", Some(tool_calls), None);
+
+    let tool_call = &previewed_tool_calls.unwrap()[0];
+    assert!(tool_call["result"].as_str().unwrap().contains("line 11"));
+    assert!(tool_call.get("detail_ref").is_none());
+}
+
+#[test]
+fn live_preview_payloads_extract_text_from_result_shapes() {
+    let array_result = json!([
+        { "type": "text", "text": "a" },
+        { "type": "text", "text": "b" }
+    ]);
+    assert!(
+        build_tool_result_preview_payload(Some("bash"), &array_result, None).is_none(),
+        "short text arrays should not be previewed"
+    );
+
+    for key in [
+        "text",
+        "content",
+        "output",
+        "aggregated_output",
+        "aggregatedOutput",
+    ] {
+        let mut object = serde_json::Map::new();
+        object.insert(
+            key.to_string(),
+            json!((1..=12)
+                .map(|index| format!("{key} {index}"))
+                .collect::<Vec<_>>()
+                .join("\n")),
+        );
+        let result = serde_json::Value::Object(object);
+        let preview = build_tool_result_preview_payload(Some("bash"), &result, None).unwrap();
+        assert!(preview
+            .result
+            .as_str()
+            .unwrap()
+            .contains(&format!("{key} 10")));
+    }
+
+    let nested_content = json!({
+        "content": [
+            { "type": "text", "text": "nested 1" },
+            { "type": "text", "text": (2..=12).map(|index| format!("nested {index}")).collect::<Vec<_>>().join("\n") }
+        ]
+    });
+    let preview = build_tool_result_preview_payload(Some("bash"), &nested_content, None).unwrap();
+    assert!(preview.result.as_str().unwrap().contains("nested 10"));
+}
+
+#[test]
+fn live_preview_payloads_handle_json_fallback_and_char_limit() {
+    let long_value = json!({
+        "items": (0..500).map(|index| json!({ "index": index, "value": "x".repeat(20) })).collect::<Vec<_>>()
+    });
+    let preview = build_live_tool_result_preview(Some("bash"), &long_value, None);
+
+    assert!(preview.is_previewed());
+    assert!(preview.result.as_str().unwrap().chars().count() <= 4_000);
+
+    let non_text_value = json!(["plain", "array", 1, true]);
+    assert!(!build_live_tool_result_preview(Some("bash"), &non_text_value, None).is_previewed());
+    assert!(!build_live_tool_result_preview(None, &long_value, None).is_previewed());
+}
+
+#[test]
+fn live_preview_fields_flatten_into_agent_tool_call_payload_json() {
+    let result = json!((1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n"));
+    let detail_ref = tool_detail_ref("conv-1", "msg-1", Some("tool-1"), None);
+    let preview =
+        build_tool_result_preview_payload(Some("bash"), &result, Some(detail_ref)).unwrap();
+    let payload = AgentToolCallPayload {
+        tool_name: "bash".to_string(),
+        tool_id: Some("tool-1".to_string()),
+        arguments: json!({ "command": "cat big.log" }),
+        result: Some(preview.result.clone()),
+        preview: AgentToolCallPreviewFields::from_tool_result_preview(Some(&preview)),
+        conversation_id: "conv-1".to_string(),
+        context_type: "project".to_string(),
+        context_id: "project-1".to_string(),
+        diff_context: None,
+        parent_tool_use_id: None,
+        seq: 7,
+    };
+
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["result_preview_truncated"], true);
+    assert_eq!(value["result_preview_line_count"], 12);
+    assert_eq!(value["result_preview_omitted_lines"], 2);
+    assert_eq!(value["detail_ref"]["tool_call_id"], "tool-1");
+    assert!(value.get("preview").is_none());
 }
