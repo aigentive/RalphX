@@ -23,8 +23,8 @@ Daily scheduled releases:
 - Manual `Daily Release` dispatch supports `dry_run=true` to verify generation without committing, tagging, pushing, or dispatching `Release Build`.
 - Manual `Daily Release` dispatch supports `release_bump` to force `patch`, `minor`, or `major`; selecting `major` is explicit release-owner approval.
 - Manual `Daily Release` dispatch also supports `release_version` to force an exact version; do not combine it with `release_bump`.
-- Manual `Daily Release` dispatch supports `linux_runner`, `arm_runner`, and `macos_runner_size` to choose the Release Build runner path; Depot is the default for Linux prep/metadata/publish and the Apple Silicon build, while `macos_runner_size=larger` intentionally uses paid GitHub-hosted macOS larger runners for GitHub-hosted macOS builds.
-- The Intel macOS artifact stays on GitHub-hosted Intel macOS because Depot macOS runners are Apple Silicon.
+- Manual `Daily Release` dispatch supports `linux_runner`, `arm_runner`, `intel_runner`, and `macos_runner_size` to choose the Release Build runner path; Blacksmith is the default for Linux prep/metadata/publish and both macOS builds, while `macos_runner_size=larger` intentionally uses paid GitHub-hosted macOS larger runners for GitHub-hosted macOS builds.
+- `arm_runner` and `intel_runner` each support `blacksmith`, `depot`, `github-hosted`, and `self-hosted`. Blacksmith and Depot Intel builds use Apple Silicon runners with Tauri's `x86_64-apple-darwin` target.
 - Maintenance-only commits can avoid scheduled release prep when every commit after the latest tag includes `[skip daily-release]`, `[skip release]`, `[no daily-release]`, or `[no release]`.
 
 Notes:

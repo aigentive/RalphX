@@ -94,9 +94,10 @@ Manual testing:
 3. Use `dry_run=true` to verify Codex proposal, version bump, and note generation without committing, tagging, pushing, or dispatching the build.
 4. Optionally set `release_bump` to force `patch`, `minor`, or `major`; `major` is the required approval path for a normal `1.0.0` jump.
 5. Optionally set `release_version` to force an exact version such as `0.42.0`, `0.100.42`, or `v1.0.0`; do not combine it with `release_bump`.
-6. Optionally set `linux_runner` to choose `depot`, `github-hosted`, or `self-hosted` for the Daily Release prep job and the dispatched Release Build metadata job.
-7. Optionally set `arm_runner` to choose `depot`, `self-hosted`, or `github-hosted` for the Apple Silicon build.
-8. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
+6. Optionally set `linux_runner` to choose `blacksmith`, `depot`, `github-hosted`, or `self-hosted` for the Daily Release prep job and the dispatched Release Build metadata job.
+7. Optionally set `arm_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS ARM build job.
+8. Optionally set `intel_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS Intel build job. Blacksmith and Depot use Apple Silicon and cross-build the Intel artifact with the `x86_64-apple-darwin` target.
+9. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
 
 Skipping scheduled release for maintenance-only commits:
 
@@ -104,15 +105,16 @@ Skipping scheduled release for maintenance-only commits:
 - The scheduled workflow skips only when all commits after the latest reachable release tag carry one of those markers.
 - Pushing to `main` can still run CI/CodeQL; this marker only affects the `Daily Release` workflow.
 
-Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the Depot Linux release runner, the Depot ARM macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
+Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the Blacksmith Linux release runner, the Blacksmith macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
 If Codex proposes a major version without a manual bump/version override, the workflow fails before version bump, tag creation, build dispatch, or publish.
 
 Runner labels:
 
-- `linux_runner=depot` → `depot-ubuntu-24.04`; `github-hosted` → `ubuntu-latest`; `self-hosted` → `["self-hosted","Linux","X64","ralphx-release"]`.
-- `arm_runner=depot` → `depot-macos-15`; `github-hosted` → `macos-15` or `macos-15-xlarge`; `self-hosted` → `["self-hosted","macOS","ARM64","ralphx-release"]`.
-- Auto-triggered `Release Publish` runs on `depot-ubuntu-24.04`; manual publish dispatch can choose `depot`, `github-hosted`, or `self-hosted`.
-- The Intel macOS artifact remains on GitHub-hosted Intel macOS (`macos-15-intel` or `macos-15-large`) because Depot macOS runners are Apple Silicon.
+- `linux_runner=blacksmith` → `blacksmith-32vcpu-ubuntu-2404`; `depot` → `depot-ubuntu-24.04`; `github-hosted` → `ubuntu-latest`; `self-hosted` → `["self-hosted","Linux","X64","ralphx-release"]`.
+- `arm_runner=blacksmith` → `blacksmith-12vcpu-macos-15`; `depot` → `depot-macos-15`; `github-hosted` → `macos-15` or `macos-15-xlarge`; `self-hosted` → `["self-hosted","macOS","ARM64","ralphx-release"]`.
+- `intel_runner=blacksmith` → `blacksmith-12vcpu-macos-15` with target `x86_64-apple-darwin`; `depot` → `depot-macos-15` with target `x86_64-apple-darwin`; `github-hosted` → `macos-15-intel` or `macos-15-large`; `self-hosted` → `["self-hosted","macOS","X64","ralphx-release"]`.
+- Auto-triggered `Release Publish` runs on `blacksmith-32vcpu-ubuntu-2404`; manual publish dispatch can choose `blacksmith`, `depot`, `github-hosted`, or `self-hosted`.
+- Blacksmith and Depot macOS runners are Apple Silicon, so Intel builds on those providers are cross-builds. GitHub-hosted and self-hosted Intel paths are native x86_64 runner paths.
 
 ---
 
@@ -241,11 +243,12 @@ After the tag is on `origin`, trigger `Release Build` manually from `main`:
    - `version`: `0.2.0`
    - `draft`: choose whether the public release should stay a draft
    - `prerelease`: choose whether the release should be marked as a prerelease
-   - `linux_runner`: `depot`, `github-hosted`, or `self-hosted`
-   - `arm_runner`: `depot`, `self-hosted`, or `github-hosted`
+   - `linux_runner`: `blacksmith`, `depot`, `github-hosted`, or `self-hosted`
+   - `arm_runner`: `blacksmith`, `depot`, `self-hosted`, or `github-hosted`
+   - `intel_runner`: `blacksmith`, `depot`, `self-hosted`, or `github-hosted`
    - `macos_runner_size`: `standard` or `larger`; `larger` uses paid GitHub-hosted macOS larger runners for GitHub-hosted macOS release builds
 
-The Intel macOS artifact still builds on GitHub-hosted Intel macOS because Depot macOS runners are Apple Silicon. Use `macos_runner_size=larger` when that Intel job should use `macos-15-large` instead of `macos-15-intel`.
+Release Build passes an explicit Tauri target for each macOS artifact and collects bundles from the target-specific directory, for example `src-tauri/target/x86_64-apple-darwin/release`. Use `macos_runner_size=larger` when GitHub-hosted macOS jobs should use `macos-15-xlarge` for ARM or `macos-15-large` for Intel.
 
 What `Release Build` does:
 
