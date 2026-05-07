@@ -520,12 +520,12 @@ html[data-theme="high-contrast"] main {
    input reads as a quiet control. On focus the border + placeholder flip
    to pure white for a crisp "active field" punch (per 2026-04-19 feedback
    superseding the earlier white-idle / yellow-focus scheme). Target the
-   `div:has(textarea)` combo so we reach the unified wrapper without
-   hitting the outer flex row. */
-[data-theme="high-contrast"] [data-testid="chat-input"] > div > div:has(textarea) {
+   stable field class so WebKit does not have to evaluate an expensive
+   relational selector across large chat transcripts. */
+[data-theme="high-contrast"] [data-testid="chat-input"] .chat-input-field {
   border-color: hsla(0 0% 100% / 0.25) !important;
 }
-[data-theme="high-contrast"] [data-testid="chat-input"] > div > div:has(textarea:focus) {
+[data-theme="high-contrast"] [data-testid="chat-input"] .chat-input-field:focus-within {
   border-color: #ffffff !important;
 }
 /* Placeholder ladder: muted gray at rest, pure white when the field is

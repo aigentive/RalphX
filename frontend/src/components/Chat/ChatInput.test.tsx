@@ -9,6 +9,8 @@
  * - Attach button placeholder
  */
 
+import { readFileSync } from "node:fs";
+
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -305,6 +307,19 @@ describe("ChatInput", () => {
       render(<ChatInput {...defaultProps} />);
       const textarea = screen.getByTestId("chat-input-textarea");
       expect(textarea).toHaveStyle({ background: "transparent" });
+    });
+
+    it("exposes a direct field selector for theme overrides", () => {
+      render(<ChatInput {...defaultProps} />);
+      expect(screen.getByTestId("chat-input-field")).toHaveClass("chat-input-field");
+    });
+
+    it("avoids WebKit-expensive :has selectors in chat input theme overrides", () => {
+      const highContrastCss = readFileSync(
+        "src/styles/themes/high-contrast.css",
+        "utf8"
+      );
+      expect(highContrastCss).not.toMatch(/:has\(/);
     });
 
     it("applies accent color to enabled send button", async () => {

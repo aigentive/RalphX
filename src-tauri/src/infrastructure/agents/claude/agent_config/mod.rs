@@ -673,12 +673,31 @@ fn resolve_tool_spec(project_root: &Path, raw: &AgentConfigRaw) -> AgentToolsSpe
 }
 
 fn canonical_agent_project_root() -> PathBuf {
-    let config_dir = config_path()
+    let fallback_plugin_dir = super::find_base_plugin_dir();
+    canonical_agent_project_root_from_config_path(&config_path(), fallback_plugin_dir.as_deref())
+}
+
+fn canonical_agent_project_root_from_config_path(
+    config_path: &Path,
+    fallback_runtime_plugin_dir: Option<&Path>,
+) -> PathBuf {
+    let config_dir = config_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
-    resolve_project_root_from_catalog_path(&config_dir)
-        .unwrap_or_else(|| resolve_project_root_from_plugin_dir(&config_dir))
+
+    if let Some(project_root) = resolve_project_root_from_catalog_path(&config_dir) {
+        return project_root;
+    }
+
+    if let Some(runtime_plugin_dir) = fallback_runtime_plugin_dir {
+        let runtime_project_root = resolve_project_root_from_plugin_dir(runtime_plugin_dir);
+        if let Some(project_root) = resolve_project_root_from_catalog_path(&runtime_project_root) {
+            return project_root;
+        }
+    }
+
+    resolve_project_root_from_plugin_dir(&config_dir)
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
