@@ -10,11 +10,13 @@
 
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { useChatStore } from "@/stores/chatStore";
 import { chatApi, stopAgent } from "@/api/chat";
 import { recoverTaskExecution } from "@/api/recovery";
 import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
+import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
 import type { SendAgentMessageResult } from "@/api/chat";
@@ -81,6 +83,13 @@ export function useChatActions({
   const setAgentRunning = useChatStore((s) => s.setAgentRunning);
   const setSending = useChatStore((s) => s.setSending);
   const backendQueueContextId = queueContextId ?? contextId;
+
+  const reportSendFailure = useCallback((err: unknown) => {
+    toast.error("Failed to send message", {
+      description: extractErrorMessage(err, "The agent runtime could not start."),
+      duration: 10000,
+    });
+  }, []);
 
   // ── Send ─────────────────────────────────────────────────────────
   const handleSend = useCallback(
@@ -170,14 +179,15 @@ export function useChatActions({
         if (sentResult) {
           void onUserMessageSent?.({ content, result: sentResult });
         }
-      } catch {
+      } catch (err) {
+        reportSendFailure(err);
         // Reset agent running state on error for the correct store context key.
         // Covers review, task_execution, merge, and ideation (idempotent for ideation
         // where storeContextKey and useChat's contextKey happen to match).
         setAgentRunning(storeContextKey, false);
       }
     },
-    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueMessage, onUserMessageSent]
+    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueMessage, onUserMessageSent, reportSendFailure]
   );
 
   // ── Stop Agent ───────────────────────────────────────────────────
@@ -247,8 +257,8 @@ export function useChatActions({
         if (result.wasQueued && result.queuedMessageId != null) {
           queueMessage(storeContextKey, newContent, result.queuedMessageId);
         }
-      } catch {
-        // Silently ignore — local state already updated
+      } catch (err) {
+        reportSendFailure(err);
       } finally {
         setSending(storeContextKey, false);
       }
@@ -262,6 +272,7 @@ export function useChatActions({
       storeContextKey,
       setSending,
       sendOptions,
+      reportSendFailure,
     ]
   );
 

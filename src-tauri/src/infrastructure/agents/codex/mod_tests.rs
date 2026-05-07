@@ -1,11 +1,55 @@
 use super::{
     build_codex_exec_args, build_codex_mcp_overrides, build_spawnable_codex_exec_command,
-    compose_codex_prompt, configure_spawn, CodexCliCapabilities, CodexExecCliConfig,
-    CodexMcpRuntimeContext,
+    compose_codex_prompt, configure_spawn, probe_codex_cli, CodexCliCapabilities,
+    CodexExecCliConfig, CodexMcpRuntimeContext,
 };
 use crate::domain::agents::LogicalEffort;
-use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    std::fs::write(path, contents).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark executable");
+    }
+}
 
 fn full_codex_capabilities() -> CodexCliCapabilities {
     CodexCliCapabilities {
@@ -46,6 +90,61 @@ fn build_codex_exec_command_sets_agent_tool_path() {
 
     assert!(path.contains("/opt/homebrew/bin"));
     assert!(path.contains("/usr/local/bin"));
+}
+
+#[test]
+fn probe_codex_cli_prepends_resolved_node_for_env_shim() {
+    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let empty_path = temp_dir.path().join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("create empty path");
+    let nvm_bin = temp_dir
+        .path()
+        .join(".nvm")
+        .join("versions")
+        .join("node")
+        .join("v22.16.0")
+        .join("bin");
+    std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+    let node_path = nvm_bin.join("node");
+    let codex_path = nvm_bin.join("codex");
+    write_executable(
+        &node_path,
+        r#"#!/bin/sh
+shift
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.124.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    write_executable(&codex_path, "#!/usr/bin/env node\n");
+
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+    let _path = EnvGuard::set_os("PATH", &empty_path);
+    let _nvm_bin = EnvGuard::unset("NVM_BIN");
+    let _volta_home = EnvGuard::unset("VOLTA_HOME");
+    let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+    let capabilities =
+        probe_codex_cli(&codex_path).expect("Codex probe should run npm shim with resolved node");
+
+    assert_eq!(capabilities.version.as_deref(), Some("0.124.0"));
+    assert!(capabilities.supports_exec_subcommand);
+    assert!(capabilities.supports_json_output);
+    assert!(capabilities.supports_model_flag);
+    assert!(capabilities.supports_config_override);
+    assert!(capabilities.supports_sandbox_flag);
+    assert!(capabilities.supports_add_dir);
+    assert!(capabilities.supports_search_flag);
+    assert!(capabilities.supports_resume_subcommand);
+    assert!(capabilities.supports_mcp_subcommand);
 }
 
 #[test]
