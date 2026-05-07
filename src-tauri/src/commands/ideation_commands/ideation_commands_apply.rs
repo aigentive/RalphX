@@ -1021,10 +1021,7 @@ pub async fn apply_proposals_to_kanban(
         let session_id_str = result.session_id.clone();
         if let Err(error) = spawn_session_namer_agent(
             &state,
-            SessionNamerTarget::AcceptedSession {
-                session_id: session_id_str,
-                accepted_proposals: proposals_context,
-            },
+            SessionNamerTarget::accepted_session(session_id_str, proposals_context),
         )
         .await
         {

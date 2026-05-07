@@ -19,10 +19,7 @@ pub(super) async fn spawn_session_namer(
 ) {
     if let Err(error) = spawn_session_namer_agent(
         app,
-        SessionNamerTarget::SessionInitial {
-            session_id,
-            user_message: prompt,
-        },
+        SessionNamerTarget::session_initial(session_id, prompt),
     )
     .await
     {

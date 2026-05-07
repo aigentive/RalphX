@@ -421,6 +421,44 @@ async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_whe
 }
 
 #[tokio::test]
+async fn test_resolve_session_namer_runtime_for_session_prefers_active_conversation_harness() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project = Project::new(
+        "Codex Session Conversation Project".to_string(),
+        "/tmp".to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let mut conversation = ChatConversation::new_ideation(session.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let runtime = state
+        .resolve_session_namer_runtime_for_session(&session)
+        .await
+        .expect("session namer should prefer the active ideation conversation harness");
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "active ideation conversation provider should override the project lane fallback"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+}
+
+#[tokio::test]
 async fn test_resolve_session_namer_runtime_uses_default_without_provider_or_lane() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());

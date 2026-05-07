@@ -37,10 +37,10 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::ConversationInitial {
-            conversation_id: conversation.id.as_str(),
-            user_message: "Name this Codex conversation".to_string(),
-        },
+        SessionNamerTarget::conversation_initial(
+            conversation.id.as_str(),
+            "Name this Codex conversation",
+        ),
     )
     .await
     .unwrap();
@@ -87,10 +87,7 @@ async fn session_namer_session_spawn_uses_active_project_cwd_and_project_ideatio
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::SessionInitial {
-            session_id: session.id.as_str().to_string(),
-            user_message: "Build the settings analyzer".to_string(),
-        },
+        SessionNamerTarget::session_initial(session.id.as_str(), "Build the settings analyzer"),
     )
     .await
     .unwrap();
@@ -127,10 +124,10 @@ async fn session_namer_fire_and_forget_spawns_and_waits_for_accepted_session() {
 
     spawn_session_namer_agent(
         &state,
-        SessionNamerTarget::AcceptedSession {
-            session_id: session.id.as_str().to_string(),
-            accepted_proposals: "Ship utility agent runtime fixes".to_string(),
-        },
+        SessionNamerTarget::accepted_session(
+            session.id.as_str(),
+            "Ship utility agent runtime fixes",
+        ),
     )
     .await
     .unwrap();
@@ -183,10 +180,10 @@ async fn session_namer_ideation_conversation_spawn_uses_session_project_cwd() {
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::ConversationInitial {
-            conversation_id: conversation.id.as_str(),
-            user_message: "Name this ideation conversation".to_string(),
-        },
+        SessionNamerTarget::conversation_initial(
+            conversation.id.as_str(),
+            "Name this ideation conversation",
+        ),
     )
     .await
     .unwrap();
@@ -219,10 +216,10 @@ async fn session_namer_task_conversation_spawn_uses_task_project_cwd() {
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::ConversationInitial {
-            conversation_id: conversation.id.as_str(),
-            user_message: "Name this task conversation".to_string(),
-        },
+        SessionNamerTarget::conversation_initial(
+            conversation.id.as_str(),
+            "Name this task conversation",
+        ),
     )
     .await
     .unwrap();
@@ -261,10 +258,10 @@ async fn session_namer_delegation_conversation_spawn_uses_delegated_project_cwd(
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::ConversationInitial {
-            conversation_id: conversation.id.as_str(),
-            user_message: "Name this delegated conversation".to_string(),
-        },
+        SessionNamerTarget::conversation_initial(
+            conversation.id.as_str(),
+            "Name this delegated conversation",
+        ),
     )
     .await
     .unwrap();
@@ -289,10 +286,10 @@ async fn session_namer_conversation_without_project_uses_runtime_root_fallback()
 
     let spawn = build_session_namer_agent_spawn(
         &state,
-        SessionNamerTarget::ConversationInitial {
-            conversation_id: conversation.id.as_str(),
-            user_message: "Name this legacy conversation".to_string(),
-        },
+        SessionNamerTarget::conversation_initial(
+            conversation.id.as_str(),
+            "Name this legacy conversation",
+        ),
     )
     .await
     .unwrap();
@@ -302,4 +299,37 @@ async fn session_namer_conversation_without_project_uses_runtime_root_fallback()
         default_repo_root_working_directory()
     );
     assert_eq!(spawn.project_id, None);
+}
+
+#[test]
+fn session_namer_initial_request_target_requires_exactly_one_target_id() {
+    let session_target = SessionNamerTarget::from_initial_request(
+        Some("session-1".to_string()),
+        None,
+        "Name session".to_string(),
+    )
+    .unwrap();
+    assert!(matches!(
+        session_target,
+        SessionNamerTarget::SessionInitial { .. }
+    ));
+
+    let conversation_target = SessionNamerTarget::from_initial_request(
+        None,
+        Some("conversation-1".to_string()),
+        "Name conversation".to_string(),
+    )
+    .unwrap();
+    assert!(matches!(
+        conversation_target,
+        SessionNamerTarget::ConversationInitial { .. }
+    ));
+
+    assert!(SessionNamerTarget::from_initial_request(
+        Some("session-1".to_string()),
+        Some("conversation-1".to_string()),
+        "ambiguous".to_string(),
+    )
+    .is_err());
+    assert!(SessionNamerTarget::from_initial_request(None, None, "missing".to_string()).is_err());
 }

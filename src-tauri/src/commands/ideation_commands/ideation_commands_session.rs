@@ -571,22 +571,12 @@ pub async fn spawn_session_namer(
     first_message: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let target = match (session_id, conversation_id) {
-        (Some(session_id), None) => SessionNamerTarget::SessionInitial {
-            session_id,
-            user_message: first_message,
-        },
-        (None, Some(conversation_id)) => SessionNamerTarget::ConversationInitial {
-            conversation_id,
-            user_message: first_message,
-        },
-        (Some(_), Some(_)) | (None, None) => {
-            return Err(
-                "spawn_session_namer requires exactly one of sessionId or conversationId"
-                    .to_string(),
-            )
-        }
-    };
+    let target = SessionNamerTarget::from_initial_request(
+        session_id,
+        conversation_id,
+        first_message,
+    )
+    .map_err(str::to_string)?;
     spawn_session_namer_agent(&state, target)
         .await
         .map_err(|error| error.to_string())

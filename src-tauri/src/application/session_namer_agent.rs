@@ -223,6 +223,52 @@ async fn resolve_project_working_directory(
 }
 
 impl SessionNamerTarget {
+    pub(crate) fn session_initial(
+        session_id: impl Into<String>,
+        user_message: impl Into<String>,
+    ) -> Self {
+        Self::SessionInitial {
+            session_id: session_id.into(),
+            user_message: user_message.into(),
+        }
+    }
+
+    pub(crate) fn conversation_initial(
+        conversation_id: impl Into<String>,
+        user_message: impl Into<String>,
+    ) -> Self {
+        Self::ConversationInitial {
+            conversation_id: conversation_id.into(),
+            user_message: user_message.into(),
+        }
+    }
+
+    pub(crate) fn accepted_session(
+        session_id: impl Into<String>,
+        accepted_proposals: impl Into<String>,
+    ) -> Self {
+        Self::AcceptedSession {
+            session_id: session_id.into(),
+            accepted_proposals: accepted_proposals.into(),
+        }
+    }
+
+    pub(crate) fn from_initial_request(
+        session_id: Option<String>,
+        conversation_id: Option<String>,
+        user_message: String,
+    ) -> Result<Self, &'static str> {
+        match (session_id, conversation_id) {
+            (Some(session_id), None) => Ok(Self::session_initial(session_id, user_message)),
+            (None, Some(conversation_id)) => {
+                Ok(Self::conversation_initial(conversation_id, user_message))
+            }
+            (Some(_), Some(_)) | (None, None) => {
+                Err("spawn_session_namer requires exactly one of sessionId or conversationId")
+            }
+        }
+    }
+
     fn prompt(&self) -> String {
         match self {
             Self::SessionInitial {
