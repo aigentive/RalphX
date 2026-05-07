@@ -83,8 +83,8 @@ describe("AgentsView performance", () => {
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBe(closedPane);
     expect(closedPane).toHaveStyle({
       width: "66.666667%",
-      minWidth: "320px",
-      maxWidth: "calc(100% - 320px)",
+      minWidth: "600px",
+      maxWidth: "calc(100% - 600px)",
       opacity: "1",
       pointerEvents: "auto",
       transition: "none",

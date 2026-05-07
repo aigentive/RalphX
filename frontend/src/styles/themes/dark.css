@@ -171,7 +171,7 @@ html[data-theme="dark"] main {
 
 [data-theme="dark"] [data-testid="task-board"],
 [data-theme="dark"] [data-testid="task-board-skeleton"] {
-  background-color: #2E2E36 !important;
+  background-color: #18181D !important;
 }
 
 [data-theme="dark"] [data-testid="task-overlay-backdrop"] {

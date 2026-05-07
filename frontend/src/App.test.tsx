@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { chatApi } from "@/api/chat";
+import { ideationApi } from "@/api/ideation";
+import { chatKeys } from "@/hooks/useChat";
+import { getQueryClient } from "@/lib/queryClient";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
@@ -9,6 +14,14 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  Toaster: () => null,
+  toast: {
+    error: vi.fn(),
+  },
+}));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -327,6 +340,9 @@ function resetStores() {
     projects: { "demo-project-1": { id: "demo-project-1", name: "Demo Project", workingDirectory: "/tmp/demo", createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" } as never },
     isInitialized: true,
   });
+
+  useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
+  getQueryClient().clear();
 }
 
 describe("App", () => {
@@ -462,6 +478,275 @@ describe("App", () => {
     expect(commandSearch.getAttribute("style")).toContain("border-color: var(--border-default)");
     expect(screen.getByTestId("font-scale-selector")).toHaveTextContent("100%");
     expect(screen.queryByTestId("project-selector-mock")).not.toBeInTheDocument();
+  });
+
+  it("shows the selected agent conversation in the Agents breadcrumb", () => {
+    const queryClient = getQueryClient();
+    useAgentSessionStore.setState({
+      selectedConversationId: "conversation-breadcrumb",
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory("conversation-breadcrumb"), {
+      pages: [
+        {
+          conversation: {
+            id: "conversation-breadcrumb",
+            contextType: "project",
+            contextId: "demo-project-1",
+            providerSessionId: null,
+            providerHarness: null,
+            title: "List worktree directory contents",
+            messageCount: 0,
+            lastMessageAt: null,
+            createdAt: "2026-05-07T00:00:00Z",
+            updatedAt: "2026-05-07T00:00:00Z",
+            archivedAt: null,
+          },
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/List worktree directory contents"
+    );
+  });
+
+  it("renames the selected agent conversation from the Agents breadcrumb", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-rename",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "List worktree directory contents",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    const updateTitle = vi.spyOn(chatApi, "updateConversationTitle").mockResolvedValue({
+      ...conversation,
+      title: "Renamed agent run",
+      updatedAt: "2026-05-07T00:01:00Z",
+    });
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    expect(screen.getByTestId("agent-breadcrumb-title")).toHaveAttribute(
+      "data-theme-button-skip",
+      "true"
+    );
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    expect(input).toHaveClass("border-transparent");
+    await user.clear(input);
+    await user.type(input, "Renamed agent run{enter}");
+
+    await waitFor(() =>
+      expect(updateTitle).toHaveBeenCalledWith(conversation.id, "Renamed agent run")
+    );
+    expect(updateTitle).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Renamed agent run"
+    );
+  });
+
+  it("renames ideation-backed agent conversations from the Agents breadcrumb", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-ideation-rename",
+      contextType: "ideation",
+      contextId: "ideation-session-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Review proposal set",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    const updateConversationTitle = vi
+      .spyOn(chatApi, "updateConversationTitle")
+      .mockResolvedValue({
+        ...conversation,
+        title: "Renamed ideation run",
+        updatedAt: "2026-05-07T00:01:00Z",
+      });
+    const updateSessionTitle = vi
+      .spyOn(ideationApi.sessions, "updateTitle")
+      .mockResolvedValue({ id: "ideation-session-1", title: "Renamed ideation run" } as never);
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    await user.clear(input);
+    await user.type(input, "Renamed ideation run{enter}");
+
+    await waitFor(() =>
+      expect(updateConversationTitle).toHaveBeenCalledWith(
+        conversation.id,
+        "Renamed ideation run"
+      )
+    );
+    expect(updateSessionTitle).toHaveBeenCalledWith(
+      "ideation-session-1",
+      "Renamed ideation run"
+    );
+  });
+
+  it("restores the breadcrumb title and shows an error when breadcrumb rename fails", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-rename-failure",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Original title",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    vi.spyOn(chatApi, "updateConversationTitle").mockRejectedValue(
+      new Error("Rename failed")
+    );
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversation(conversation.id), {
+      conversation,
+      messages: [],
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+    queryClient.setQueryData(
+      chatKeys.conversationList(conversation.contextType, conversation.contextId),
+      [conversation]
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    await user.clear(input);
+    await user.type(input, "Broken title{enter}");
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Rename failed")
+    );
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Original title"
+    );
+  });
+
+  it("cancels breadcrumb rename on Escape without saving", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-rename-cancel",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Original breadcrumb title",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    const updateTitle = vi.spyOn(chatApi, "updateConversationTitle");
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    await user.clear(input);
+    await user.type(input, "Should not save{escape}");
+
+    expect(updateTitle).not.toHaveBeenCalled();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Original breadcrumb title"
+    );
   });
 
   it("uses the v27 panel surface for the right reviews sidebar", () => {

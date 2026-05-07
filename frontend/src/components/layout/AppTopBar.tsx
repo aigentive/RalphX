@@ -1,11 +1,19 @@
-import { useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Check, ChevronDown, GitPullRequest, Search } from "lucide-react";
+import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { toast } from "sonner";
 
+import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
+import { ideationApi } from "@/api/ideation";
+import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { chatKeys, useConversationHistoryWindow } from "@/hooks/useChat";
 import { cn } from "@/lib/utils";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useThemeStore, type FontScale } from "@/stores/themeStore";
 import type { ViewType } from "@/types/chat";
+import type { ChatConversation } from "@/types/chat-conversation";
 
 import { ThemeSelector } from "./ThemeSelector";
 
@@ -37,9 +45,13 @@ function viewLabel(view: ViewType): string {
   return VIEW_LABELS[view] ?? "Workspace";
 }
 
-function breadcrumbItems(currentView: ViewType, projectName: string | null): string[] {
+function breadcrumbItems(
+  currentView: ViewType,
+  projectName: string | null,
+  agentConversationTitle: string | null,
+): string[] {
   if (currentView === "agents") {
-    return ["Workspace", "Agents", "New run"];
+    return ["Workspace", "Agents", agentConversationTitle ?? "New run"];
   }
 
   if (currentView === "kanban") {
@@ -52,6 +64,159 @@ function breadcrumbItems(currentView: ViewType, projectName: string | null): str
 interface FontScaleSelectorProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+type ConversationQueryData = {
+  conversation: ChatConversation;
+  messages: ChatMessageResponse[];
+};
+
+function updateConversationTitleInCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  conversation: ChatConversation,
+  title: string,
+) {
+  const updatedAt = new Date().toISOString();
+  const updateConversation = (item: ChatConversation): ChatConversation =>
+    item.id === conversation.id
+      ? {
+          ...item,
+          title,
+          updatedAt,
+        }
+      : item;
+
+  queryClient.setQueryData<ConversationQueryData>(
+    chatKeys.conversation(conversation.id),
+    (oldData) =>
+      oldData
+        ? {
+            ...oldData,
+            conversation: updateConversation(oldData.conversation),
+          }
+        : oldData,
+  );
+
+  queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+    chatKeys.conversationHistory(conversation.id),
+    (oldData) =>
+      oldData
+        ? {
+            ...oldData,
+            pages: oldData.pages.map((page) => ({
+              ...page,
+              conversation: updateConversation(page.conversation),
+            })),
+          }
+        : oldData,
+  );
+
+  queryClient.setQueryData<ChatConversation[]>(
+    chatKeys.conversationList(conversation.contextType, conversation.contextId),
+    (oldData) => oldData?.map(updateConversation),
+  );
+}
+
+interface EditableAgentBreadcrumbTitleProps {
+  conversation: ChatConversation;
+  title: string;
+}
+
+function EditableAgentBreadcrumbTitle({
+  conversation,
+  title,
+}: EditableAgentBreadcrumbTitleProps) {
+  const queryClient = useQueryClient();
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(title);
+  const commitInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraftTitle(title);
+    }
+  }, [isEditing, title]);
+
+  const commitTitle = useCallback(async () => {
+    if (commitInFlightRef.current) {
+      return;
+    }
+
+    const trimmed = draftTitle.trim();
+    if (!trimmed || trimmed === title) {
+      setDraftTitle(title);
+      setIsEditing(false);
+      return;
+    }
+
+    commitInFlightRef.current = true;
+    updateConversationTitleInCache(queryClient, conversation, trimmed);
+    setIsEditing(false);
+
+    try {
+      if (conversation.contextType === "ideation") {
+        await Promise.all([
+          chatApi.updateConversationTitle(conversation.id, trimmed),
+          ideationApi.sessions.updateTitle(conversation.contextId, trimmed),
+        ]);
+      } else {
+        await chatApi.updateConversationTitle(conversation.id, trimmed);
+      }
+      void queryClient.invalidateQueries({ queryKey: chatKeys.conversations() });
+      void queryClient.invalidateQueries({ queryKey: agentConversationKeys.all });
+    } catch (error) {
+      updateConversationTitleInCache(queryClient, conversation, title);
+      toast.error(error instanceof Error ? error.message : "Failed to rename session");
+    } finally {
+      commitInFlightRef.current = false;
+    }
+  }, [conversation, draftTitle, queryClient, title]);
+
+  if (isEditing) {
+    return (
+      <input
+        value={draftTitle}
+        onChange={(event) => setDraftTitle(event.target.value)}
+        onBlur={() => void commitTitle()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void commitTitle();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setDraftTitle(title);
+            setIsEditing(false);
+          }
+        }}
+        className="h-6 max-w-[38ch] rounded-[4px] border border-transparent bg-transparent px-0.5 text-[0.7812rem] font-medium outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+        style={{
+          width: `${Math.max(12, Math.min(38, draftTitle.length + 1))}ch`,
+          color: "var(--text-primary)",
+          WebkitAppRegion: "no-drag",
+        } as CSSProperties}
+        aria-label="Rename agent conversation"
+        autoFocus
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="max-w-[42ch] truncate rounded-[4px] text-left font-medium outline-none hover:text-[var(--text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
+      style={{
+        color: "var(--text-primary)",
+        WebkitAppRegion: "no-drag",
+      } as CSSProperties}
+      aria-label="Rename agent conversation"
+      data-testid="agent-breadcrumb-title"
+      data-theme-button-skip="true"
+      onClick={() => setIsEditing(true)}
+    >
+      {title}
+    </button>
+  );
 }
 
 function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
@@ -136,8 +301,25 @@ export function AppTopBar({
   onToggleReviewsPanel,
 }: AppTopBarProps) {
   const activeProject = useProjectStore(selectActiveProject);
+  const selectedAgentConversationId = useAgentSessionStore((s) => s.selectedConversationId);
+  const selectedAgentConversation = useConversationHistoryWindow(selectedAgentConversationId, {
+    enabled: currentView === "agents" && Boolean(selectedAgentConversationId),
+    pageSize: 1,
+  });
   const [activeMenu, setActiveMenu] = useState<"theme" | "font" | null>(null);
-  const crumbs = breadcrumbItems(currentView, activeProject?.name ?? null);
+  const agentConversation =
+    currentView === "agents" && selectedAgentConversationId
+      ? selectedAgentConversation.data?.conversation ?? null
+      : null;
+  const agentConversationTitle =
+    agentConversation
+      ? agentConversation.title?.trim() || "Untitled agent"
+      : null;
+  const crumbs = breadcrumbItems(
+    currentView,
+    activeProject?.name ?? null,
+    agentConversationTitle,
+  );
   const reviewsLabel =
     pendingReviewCount > 0
       ? `Reviews · ${pendingReviewCount} pending`
@@ -169,7 +351,14 @@ export function AppTopBar({
                 className={cn(isLast && "font-medium")}
                 style={{ color: isLast ? "var(--text-primary)" : "var(--text-muted)" }}
               >
-                {item}
+                {isLast && agentConversation ? (
+                  <EditableAgentBreadcrumbTitle
+                    conversation={agentConversation}
+                    title={agentConversationTitle ?? "Untitled agent"}
+                  />
+                ) : (
+                  item
+                )}
               </span>
               {!isLast && (
                 <span aria-hidden="true" style={{ color: "var(--text-subtle, var(--text-muted))" }}>

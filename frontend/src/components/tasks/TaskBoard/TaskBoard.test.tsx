@@ -291,24 +291,25 @@ describe("TaskBoard", () => {
   });
 
   describe("fillWidth prop", () => {
-    it("uses minmax(0, 1fr) columns when fillWidth=true so columns fluidly fill the host", async () => {
+    it("keeps fixed 300px columns when fillWidth=true so the host scrolls instead of stretching lanes", async () => {
       vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
       render(<TaskBoard projectId="p1" fillWidth />, { wrapper: createWrapper() });
 
       const board = await screen.findByTestId("task-board");
-      // The grid template should not contain the 220px floor when fillWidth is on.
       const tpl = (board as HTMLElement).style.gridTemplateColumns;
-      expect(tpl).toContain("minmax(0, 1fr)");
-      expect(tpl).not.toContain("220px");
+      expect(tpl).toContain("300px");
+      expect(tpl).not.toContain("1fr");
+      expect(tpl).not.toContain("minmax(0, 1fr)");
     });
 
-    it("falls back to minmax(220px, 1fr) when fillWidth is unset", async () => {
+    it("uses fixed 300px expanded columns when fillWidth is unset", async () => {
       vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
       render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
 
       const board = await screen.findByTestId("task-board");
       const tpl = (board as HTMLElement).style.gridTemplateColumns;
-      expect(tpl).toContain("minmax(220px, 1fr)");
+      expect(tpl).toContain("300px");
+      expect(tpl).not.toContain("1fr");
     });
   });
 });

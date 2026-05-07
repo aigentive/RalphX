@@ -38,21 +38,20 @@ describe("useColumnCollapse", () => {
     expect(result.current.expandColumn).toBeInstanceOf(Function);
   });
 
-  it("keeps empty columns expanded on initial render", () => {
+  it("collapses empty columns on initial render", () => {
     const taskCounts = makeCounts({ draft: 3, ready: 0, in_progress: 1, done: 0 });
 
     const { result } = renderHook(() =>
       useColumnCollapse(columns, taskCounts, "session-1"),
     );
 
-    // v29a keeps the board stable and renders empty states in place.
-    expect(result.current.isCollapsed("ready")).toBe(false);
-    expect(result.current.isCollapsed("done")).toBe(false);
+    expect(result.current.isCollapsed("ready")).toBe(true);
+    expect(result.current.isCollapsed("done")).toBe(true);
     expect(result.current.isCollapsed("draft")).toBe(false);
     expect(result.current.isCollapsed("in_progress")).toBe(false);
   });
 
-  it("keeps empty columns expanded on plan change", () => {
+  it("collapses empty columns on plan change", () => {
     const taskCounts = makeCounts({ draft: 3, ready: 2, in_progress: 1, done: 0 });
 
     const { result, rerender } = renderHook(
@@ -61,16 +60,16 @@ describe("useColumnCollapse", () => {
       { initialProps: { sessionId: "session-1", counts: taskCounts } },
     );
 
-    expect(result.current.isCollapsed("done")).toBe(false);
+    expect(result.current.isCollapsed("done")).toBe(true);
     expect(result.current.isCollapsed("ready")).toBe(false);
 
     // Plan changes — now "ready" is also empty
     const newCounts = makeCounts({ draft: 1, ready: 0, in_progress: 0, done: 0 });
     rerender({ sessionId: "session-2", counts: newCounts });
 
-    expect(result.current.isCollapsed("ready")).toBe(false);
-    expect(result.current.isCollapsed("in_progress")).toBe(false);
-    expect(result.current.isCollapsed("done")).toBe(false);
+    expect(result.current.isCollapsed("ready")).toBe(true);
+    expect(result.current.isCollapsed("in_progress")).toBe(true);
+    expect(result.current.isCollapsed("done")).toBe(true);
   });
 
   it("auto-expands when count transitions from 0 to N", () => {
@@ -81,17 +80,12 @@ describe("useColumnCollapse", () => {
       { initialProps: { counts: initialCounts } },
     );
 
-    // Empty columns start expanded, but a user can still collapse them.
-    act(() => {
-      result.current.toggleCollapse("ready");
-    });
     expect(result.current.isCollapsed("ready")).toBe(true);
 
     // Tasks arrive in "ready"
     const updatedCounts = makeCounts({ draft: 3, ready: 2, in_progress: 1, done: 0 });
     rerender({ counts: updatedCounts });
 
-    // Should auto-expand
     expect(result.current.isCollapsed("ready")).toBe(false);
   });
 
@@ -104,9 +98,6 @@ describe("useColumnCollapse", () => {
       { initialProps: { counts: emptyCounts, sessionId: "session-1" } },
     );
 
-    act(() => {
-      result.current.toggleCollapse("ready");
-    });
     expect(result.current.isCollapsed("ready")).toBe(true);
 
     // User manually expands "ready"
@@ -128,19 +119,19 @@ describe("useColumnCollapse", () => {
       useColumnCollapse(columns, taskCounts, "session-1"),
     );
 
+    expect(result.current.isCollapsed("ready")).toBe(true);
+
+    // Toggle to expanded
+    act(() => {
+      result.current.toggleCollapse("ready");
+    });
     expect(result.current.isCollapsed("ready")).toBe(false);
 
-    // Toggle to collapsed
+    // Toggle back to collapsed
     act(() => {
       result.current.toggleCollapse("ready");
     });
     expect(result.current.isCollapsed("ready")).toBe(true);
-
-    // Toggle back to expanded
-    act(() => {
-      result.current.toggleCollapse("ready");
-    });
-    expect(result.current.isCollapsed("ready")).toBe(false);
   });
 
   it("expandColumn expands a collapsed column", () => {
@@ -150,9 +141,6 @@ describe("useColumnCollapse", () => {
       useColumnCollapse(columns, taskCounts, "session-1"),
     );
 
-    act(() => {
-      result.current.toggleCollapse("ready");
-    });
     expect(result.current.isCollapsed("ready")).toBe(true);
 
     // Expand it
@@ -185,16 +173,16 @@ describe("useColumnCollapse", () => {
       { initialProps: { counts: emptyCounts, sessionId: "session-1" } },
     );
 
-    // User manually collapses "ready"
+    // User manually expands "ready"
     act(() => {
       result.current.toggleCollapse("ready");
     });
-    expect(result.current.isCollapsed("ready")).toBe(true);
+    expect(result.current.isCollapsed("ready")).toBe(false);
 
-    // Plan changes (different session ID) — stale collapse state is reset.
+    // Plan changes (different session ID) — stale expand state is reset.
     rerender({ counts: emptyCounts, sessionId: "session-2" });
 
-    expect(result.current.isCollapsed("ready")).toBe(false);
+    expect(result.current.isCollapsed("ready")).toBe(true);
   });
 
   it("handles undefined ideationSessionId", () => {
@@ -204,11 +192,11 @@ describe("useColumnCollapse", () => {
       useColumnCollapse(columns, taskCounts, undefined),
     );
 
-    expect(result.current.isCollapsed("ready")).toBe(false);
+    expect(result.current.isCollapsed("ready")).toBe(true);
     expect(result.current.isCollapsed("draft")).toBe(false);
   });
 
-  it("does not auto-collapse columns that become empty from filter toggle", () => {
+  it("auto-collapses columns that become empty from filter toggle", () => {
     // Start with tasks in "ready"
     const initialCounts = makeCounts({ draft: 3, ready: 2, in_progress: 1, done: 0 });
 
@@ -217,18 +205,18 @@ describe("useColumnCollapse", () => {
       { initialProps: { counts: initialCounts } },
     );
 
-    // "ready" starts expanded
+    // "ready" starts expanded because it has tasks.
     expect(result.current.isCollapsed("ready")).toBe(false);
 
     // Toggle filter causes "ready" to become empty (e.g., those tasks were all merge tasks)
     const filteredCounts = makeCounts({ draft: 3, ready: 0, in_progress: 1, done: 0 });
     rerender({ counts: filteredCounts });
 
-    expect(result.current.isCollapsed("ready")).toBe(false);
+    expect(result.current.isCollapsed("ready")).toBe(true);
   });
 
   it("auto-expands columns that gain tasks from filter toggle (0→N transition)", () => {
-    // Start with "ready" empty and manually collapse it.
+    // Start with "ready" empty and already auto-collapsed.
     const initialCounts = makeCounts({ draft: 3, ready: 0, in_progress: 1, done: 0 });
 
     const { result, rerender } = renderHook(
@@ -236,9 +224,6 @@ describe("useColumnCollapse", () => {
       { initialProps: { counts: initialCounts } },
     );
 
-    act(() => {
-      result.current.toggleCollapse("ready");
-    });
     expect(result.current.isCollapsed("ready")).toBe(true);
 
     // Toggle filter reveals tasks in "ready" (0→2 transition)

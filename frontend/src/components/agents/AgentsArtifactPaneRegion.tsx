@@ -18,8 +18,8 @@ import type { AgentConversation } from "./agentConversations";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 
-export const AGENTS_ARTIFACT_MIN_WIDTH = 320;
-export const AGENTS_CHAT_MIN_WIDTH = 320;
+export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
+export const AGENTS_CHAT_MIN_WIDTH = 600;
 
 const LazyAgentsArtifactPane = lazy(() =>
   preloadAgentsArtifactPane().then((module) => ({ default: module.AgentsArtifactPane })),

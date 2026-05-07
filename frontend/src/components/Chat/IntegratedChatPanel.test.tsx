@@ -758,7 +758,7 @@ describe("IntegratedChatPanel", () => {
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
 
-    it("first paints visual conversation placeholders before hydrating existing messages", async () => {
+    it("mounts the scrollable transcript instead of blocking on placeholder hydration", async () => {
       mockChatPanelContext.activeConversationId = "conv-1";
       useChatMockState.conversations = [{ id: "conv-1" }];
       useChatMockState.conversation = { contextType: "task", contextId: "task-1" };
@@ -779,13 +779,16 @@ describe("IntegratedChatPanel", () => {
         </TestWrapper>
       );
 
-      expect(screen.getByTestId("chat-transcript-placeholders")).toBeInTheDocument();
-      expect(screen.queryByText("Existing conversation content")).not.toBeInTheDocument();
+      const transcript = screen.getByTestId("integrated-chat-messages");
+      expect(transcript).toBeInTheDocument();
+      expect(transcript).toHaveClass("overflow-hidden");
+      expect(screen.getByText("Existing conversation content")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-transcript-settling-placeholders")).toBeInTheDocument();
 
       await waitFor(() =>
-        expect(screen.getByText("Existing conversation content")).toBeInTheDocument()
+        expect(screen.queryByTestId("chat-transcript-settling-placeholders")).not.toBeInTheDocument()
       );
-      expect(screen.queryByTestId("chat-transcript-placeholders")).not.toBeInTheDocument();
+      expect(screen.getByText("Existing conversation content")).toBeInTheDocument();
     });
   });
 

@@ -4,6 +4,8 @@
  * Design: v29a Kanban — stable full-height columns with 1px dividers.
  */
 
+import { TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH } from "./TaskBoard.layout";
+
 const COLUMN_COUNT = 5;
 
 export function TaskBoardSkeleton() {
@@ -12,7 +14,7 @@ export function TaskBoardSkeleton() {
       data-testid="task-board-skeleton"
       className="grid flex-1 overflow-x-auto"
       style={{
-        gridTemplateColumns: `repeat(${COLUMN_COUNT}, minmax(220px, 1fr))`,
+        gridTemplateColumns: `repeat(${COLUMN_COUNT}, ${TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH}px)`,
         gap: "1px",
         background: "var(--kanban-board-divider)",
       }}
@@ -22,8 +24,11 @@ export function TaskBoardSkeleton() {
           <div
             key={index}
             data-testid={`skeleton-column-${index}`}
-            className="flex min-w-[220px] flex-col"
-            style={{ background: "var(--kanban-column-bg)" }}
+            className="flex flex-col"
+            style={{
+              background: "var(--kanban-column-bg)",
+              minWidth: `${TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH}px`,
+            }}
           >
             {/* Column header - simple */}
             <div

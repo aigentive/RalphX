@@ -30,9 +30,6 @@ import {
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
-import {
-  AgentsChatFocusBar,
-} from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
@@ -43,6 +40,7 @@ import {
   agentModelOptions,
 } from "./agentOptions";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
+import { AGENTS_CHAT_MIN_WIDTH } from "./AgentsArtifactPaneRegion";
 import {
   getAgentQueueHaltState,
   type AgentQueueHaltState,
@@ -139,8 +137,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
   const isFocusedChildChat = chatFocus.type !== "workspace";
-  const showWorkspaceStatus =
-    Boolean(activeWorkspace) && !isFocusedChildChat;
   const panelStoreKeyOverride = useMemo(() => {
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
@@ -169,11 +165,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     [executionHaltState, queuedInitialPrompt]
   );
 
-  // Every chat now renders the rich composer, which hosts the chat focus
-  // pill — so the header bar should never duplicate the picker. Keep the
-  // bar only when there's a workspace status pill to surface.
-  const showFocusBar = showWorkspaceStatus;
-  const focusBarOptions: AgentsChatFocusSwitchOption[] = [];
   const composerChatFocus = useMemo<ChatFocusFieldConfig | undefined>(() => {
     if (chatFocusOptions.length <= 1) return undefined;
     const focusToneStyles: Record<
@@ -240,7 +231,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
 
   return (
-    <div className="flex-1 min-w-0 h-full flex flex-col">
+    <div
+      className="flex-1 h-full flex flex-col"
+      style={{ minWidth: AGENTS_CHAT_MIN_WIDTH }}
+      data-testid="agents-active-conversation-panel"
+    >
       <div className="min-h-0 flex-1">
         <IntegratedChatPanel
           key={`${selectedConversationId}:${chatFocus.type}:${focusedChatSessionId ?? "workspace"}`}
@@ -439,20 +434,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               isPublishingWorkspace={publishingConversationId === selectedConversationId}
               onToggleArtifacts={onToggleArtifacts}
               onSelectArtifact={onSelectArtifact}
+              showTitle={false}
             />
           }
-          {...(showFocusBar
-            ? {
-                headerSubContent: (
-                  <AgentsChatFocusBar
-                    activeType={chatFocus.type}
-                    options={focusBarOptions}
-                    workspace={showWorkspaceStatus ? activeWorkspace : null}
-                    onSelectFocus={onSelectChatFocus}
-                  />
-                ),
-              }
-            : {})}
           emptyState={emptyState}
         />
       </div>

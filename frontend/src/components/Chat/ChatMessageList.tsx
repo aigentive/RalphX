@@ -67,6 +67,7 @@ export const AT_BOTTOM_THRESHOLD = 150;
 export const TEXT_LENGTH_BUCKET_SIZE = 150;
 
 const INITIAL_TRANSCRIPT_PAINT_MAX_FRAMES = 240;
+const INITIAL_TRANSCRIPT_PAINT_MAX_MS = 2_500;
 
 /** Shared styles for content containers to handle long text */
 const contentContainerStyle: React.CSSProperties = {
@@ -457,11 +458,21 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const initialPaintReadyFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const initialPaintReadyAttemptRef = useRef(0);
-    const [pendingInitialPaintCoverKey, setPendingInitialPaintCoverKey] =
-      useState<string | null>(() => (initialPaintCoverKey && messages.length > 0 ? initialPaintCoverKey : null));
+    const initialPendingPaintCoverKey =
+      initialPaintCoverKey && messages.length > 0 ? initialPaintCoverKey : null;
+    const pendingInitialPaintCoverKeyRef = useRef<string | null>(initialPendingPaintCoverKey);
+    const completedInitialPaintCoverKeyRef = useRef<string | null>(null);
+    const [pendingInitialPaintCoverKey, setPendingInitialPaintCoverKeyState] =
+      useState<string | null>(() => initialPendingPaintCoverKey);
     const shouldShowInitialPaintCover =
       pendingInitialPaintCoverKey !== null && messages.length > 0;
+
+    const setPendingInitialPaintCoverKey = useCallback((nextKey: string | null) => {
+      pendingInitialPaintCoverKeyRef.current = nextKey;
+      setPendingInitialPaintCoverKeyState(nextKey);
+    }, []);
 
     const setIsVisuallyAtBottom = useCallback((nextValue: boolean) => {
       if (isVisuallyAtBottomRef.current === nextValue) {
@@ -480,6 +491,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         clearTimeout(initialPaintReadyTimerRef.current);
         initialPaintReadyTimerRef.current = null;
       }
+      if (initialPaintReadyFallbackTimerRef.current !== null) {
+        clearTimeout(initialPaintReadyFallbackTimerRef.current);
+        initialPaintReadyFallbackTimerRef.current = null;
+      }
       initialPaintReadyAttemptRef.current = 0;
     }, []);
 
@@ -489,11 +504,32 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     );
 
     useEffect(() => {
+      const nextKey = initialPaintCoverKey && messages.length > 0 ? initialPaintCoverKey : null;
+
+      if (!nextKey) {
+        completedInitialPaintCoverKeyRef.current = null;
+        if (pendingInitialPaintCoverKeyRef.current !== null) {
+          cancelInitialPaintReadyJob();
+          setPendingInitialPaintCoverKey(null);
+        }
+        return;
+      }
+
+      if (completedInitialPaintCoverKeyRef.current === nextKey) {
+        if (pendingInitialPaintCoverKeyRef.current !== null) {
+          cancelInitialPaintReadyJob();
+          setPendingInitialPaintCoverKey(null);
+        }
+        return;
+      }
+
+      if (pendingInitialPaintCoverKeyRef.current === nextKey) {
+        return;
+      }
+
       cancelInitialPaintReadyJob();
-      setPendingInitialPaintCoverKey(
-        initialPaintCoverKey && messages.length > 0 ? initialPaintCoverKey : null,
-      );
-    }, [cancelInitialPaintReadyJob, initialPaintCoverKey, messages.length]);
+      setPendingInitialPaintCoverKey(nextKey);
+    }, [cancelInitialPaintReadyJob, initialPaintCoverKey, messages.length, setPendingInitialPaintCoverKey]);
 
     const isTranscriptDomReady = useCallback(() => {
       return isTranscriptRootReadyForReveal(transcriptRootRef.current);
@@ -508,9 +544,21 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
 
       const complete = () => {
-        const readyKey = pendingInitialPaintCoverKey;
+        const readyKey = pendingInitialPaintCoverKeyRef.current;
+        if (!readyKey) {
+          return;
+        }
+        if (initialPaintReadyFrameRef.current !== null) {
+          cancelAnimationFrame(initialPaintReadyFrameRef.current);
+          initialPaintReadyFrameRef.current = null;
+        }
+        if (initialPaintReadyFallbackTimerRef.current !== null) {
+          clearTimeout(initialPaintReadyFallbackTimerRef.current);
+          initialPaintReadyFallbackTimerRef.current = null;
+        }
         initialPaintReadyTimerRef.current = null;
         initialPaintReadyAttemptRef.current = 0;
+        completedInitialPaintCoverKeyRef.current = readyKey;
         setPendingInitialPaintCoverKey(null);
         onInitialPaintReady?.(readyKey);
       };
@@ -531,7 +579,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       };
 
       initialPaintReadyFrameRef.current = requestAnimationFrame(check);
-    }, [isTranscriptDomReady, onInitialPaintReady, pendingInitialPaintCoverKey]);
+      initialPaintReadyFallbackTimerRef.current = setTimeout(
+        complete,
+        INITIAL_TRANSCRIPT_PAINT_MAX_MS,
+      );
+    }, [isTranscriptDomReady, onInitialPaintReady, pendingInitialPaintCoverKey, setPendingInitialPaintCoverKey]);
 
     useEffect(() => {
       conversationLastUserMessageIdRef.current = lastUserMessageId;
@@ -1471,7 +1523,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           {shouldShowInitialPaintCover && (
             <ConversationTranscriptPlaceholders
               contentWidthClassName={contentWidthClassName}
-              className="absolute inset-0 z-10 bg-[var(--bg-primary)]"
+              className="pointer-events-none absolute inset-0 z-10 bg-[var(--bg-base)]"
               testId="chat-transcript-settling-placeholders"
               ariaHidden
             />
@@ -1605,7 +1657,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         {shouldShowInitialPaintCover && (
           <ConversationTranscriptPlaceholders
             contentWidthClassName={contentWidthClassName}
-            className="absolute inset-0 z-10 bg-[var(--bg-primary)]"
+            className="pointer-events-none absolute inset-0 z-10 bg-[var(--bg-base)]"
             testId="chat-transcript-settling-placeholders"
             ariaHidden
           />

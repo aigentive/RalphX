@@ -160,7 +160,7 @@ export const PlanGroup = memo(function PlanGroup({
       style={{
         width,
         height: displayHeight,
-        backgroundColor: "var(--overlay-weak)",
+        backgroundColor: "var(--bg-surface)",
         ...(isGroupSelected && {
           outline: "2px solid var(--accent-primary)",
           outlineOffset: "-2px",

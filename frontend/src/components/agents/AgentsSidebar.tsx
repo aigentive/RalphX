@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Archive,
-  ChevronDown,
+  ArrowDownUp,
   ChevronLeft,
   ChevronRight,
   Folder,
@@ -121,6 +121,7 @@ export function AgentsSidebar({
 }: AgentsSidebarProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
   const normalizedSearchInput = searchQuery.trim().toLowerCase();
   const normalizedSearch = useDebouncedValue(
     normalizedSearchInput,
@@ -247,7 +248,9 @@ export function AgentsSidebar({
             className="relative flex items-center"
             style={{
               backgroundColor: "var(--overlay-faint)",
-              borderColor: "var(--overlay-weak)",
+              borderColor: isSearchFocused
+                ? "var(--accent-border)"
+                : "var(--overlay-weak)",
               borderStyle: "solid",
               borderWidth: "1px",
               borderRadius: "6px",
@@ -260,6 +263,8 @@ export function AgentsSidebar({
             <input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => setIsSearchFocused(false)}
               placeholder="Search"
               className="w-full h-7 pl-8 pr-8 text-[0.75rem] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
               style={{
@@ -268,6 +273,7 @@ export function AgentsSidebar({
               }}
               autoFocus
               data-testid="agents-search-input"
+              data-agent-sidebar-search="true"
             />
             {searchQuery !== "" && (
               <button
@@ -285,18 +291,24 @@ export function AgentsSidebar({
       )}
 
       {projects.length > 0 && (
-        <div className="flex shrink-0 items-center gap-2 px-3 pb-2">
+        <div
+          className="mb-2 flex h-8 shrink-0 items-center gap-1 px-3"
+          role="toolbar"
+          aria-label="Agent list filters"
+          data-testid="agents-filter-toolbar"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+          }}
+        >
           <button
             type="button"
             data-testid="agents-show-all-projects-pill"
             aria-pressed={showAllProjects}
             onClick={() => setShowAllProjects(!showAllProjects)}
-            className="inline-flex h-7 items-center rounded-[6px] border px-2.5 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+            className="inline-flex h-full min-w-0 shrink-0 items-center justify-start whitespace-nowrap rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
             style={{
-              backgroundColor: showAllProjects
-                ? withAlpha("var(--accent-primary)", 15)
-                : "var(--bg-elevated)",
-              borderColor: showAllProjects ? "var(--accent-primary)" : "var(--border-subtle)",
+              backgroundColor: "transparent",
+              borderColor: "transparent",
               color: showAllProjects ? "var(--text-primary)" : "var(--text-muted)",
               boxShadow: "none",
             }}
@@ -305,23 +317,29 @@ export function AgentsSidebar({
           </button>
 
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                data-testid="agents-project-sort-pill"
-                aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
-                className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-                style={{
-                  backgroundColor: "var(--bg-elevated)",
-                  borderColor: "var(--border-subtle)",
-                  color: "var(--text-muted)",
-                  boxShadow: "none",
-                }}
-              >
-                <span>{PROJECT_SORT_LABELS[projectSort]}</span>
-                <ChevronDown className="h-3 w-3" />
-              </button>
-            </DropdownMenuTrigger>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="agents-project-sort-pill"
+                    aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
+                    className="inline-flex h-full w-8 shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-transparent text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+                    style={{
+                      backgroundColor: "transparent",
+                      borderColor: "transparent",
+                      color: "var(--text-muted)",
+                      boxShadow: "none",
+                    }}
+                  >
+                    <ArrowDownUp className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                Sort projects: {PROJECT_SORT_LABELS[projectSort]}
+              </TooltipContent>
+            </Tooltip>
             <DropdownMenuContent align="start" className="min-w-[120px]">
               <DropdownMenuRadioGroup
                 value={projectSort}
@@ -343,12 +361,10 @@ export function AgentsSidebar({
               aria-pressed={showArchived}
               aria-label="Show archived sessions"
               onClick={() => onShowArchivedChange(!showArchived)}
-              className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+              className="ml-auto inline-flex h-full min-w-0 shrink-0 items-center justify-end gap-1.5 whitespace-nowrap rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
               style={{
-                backgroundColor: showArchived
-                  ? withAlpha("var(--accent-primary)", 15)
-                  : "var(--bg-elevated)",
-                borderColor: showArchived ? "var(--accent-primary)" : "var(--border-subtle)",
+                backgroundColor: "transparent",
+                borderColor: "transparent",
                 color: showArchived ? "var(--text-primary)" : "var(--text-muted)",
                 boxShadow: "none",
               }}
@@ -471,6 +487,7 @@ function ProjectSessionGroup({
   showAllProjects,
 }: ProjectSessionGroupProps) {
   const projectActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [renameDialogConversation, setRenameDialogConversation] =
@@ -544,7 +561,8 @@ function ProjectSessionGroup({
 
   return (
     <div className="my-1 flex flex-col gap-0.5" data-testid={`agents-project-${project.id}`}>
-        <div className="group/project relative">
+        <div className="relative">
+          <div className="group/project-row relative">
           <button
             type="button"
             className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
@@ -575,7 +593,7 @@ function ProjectSessionGroup({
                 className={`agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6] transition-opacity duration-150 ${
                   projectActionsOpen
                     ? "opacity-0"
-                    : "opacity-100 group-hover/project:opacity-0 group-focus-within/project:opacity-0"
+                    : "opacity-100 group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0"
                 }`}
               >
                 {totalConversationCount}
@@ -586,7 +604,7 @@ function ProjectSessionGroup({
                 className={`agents-project-active-count grid min-w-[18px] place-items-center rounded-full px-1.5 text-[0.6562rem] font-medium leading-[1.6] transition-opacity duration-150 ${
                   projectActionsOpen
                     ? "opacity-0"
-                    : "opacity-100 group-hover/project:opacity-0 group-focus-within/project:opacity-0"
+                    : "opacity-100 group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0"
                 }`}
                 style={{
                   color: "var(--accent-primary)",
@@ -601,7 +619,7 @@ function ProjectSessionGroup({
               className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-[6px] transition-opacity duration-150 ${
                 projectActionsOpen
                   ? "opacity-100"
-                  : "opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100"
+                  : "opacity-0 group-hover/project-row:opacity-100 group-focus-within/project-row:opacity-100"
               }`}
               data-testid={`agents-project-actions-${project.id}`}
               onClick={(event) => event.stopPropagation()}
@@ -622,7 +640,7 @@ function ProjectSessionGroup({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-5.5 w-5.5 p-0 rounded border-0 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+                    className="h-5.5 w-5.5 rounded border-0 bg-transparent p-0 outline-none ring-0 hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 data-[state=open]:bg-transparent"
                     aria-label="Project actions"
                     data-theme-button-skip="true"
                     style={{ boxShadow: "none" }}
@@ -630,7 +648,13 @@ function ProjectSessionGroup({
                     <MoreHorizontal className="w-3.5 h-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent
+                  align="end"
+                  onCloseAutoFocus={(event) => {
+                    event.preventDefault();
+                    projectActionsTriggerRef.current?.blur();
+                  }}
+                >
                   <DropdownMenuItem
                     className="gap-2 text-xs"
                     onClick={() => setArchiveDialogOpen(true)}
@@ -641,6 +665,7 @@ function ProjectSessionGroup({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+          </div>
 
           <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
             <AlertDialogContent>
@@ -781,7 +806,7 @@ function ProjectSessionGroup({
                     >
                       <button
                         type="button"
-                        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 pr-8 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                         onClick={() => onSelectConversation(project.id, conversation)}
                         aria-current={isSelected ? "true" : undefined}
                         style={{
@@ -813,7 +838,7 @@ function ProjectSessionGroup({
                           </span>
                         </span>
                         <span
-                          className={`agents-session-status-slot transition-opacity duration-150 ${
+                          className={`agents-session-status-slot grid h-4 w-4 place-items-center justify-self-end transition-opacity duration-150 ${
                             sessionActionsOpen
                               ? "opacity-0"
                               : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
@@ -823,23 +848,37 @@ function ProjectSessionGroup({
                         </span>
                       </button>
                       <DropdownMenu
-                        onOpenChange={(open) =>
-                          setOpenSessionActionsId(open ? conversation.id : null)
-                        }
+                        onOpenChange={(open) => {
+                          setOpenSessionActionsId(open ? conversation.id : null);
+                          if (!open) {
+                            requestAnimationFrame(() => {
+                              sessionActionsTriggerRefs.current[conversation.id]?.blur();
+                            });
+                          }
+                        }}
                       >
                         <DropdownMenuTrigger asChild>
                           <Button
+                            ref={(node) => {
+                              sessionActionsTriggerRefs.current[conversation.id] = node;
+                            }}
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 p-0 opacity-0 outline-none ring-0 transition-opacity focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:opacity-100"
+                            className="absolute right-2 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 bg-transparent p-0 opacity-0 outline-none ring-0 transition-opacity hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:bg-transparent data-[state=open]:opacity-100"
                             aria-label="Session actions"
                             style={{ boxShadow: "none" }}
                           >
                             <MoreHorizontal className="h-3.5 w-3.5" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
+                        <DropdownMenuContent
+                          align="end"
+                          onCloseAutoFocus={(event) => {
+                            event.preventDefault();
+                            sessionActionsTriggerRefs.current[conversation.id]?.blur();
+                          }}
+                        >
                           <DropdownMenuItem
                             className="gap-2 text-xs"
                             onClick={() => openRenameDialog(conversation)}
@@ -948,7 +987,7 @@ function StaticRecentRuns() {
             style={{ boxShadow: "none" }}
           >
             <span
-              className="h-[7px] w-[7px] rounded-full"
+              className="block h-[7px] w-[7px] rounded-full"
               style={{ background: "var(--status-success)" }}
             />
             <span className="min-w-0">
@@ -1036,7 +1075,7 @@ function SessionStatusDot({
     return (
       <span
         aria-hidden="true"
-        className="h-[7px] w-[7px] shrink-0 rounded-full"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
         style={{
           backgroundColor: "var(--accent-primary)",
           border: "1.5px solid transparent",
@@ -1049,7 +1088,7 @@ function SessionStatusDot({
     return (
       <span
         aria-hidden="true"
-        className="h-[7px] w-[7px] shrink-0 rounded-full"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
         style={{
           backgroundColor: "var(--status-success)",
           border: "1.5px solid transparent",
@@ -1062,7 +1101,7 @@ function SessionStatusDot({
     return (
       <span
         aria-hidden="true"
-        className="h-[7px] w-[7px] shrink-0 rounded-full"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
         style={{
           backgroundColor: "transparent",
           borderColor: "var(--text-subtle)",

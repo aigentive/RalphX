@@ -90,24 +90,24 @@ describe("Column", () => {
       expect(screen.getByText("In Progress")).toBeInTheDocument();
     });
 
-    it("drops the 220px minWidth when fillWidth is true", () => {
+    it("keeps the 300px minWidth when fillWidth is true", () => {
       const column = createMockColumn();
       render(
         <Column column={column} projectId="p1" showArchived={false} fillWidth />,
         { wrapper: DndWrapper },
       );
       const root = screen.getByTestId(`column-${column.id}`);
-      expect(root.style.minWidth).toBe("0px");
+      expect(root.style.minWidth).toBe("300px");
     });
 
-    it("keeps the 220px minWidth when fillWidth is unset", () => {
+    it("keeps a 300px minWidth when fillWidth is unset", () => {
       const column = createMockColumn();
       render(
         <Column column={column} projectId="p1" showArchived={false} />,
         { wrapper: DndWrapper },
       );
       const root = screen.getByTestId(`column-${column.id}`);
-      expect(root.style.minWidth).toBe("220px");
+      expect(root.style.minWidth).toBe("300px");
     });
 
     it("should render task count in header", () => {

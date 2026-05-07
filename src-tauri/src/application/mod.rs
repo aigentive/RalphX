@@ -158,6 +158,8 @@ mod ideation_harness_availability_tests;
 #[cfg(test)]
 mod recovery_queue_tests;
 #[cfg(test)]
+mod runtime_wiring_tests;
+#[cfg(test)]
 mod webhook_service_tests;
 #[cfg(test)]
 mod prune_engine_tests;
