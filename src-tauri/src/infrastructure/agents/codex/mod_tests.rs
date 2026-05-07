@@ -6,9 +6,6 @@ use super::{
 use crate::domain::agents::LogicalEffort;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 struct EnvGuard {
     key: &'static str,
@@ -94,7 +91,9 @@ fn build_codex_exec_command_sets_agent_tool_path() {
 
 #[test]
 fn probe_codex_cli_prepends_resolved_node_for_env_shim() {
-    let _lock = ENV_MUTEX.lock().expect("env mutex");
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let empty_path = temp_dir.path().join("empty-path");
     std::fs::create_dir_all(&empty_path).expect("create empty path");

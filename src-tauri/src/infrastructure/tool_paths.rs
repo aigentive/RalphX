@@ -3,6 +3,9 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[cfg(test)]
+pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn resolve_gh_cli_path() -> PathBuf {
     resolve_cli_path("gh", &["/opt/homebrew/bin/gh", "/usr/local/bin/gh"])
 }

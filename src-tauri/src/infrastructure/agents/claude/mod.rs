@@ -219,6 +219,10 @@ pub(crate) fn find_base_plugin_dir() -> Option<PathBuf> {
 
 /// Apply common Claude CLI environment flags for RalphX-managed spawns.
 pub fn apply_common_spawn_env(cmd: &mut Command) {
+    apply_common_spawn_env_to_std(cmd.as_std_mut());
+}
+
+fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
     cmd.env(
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
@@ -230,7 +234,7 @@ pub fn apply_common_spawn_env(cmd: &mut Command) {
         "TAURI_API_URL",
         crate::utils::backend_endpoint::backend_http_base_url(),
     );
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
 }
 
 /// Normalize legacy short agent ids to the current canonical ids.
@@ -1616,7 +1620,9 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     let mcp_server_name = claude_runtime_config().mcp_server_name.clone();
 
     // First, try to remove existing registration (ignore errors)
-    let remove_result = std::process::Command::new(cli_path)
+    let mut remove_cmd = std::process::Command::new(cli_path);
+    apply_common_spawn_env_to_std(&mut remove_cmd);
+    let remove_result = remove_cmd
         .args(["mcp", "remove", &mcp_server_name, "-s", "user"])
         .output();
 
@@ -1633,7 +1639,9 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     }
 
     // Register the MCP server with user scope
-    let add_result = std::process::Command::new(cli_path)
+    let mut add_cmd = std::process::Command::new(cli_path);
+    apply_common_spawn_env_to_std(&mut add_cmd);
+    let add_result = add_cmd
         .args([
             "mcp",
             "add-json",
@@ -1760,8 +1768,49 @@ mod create_mcp_config_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn write_executable(path: &Path, contents: &str) {
+        std::fs::write(path, contents).expect("write executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path)
+                .expect("executable metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).expect("mark executable");
+        }
+    }
 
     /// build_spawnable_command calls ensure_claude_spawn_allowed() which returns
     /// Err in tests — exercise the function up to that guard.
@@ -1851,6 +1900,51 @@ mod tests {
         let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
 
         assert_eq!(path_entries.first(), Some(&expected_node_bin));
+    }
+
+    #[tokio::test]
+    async fn register_mcp_server_prepends_resolved_node_for_env_shim() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let empty_path = temp_dir.path().join("empty-path");
+        std::fs::create_dir_all(&empty_path).expect("create empty path");
+        let nvm_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.16.0")
+            .join("bin");
+        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+        let node_path = nvm_bin.join("node");
+        let claude_path = nvm_bin.join("claude");
+        write_executable(
+            &node_path,
+            r#"#!/bin/sh
+shift
+if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
+  exit 0
+elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
+  exit 0
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+        );
+        write_executable(&claude_path, "#!/usr/bin/env node\n");
+
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _path = EnvGuard::set_os("PATH", &empty_path);
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+        register_mcp_server(&claude_path, temp_dir.path())
+            .await
+            .expect("Claude MCP registration should run npm shim with resolved node");
     }
 
     /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the
