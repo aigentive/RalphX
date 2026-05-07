@@ -631,8 +631,14 @@ fn write_codex_prompt_debug_artifact(
 }
 
 fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = StdCommand::new(cli_path)
-        .args(args)
+    let mut command = StdCommand::new(cli_path);
+    command.args(args);
+    command.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
 
