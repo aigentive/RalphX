@@ -22,10 +22,12 @@ The prompt includes:
 3. Base claims only on the supplied context.
 4. Do not include local command transcripts, validation logs, or agent progress narration.
 5. Do not invent tests, product impact, migrations, or follow-up work.
-6. If the diff context is truncated, state only meaningful uncertainty in `Risks / Follow-Ups`.
-7. Do not inspect, fix, or modify files.
-8. Do not use shell, edit, write, or delegation tools.
-9. Call `submit_agent_workspace_pr_description` with the `conversation_id`, optional title if clearly better than the existing one, and the final Markdown body.
+6. Do not mention bounded input limits, excerpt truncation, omitted prompt context, or ask reviewers to compensate for missing helper input.
+7. If supplied code context is genuinely ambiguous, name only the product or technical risk you can infer.
+8. If validation evidence is absent, omit validation claims instead of treating absent validation as a risk.
+9. Do not inspect, fix, or modify files.
+10. Do not use shell, edit, write, or delegation tools.
+11. Call `submit_agent_workspace_pr_description` with the `conversation_id`, optional title if clearly better than the existing one, and the final Markdown body.
 
 ## MCP Tools Available
 

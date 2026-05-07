@@ -23,7 +23,7 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgenticClient, LogicalEffort};
-use crate::domain::entities::{ChatContextType, ChatConversation};
+use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationWorkspaceRepository,
@@ -391,8 +391,51 @@ impl AppState {
         })
     }
 
-    pub(crate) async fn resolve_session_namer_runtime(&self) -> ResolvedBackgroundAgentRuntime {
-        self.default_background_agent_runtime()
+    pub(crate) async fn resolve_session_namer_runtime_for_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_ideation_background_agent_runtime(project_id)
+            .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_session(
+        &self,
+        session: &IdeationSession,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(conversation) = self
+            .chat_conversation_repo
+            .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
+            .await?
+        {
+            return self
+                .resolve_session_namer_runtime_for_conversation(
+                    &conversation,
+                    Some(session.project_id.as_str()),
+                )
+                .await;
+        }
+
+        self.resolve_session_namer_runtime_for_project(Some(session.project_id.as_str()))
+            .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_conversation(
+        &self,
+        conversation: &ChatConversation,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = conversation.provider_harness {
+            return self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "session namer owning conversation",
+                )
+                .await;
+        }
+
+        self.resolve_session_namer_runtime_for_project(project_id)
+            .await
     }
 
     pub(crate) async fn resolve_pr_describer_runtime(

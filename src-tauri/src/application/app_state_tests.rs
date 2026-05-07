@@ -361,12 +361,12 @@ async fn test_resolve_ideation_background_agent_runtime_errors_without_registere
 }
 
 #[tokio::test]
-async fn test_resolve_session_namer_runtime_uses_default_client_even_when_ideation_lane_is_codex() {
+async fn test_resolve_session_namer_runtime_uses_project_ideation_harness() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let state = AppState::new_test()
-        .with_agent_client(default_mock.clone())
-        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
 
     let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
     state.project_repo.create(project.clone()).await.unwrap();
@@ -380,16 +380,67 @@ async fn test_resolve_session_namer_runtime_uses_default_client_even_when_ideati
         .await
         .unwrap();
 
-    let runtime = state.resolve_session_namer_runtime().await;
+    let runtime = state
+        .resolve_session_namer_runtime_for_project(Some(project.id.as_str()))
+        .await
+        .expect("session namer should resolve from the project ideation harness");
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "session namer should follow the owning project's ideation harness when no conversation provider has been persisted"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+}
+
+#[tokio::test]
+async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_when_present() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project = Project::new("Codex Conversation Project".to_string(), "/tmp".to_string());
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let runtime = state
+        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
+        .await
+        .expect("session namer should resolve from the owning conversation harness");
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "session namer should use the harness that owns the conversation being titled"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model, None);
+    assert_eq!(runtime.logical_effort, None);
+}
+
+#[tokio::test]
+async fn test_resolve_session_namer_runtime_uses_default_without_provider_or_lane() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock.clone())
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
+
+    let project = Project::new("Legacy Project".to_string(), "/tmp".to_string());
+    let conversation = ChatConversation::new_project(project.id.clone());
+
+    let runtime = state
+        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
+        .await
+        .expect("legacy session namer runtime should fall back to the default helper client");
 
     assert!(
         Arc::ptr_eq(&runtime.client, &default_mock),
-        "session namer should stay on the default helper client instead of inheriting the main ideation lane"
+        "legacy session namer should keep using the default helper client without provider or lane metadata"
     );
-    assert_eq!(
-        runtime.harness, None,
-        "default helper client should not advertise an explicit non-default harness"
-    );
+    assert_eq!(runtime.harness, None);
     assert_eq!(runtime.model, None);
     assert_eq!(runtime.logical_effort, None);
 }

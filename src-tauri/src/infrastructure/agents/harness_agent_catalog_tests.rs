@@ -626,6 +626,13 @@ fn codex_runtime_features_load_from_harness_metadata() {
         Some(&false),
         "PR describer should disable Codex shell_tool declaratively"
     );
+
+    let session_namer = load_canonical_codex_metadata(&root, "ralphx-utility-session-namer");
+    assert_eq!(
+        session_namer.runtime_features.get("shell_tool"),
+        Some(&false),
+        "session namer should disable Codex shell_tool declaratively"
+    );
 }
 
 #[test]
@@ -1005,7 +1012,32 @@ fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
         !prompt.contains("mcp__ralphx__"),
         "Codex PR describer prompt should not use Claude-style MCP names"
     );
+    assert!(
+        !prompt.contains("truncated"),
+        "Codex PR describer prompt should not tell helpers to expose bounded-context truncation"
+    );
     assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
+}
+
+#[test]
+fn project_analyzer_codex_prompt_uses_harness_neutral_file_inspection_language() {
+    let root = project_root();
+    let prompt =
+        load_harness_agent_prompt(&root, "ralphx-project-analyzer", AgentPromptHarness::Codex)
+            .expect("expected project analyzer Codex prompt");
+
+    assert!(
+        !prompt.contains("Use `Glob`"),
+        "project analyzer Codex prompt should not prescribe Claude-only Glob tool usage"
+    );
+    assert!(
+        !prompt.contains("use `Read`"),
+        "project analyzer Codex prompt should not prescribe Claude-only Read tool usage"
+    );
+    assert!(
+        prompt.contains("Inspect the working directory"),
+        "project analyzer should express file inspection in harness-neutral terms"
+    );
 }
 
 fn canonical_agent_names(root: &std::path::Path) -> Vec<String> {

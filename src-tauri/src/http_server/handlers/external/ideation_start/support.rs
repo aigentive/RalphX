@@ -1,9 +1,5 @@
 use super::*;
-use crate::application::harness_runtime_registry::{
-    default_repo_root_working_directory, resolve_harness_agent_bootstrap,
-};
-use crate::application::session_namer_prompt::build_session_namer_prompt;
-use crate::domain::agents::DEFAULT_AGENT_HARNESS;
+use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 
 /// Build a fully configured app chat service from shared app + execution state.
 /// Extracted to avoid duplicating the 12-arg constructor chain across multiple handlers.
@@ -21,58 +17,21 @@ pub(super) async fn spawn_session_namer(
     session_id: String,
     prompt: String,
 ) {
-    let runtime = app.resolve_session_namer_runtime().await;
-    let agent_client = Arc::clone(&runtime.client);
-    let project_id = project_id.to_string();
-    tokio::spawn(async move {
-        use crate::domain::agents::{AgentConfig, AgentRole};
-        use crate::infrastructure::agents::claude::agent_names;
-        let namer_instructions = build_session_namer_prompt(&format!(
-            "<session_id>{}</session_id>\n<user_message>{}</user_message>",
-            session_id, prompt
-        ));
-
-        let working_directory = default_repo_root_working_directory();
-        let bootstrap = resolve_harness_agent_bootstrap(
-            runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS),
-            agent_names::AGENT_SESSION_NAMER,
-            working_directory,
+    if let Err(error) = spawn_session_namer_agent(
+        app,
+        SessionNamerTarget::SessionInitial {
+            session_id,
+            user_message: prompt,
+        },
+    )
+    .await
+    {
+        tracing::warn!(
+            project_id,
+            "Failed to prepare external ideation session namer: {}",
+            error
         );
-        let harness_for_log = runtime.harness;
-
-        let config = AgentConfig {
-            role: AgentRole::Custom(bootstrap.agent_role.clone()),
-            prompt: namer_instructions,
-            working_directory: bootstrap.working_directory,
-            plugin_dir: Some(bootstrap.plugin_dir),
-            agent: Some(bootstrap.agent_name),
-            model: runtime.model,
-            harness: runtime.harness,
-            logical_effort: runtime.logical_effort,
-            approval_policy: runtime.approval_policy,
-            sandbox_mode: runtime.sandbox_mode,
-            max_tokens: None,
-            timeout_secs: Some(60),
-            env: bootstrap.env,
-        };
-
-        tracing::info!(
-            session_id = %session_id,
-            project_id = %project_id,
-            harness = ?harness_for_log,
-            "Spawning external ideation session namer agent"
-        );
-        match agent_client.spawn_agent(config).await {
-            Ok(handle) => {
-                if let Err(e) = agent_client.wait_for_completion(&handle).await {
-                    tracing::warn!("Session namer agent failed: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to spawn session namer agent: {}", e);
-            }
-        }
-    });
+    }
 }
 
 /// Determine agent tri-state status for a session:
