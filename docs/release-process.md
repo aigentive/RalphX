@@ -94,6 +94,8 @@ Manual testing:
 3. Use `dry_run=true` to verify Codex proposal, version bump, and note generation without committing, tagging, pushing, or dispatching the build.
 4. Optionally set `release_bump` to force `patch`, `minor`, or `major`; `major` is the required approval path for a normal `1.0.0` jump.
 5. Optionally set `release_version` to force an exact version such as `0.42.0`, `0.100.42`, or `v1.0.0`; do not combine it with `release_bump`.
+6. Optionally set `arm_runner` to choose `self-hosted` or `github-hosted` for the Apple Silicon build.
+7. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
 
 Skipping scheduled release for maintenance-only commits:
 
@@ -101,7 +103,7 @@ Skipping scheduled release for maintenance-only commits:
 - The scheduled workflow skips only when all commits after the latest reachable release tag carry one of those markers.
 - Pushing to `main` can still run CI/CodeQL; this marker only affects the `Daily Release` workflow.
 
-Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, and the self-hosted ARM release runner by default. Manual dispatch can override those values.
+Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the self-hosted ARM release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
 If Codex proposes a major version without a manual bump/version override, the workflow fails before version bump, tag creation, build dispatch, or publish.
 
 ---
@@ -232,6 +234,7 @@ After the tag is on `origin`, trigger `Release Build` manually from `main`:
    - `draft`: choose whether the public release should stay a draft
    - `prerelease`: choose whether the release should be marked as a prerelease
    - `arm_runner`: `self-hosted` or `github-hosted`
+   - `macos_runner_size`: `standard` or `larger`; `larger` uses paid GitHub-hosted macOS larger runners for release builds
 
 What `Release Build` does:
 

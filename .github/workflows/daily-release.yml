@@ -43,6 +43,14 @@ on:
         options:
           - self-hosted
           - github-hosted
+      macos_runner_size:
+        description: "GitHub-hosted macOS runner size for the release build"
+        required: true
+        type: choice
+        default: standard
+        options:
+          - standard
+          - larger
       codex_model:
         description: "Codex model for version proposal and release notes"
         required: true
@@ -85,6 +93,7 @@ jobs:
       DRAFT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
       PRERELEASE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
       ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'self-hosted' }}
+      MACOS_RUNNER_SIZE: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_runner_size || 'standard' }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v6
@@ -279,7 +288,8 @@ jobs:
             -f "version=${version}" \
             -f "draft=${DRAFT_RELEASE}" \
             -f "prerelease=${PRERELEASE_RELEASE}" \
-            -f "arm_runner=${ARM_RUNNER}"
+            -f "arm_runner=${ARM_RUNNER}" \
+            -f "macos_runner_size=${MACOS_RUNNER_SIZE}"
 
           echo "Dispatched Release Build for ${tag}." >> "${GITHUB_STEP_SUMMARY}"
 
