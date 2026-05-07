@@ -348,6 +348,53 @@ describe("useConversationHistoryWindow", () => {
       1
     );
   });
+
+  it("caps loaded history pages to keep transcript memory bounded", async () => {
+    vi.mocked(chatApi.getConversationMessagesPage)
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [mockMessage2],
+        limit: 1,
+        offset: 0,
+        totalMessageCount: 3,
+        hasOlder: true,
+      })
+      .mockResolvedValueOnce({
+        conversation: mockConversation1,
+        messages: [mockMessage1],
+        limit: 1,
+        offset: 1,
+        totalMessageCount: 3,
+        hasOlder: true,
+      });
+
+    const { result } = renderHook(
+      () => useConversationHistoryWindow("conv-1", { pageSize: 1, maxPages: 2 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.hasOlderMessages).toBe(true);
+
+    await act(async () => {
+      await result.current.fetchOlderMessages();
+    });
+
+    await waitFor(() => expect(result.current.hasOlderMessages).toBe(false));
+    expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+      "message-1",
+      "message-2",
+    ]);
+    expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await result.current.fetchOlderMessages();
+    });
+
+    expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("useAgentRunStatus", () => {

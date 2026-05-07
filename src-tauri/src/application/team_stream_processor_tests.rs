@@ -79,6 +79,46 @@ fn test_message_type_mapping() {
     assert_eq!(message_type, TeamMessageType::TeammateMessage);
 }
 
+#[test]
+fn teammate_tool_result_event_payload_includes_preview_metadata() {
+    let result = serde_json::json!((1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n"));
+    let detail_ref = crate::application::chat_service::tool_result_preview::tool_detail_ref(
+        "conv-1",
+        "msg-1",
+        Some("tool-heavy"),
+        None,
+    );
+    let preview =
+        crate::application::chat_service::tool_result_preview::build_live_tool_result_preview(
+            Some("bash"),
+            &result,
+            Some(detail_ref),
+        );
+
+    let payload = teammate_tool_result_event_payload(
+        "worker",
+        "tool-heavy",
+        &preview,
+        "project",
+        "project-1",
+        Some("parent-tool".to_string()),
+        Some("conv-1"),
+    );
+
+    assert_eq!(payload["teammate_name"], "worker");
+    assert_eq!(payload["tool_name"], "result:tool-heavy");
+    assert_eq!(payload["result"].as_str().unwrap().lines().count(), 10);
+    assert_eq!(payload["result_preview_truncated"], true);
+    assert_eq!(payload["result_preview_line_count"], 12);
+    assert_eq!(payload["result_preview_omitted_lines"], 2);
+    assert_eq!(payload["detail_ref"]["message_id"], "msg-1");
+    assert_eq!(payload["parent_tool_use_id"], "parent-tool");
+    assert_eq!(payload["conversation_id"], "conv-1");
+}
+
 // ============================================================================
 // extract_assistant_usage tests
 // ============================================================================

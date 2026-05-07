@@ -1,8 +1,15 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ToolCallIndicator, type ToolCall } from "./ToolCallIndicator";
 import { makeToolCall } from "./__tests__/chatRenderFixtures";
+import { chatApi } from "@/api/chat";
+
+vi.mock("@/api/chat", () => ({
+  chatApi: {
+    getAgentMessageToolCallDetail: vi.fn(),
+  },
+}));
 
 vi.mock("@/hooks/useChildSessionStatus", () => ({
   useChildSessionStatus: vi.fn(() => ({
@@ -23,6 +30,10 @@ vi.mock("@/hooks/useChildSessionStatus", () => ({
  * custom_tool, etc.) and for edit/write error fallback cases.
  */
 describe("ToolCallIndicator", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   describe("Project orchestration widgets", () => {
     it("hides completed routine project orchestration reads", () => {
       const toolCall: ToolCall = makeToolCall("mcp__ralphx__v1_get_ideation_status", {
@@ -112,6 +123,120 @@ describe("ToolCallIndicator", () => {
   });
 
   describe("Interaction (generic fallback)", () => {
+    it("loads full previewed tool results only after expansion", async () => {
+      const user = userEvent.setup();
+      vi.mocked(chatApi.getAgentMessageToolCallDetail).mockResolvedValueOnce({
+        toolCall: makeToolCall("custom_tool", {
+          id: "call-1",
+          arguments: { target: "big-result" },
+          result: "full line 1\nfull line 2\nfull line 3",
+        }),
+      });
+      const toolCall: ToolCall = makeToolCall("custom_tool", {
+        id: "call-1",
+        arguments: { target: "big-result" },
+        result: "preview line 1\npreview line 2",
+        resultPreviewTruncated: true,
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "call-1",
+        },
+      });
+
+      render(<ToolCallIndicator toolCall={toolCall} />);
+
+      expect(screen.getByTestId("tool-call-preview-card")).toBeInTheDocument();
+      expect(chatApi.getAgentMessageToolCallDetail).not.toHaveBeenCalled();
+
+      await user.click(screen.getByTestId("tool-call-toggle"));
+
+      expect(chatApi.getAgentMessageToolCallDetail).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "call-1",
+      });
+      expect(await screen.findByText(/full line 3/)).toBeInTheDocument();
+      expect(screen.queryByText(/preview line 2/)).not.toBeInTheDocument();
+    });
+
+    it("shows unavailable text when preview detail returns empty", async () => {
+      const user = userEvent.setup();
+      vi.mocked(chatApi.getAgentMessageToolCallDetail).mockResolvedValueOnce(null);
+      const toolCall: ToolCall = makeToolCall("read", {
+        id: "call-1",
+        arguments: { file_path: "/tmp/big.txt" },
+        result: "preview",
+        resultPreviewTruncated: true,
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "call-1",
+        },
+      });
+
+      render(<ToolCallIndicator toolCall={toolCall} compact isStreaming />);
+      await user.click(screen.getByTestId("tool-call-toggle"));
+
+      expect(await screen.findByText("Full result is unavailable.")).toBeInTheDocument();
+    });
+
+    it("shows detail load errors for previewed tool results", async () => {
+      const user = userEvent.setup();
+      vi.mocked(chatApi.getAgentMessageToolCallDetail).mockRejectedValueOnce(
+        new Error("detail endpoint failed")
+      );
+      const toolCall: ToolCall = makeToolCall("edit", {
+        id: "call-1",
+        arguments: { file_path: "/tmp/big.txt" },
+        result: "preview",
+        resultPreviewTruncated: true,
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "call-1",
+        },
+      });
+
+      render(<ToolCallIndicator toolCall={toolCall} />);
+      await user.click(screen.getByTestId("tool-call-toggle"));
+
+      expect(await screen.findByText("detail endpoint failed")).toBeInTheDocument();
+    });
+
+    it("expands previewed results without fetching when no detail ref exists", async () => {
+      const user = userEvent.setup();
+      const toolCall: ToolCall = makeToolCall("glob", {
+        id: "call-1",
+        arguments: { pattern: "**/*.ts" },
+        result: "preview only",
+        resultPreviewTruncated: true,
+      });
+
+      render(<ToolCallIndicator toolCall={toolCall} />);
+      await user.click(screen.getByTestId("tool-call-toggle"));
+
+      expect(chatApi.getAgentMessageToolCallDetail).not.toHaveBeenCalled();
+      expect(screen.getByText("preview only")).toBeInTheDocument();
+    });
+
+    it.each(["bash", "write", "grep"] as const)(
+      "renders preview card icon branch for %s",
+      (name) => {
+        const toolCall: ToolCall = makeToolCall(name, {
+          id: `call-${name}`,
+          arguments: { value: name },
+          result: "preview",
+          resultPreviewTruncated: true,
+        });
+
+        render(<ToolCallIndicator toolCall={toolCall} />);
+
+        expect(screen.getByTestId("tool-call-preview-card")).toBeInTheDocument();
+        expect(screen.getAllByText(name).length).toBeGreaterThan(0);
+      }
+    );
+
     it("expands when clicked", async () => {
       const user = userEvent.setup();
       const toolCall: ToolCall = makeToolCall("update_task", {

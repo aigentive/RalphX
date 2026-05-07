@@ -10,6 +10,7 @@ import type {
 } from "../types/chat-conversation";
 import { normalizeConversationProviderMetadata } from "../types/chat-conversation";
 import type { ToolCall } from "../components/Chat/ToolCallIndicator";
+import type { ToolCallDetailRef } from "../components/Chat/tool-widgets/shared.constants";
 import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
@@ -67,9 +68,127 @@ export interface ChatMessageResponse {
   createdAt: string;
 }
 
+export interface AgentToolCallDetailResponse {
+  toolCall: ToolCall;
+}
+
 // ============================================================================
 // Parsing Utilities
 // ============================================================================
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function getNumberField(record: Record<string, unknown>, snake: string, camel: string): number | undefined {
+  const value = record[snake] ?? record[camel];
+  return typeof value === "number" ? value : undefined;
+}
+
+function normalizeToolCallDetailRef(raw: unknown): ToolCallDetailRef | undefined {
+  const record = getRecord(raw);
+  if (!record) return undefined;
+
+  const conversationId = record.conversation_id ?? record.conversationId;
+  const messageId = record.message_id ?? record.messageId;
+  if (typeof conversationId !== "string" || typeof messageId !== "string") {
+    return undefined;
+  }
+
+  const toolCallId = record.tool_call_id ?? record.toolCallId;
+  const contentBlockIndex = record.content_block_index ?? record.contentBlockIndex;
+  const detailRef: ToolCallDetailRef = { conversationId, messageId };
+  if (typeof toolCallId === "string") {
+    detailRef.toolCallId = toolCallId;
+  }
+  if (typeof contentBlockIndex === "number") {
+    detailRef.contentBlockIndex = contentBlockIndex;
+  }
+  return detailRef;
+}
+
+type ToolPreviewMetadataTarget = {
+  resultPreviewTruncated?: boolean | undefined;
+  resultPreviewOriginalBytes?: number | undefined;
+  resultPreviewLineCount?: number | undefined;
+  resultPreviewOmittedLines?: number | undefined;
+  detailRef?: ToolCallDetailRef | undefined;
+};
+
+function applyToolPreviewMetadata(target: ToolPreviewMetadataTarget, raw: unknown) {
+  const record = getRecord(raw);
+  if (!record) return;
+
+  const previewTruncated =
+    record.result_preview_truncated ?? record.resultPreviewTruncated;
+  if (previewTruncated === true) {
+    target.resultPreviewTruncated = true;
+  }
+
+  const originalBytes = getNumberField(
+    record,
+    "result_preview_original_bytes",
+    "resultPreviewOriginalBytes"
+  );
+  if (originalBytes != null) target.resultPreviewOriginalBytes = originalBytes;
+
+  const lineCount = getNumberField(
+    record,
+    "result_preview_line_count",
+    "resultPreviewLineCount"
+  );
+  if (lineCount != null) target.resultPreviewLineCount = lineCount;
+
+  const omittedLines = getNumberField(
+    record,
+    "result_preview_omitted_lines",
+    "resultPreviewOmittedLines"
+  );
+  if (omittedLines != null) target.resultPreviewOmittedLines = omittedLines;
+
+  const detailRef = normalizeToolCallDetailRef(record.detail_ref ?? record.detailRef);
+  if (detailRef) target.detailRef = detailRef;
+}
+
+function normalizeToolCall(raw: unknown, idx = 0): ToolCall {
+  const record = getRecord(raw) ?? {};
+  const id = record.id;
+  const name = record.name;
+  const toolCall: ToolCall = {
+    id: typeof id === "string" ? id : `tool-${idx}`,
+    name: typeof name === "string" ? name : "unknown",
+    arguments: record.arguments ?? record.input ?? {},
+  };
+  if ("result" in record) {
+    toolCall.result = record.result;
+  }
+  const parentToolUseId = record.parent_tool_use_id ?? record.parentToolUseId;
+  if (typeof parentToolUseId === "string") {
+    toolCall.parentToolUseId = parentToolUseId;
+  }
+  if (typeof record.error === "string") {
+    toolCall.error = record.error;
+  }
+
+  applyToolPreviewMetadata(toolCall, raw);
+
+  const diffContext = record.diff_context ?? record.diffContext;
+  if (diffContext != null && typeof diffContext === "object") {
+    const diffRecord = diffContext as Record<string, unknown>;
+    const filePath = diffRecord.file_path ?? diffRecord.filePath;
+    if (typeof filePath === "string") {
+      const oldContent = diffRecord.old_content ?? diffRecord.oldContent;
+      toolCall.diffContext = { filePath };
+      if (typeof oldContent === "string") {
+        toolCall.diffContext.oldContent = oldContent;
+      }
+    }
+  }
+
+  return toolCall;
+}
 
 /**
  * Parse content blocks from raw JSON data
@@ -89,10 +208,11 @@ export function parseContentBlocks(raw: unknown): ContentBlockItem[] {
       text: block.text,
       id: block.id,
       name: block.name,
-      arguments: block.arguments,
+      arguments: block.arguments ?? block.input,
       result: block.result,
       parentToolUseId: block.parent_tool_use_id ?? block.parentToolUseId,
     };
+    applyToolPreviewMetadata(item, block);
     // Transform diff_context (snake_case) to diffContext (camelCase) for tool_use blocks
     if (block.type === "tool_use" && block.diff_context) {
       item.diffContext = {
@@ -116,23 +236,7 @@ export function parseToolCalls(raw: unknown): ToolCall[] {
   const data = typeof raw === "string" ? safeJsonParse(raw) : raw;
   if (!Array.isArray(data)) return [];
 
-  return data.map((tc, idx) => {
-    const toolCall: ToolCall = {
-      id: tc.id ?? `tool-${idx}`,
-      name: tc.name ?? "unknown",
-      arguments: tc.arguments ?? {},
-      result: tc.result,
-      parentToolUseId: tc.parent_tool_use_id ?? tc.parentToolUseId,
-      error: tc.error,
-    };
-    if (tc.diff_context) {
-      toolCall.diffContext = {
-        oldContent: tc.diff_context.old_content ?? undefined,
-        filePath: tc.diff_context.file_path,
-      };
-    }
-    return toolCall;
-  });
+  return data.map((tc, idx) => normalizeToolCall(tc, idx));
 }
 
 /**
@@ -736,6 +840,10 @@ const ConversationMessagesPageResponseSchema = z.object({
   has_older: z.boolean(),
 });
 
+const AgentToolCallDetailResponseSchema = z.object({
+  tool_call: z.any(),
+});
+
 type RawConversationMessagesPage = z.infer<
   typeof ConversationMessagesPageResponseSchema
 >;
@@ -879,6 +987,26 @@ export async function getConversationMessagesPage(
   return transformConversationMessagesPage(raw);
 }
 
+export async function getAgentMessageToolCallDetail(
+  detailRef: ToolCallDetailRef
+): Promise<AgentToolCallDetailResponse | null> {
+  const raw = await typedInvoke(
+    "get_agent_message_tool_call_detail",
+    {
+      conversationId: detailRef.conversationId,
+      messageId: detailRef.messageId,
+      toolCallId: detailRef.toolCallId ?? null,
+      contentBlockIndex: detailRef.contentBlockIndex ?? null,
+    },
+    AgentToolCallDetailResponseSchema.nullable()
+  );
+
+  if (!raw) return null;
+  return {
+    toolCall: normalizeToolCall(raw.tool_call),
+  };
+}
+
 export async function getConversationStats(
   conversationId: string
 ): Promise<ConversationStatsResponse | null> {
@@ -1015,6 +1143,7 @@ export const chatApi = {
   listConversationsPage,
   getConversation,
   getConversationMessagesPage,
+  getAgentMessageToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,

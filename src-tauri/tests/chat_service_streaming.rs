@@ -1,7 +1,7 @@
 use ralphx_lib::application::chat_service::{
-    events, is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker,
-    AgentChunkPayload, AgentRunCompletedPayload, AgentTaskCompletedPayload,
-    AgentTaskStartedPayload, AgentToolCallPayload, CompletionSignalTracker, StreamError,
+    events, is_completion_tool_name, should_kill_on_timeout, ActiveTaskTracker, AgentChunkPayload,
+    AgentRunCompletedPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
+    AgentToolCallPayload, AgentToolCallPreviewFields, CompletionSignalTracker, StreamError,
     StreamOutcome, StreamTimeoutConfig,
 };
 use ralphx_lib::domain::entities::{AgentRunUsage, ChatContextType};
@@ -374,6 +374,7 @@ fn test_payloads_serialize_with_seq() {
         tool_id: Some("tool-1".to_string()),
         arguments: serde_json::json!({}),
         result: None,
+        preview: AgentToolCallPreviewFields::default(),
         conversation_id: "conv-1".to_string(),
         context_type: "task".to_string(),
         context_id: "task-1".to_string(),

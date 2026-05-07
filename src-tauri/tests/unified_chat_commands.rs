@@ -417,7 +417,8 @@ mod ipc_contract {
         UpsertCustomAgentModelInput,
     };
     use ralphx_lib::commands::unified_chat_commands::{
-        get_agent_conversation_workspace_freshness,
+        get_agent_conversation_messages_page_for_app_state,
+        get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
         publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
         QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
         SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
@@ -427,6 +428,7 @@ mod ipc_contract {
         default_model_for_provider, lightweight_model_for_provider, AgentHarnessKind,
         AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource, LogicalEffort,
     };
+    use ralphx_lib::domain::entities::{ChatConversation, ChatMessage, MessageRole, ProjectId};
     use ralphx_lib::domain::repositories::AgentModelRegistryRepository;
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -528,6 +530,126 @@ mod ipc_contract {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_agent_message_tool_preview_round_trips_full_detail() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-preview-ipc".to_string());
+        let conversation = ChatConversation::new_project(project_id.clone());
+        let conversation_id = conversation.id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let long_result = (1..=14)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut message = ChatMessage::user_in_project(project_id, "assistant preview");
+        message.role = MessageRole::Orchestrator;
+        message.conversation_id = Some(conversation_id.clone());
+        message.tool_calls = Some(
+            serde_json::json!([
+                {
+                    "id": "tool-ipc-1",
+                    "name": "bash",
+                    "arguments": { "command": "printf" },
+                    "result": long_result,
+                },
+                {
+                    "id": "task-ipc-1",
+                    "name": "Task",
+                    "arguments": { "description": "inspect" },
+                    "result": {
+                        "subagent_type": "Explore",
+                        "content": (1..=14).map(|index| format!("task line {index}")).collect::<Vec<_>>().join("\n")
+                    }
+                }
+            ])
+            .to_string(),
+        );
+        message.content_blocks = Some(
+            serde_json::json!([
+                { "type": "text", "text": "before" },
+                {
+                    "type": "tool_use",
+                    "id": "tool-block-ipc-1",
+                    "name": "read",
+                    "arguments": { "file_path": "big.txt" },
+                    "result": (1..=12).map(|index| format!("block line {index}")).collect::<Vec<_>>().join("\n")
+                }
+            ])
+            .to_string(),
+        );
+        let message_id = message.id.as_str().to_string();
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should persist");
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let page = get_agent_conversation_messages_page_for_app_state(
+            app.state::<AppState>().inner(),
+            conversation_id.clone(),
+            10,
+            0,
+        )
+        .await
+        .expect("page helper should succeed")
+        .expect("conversation should exist");
+
+        let message = page.messages.first().expect("message should be returned");
+        let tool_calls = message.tool_calls.as_ref().expect("tool calls");
+        let previewed_tool = &tool_calls[0];
+        assert_eq!(previewed_tool["result_preview_truncated"], true);
+        assert_eq!(
+            previewed_tool["result"].as_str().unwrap().lines().count(),
+            10
+        );
+        assert_eq!(previewed_tool["detail_ref"]["tool_call_id"], "tool-ipc-1");
+        assert!(tool_calls[1]["result"].is_object(), "Task stays structured");
+
+        let content_blocks = message.content_blocks.as_ref().expect("content blocks");
+        assert_eq!(content_blocks[1]["result_preview_truncated"], true);
+        assert_eq!(content_blocks[1]["detail_ref"]["content_block_index"], 1);
+
+        let detail = get_agent_message_tool_call_detail(
+            conversation_id.as_str().to_string(),
+            message_id.clone(),
+            Some("tool-ipc-1".to_string()),
+            None,
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("detail command should succeed")
+        .expect("tool detail should exist");
+        assert!(detail.tool_call["result"]
+            .as_str()
+            .unwrap()
+            .contains("line 14"));
+
+        let block_detail = get_agent_message_tool_call_detail(
+            conversation_id.as_str().to_string(),
+            message_id,
+            None,
+            Some(1),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("block detail command should succeed")
+        .expect("content block detail should exist");
+        assert!(block_detail.tool_call["result"]
+            .as_str()
+            .unwrap()
+            .contains("block line 12"));
     }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────

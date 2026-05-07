@@ -26,6 +26,7 @@ mod chat_service_streaming;
 mod chat_service_types;
 pub mod freshness_routing;
 mod streaming_state_cache;
+pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
@@ -117,10 +118,11 @@ pub use chat_service_types::{
     events, AgentChunkPayload, AgentConversationCreatedPayload, AgentErrorPayload,
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload, AgentQueueSentPayload,
     AgentRunCompletedPayload, AgentRunStartedPayload, AgentTaskCompletedPayload,
-    AgentTaskStartedPayload, AgentToolCallPayload, ChatConversationWithMessages, ChatServiceError,
-    SendCallerContext, SendResult, TeamArtifactCreatedPayload, TeamCostUpdatePayload,
-    TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload, TeamTeammateIdlePayload,
-    TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
+    AgentTaskStartedPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
+    ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
+    TeamArtifactCreatedPayload, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
+    TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
+    TeamTeammateSpawnedPayload,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,

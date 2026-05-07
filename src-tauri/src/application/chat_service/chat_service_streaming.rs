@@ -40,9 +40,14 @@ use tokio_util::sync::CancellationToken;
 use super::chat_service_errors::StreamError;
 use super::chat_service_types::AgentUsageUpdatedPayload;
 use super::streaming_state_cache::{CachedStreamingTask, CachedToolCall, StreamingStateCache};
+use super::tool_result_preview::{
+    build_live_tool_result_preview_for_tool_call, build_live_tool_result_preview_for_tool_id,
+    live_tool_result_activity_content, live_tool_result_activity_metadata,
+};
 use super::{
     event_context, events, has_meaningful_output, AgentChunkPayload, AgentHookPayload,
     AgentTaskCompletedPayload, AgentTaskStartedPayload, AgentToolCallPayload,
+    AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
 
@@ -1401,6 +1406,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_id: id.clone(),
                                     arguments: serde_json::Value::Null,
                                     result: None,
+                                    preview: AgentToolCallPreviewFields::default(),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -1481,6 +1487,7 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_id: tool_call.id.clone(),
                                     arguments: tool_call.arguments.clone(),
                                     result: None,
+                                    preview: AgentToolCallPreviewFields::default(),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2121,21 +2128,36 @@ pub async fn process_stream_background<R: Runtime>(
                         result,
                         parent_tool_use_id,
                     } => {
+                        let result_preview = build_live_tool_result_preview_for_tool_id(
+                            &processor.tool_calls,
+                            Some(&conversation_id_str),
+                            assistant_message_id.as_deref(),
+                            &tool_use_id,
+                            &result,
+                        );
+                        if result_preview.is_previewed() {
+                            persist_assistant_message_snapshot(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                            )
+                            .await;
+                        }
+
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 events::AGENT_TOOL_CALL,
-                                AgentToolCallPayload {
-                                    tool_name: format!("result:{}", tool_use_id),
-                                    tool_id: Some(tool_use_id.clone()),
-                                    arguments: serde_json::Value::Null,
-                                    result: Some(result.clone()),
-                                    conversation_id: conversation_id_str.clone(),
-                                    context_type: context_type_str.clone(),
-                                    context_id: context_id_str.clone(),
-                                    diff_context: None,
+                                AgentToolCallPayload::from_live_tool_result(
+                                    &tool_use_id,
+                                    &result_preview,
+                                    &conversation_id_str,
+                                    &context_type_str,
+                                    &context_id_str,
                                     parent_tool_use_id,
-                                    seq: stream_seq,
-                                },
+                                    stream_seq,
+                                ),
                             );
                             stream_seq += 1;
 
@@ -2145,10 +2167,11 @@ pub async fn process_stream_background<R: Runtime>(
                                 ChatContextType::TaskExecution | ChatContextType::Merge
                             ) {
                                 let result_content =
-                                    serde_json::to_string(&result).unwrap_or_default();
-                                let result_metadata = serde_json::json!({
-                                    "tool_use_id": tool_use_id,
-                                });
+                                    live_tool_result_activity_content(&result_preview);
+                                let result_metadata = live_tool_result_activity_metadata(
+                                    &tool_use_id,
+                                    &result_preview,
+                                );
 
                                 let _ = handle.emit(
                                     events::AGENT_MESSAGE,
@@ -2902,21 +2925,25 @@ async fn process_codex_stream_background<R: Runtime>(
                 )
                 .await;
 
+                let result_preview = build_live_tool_result_preview_for_tool_call(
+                    &conversation_id_str,
+                    assistant_message_id.as_deref(),
+                    &tool_call,
+                );
+
                 if let Some(ref handle) = app_handle {
                     let _ = handle.emit(
                         events::AGENT_TOOL_CALL,
-                        AgentToolCallPayload {
-                            tool_name: tool_call.name.clone(),
-                            tool_id: tool_call.id.clone(),
-                            arguments: tool_call.arguments.clone(),
-                            result: tool_call.result.clone(),
-                            conversation_id: conversation_id_str.clone(),
-                            context_type: context_type_str.clone(),
-                            context_id: context_id_str.clone(),
-                            diff_context: diff_context_value,
-                            parent_tool_use_id: None,
-                            seq: stream_seq,
-                        },
+                        AgentToolCallPayload::from_completed_tool_call(
+                            &tool_call,
+                            result_preview.as_ref(),
+                            &conversation_id_str,
+                            &context_type_str,
+                            &context_id_str,
+                            diff_context_value,
+                            None,
+                            stream_seq,
+                        ),
                     );
                     stream_seq += 1;
                 }
