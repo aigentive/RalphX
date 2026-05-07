@@ -111,7 +111,7 @@ pub async fn draft_agent_workspace_pr_description(
         conversation_context: &conversation_context,
     });
 
-    let runtime = state.resolve_pr_describer_runtime().await;
+    let runtime = state.resolve_pr_describer_runtime(conversation).await?;
     let agent_client = Arc::clone(&runtime.client);
     let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(
@@ -397,8 +397,8 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::domain::agents::{
-        AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgentRole,
-        AgenticClient, ClientCapabilities, ResponseChunk,
+        AgentConfig, AgentHandle, AgentHarnessKind, AgentOutput, AgentResponse, AgentResult,
+        AgentRole, AgenticClient, ClientCapabilities, ResponseChunk,
     };
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, ChatMessage, IdeationAnalysisBaseRefKind, MessageRole,
@@ -874,6 +874,59 @@ mod tests {
         assert!(config
             .prompt
             .contains("Please prepare the publishable PR description."));
+    }
+
+    #[tokio::test]
+    async fn draft_pr_description_uses_conversation_harness_client_when_available() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let mut conversation = conversation_for(&project);
+        conversation.provider_harness = Some(AgentHarnessKind::Codex);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let state = AppState::new_test();
+
+        let default_client = Arc::new(SubmittingPrDescriptionClient::failed(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+        ));
+        let codex_client = Arc::new(SubmittingPrDescriptionClient::success(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            Some("Codex PR title".to_string()),
+            "## Summary\n\nCodex-generated body.",
+        ));
+        let state = state
+            .with_agent_client(default_client.clone())
+            .with_harness_agent_client(AgentHarnessKind::Codex, codex_client.clone());
+
+        let description = draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(description.title.as_deref(), Some("Codex PR title"));
+        assert_eq!(
+            description.body_markdown,
+            "## Summary\n\nCodex-generated body."
+        );
+        assert!(
+            default_client.spawned_configs().await.is_empty(),
+            "default helper client should not be used for Codex-owned conversations"
+        );
+
+        let configs = codex_client.spawned_configs().await;
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].harness, Some(AgentHarnessKind::Codex));
+        assert_eq!(
+            configs[0].agent.as_deref(),
+            Some(agent_names::AGENT_PR_DESCRIBER)
+        );
     }
 
     #[tokio::test]
