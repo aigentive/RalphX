@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
-use super::session_namer_agent::{build_session_namer_agent_spawn, SessionNamerTarget};
+use super::session_namer_agent::{
+    build_session_namer_agent_spawn, spawn_session_namer_agent, SessionNamerTarget,
+};
 use super::AppState;
+use crate::application::harness_runtime_registry::default_repo_root_working_directory;
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, AgenticClient, LogicalEffort,
 };
-use crate::domain::entities::{ChatConversation, IdeationSession, Project};
+use crate::domain::entities::{ChatConversation, DelegatedSession, IdeationSession, Project, Task};
 use crate::infrastructure::agents::claude::agent_names;
-use crate::infrastructure::MockAgenticClient;
+use crate::infrastructure::{MockAgenticClient, MockCallType};
 
 #[tokio::test]
 async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversation_harness() {
@@ -102,4 +105,201 @@ async fn session_namer_session_spawn_uses_active_project_cwd_and_project_ideatio
         Some(agent_names::AGENT_SESSION_NAMER)
     );
     assert!(spawn.config.prompt.contains("Build the settings analyzer"));
+}
+
+#[tokio::test]
+async fn session_namer_fire_and_forget_spawns_and_waits_for_accepted_session() {
+    let concrete_client = Arc::new(MockAgenticClient::new());
+    let agent_client: Arc<dyn AgenticClient> = concrete_client.clone();
+    let state = AppState::new_test().with_agent_client(agent_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Accepted Session Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+
+    spawn_session_namer_agent(
+        &state,
+        SessionNamerTarget::AcceptedSession {
+            session_id: session.id.as_str().to_string(),
+            accepted_proposals: "Ship utility agent runtime fixes".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    for _ in 0..20 {
+        if concrete_client.get_calls().await.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let calls = concrete_client.get_calls().await;
+    assert!(
+        calls.iter().any(|call| matches!(
+            &call.call_type,
+            MockCallType::Spawn { prompt, .. }
+                if prompt.contains("<accepted_proposals>Ship utility agent runtime fixes</accepted_proposals>")
+        )),
+        "session namer should spawn with the accepted-proposals prompt"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| matches!(call.call_type, MockCallType::WaitForCompletion { .. })),
+        "fire-and-forget session namer task should wait for the helper to complete"
+    );
+}
+
+#[tokio::test]
+async fn session_namer_ideation_conversation_spawn_uses_session_project_cwd() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Ideation Conversation Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_ideation(session.id.clone()))
+        .await
+        .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        SessionNamerTarget::ConversationInitial {
+            conversation_id: conversation.id.as_str(),
+            user_message: "Name this ideation conversation".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(spawn.config.working_directory, project_dir.path());
+    assert!(spawn.config.prompt.contains("Name this ideation conversation"));
+}
+
+#[tokio::test]
+async fn session_namer_task_conversation_spawn_uses_task_project_cwd() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Task Conversation Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let task = state
+        .task_repo
+        .create(Task::new(project.id.clone(), "Task conversation".to_string()))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_task(task.id.clone()))
+        .await
+        .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        SessionNamerTarget::ConversationInitial {
+            conversation_id: conversation.id.as_str(),
+            user_message: "Name this task conversation".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(spawn.config.working_directory, project_dir.path());
+    assert_eq!(spawn.project_id.as_deref(), Some(project.id.as_str()));
+}
+
+#[tokio::test]
+async fn session_namer_delegation_conversation_spawn_uses_delegated_project_cwd() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Delegation Conversation Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+    let delegated = state
+        .delegated_session_repo
+        .create(DelegatedSession::new(
+            project.id.clone(),
+            "task",
+            "task-1",
+            "ralphx-execution-reviewer",
+            AgentHarnessKind::Codex,
+        ))
+        .await
+        .unwrap();
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_delegation(delegated.id.clone()))
+        .await
+        .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        SessionNamerTarget::ConversationInitial {
+            conversation_id: conversation.id.as_str(),
+            user_message: "Name this delegated conversation".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(spawn.config.working_directory, project_dir.path());
+    assert_eq!(spawn.project_id.as_deref(), Some(project.id.as_str()));
+}
+
+#[tokio::test]
+async fn session_namer_conversation_without_project_uses_runtime_root_fallback() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+    let missing_task = Task::new(
+        crate::domain::entities::ProjectId::from_string("missing-project".to_string()),
+        "Missing task".to_string(),
+    );
+    let conversation = state
+        .chat_conversation_repo
+        .create(ChatConversation::new_task(missing_task.id.clone()))
+        .await
+        .unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        SessionNamerTarget::ConversationInitial {
+            conversation_id: conversation.id.as_str(),
+            user_message: "Name this legacy conversation".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        spawn.config.working_directory,
+        default_repo_root_working_directory()
+    );
+    assert_eq!(spawn.project_id, None);
 }
