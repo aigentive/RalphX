@@ -1,13 +1,24 @@
 use serde_json::json;
+use std::process::Stdio;
+use std::sync::Arc;
 
 use crate::application::chat_service::tool_result_preview::{
     build_live_tool_result_preview, build_live_tool_result_preview_for_tool_call,
     build_live_tool_result_preview_for_tool_id, build_tool_result_preview_payload,
-    live_tool_result_activity_content, live_tool_result_activity_metadata, tool_detail_ref,
+    live_tool_result_activity_content, live_tool_result_activity_metadata,
+    preview_tool_result_object, should_skip_tool_result_preview, tool_detail_ref,
 };
-use crate::application::chat_service::{AgentToolCallPayload, AgentToolCallPreviewFields};
+use crate::application::chat_service::{
+    process_stream_background, AgentToolCallPayload, AgentToolCallPreviewFields,
+    StreamingStateCache,
+};
 use crate::commands::unified_chat_commands::preview_tool_payloads_for_message;
+use crate::domain::agents::AgentHarnessKind;
+use crate::domain::entities::{ChatContextType, ChatConversationId};
 use crate::infrastructure::agents::claude::ToolCall;
+use crate::infrastructure::memory::MemoryChatMessageRepository;
+use tauri::test::MockRuntime;
+use tokio_util::sync::CancellationToken;
 
 #[test]
 fn preview_tool_payloads_truncates_large_tool_results() {
@@ -241,6 +252,43 @@ fn live_preview_payloads_handle_json_fallback_and_char_limit() {
 }
 
 #[test]
+fn preview_helpers_cover_fallback_and_skip_edges() {
+    let nested_content = json!({
+        "content": [
+            { "type": "image", "source": "ignored" },
+            { "type": "text", "text": (1..=12).map(|index| format!("nested {index}")).collect::<Vec<_>>().join("\n") }
+        ]
+    });
+    let nested_preview =
+        build_tool_result_preview_payload(Some("bash"), &nested_content, None).unwrap();
+    assert!(nested_preview
+        .result
+        .as_str()
+        .unwrap()
+        .contains("nested 10"));
+
+    assert!(
+        !build_live_tool_result_preview(Some("bash"), &json!(true), None).is_previewed(),
+        "primitive JSON fallback stays full when it is small"
+    );
+    assert!(
+        !build_live_tool_result_preview(Some("bash"), &json!(""), None).is_previewed(),
+        "empty string results should not allocate a preview"
+    );
+
+    let long_single_line = json!("x".repeat(4_100));
+    let char_limited = build_live_tool_result_preview(Some("bash"), &long_single_line, None);
+    assert!(char_limited.is_previewed());
+    assert_eq!(char_limited.result.as_str().unwrap().chars().count(), 4_000);
+
+    assert!(!should_skip_tool_result_preview(None));
+
+    let mut missing_result = serde_json::Map::new();
+    missing_result.insert("name".to_string(), json!("bash"));
+    assert!(!preview_tool_result_object(&mut missing_result, None));
+}
+
+#[test]
 fn live_preview_fields_flatten_into_agent_tool_call_payload_json() {
     let result = json!((1..=12)
         .map(|index| format!("line {index}"))
@@ -403,4 +451,79 @@ fn live_tool_result_payload_helpers_use_preview_result() {
     assert!(content.contains("line 10"));
     assert_eq!(metadata["tool_use_id"], "tool-heavy");
     assert_eq!(metadata["result_preview_truncated"], true);
+}
+
+#[tokio::test]
+async fn stream_background_previews_heavy_live_tool_result() {
+    let app = crate::testing::create_mock_app();
+    let conversation_id = ChatConversationId::from_string("conv-live-preview".to_string());
+    let long_result = (1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let assistant = json!({
+        "type": "assistant",
+        "message": {
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_heavy",
+                "name": "bash",
+                "input": { "command": "cat big.log" }
+            }]
+        }
+    });
+    let tool_result = json!({
+        "type": "user",
+        "message": {
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_heavy",
+                "content": long_result,
+                "is_error": false
+            }]
+        }
+    });
+    let stream = format!("{assistant}\n{tool_result}\n");
+    let child = tokio::process::Command::new("python3")
+        .arg("-c")
+        .arg("import sys; sys.stdout.write(sys.argv[1])")
+        .arg(stream)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn stream fixture");
+
+    let outcome = process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::TaskExecution,
+        "task-live-preview",
+        &conversation_id,
+        Some(app.handle().clone()),
+        None,
+        None,
+        Some(Arc::new(MemoryChatMessageRepository::new())),
+        Some("msg-live-preview".to_string()),
+        None,
+        CancellationToken::new(),
+        None,
+        false,
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("stream should process");
+
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(outcome.tool_calls[0].name, "bash");
+    assert_eq!(
+        outcome.tool_calls[0].result.as_ref().unwrap(),
+        &json!(long_result)
+    );
 }
