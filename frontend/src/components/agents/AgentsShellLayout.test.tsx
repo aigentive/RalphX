@@ -1,8 +1,30 @@
 import { createRef } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { AgentsShellLayout } from "./AgentsShellLayout";
+
+vi.mock("@/components/ui/ResizeHandle", () => ({
+  ResizeHandle: ({
+    isResizing,
+    onDoubleClick,
+    onMouseDown,
+    testId,
+  }: {
+    isResizing: boolean;
+    onDoubleClick: React.MouseEventHandler<HTMLDivElement>;
+    onMouseDown: React.MouseEventHandler<HTMLDivElement>;
+    testId?: string;
+  }) => (
+    <div
+      role="separator"
+      data-resizing={String(isResizing)}
+      data-testid={testId}
+      onDoubleClick={onDoubleClick}
+      onMouseDown={onMouseDown}
+    />
+  ),
+}));
 
 vi.mock("./AgentsSidebar", () => ({
   AgentsSidebar: () => <div data-testid="mock-agents-sidebar" />,
@@ -71,6 +93,61 @@ describe("AgentsShellLayout", () => {
 
     const sidebarContainer = screen.getByTestId("agents-sidebar-container");
     expect(sidebarContainer.style.transition).toBe("none");
+  });
+
+  it("restores the persistent desktop resize handle and applies dragged width", async () => {
+    render(<AgentsShellLayout {...buildProps()} />);
+
+    const sidebarContainer = screen.getByTestId("agents-sidebar-container");
+    vi.spyOn(sidebarContainer, "getBoundingClientRect").mockReturnValue({
+      bottom: 720,
+      height: 720,
+      left: 0,
+      right: 280,
+      top: 0,
+      width: 280,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const handle = screen.getByTestId("agents-sidebar-resize-handle");
+    expect(handle).toHaveAttribute("data-resizing", "false");
+
+    fireEvent.mouseDown(handle, { clientX: 280 });
+    await waitFor(() => expect(handle).toHaveAttribute("data-resizing", "true"));
+    expect(sidebarContainer.style.transition).toBe("none");
+
+    fireEvent.mouseMove(document, { clientX: 360 });
+    fireEvent.mouseUp(document);
+
+    await waitFor(() => {
+      expect(sidebarContainer.style.width).toBe("360px");
+      expect(sidebarContainer.style.minWidth).toBe("360px");
+      expect(handle).toHaveAttribute("data-resizing", "false");
+    });
+  });
+
+  it("hides the desktop resize handle while the sidebar is collapsed or overlayed", () => {
+    const { rerender } = render(
+      <AgentsShellLayout
+        {...buildProps({
+          isSidebarCollapsed: true,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("agents-sidebar-resize-handle")).not.toBeInTheDocument();
+
+    rerender(
+      <AgentsShellLayout
+        {...buildProps({
+          isSidebarOverlayOpen: true,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("agents-sidebar-resize-handle")).not.toBeInTheDocument();
   });
 
   it("shows the toggle strip and triggers toggle on click + Enter/Space when collapsed", () => {

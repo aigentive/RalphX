@@ -588,8 +588,9 @@ test.describe("Agents View", () => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
 
-    await expect(page.getByTestId("agents-show-archived-pill")).toHaveCount(0);
-    await expect(page.getByTestId("agents-project-sort-pill")).toHaveCount(0);
+    await expect(page.getByTestId("agents-show-all-projects-pill")).toBeVisible();
+    await expect(page.getByTestId("agents-project-sort-pill")).toBeVisible();
+    await expect(page.getByTestId("agents-show-archived-pill")).toBeVisible();
     // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
     await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();

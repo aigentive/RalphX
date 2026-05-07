@@ -49,20 +49,6 @@ function breadcrumbItems(currentView: ViewType, projectName: string | null): str
   return ["Workspace", viewLabel(currentView)];
 }
 
-function WindowTrafficLights() {
-  return (
-    <div
-      className="absolute left-5 top-[17px] z-[1] flex gap-2"
-      data-testid="window-traffic-lights"
-      aria-hidden="true"
-    >
-      <span className="h-3 w-3 rounded-full" style={{ background: "#FF5F57" }} />
-      <span className="h-3 w-3 rounded-full" style={{ background: "#FEBC2E" }} />
-      <span className="h-3 w-3 rounded-full" style={{ background: "#28C840" }} />
-    </div>
-  );
-}
-
 interface FontScaleSelectorProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -169,8 +155,6 @@ export function AppTopBar({
       data-tauri-drag-region
       data-testid="app-header"
     >
-      <WindowTrafficLights />
-
       <nav
         className="inline-flex min-w-0 items-center gap-2 text-[0.7812rem]"
         aria-label="Breadcrumb"

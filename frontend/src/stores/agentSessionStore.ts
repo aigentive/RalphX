@@ -134,13 +134,6 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setFocusedProject: (projectId) =>
         set((state) => {
           state.focusedProjectId = projectId;
-          const lastConversationId = projectId
-            ? (state.lastSelectedConversationByProjectId ?? {})[projectId]
-            : null;
-          if (projectId && lastConversationId) {
-            state.selectedProjectId = projectId;
-            state.selectedConversationId = lastConversationId;
-          }
           if (projectId) {
             expandOnlyProject(state, projectId);
           }

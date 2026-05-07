@@ -36,10 +36,11 @@ pub fn create_main_window<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> t
 
     let webview_window = builder.build()?;
 
+    let _ = webview_window.show();
+
     #[cfg(target_os = "macos")]
     center_traffic_lights_macos(&webview_window);
 
-    let _ = webview_window.show();
     Ok(())
 }
 
