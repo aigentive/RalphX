@@ -51,6 +51,42 @@ fn test_canonical_agent_project_root_resolves_live_claude_agents() {
 }
 
 #[test]
+fn test_canonical_agent_project_root_falls_back_to_runtime_plugin_dir() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let runtime_root = temp_dir.path().join("runtime-root");
+    let agent_root = runtime_root.join("agents").join("ralphx-test-agent");
+    let plugin_dir = runtime_root.join("plugins").join("app");
+    std::fs::create_dir_all(&agent_root).expect("agent root");
+    std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: ralphx-test-agent\nrole: test\n",
+    )
+    .expect("agent definition");
+
+    let missing_config_path = temp_dir.path().join("missing").join("config").join("ralphx.yaml");
+
+    assert_eq!(
+        canonical_agent_project_root_from_config_path(&missing_config_path, Some(&plugin_dir)),
+        runtime_root.canonicalize().expect("canonical runtime root")
+    );
+}
+
+#[test]
+fn test_canonical_agent_project_root_ignores_runtime_plugin_dir_without_agents() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let plugin_dir = temp_dir.path().join("runtime-root").join("plugins").join("app");
+    std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+
+    let missing_config_path = temp_dir.path().join("missing").join("config").join("ralphx.yaml");
+
+    assert_eq!(
+        canonical_agent_project_root_from_config_path(&missing_config_path, Some(&plugin_dir)),
+        temp_dir.path().join("missing")
+    );
+}
+
+#[test]
 fn test_get_allowed_tools_worker_agent() {
     let tools = get_allowed_tools("ralphx-execution-worker").unwrap();
     let tool_list: HashSet<_> = tools.split(',').collect();

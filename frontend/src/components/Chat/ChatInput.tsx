@@ -296,7 +296,8 @@ export function ChatInput({
             Border is 2px wide on every state so the focus color swap does
             not reflow the layout (previously 1px→2px toggled a 1px jump). */}
         <div
-          className="flex-1 flex items-end rounded-lg transition-colors"
+          data-testid="chat-input-field"
+          className="chat-input-field flex-1 flex items-end rounded-lg transition-colors"
           style={{
             background: "var(--bg-surface)",
             border: isFocused
