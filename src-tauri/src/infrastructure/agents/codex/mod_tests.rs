@@ -1,7 +1,7 @@
 use super::{
     build_codex_exec_args, build_codex_mcp_overrides, build_spawnable_codex_exec_command,
-    compose_codex_prompt, configure_spawn, probe_codex_cli, CodexCliCapabilities,
-    CodexExecCliConfig, CodexMcpRuntimeContext,
+    compose_codex_prompt, configure_spawn, probe_codex_cli, resolve_codex_cli_from_candidates,
+    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
 };
 use crate::domain::agents::LogicalEffort;
 use std::ffi::{OsStr, OsString};
@@ -144,6 +144,149 @@ fi
     assert!(capabilities.supports_search_flag);
     assert!(capabilities.supports_resume_subcommand);
     assert!(capabilities.supports_mcp_subcommand);
+}
+
+#[test]
+fn probe_codex_cli_reports_legacy_cli_without_exec_as_incompatible() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_path = temp_dir.path().join("codex");
+    write_executable(
+        &codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' '  $ codex completion <bash|zsh|fish>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+  exit 2
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+
+    let capabilities =
+        probe_codex_cli(&codex_path).expect("legacy Codex should probe as incompatible");
+
+    assert!(!capabilities.supports_exec_subcommand);
+    assert!(!capabilities.has_core_exec_support());
+    assert_eq!(
+        capabilities.missing_core_exec_features(),
+        vec![
+            "exec_subcommand",
+            "json_output",
+            "model_flag",
+            "config_override",
+            "sandbox_flag",
+            "add_dir",
+        ]
+    );
+}
+
+#[test]
+fn resolve_codex_cli_skips_legacy_candidate_without_exec_support() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let legacy_path = temp_dir.path().join("legacy").join("codex");
+    let modern_path = temp_dir.path().join("modern").join("codex");
+    std::fs::create_dir_all(legacy_path.parent().expect("legacy parent")).expect("legacy dir");
+    std::fs::create_dir_all(modern_path.parent().expect("modern parent")).expect("modern dir");
+    write_executable(
+        &legacy_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>'
+  exit 2
+else
+  exit 64
+fi
+"#,
+    );
+    write_executable(
+        &modern_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.124.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  exit 64
+fi
+"#,
+    );
+
+    let resolved = resolve_codex_cli_from_candidates(vec![legacy_path, modern_path.clone()])
+        .expect("resolver should select the compatible candidate");
+
+    assert_eq!(resolved.path, modern_path);
+    assert!(resolved.capabilities.has_core_exec_support());
+}
+
+#[test]
+fn resolve_codex_cli_returns_first_incompatible_candidate_when_none_support_exec() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let legacy_path = temp_dir.path().join("codex");
+    write_executable(
+        &legacy_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  exit 2
+else
+  exit 64
+fi
+"#,
+    );
+
+    let resolved = resolve_codex_cli_from_candidates(vec![legacy_path.clone()])
+        .expect("incompatible candidate should still resolve for availability reporting");
+
+    assert_eq!(resolved.path, legacy_path);
+    assert!(!resolved.capabilities.has_core_exec_support());
+    assert!(resolved
+        .capabilities
+        .missing_core_exec_features()
+        .contains(&"exec_subcommand"));
+}
+
+#[test]
+fn resolve_codex_cli_reports_probe_errors_when_candidates_cannot_be_probed() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let broken_path = temp_dir.path().join("codex");
+    write_executable(
+        &broken_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'broken codex\n' >&2
+  exit 70
+fi
+exit 64
+"#,
+    );
+
+    let error = resolve_codex_cli_from_candidates(vec![broken_path.clone()])
+        .expect_err("broken candidate should fail probing");
+
+    assert!(error.contains("No launchable Codex CLI could be probed"));
+    assert!(error.contains(&broken_path.to_string_lossy().to_string()));
+}
+
+#[test]
+fn resolve_codex_cli_reports_not_found_when_candidate_list_is_empty() {
+    let error = resolve_codex_cli_from_candidates(Vec::new())
+        .expect_err("empty candidate list should be not found");
+
+    assert_eq!(error, "Codex CLI not found");
 }
 
 #[test]
@@ -505,6 +648,9 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
 
 #[test]
 fn configure_spawn_prepends_resolved_node_bin_to_path() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
     let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
         .parent()
         .map(PathBuf::from)

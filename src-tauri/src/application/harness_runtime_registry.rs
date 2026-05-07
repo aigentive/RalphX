@@ -11,7 +11,7 @@ use crate::infrastructure::agents::claude::{
     SpecialistEntry, UiFeatureFlagsConfig, VerificationConfig,
 };
 use crate::infrastructure::agents::{
-    find_codex_cli, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities,
+    find_codex_cli, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities, ResolvedCodexCli,
 };
 use which::which;
 
@@ -176,6 +176,10 @@ fn resolve_claude_chat_harness_cli(
 }
 
 fn resolve_codex_chat_harness_cli(codex_cli_path: &Path) -> Result<ResolvedChatHarnessCli, String> {
+    if codex_cli_path == Path::new(default_chat_service_cli_name(AgentHarnessKind::Codex)) {
+        return codex_chat_harness_cli_from_resolve_result(resolve_codex_cli());
+    }
+
     if !codex_cli_path.exists() && which(codex_cli_path).is_err() {
         return Err(format!(
             "Codex CLI not found at {}",
@@ -187,6 +191,16 @@ fn resolve_codex_chat_harness_cli(codex_cli_path: &Path) -> Result<ResolvedChatH
     Ok(ResolvedChatHarnessCli::Codex {
         cli_path: codex_cli_path.to_path_buf(),
         capabilities,
+    })
+}
+
+fn codex_chat_harness_cli_from_resolve_result(
+    resolved: Result<ResolvedCodexCli, String>,
+) -> Result<ResolvedChatHarnessCli, String> {
+    let resolved = resolved?;
+    Ok(ResolvedChatHarnessCli::Codex {
+        cli_path: resolved.path,
+        capabilities: resolved.capabilities,
     })
 }
 
@@ -306,9 +320,18 @@ fn resolve_chat_service_cli_path(harness: AgentHarnessKind) -> PathBuf {
     match harness {
         AgentHarnessKind::Claude => find_claude_cli()
             .unwrap_or_else(|| PathBuf::from(default_chat_service_cli_name(harness))),
-        AgentHarnessKind::Codex => find_codex_cli()
-            .unwrap_or_else(|| PathBuf::from(default_chat_service_cli_name(harness))),
+        AgentHarnessKind::Codex => {
+            codex_chat_service_cli_path_from_resolve_result(resolve_codex_cli())
+        }
     }
+}
+
+fn codex_chat_service_cli_path_from_resolve_result(
+    resolved: Result<ResolvedCodexCli, String>,
+) -> PathBuf {
+    resolved
+        .map(|resolved| resolved.path)
+        .unwrap_or_else(|_| PathBuf::from(default_chat_service_cli_name(AgentHarnessKind::Codex)))
 }
 
 pub(crate) fn resolve_chat_service_bootstrap(
@@ -722,6 +745,28 @@ mod tests {
         (temp, plugin_dir, generated_dir)
     }
 
+    fn test_codex_capabilities() -> CodexCliCapabilities {
+        CodexCliCapabilities {
+            version: Some("0.124.0".to_string()),
+            supports_exec_subcommand: true,
+            supports_json_output: true,
+            supports_model_flag: true,
+            supports_config_override: true,
+            supports_sandbox_flag: true,
+            supports_add_dir: true,
+            supports_search_flag: true,
+            supports_resume_subcommand: true,
+            supports_mcp_subcommand: true,
+        }
+    }
+
+    fn test_resolved_codex_cli(path: &str) -> ResolvedCodexCli {
+        ResolvedCodexCli {
+            path: PathBuf::from(path),
+            capabilities: test_codex_capabilities(),
+        }
+    }
+
     #[test]
     fn resolve_startup_harness_integration_returns_none_for_codex() {
         let integration = resolve_startup_harness_integration(AgentHarnessKind::Codex).unwrap();
@@ -746,6 +791,42 @@ mod tests {
             resolve_default_chat_service_bootstrap(),
             resolve_chat_service_bootstrap(DEFAULT_AGENT_HARNESS)
         );
+    }
+
+    #[test]
+    fn codex_chat_harness_cli_maps_compatible_default_candidate() {
+        let resolved = codex_chat_harness_cli_from_resolve_result(Ok(test_resolved_codex_cli(
+            "/opt/homebrew/bin/codex",
+        )))
+        .unwrap();
+
+        match resolved {
+            ResolvedChatHarnessCli::Codex {
+                cli_path,
+                capabilities,
+            } => {
+                assert_eq!(cli_path, PathBuf::from("/opt/homebrew/bin/codex"));
+                assert!(capabilities.has_core_exec_support());
+            }
+            ResolvedChatHarnessCli::Claude { .. } => panic!("expected Codex CLI resolution"),
+        }
+    }
+
+    #[test]
+    fn codex_chat_service_cli_path_uses_compatible_candidate() {
+        let cli_path = codex_chat_service_cli_path_from_resolve_result(Ok(
+            test_resolved_codex_cli("/opt/homebrew/bin/codex"),
+        ));
+
+        assert_eq!(cli_path, PathBuf::from("/opt/homebrew/bin/codex"));
+    }
+
+    #[test]
+    fn codex_chat_service_cli_path_falls_back_to_default_name_when_resolution_fails() {
+        let cli_path =
+            codex_chat_service_cli_path_from_resolve_result(Err("Codex CLI not found".to_string()));
+
+        assert_eq!(cli_path, PathBuf::from("codex"));
     }
 
     #[test]
