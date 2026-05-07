@@ -14,8 +14,8 @@ use crate::domain::agents::{
 
 use super::{
     build_codex_mcp_overrides, build_spawnable_codex_exec_command, compose_codex_prompt,
-    find_codex_cli, normalize_codex_exec_output, probe_codex_cli, resolve_codex_cli,
-    CodexCliCapabilities, CodexExecCliConfig,
+    normalize_codex_exec_output, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities,
+    CodexExecCliConfig,
 };
 
 lazy_static! {
@@ -30,9 +30,8 @@ pub struct CodexCliClient {
 
 impl CodexCliClient {
     pub fn new() -> Self {
-        let cli_path = find_codex_cli().unwrap_or_else(|| PathBuf::from("codex"));
         Self {
-            cli_path,
+            cli_path: PathBuf::from("codex"),
             capabilities: ClientCapabilities::codex(),
         }
     }

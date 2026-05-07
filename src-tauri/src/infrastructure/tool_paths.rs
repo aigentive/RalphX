@@ -133,7 +133,11 @@ pub(crate) fn find_claude_cli_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
-    find_cli_path_with_candidates(
+    find_codex_cli_candidates().into_iter().next()
+}
+
+pub(crate) fn find_codex_cli_candidates() -> Vec<PathBuf> {
+    find_cli_path_candidates_with_candidates(
         "codex",
         &[
             "/opt/homebrew/bin/codex",
@@ -192,9 +196,21 @@ fn find_cli_path_with_candidates(
     fixed_candidates: &[&'static str],
     extra_candidates: &[PathBuf],
 ) -> Option<PathBuf> {
+    find_cli_path_candidates_with_candidates(tool_name, fixed_candidates, extra_candidates)
+        .into_iter()
+        .next()
+}
+
+fn find_cli_path_candidates_with_candidates(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
     if let Ok(path) = which::which(tool_name) {
         if is_launchable_tool_path(tool_name, &path) {
-            return Some(path);
+            push_unique_path(&mut candidates, path);
         }
     }
 
@@ -203,7 +219,7 @@ fn find_cli_path_with_candidates(
         // and VOLTA_HOME/bin, then validated before probing.
         // codeql[rust/path-injection]
         if is_launchable_tool_path(tool_name, candidate) {
-            return Some(candidate.clone());
+            push_unique_path(&mut candidates, candidate.clone());
         }
     }
 
@@ -212,11 +228,21 @@ fn find_cli_path_with_candidates(
         // Fixed, app-owned candidate list for GUI launches with stripped PATH.
         // codeql[rust/path-injection]
         if is_launchable_tool_path(tool_name, &path) {
-            return Some(path);
+            push_unique_path(&mut candidates, path);
         }
     }
 
-    find_login_shell_cli(tool_name)
+    if let Some(path) = find_login_shell_cli(tool_name) {
+        push_unique_path(&mut candidates, path);
+    }
+
+    candidates
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|candidate| candidate == &path) {
+        paths.push(path);
+    }
 }
 
 fn find_env_override_path(env_var: &'static str) -> Option<PathBuf> {
@@ -409,8 +435,8 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, find_claude_cli_path, find_codex_cli_path,
-        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
+        agent_subprocess_env_path_from_parts, find_claude_cli_path, find_codex_cli_candidates,
+        find_codex_cli_path, nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
         prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
     };
     use std::ffi::OsStr;
@@ -579,6 +605,13 @@ mod tests {
         let _volta_home = EnvGuard::unset("VOLTA_HOME");
 
         assert_eq!(find_codex_cli_path(), Some(newer_codex_bin.join("codex")));
+        assert_eq!(
+            find_codex_cli_candidates()
+                .into_iter()
+                .take(2)
+                .collect::<Vec<_>>(),
+            vec![newer_codex_bin.join("codex"), older_codex_bin.join("codex")]
+        );
     }
 
     #[test]
