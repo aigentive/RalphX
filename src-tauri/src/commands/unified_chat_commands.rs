@@ -27,6 +27,9 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::agent_workspace_bridge::wake_agent_workspace_for_bridge_events;
 use crate::application::agent_workspace_pr_description::draft_agent_workspace_pr_description;
+use crate::application::chat_service::tool_result_preview::{
+    preview_tool_result_object, tool_detail_ref,
+};
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
 use crate::application::git_service::GitService;
 use crate::application::publish_resilience::{
@@ -45,8 +48,9 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentRunStatus, ChatContextType,
-    ChatConversation, ChatConversationId, DelegatedSessionId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    ChatConversation, ChatConversationId, ChatMessageId, DelegatedSessionId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskId,
 };
 use crate::domain::services::{AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey};
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
@@ -692,6 +696,12 @@ pub struct AgentMessageResponse {
     pub created_at: String,
 }
 
+/// Response for a lazily loaded full tool-call detail.
+#[derive(Debug, Serialize)]
+pub struct AgentToolCallDetailResponse {
+    pub tool_call: serde_json::Value,
+}
+
 /// Response for agent run status
 #[derive(Debug, Serialize)]
 pub struct AgentRunStatusResponse {
@@ -1062,6 +1072,114 @@ async fn reconcile_delegated_result_payloads(
     let tool_calls = reconcile_value_array(state, tool_calls, &mut snapshot_cache).await;
     let content_blocks = reconcile_value_array(state, content_blocks, &mut snapshot_cache).await;
     (tool_calls, content_blocks)
+}
+
+fn maybe_preview_tool_result(
+    object: &mut JsonMap<String, JsonValue>,
+    conversation_id: &str,
+    message_id: &str,
+    content_block_index: Option<usize>,
+) {
+    let tool_call_id = object
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let detail_ref = tool_detail_ref(
+        conversation_id,
+        message_id,
+        tool_call_id.as_deref(),
+        content_block_index,
+    );
+    preview_tool_result_object(object, Some(detail_ref));
+}
+
+fn preview_tool_call_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
+    let Some(items) = value.as_array_mut() else {
+        return;
+    };
+    for item in items.iter_mut() {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        maybe_preview_tool_result(object, conversation_id, message_id, None);
+    }
+}
+
+fn preview_content_block_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
+    let Some(items) = value.as_array_mut() else {
+        return;
+    };
+    for (index, item) in items.iter_mut().enumerate() {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        if object.get("type").and_then(JsonValue::as_str) != Some("tool_use") {
+            continue;
+        }
+        maybe_preview_tool_result(object, conversation_id, message_id, Some(index));
+    }
+}
+
+pub(crate) fn preview_tool_payloads_for_message(
+    conversation_id: &str,
+    message_id: &str,
+    mut tool_calls: Option<JsonValue>,
+    mut content_blocks: Option<JsonValue>,
+) -> (Option<JsonValue>, Option<JsonValue>) {
+    if let Some(value) = tool_calls.as_mut() {
+        preview_tool_call_array(value, conversation_id, message_id);
+    }
+    if let Some(value) = content_blocks.as_mut() {
+        preview_content_block_array(value, conversation_id, message_id);
+    }
+    (tool_calls, content_blocks)
+}
+
+fn find_tool_call_by_id(value: &JsonValue, tool_call_id: &str) -> Option<JsonValue> {
+    value.as_array()?.iter().find_map(|item| {
+        let object = item.as_object()?;
+        if object.get("id").and_then(JsonValue::as_str) == Some(tool_call_id) {
+            Some(item.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn find_content_block_by_index(value: &JsonValue, content_block_index: usize) -> Option<JsonValue> {
+    let item = value.as_array()?.get(content_block_index)?;
+    let object = item.as_object()?;
+    if object.get("type").and_then(JsonValue::as_str) == Some("tool_use") {
+        Some(item.clone())
+    } else {
+        None
+    }
+}
+
+fn find_tool_call_detail(
+    tool_calls: Option<&JsonValue>,
+    content_blocks: Option<&JsonValue>,
+    tool_call_id: Option<&str>,
+    content_block_index: Option<usize>,
+) -> Option<JsonValue> {
+    if let (Some(content_blocks), Some(index)) = (content_blocks, content_block_index) {
+        return find_content_block_by_index(content_blocks, index);
+    }
+
+    if let Some(tool_call_id) = tool_call_id {
+        if let Some(tool_call) =
+            tool_calls.and_then(|value| find_tool_call_by_id(value, tool_call_id))
+        {
+            return Some(tool_call);
+        }
+        if let Some(tool_call) =
+            content_blocks.and_then(|value| find_tool_call_by_id(value, tool_call_id))
+        {
+            return Some(tool_call);
+        }
+    }
+
+    None
 }
 
 // ============================================================================
@@ -3512,6 +3630,12 @@ pub async fn get_agent_conversation_messages_page(
             message.content_blocks.clone(),
         )
         .await;
+        let (tool_calls, content_blocks) = preview_tool_payloads_for_message(
+            &conversation_id.as_str(),
+            &message.id.as_str(),
+            tool_calls,
+            content_blocks,
+        );
 
         messages.push(AgentMessageResponse {
             id: message.id.as_str().to_string(),
@@ -3554,6 +3678,47 @@ pub async fn get_agent_conversation_messages_page(
         total_message_count,
         has_older,
     }))
+}
+
+/// Get the full result payload for a previewed tool call in a persisted message.
+#[tauri::command]
+pub async fn get_agent_message_tool_call_detail(
+    conversation_id: String,
+    message_id: String,
+    tool_call_id: Option<String>,
+    content_block_index: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Option<AgentToolCallDetailResponse>, String> {
+    let conversation_id = ChatConversationId::from_string(&conversation_id);
+    let message_id = ChatMessageId::from_string(&message_id);
+
+    let Some(message) = state
+        .chat_message_repo
+        .get_by_id(&message_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    if message.conversation_id.as_ref().map(|id| id.as_str()) != Some(conversation_id.as_str()) {
+        return Ok(None);
+    }
+
+    let (tool_calls, content_blocks) = reconcile_delegated_result_payloads(
+        &state,
+        message.tool_calls.clone(),
+        message.content_blocks.clone(),
+    )
+    .await;
+    let detail = find_tool_call_detail(
+        tool_calls.as_ref(),
+        content_blocks.as_ref(),
+        tool_call_id.as_deref(),
+        content_block_index.map(|index| index as usize),
+    );
+
+    Ok(detail.map(|tool_call| AgentToolCallDetailResponse { tool_call }))
 }
 
 /// Get the active agent run for a conversation

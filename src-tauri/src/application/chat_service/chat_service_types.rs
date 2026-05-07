@@ -196,6 +196,16 @@ pub struct AgentToolCallPayload {
     pub tool_id: Option<String>,
     pub arguments: serde_json::Value,
     pub result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_original_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_line_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_omitted_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_ref: Option<serde_json::Value>,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,

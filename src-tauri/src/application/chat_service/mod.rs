@@ -26,6 +26,7 @@ mod chat_service_streaming;
 mod chat_service_types;
 pub mod freshness_routing;
 mod streaming_state_cache;
+pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{

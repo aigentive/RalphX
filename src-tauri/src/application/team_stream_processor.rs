@@ -17,6 +17,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
+use crate::application::chat_service::tool_result_preview::{
+    build_tool_result_preview_payload, tool_detail_ref,
+};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
@@ -545,6 +548,46 @@ pub fn start_teammate_stream<R: Runtime>(
                                     result,
                                     parent_tool_use_id,
                                 } => {
+                                    let original_tool_name = processor
+                                        .tool_calls
+                                        .iter()
+                                        .find(|tool_call| {
+                                            tool_call.id.as_deref() == Some(tool_use_id.as_str())
+                                        })
+                                        .map(|tool_call| tool_call.name.as_str());
+                                    let detail_ref =
+                                        assistant_message_id.as_ref().and_then(|message_id| {
+                                            conversation_id_str.as_deref().map(|conversation_id| {
+                                                tool_detail_ref(
+                                                    conversation_id,
+                                                    message_id,
+                                                    Some(tool_use_id.as_str()),
+                                                    None,
+                                                )
+                                            })
+                                        });
+                                    let result_preview = original_tool_name.and_then(|name| {
+                                        build_tool_result_preview_payload(
+                                            Some(name),
+                                            &result,
+                                            detail_ref,
+                                        )
+                                    });
+                                    if result_preview.is_some() {
+                                        flush_teammate_message(
+                                            &chat_message_repo,
+                                            &assistant_message_id,
+                                            &processor.response_text,
+                                            &processor.tool_calls,
+                                            &processor.content_blocks,
+                                        )
+                                        .await;
+                                    }
+                                    let event_result = result_preview
+                                        .as_ref()
+                                        .map(|preview| preview.result.clone())
+                                        .unwrap_or_else(|| result.clone());
+
                                     let _ = app_handle.emit(
                                         "agent:tool_call",
                                         serde_json::json!({
@@ -552,7 +595,12 @@ pub fn start_teammate_stream<R: Runtime>(
                                             "tool_name": format!("result:{}", tool_use_id),
                                             "tool_id": tool_use_id,
                                             "arguments": serde_json::Value::Null,
-                                            "result": result,
+                                            "result": event_result,
+                                            "result_preview_truncated": result_preview.as_ref().map(|_| true),
+                                            "result_preview_original_bytes": result_preview.as_ref().map(|preview| preview.original_bytes),
+                                            "result_preview_line_count": result_preview.as_ref().map(|preview| preview.line_count),
+                                            "result_preview_omitted_lines": result_preview.as_ref().map(|preview| preview.omitted_lines),
+                                            "detail_ref": result_preview.as_ref().and_then(|preview| preview.detail_ref.clone()),
                                             "context_type": context_type,
                                             "context_id": context_id,
                                             "parent_tool_use_id": parent_tool_use_id,

@@ -23,6 +23,11 @@ export function makeToolCall(
     error,
     diffContext,
     stats,
+    resultPreviewTruncated,
+    resultPreviewOriginalBytes,
+    resultPreviewLineCount,
+    resultPreviewOmittedLines,
+    detailRef,
   }: ToolCallOverrides = {},
 ): ToolCall {
   return {
@@ -33,6 +38,11 @@ export function makeToolCall(
     ...(error !== undefined ? { error } : {}),
     ...(diffContext !== undefined ? { diffContext } : {}),
     ...(stats !== undefined ? { stats } : {}),
+    ...(resultPreviewTruncated !== undefined ? { resultPreviewTruncated } : {}),
+    ...(resultPreviewOriginalBytes !== undefined ? { resultPreviewOriginalBytes } : {}),
+    ...(resultPreviewLineCount !== undefined ? { resultPreviewLineCount } : {}),
+    ...(resultPreviewOmittedLines !== undefined ? { resultPreviewOmittedLines } : {}),
+    ...(detailRef !== undefined ? { detailRef } : {}),
   };
 }
 

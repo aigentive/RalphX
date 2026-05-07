@@ -259,6 +259,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::list_agent_conversations_page,
             commands::unified_chat_commands::get_agent_conversation,
             commands::unified_chat_commands::get_agent_conversation_messages_page,
+            commands::unified_chat_commands::get_agent_message_tool_call_detail,
             commands::unified_chat_commands::get_agent_conversation_workspace,
             commands::unified_chat_commands::list_agent_conversation_workspaces_by_project,
             commands::unified_chat_commands::list_agent_conversation_workspace_publication_events,

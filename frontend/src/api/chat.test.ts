@@ -7,6 +7,7 @@ import {
   listConversationsPage,
   getConversation,
   getConversationMessagesPage,
+  getAgentMessageToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,
@@ -57,6 +58,39 @@ describe("chat api", () => {
     });
   });
 
+  it("preserves preview metadata and detail refs on parsed tool calls", () => {
+    const parsed = parseToolCalls(JSON.stringify([
+      {
+        id: "t1",
+        name: "bash",
+        arguments: { command: "cat big.log" },
+        result: "line 1\nline 2",
+        result_preview_truncated: true,
+        result_preview_line_count: 40,
+        result_preview_omitted_lines: 30,
+        result_preview_original_bytes: 12000,
+        detail_ref: {
+          conversation_id: "conv-1",
+          message_id: "msg-1",
+          tool_call_id: "t1",
+        },
+      },
+    ]));
+
+    expect(parsed[0]).toMatchObject({
+      id: "t1",
+      resultPreviewTruncated: true,
+      resultPreviewLineCount: 40,
+      resultPreviewOmittedLines: 30,
+      resultPreviewOriginalBytes: 12000,
+      detailRef: {
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "t1",
+      },
+    });
+  });
+
   it("parses content blocks", () => {
     const parsed = parseContentBlocks('[{"type":"text","text":"hello"}]');
     expect(parsed).toHaveLength(1);
@@ -71,6 +105,40 @@ describe("chat api", () => {
       id: "tool-1",
       name: "bash",
       parentToolUseId: "delegate-1",
+    });
+  });
+
+  it("preserves preview metadata and detail refs on parsed content blocks", () => {
+    const parsed = parseContentBlocks(JSON.stringify([
+      {
+        type: "tool_use",
+        id: "tool-1",
+        name: "read",
+        input: { file_path: "big.txt" },
+        result: "first lines",
+        result_preview_truncated: true,
+        result_preview_line_count: 20,
+        detail_ref: {
+          conversation_id: "conv-1",
+          message_id: "msg-1",
+          tool_call_id: "tool-1",
+          content_block_index: 2,
+        },
+      },
+    ]));
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      id: "tool-1",
+      arguments: { file_path: "big.txt" },
+      resultPreviewTruncated: true,
+      resultPreviewLineCount: 20,
+      detailRef: {
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "tool-1",
+        contentBlockIndex: 2,
+      },
     });
   });
 
@@ -446,6 +514,35 @@ describe("chat api", () => {
     const result = await getConversationMessagesPage("c-legacy", 40, 0);
 
     expect(result.messages[0]?.conversationId).toBe("c-legacy");
+  });
+
+  it("loads a full tool call detail by preview detail ref", async () => {
+    mockInvoke.mockResolvedValue({
+      tool_call: {
+        id: "tool-1",
+        name: "bash",
+        arguments: { command: "cat big.log" },
+        result: "full output",
+      },
+    });
+
+    const result = await getAgentMessageToolCallDetail({
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      toolCallId: "tool-1",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_message_tool_call_detail", {
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      toolCallId: "tool-1",
+      contentBlockIndex: null,
+    });
+    expect(result?.toolCall).toMatchObject({
+      id: "tool-1",
+      name: "bash",
+      result: "full output",
+    });
   });
 
   it("gets conversation stats with camelCase totals and buckets", async () => {

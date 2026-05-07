@@ -255,6 +255,95 @@ describe("useChatEvents", () => {
       expect(result[0]!.result).toBe("file content here");
     });
 
+    it("should store only a preview for large streaming tool results", () => {
+      const props = makeProps();
+      renderAndClear(props);
+      const largeResult = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`).join("\n");
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Read",
+          tool_id: "toolu_preview",
+          arguments: { file_path: "/src/large.log" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Read",
+          tool_id: "toolu_preview",
+          arguments: { file_path: "/src/large.log" },
+          result: largeResult,
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const existing: ToolCall[] = [
+        { id: "toolu_preview", name: "Read", arguments: { file_path: "/src/large.log" } },
+      ];
+      const result = executeUpdater<ToolCall[]>(props.setStreamingToolCalls, existing, 1);
+
+      expect(result[0]!.resultPreviewTruncated).toBe(true);
+      expect(result[0]!.resultPreviewLineCount).toBe(14);
+      expect(String(result[0]!.result).split("\n")).toHaveLength(10);
+      expect(String(result[0]!.result)).toContain("line 10");
+      expect(String(result[0]!.result)).not.toContain("line 11");
+    });
+
+    it("should preserve backend streaming preview metadata and detail refs", () => {
+      const props = makeProps();
+      renderAndClear(props);
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "Read",
+          tool_id: "toolu_preview",
+          arguments: { file_path: "/src/large.log" },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      act(() => {
+        fireEvent("agent:tool_call", {
+          tool_name: "result:toolu_preview",
+          tool_id: "toolu_preview",
+          arguments: {},
+          result: "backend preview line 1\nbackend preview line 2",
+          result_preview_truncated: true,
+          result_preview_line_count: 120,
+          result_preview_omitted_lines: 110,
+          result_preview_original_bytes: 48_000,
+          detail_ref: {
+            conversation_id: CONV_ID,
+            message_id: "msg-live",
+            tool_call_id: "toolu_preview",
+          },
+          conversation_id: CONV_ID,
+          context_id: CTX_ID,
+        });
+      });
+
+      const existing: ToolCall[] = [
+        { id: "toolu_preview", name: "Read", arguments: { file_path: "/src/large.log" } },
+      ];
+      const result = executeUpdater<ToolCall[]>(props.setStreamingToolCalls, existing, 1);
+
+      expect(result[0]!.result).toBe("backend preview line 1\nbackend preview line 2");
+      expect(result[0]!.resultPreviewTruncated).toBe(true);
+      expect(result[0]!.resultPreviewLineCount).toBe(120);
+      expect(result[0]!.resultPreviewOmittedLines).toBe(110);
+      expect(result[0]!.resultPreviewOriginalBytes).toBe(48_000);
+      expect(result[0]!.detailRef).toEqual({
+        conversationId: CONV_ID,
+        messageId: "msg-live",
+        toolCallId: "toolu_preview",
+      });
+    });
+
     it("should update an existing no-id tool call by stable name and arguments", () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-04-25T13:00:00Z"));

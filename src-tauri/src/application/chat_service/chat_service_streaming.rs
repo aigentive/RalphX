@@ -40,6 +40,7 @@ use tokio_util::sync::CancellationToken;
 use super::chat_service_errors::StreamError;
 use super::chat_service_types::AgentUsageUpdatedPayload;
 use super::streaming_state_cache::{CachedStreamingTask, CachedToolCall, StreamingStateCache};
+use super::tool_result_preview::{build_tool_result_preview_payload, tool_detail_ref};
 use super::{
     event_context, events, has_meaningful_output, AgentChunkPayload, AgentHookPayload,
     AgentTaskCompletedPayload, AgentTaskStartedPayload, AgentToolCallPayload,
@@ -1401,6 +1402,11 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_id: id.clone(),
                                     arguments: serde_json::Value::Null,
                                     result: None,
+                                    result_preview_truncated: None,
+                                    result_preview_original_bytes: None,
+                                    result_preview_line_count: None,
+                                    result_preview_omitted_lines: None,
+                                    detail_ref: None,
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -1481,6 +1487,11 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_id: tool_call.id.clone(),
                                     arguments: tool_call.arguments.clone(),
                                     result: None,
+                                    result_preview_truncated: None,
+                                    result_preview_original_bytes: None,
+                                    result_preview_line_count: None,
+                                    result_preview_omitted_lines: None,
+                                    detail_ref: None,
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2121,6 +2132,37 @@ pub async fn process_stream_background<R: Runtime>(
                         result,
                         parent_tool_use_id,
                     } => {
+                        let original_tool_name = processor
+                            .tool_calls
+                            .iter()
+                            .find(|tool_call| tool_call.id.as_deref() == Some(tool_use_id.as_str()))
+                            .map(|tool_call| tool_call.name.as_str());
+                        let detail_ref = assistant_message_id.as_ref().map(|message_id| {
+                            tool_detail_ref(
+                                &conversation_id_str,
+                                message_id,
+                                Some(tool_use_id.as_str()),
+                                None,
+                            )
+                        });
+                        let result_preview = original_tool_name.and_then(|name| {
+                            build_tool_result_preview_payload(Some(name), &result, detail_ref)
+                        });
+                        if result_preview.is_some() {
+                            persist_assistant_message_snapshot(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                            )
+                            .await;
+                        }
+                        let event_result = result_preview
+                            .as_ref()
+                            .map(|preview| preview.result.clone())
+                            .unwrap_or_else(|| result.clone());
+
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 events::AGENT_TOOL_CALL,
@@ -2128,7 +2170,20 @@ pub async fn process_stream_background<R: Runtime>(
                                     tool_name: format!("result:{}", tool_use_id),
                                     tool_id: Some(tool_use_id.clone()),
                                     arguments: serde_json::Value::Null,
-                                    result: Some(result.clone()),
+                                    result: Some(event_result.clone()),
+                                    result_preview_truncated: result_preview.as_ref().map(|_| true),
+                                    result_preview_original_bytes: result_preview
+                                        .as_ref()
+                                        .map(|preview| preview.original_bytes),
+                                    result_preview_line_count: result_preview
+                                        .as_ref()
+                                        .map(|preview| preview.line_count),
+                                    result_preview_omitted_lines: result_preview
+                                        .as_ref()
+                                        .map(|preview| preview.omitted_lines),
+                                    detail_ref: result_preview
+                                        .as_ref()
+                                        .and_then(|preview| preview.detail_ref.clone()),
                                     conversation_id: conversation_id_str.clone(),
                                     context_type: context_type_str.clone(),
                                     context_id: context_id_str.clone(),
@@ -2145,9 +2200,10 @@ pub async fn process_stream_background<R: Runtime>(
                                 ChatContextType::TaskExecution | ChatContextType::Merge
                             ) {
                                 let result_content =
-                                    serde_json::to_string(&result).unwrap_or_default();
+                                    serde_json::to_string(&event_result).unwrap_or_default();
                                 let result_metadata = serde_json::json!({
                                     "tool_use_id": tool_use_id,
+                                    "result_preview_truncated": result_preview.is_some(),
                                 });
 
                                 let _ = handle.emit(
@@ -2902,6 +2958,22 @@ async fn process_codex_stream_background<R: Runtime>(
                 )
                 .await;
 
+                let result_preview = tool_call.result.as_ref().and_then(|result| {
+                    let detail_ref = assistant_message_id.as_ref().map(|message_id| {
+                        tool_detail_ref(
+                            &conversation_id_str,
+                            message_id,
+                            tool_call.id.as_deref(),
+                            None,
+                        )
+                    });
+                    build_tool_result_preview_payload(Some(&tool_call.name), result, detail_ref)
+                });
+                let event_result = result_preview
+                    .as_ref()
+                    .map(|preview| Some(preview.result.clone()))
+                    .unwrap_or_else(|| tool_call.result.clone());
+
                 if let Some(ref handle) = app_handle {
                     let _ = handle.emit(
                         events::AGENT_TOOL_CALL,
@@ -2909,7 +2981,20 @@ async fn process_codex_stream_background<R: Runtime>(
                             tool_name: tool_call.name.clone(),
                             tool_id: tool_call.id.clone(),
                             arguments: tool_call.arguments.clone(),
-                            result: tool_call.result.clone(),
+                            result: event_result,
+                            result_preview_truncated: result_preview.as_ref().map(|_| true),
+                            result_preview_original_bytes: result_preview
+                                .as_ref()
+                                .map(|preview| preview.original_bytes),
+                            result_preview_line_count: result_preview
+                                .as_ref()
+                                .map(|preview| preview.line_count),
+                            result_preview_omitted_lines: result_preview
+                                .as_ref()
+                                .map(|preview| preview.omitted_lines),
+                            detail_ref: result_preview
+                                .as_ref()
+                                .and_then(|preview| preview.detail_ref.clone()),
                             conversation_id: conversation_id_str.clone(),
                             context_type: context_type_str.clone(),
                             context_id: context_id_str.clone(),
