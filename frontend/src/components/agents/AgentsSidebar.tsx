@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   Archive,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Folder,
@@ -35,6 +36,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -47,6 +50,7 @@ import {
 import { useChatStore } from "@/stores/chatStore";
 import {
   useAgentSessionStore,
+  type AgentProjectSort,
 } from "@/stores/agentSessionStore";
 import { withAlpha } from "@/lib/theme-colors";
 import type { Project } from "@/types/project";
@@ -57,8 +61,15 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { useProjectAgentConversations } from "./useProjectAgentConversations";
+import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
+
+const PROJECT_SORT_LABELS: Record<AgentProjectSort, string> = {
+  latest: "Latest",
+  az: "A-Z",
+  za: "Z-A",
+};
 
 const STATIC_RECENT_RUNS = [
   {
@@ -105,6 +116,7 @@ export function AgentsSidebar({
   onArchiveConversation,
   onRestoreConversation,
   showArchived,
+  onShowArchivedChange,
   onCollapse,
 }: AgentsSidebarProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -114,6 +126,41 @@ export function AgentsSidebar({
     normalizedSearchInput,
     AGENTS_SEARCH_DEBOUNCE_MS
   );
+  const showAllProjects = useAgentSessionStore((s) => s.showAllProjects);
+  const setShowAllProjects = useAgentSessionStore((s) => s.setShowAllProjects);
+  const projectSort = useAgentSessionStore((s) => s.projectSort);
+  const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
+  const shouldHydrateAllSidebarProjects =
+    showAllProjects || showArchived || normalizedSearch.length > 0;
+  const pinnedProjectId = pinnedConversation?.projectId ?? null;
+  const archivedCountProjectIds = useMemo(() => {
+    if (shouldHydrateAllSidebarProjects) {
+      return projects.map((project) => project.id);
+    }
+
+    const projectIds = new Set<string>();
+    if (focusedProjectId) {
+      projectIds.add(focusedProjectId);
+    }
+    if (pinnedProjectId) {
+      projectIds.add(pinnedProjectId);
+    }
+    if (projectIds.size === 0 && projects[0]) {
+      projectIds.add(projects[0].id);
+    }
+    return Array.from(projectIds);
+  }, [focusedProjectId, pinnedProjectId, projects, shouldHydrateAllSidebarProjects]);
+  const { totalArchivedCount } = useArchivedConversationCounts(archivedCountProjectIds);
+  const orderedProjects = useMemo(() => {
+    if (projectSort === "latest") {
+      return projects;
+    }
+
+    const sortedProjects = [...projects].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+    );
+    return projectSort === "za" ? sortedProjects.reverse() : sortedProjects;
+  }, [projectSort, projects]);
 
   return (
     <aside
@@ -237,6 +284,90 @@ export function AgentsSidebar({
         </div>
       )}
 
+      {projects.length > 0 && (
+        <div className="flex shrink-0 items-center gap-2 px-3 pb-2">
+          <button
+            type="button"
+            data-testid="agents-show-all-projects-pill"
+            aria-pressed={showAllProjects}
+            onClick={() => setShowAllProjects(!showAllProjects)}
+            className="inline-flex h-7 items-center rounded-[6px] border px-2.5 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+            style={{
+              backgroundColor: showAllProjects
+                ? withAlpha("var(--accent-primary)", 15)
+                : "var(--bg-elevated)",
+              borderColor: showAllProjects ? "var(--accent-primary)" : "var(--border-subtle)",
+              color: showAllProjects ? "var(--text-primary)" : "var(--text-muted)",
+              boxShadow: "none",
+            }}
+          >
+            All projects
+          </button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-testid="agents-project-sort-pill"
+                aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
+                className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                style={{
+                  backgroundColor: "var(--bg-elevated)",
+                  borderColor: "var(--border-subtle)",
+                  color: "var(--text-muted)",
+                  boxShadow: "none",
+                }}
+              >
+                <span>{PROJECT_SORT_LABELS[projectSort]}</span>
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-[120px]">
+              <DropdownMenuRadioGroup
+                value={projectSort}
+                onValueChange={(value) => setProjectSort(value as AgentProjectSort)}
+              >
+                {(["latest", "az", "za"] as AgentProjectSort[]).map((sort) => (
+                  <DropdownMenuRadioItem key={sort} value={sort} className="text-xs">
+                    {PROJECT_SORT_LABELS[sort]}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {(showArchived || totalArchivedCount > 0) && (
+            <button
+              type="button"
+              data-testid="agents-show-archived-pill"
+              aria-pressed={showArchived}
+              aria-label="Show archived sessions"
+              onClick={() => onShowArchivedChange(!showArchived)}
+              className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+              style={{
+                backgroundColor: showArchived
+                  ? withAlpha("var(--accent-primary)", 15)
+                  : "var(--bg-elevated)",
+                borderColor: showArchived ? "var(--accent-primary)" : "var(--border-subtle)",
+                color: showArchived ? "var(--text-primary)" : "var(--text-muted)",
+                boxShadow: "none",
+              }}
+            >
+              <span>Archived</span>
+              <span
+                className="rounded-full px-1.5 text-[0.625rem] font-semibold leading-[1.6]"
+                style={{
+                  backgroundColor: "var(--overlay-weak)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {totalArchivedCount}
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto px-3 pb-3 pt-0.5">
         {projects.length === 0 ? (
           <div className="h-full px-5 flex flex-col items-center justify-center text-center gap-3">
@@ -255,7 +386,7 @@ export function AgentsSidebar({
             </Button>
           </div>
         ) : (
-          projects.map((project) => (
+          orderedProjects.map((project) => (
             <ProjectSessionGroup
               key={project.id}
               project={project}
@@ -272,6 +403,7 @@ export function AgentsSidebar({
               onArchiveConversation={onArchiveConversation}
               onRestoreConversation={onRestoreConversation}
               showArchived={showArchived}
+              showAllProjects={showAllProjects}
             />
           ))
         )}
@@ -320,6 +452,7 @@ interface ProjectSessionGroupProps {
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
   showArchived: boolean;
+  showAllProjects: boolean;
 }
 
 function ProjectSessionGroup({
@@ -335,6 +468,7 @@ function ProjectSessionGroup({
   onArchiveConversation,
   onRestoreConversation,
   showArchived,
+  showAllProjects,
 }: ProjectSessionGroupProps) {
   const projectActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
@@ -344,11 +478,16 @@ function ProjectSessionGroup({
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
   const [archiveDialogConversation, setArchiveDialogConversation] =
     useState<AgentConversation | null>(null);
+  const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
   const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
   const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
   const shouldEnableConversationQuery =
-    true;
+    showAllProjects ||
+    showArchived ||
+    isFocused ||
+    Boolean(pinnedConversation) ||
+    searchQuery.length > 0;
   const conversations = useProjectAgentConversations(project.id, showArchived, {
     search: searchQuery,
     enabled: shouldEnableConversationQuery,
@@ -373,10 +512,11 @@ function ProjectSessionGroup({
       (agentStatuses[rowKey] ?? "idle") !== "idle"
     );
   }).length;
-  const isCurrentProject =
-    isFocused ||
-    (selectedConversationId !== null &&
-      visibleConversations.some((conversation) => conversation.id === selectedConversationId));
+  const isCurrentProject = expanded && isFocused;
+  const handleProjectRowToggle = () => {
+    onFocusProject(project.id);
+    setProjectExpanded(project.id, !expanded);
+  };
   const openRenameDialog = (conversation: AgentConversation) => {
     setRenameDraftTitle(conversation.title || "Untitled agent");
     setRenameDialogConversation(conversation);
@@ -397,59 +537,66 @@ function ProjectSessionGroup({
   if (
     !conversations.isLoading &&
     visibleConversations.length === 0 &&
-    (showArchived || searchQuery.length > 0)
+    (showArchived || searchQuery.length > 0 || !showAllProjects)
   ) {
     return null;
   }
 
   return (
     <div className="my-1 flex flex-col gap-0.5" data-testid={`agents-project-${project.id}`}>
-        <div className="group/project">
-          <div
-            className="agents-project-row relative grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] hover:bg-[var(--bg-elevated)]"
+        <div className="group/project relative">
+          <button
+            type="button"
+            className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
             data-testid={`agents-project-row-${project.id}`}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Collapse" : "Expand"} project ${project.name}`}
             aria-current={isCurrentProject ? "true" : undefined}
+            onClick={handleProjectRowToggle}
           >
-            <button
-              type="button"
-              className="agents-project-chevron grid h-3 w-3 place-items-center rounded outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-              onClick={() => setProjectExpanded(project.id, !expanded)}
-              aria-label={expanded ? "Collapse project" : "Expand project"}
+            <span
+              className="agents-project-chevron grid h-3 w-3 place-items-center rounded"
+              aria-hidden="true"
             >
               <ChevronRight
                 className={`h-2.5 w-2.5 transition-transform duration-[120ms] ${expanded ? "rotate-90" : ""}`}
                 strokeWidth={2}
               />
-            </button>
-            <button
-              type="button"
-              className="contents bg-transparent border-0 p-0 text-left shadow-none outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-              onClick={() => onFocusProject(project.id)}
-              style={{ boxShadow: "none" }}
-            >
-              <Folder
-                className="agents-project-icon h-3.5 w-3.5 shrink-0"
-                strokeWidth={1.8}
-              />
-              <span className="min-w-0 truncate">
-                {project.name}
-              </span>
-            </button>
+            </span>
+            <Folder
+              className="agents-project-icon h-3.5 w-3.5 shrink-0"
+              strokeWidth={1.8}
+            />
+            <span className="min-w-0 truncate">
+              {project.name}
+            </span>
             {totalConversationCount > 0 && (
               <span
-                className="agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6]"
+                className={`agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6] transition-opacity duration-150 ${
+                  projectActionsOpen
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/project:opacity-0 group-focus-within/project:opacity-0"
+                }`}
               >
                 {totalConversationCount}
               </span>
             )}
             {totalConversationCount === 0 && !expanded && activeRuntimeCount > 0 && (
               <span
-                className="grid min-w-[18px] place-items-center rounded-full px-1.5 text-[0.6562rem] font-medium leading-[1.6]"
-                style={{ color: "var(--accent-primary)", background: withAlpha("var(--accent-primary)", 15) }}
+                className={`agents-project-active-count grid min-w-[18px] place-items-center rounded-full px-1.5 text-[0.6562rem] font-medium leading-[1.6] transition-opacity duration-150 ${
+                  projectActionsOpen
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/project:opacity-0 group-focus-within/project:opacity-0"
+                }`}
+                style={{
+                  color: "var(--accent-primary)",
+                  backgroundColor: withAlpha("var(--accent-primary)", 15),
+                }}
               >
                 {activeRuntimeCount}
               </span>
             )}
+          </button>
             <div
               className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-[6px] transition-opacity duration-150 ${
                 projectActionsOpen
@@ -457,6 +604,7 @@ function ProjectSessionGroup({
                   : "opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100"
               }`}
               data-testid={`agents-project-actions-${project.id}`}
+              onClick={(event) => event.stopPropagation()}
             >
               <DropdownMenu
                 onOpenChange={(open) => {
@@ -493,7 +641,6 @@ function ProjectSessionGroup({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-          </div>
 
           <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
             <AlertDialogContent>
@@ -624,6 +771,7 @@ function ProjectSessionGroup({
                     agentStatus
                   );
                   const showRuntimeState = runtimeState === "running";
+                  const sessionActionsOpen = openSessionActionsId === conversation.id;
 
                   return (
                     <div
@@ -633,7 +781,7 @@ function ProjectSessionGroup({
                     >
                       <button
                         type="button"
-                        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 pr-8 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                         onClick={() => onSelectConversation(project.id, conversation)}
                         aria-current={isSelected ? "true" : undefined}
                         style={{
@@ -664,15 +812,27 @@ function ProjectSessionGroup({
                             )}
                           </span>
                         </span>
-                        <SessionStatusDot state={runtimeState} selected={isSelected} />
+                        <span
+                          className={`agents-session-status-slot transition-opacity duration-150 ${
+                            sessionActionsOpen
+                              ? "opacity-0"
+                              : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+                          }`}
+                        >
+                          <SessionStatusDot state={runtimeState} selected={isSelected} />
+                        </span>
                       </button>
-                      <DropdownMenu>
+                      <DropdownMenu
+                        onOpenChange={(open) =>
+                          setOpenSessionActionsId(open ? conversation.id : null)
+                        }
+                      >
                         <DropdownMenuTrigger asChild>
                           <Button
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 p-0 opacity-0 outline-none ring-0 transition-opacity focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 data-[state=open]:opacity-100"
+                            className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 p-0 opacity-0 outline-none ring-0 transition-opacity focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:opacity-100"
                             aria-label="Session actions"
                             style={{ boxShadow: "none" }}
                           >

@@ -451,7 +451,7 @@ describe("App", () => {
     expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
       "border-right-color: var(--app-rail-border)"
     );
-    expect(screen.getByTestId("window-traffic-lights")).toBeInTheDocument();
+    expect(screen.queryByTestId("window-traffic-lights")).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
       "Workspace/Agents/New run"
     );

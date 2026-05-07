@@ -168,7 +168,7 @@ describe("AgentsSidebar", () => {
     useChatStore.setState({ activeConversationIds: {}, agentStatus: {} });
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": false },
-      showAllProjects: false,
+      showAllProjects: true,
       projectSort: "latest",
     });
   });
@@ -349,7 +349,7 @@ describe("AgentsSidebar", () => {
     });
 
     renderSidebar([project()], {
-      focusedProjectId: null,
+      focusedProjectId: "project-1",
       selectedConversationId: "conversation-active",
     });
 
@@ -367,7 +367,7 @@ describe("AgentsSidebar", () => {
     expect(within(sessionRow).getByText("master").closest(".agents-session-meta")).toBeTruthy();
   });
 
-  it("omits the legacy archived filter pill in the v27 sidebar", () => {
+  it("renders the archived filter pill from project counts and toggles archived sessions", () => {
     const onShowArchivedChange = vi.fn();
     archivedConversationCounts.set("project-1", 4);
     conversationsByProject.set("project-1", {
@@ -381,9 +381,13 @@ describe("AgentsSidebar", () => {
 
     renderSidebar([project()], { onShowArchivedChange });
 
-    expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
-    expect(onShowArchivedChange).not.toHaveBeenCalled();
-    expect(archivedCountCalls).toHaveLength(0);
+    const archivedPill = screen.getByTestId("agents-show-archived-pill");
+    expect(archivedPill).toHaveTextContent("Archived");
+    expect(archivedPill).toHaveTextContent("4");
+    expect(archivedCountCalls.at(-1)).toEqual(["project-1"]);
+
+    fireEvent.click(archivedPill);
+    expect(onShowArchivedChange).toHaveBeenCalledWith(true);
   });
 
   it("renders the static v27 Recent block above the add-project action", () => {
@@ -426,7 +430,7 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByText("Start")).not.toBeInTheDocument();
   });
 
-  it("hydrates every project row in the v27 sidebar tree", () => {
+  it("hydrates every project row when the show-all-projects filter is enabled", () => {
     const focused = project({ id: "project-1", name: "alpha" });
     const idle = project({ id: "project-2", name: "beta" });
     const anotherIdle = project({ id: "project-3", name: "gamma" });
@@ -465,7 +469,7 @@ describe("AgentsSidebar", () => {
         }),
       ])
     );
-    expect(archivedCountCalls).toHaveLength(0);
+    expect(archivedCountCalls.at(-1)).toEqual(["project-1", "project-2", "project-3"]);
   });
 
   it("collapses the previously expanded project when another project opens", () => {
@@ -500,11 +504,7 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-session-conversation-1")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-session-conversation-2")).not.toBeInTheDocument();
 
-    fireEvent.click(
-      within(screen.getByTestId("agents-project-project-2")).getByRole("button", {
-        name: "Expand project",
-      })
-    );
+    fireEvent.click(screen.getByTestId("agents-project-row-project-2"));
 
     expect(screen.queryByTestId("agents-session-conversation-1")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-session-conversation-2")).toBeInTheDocument();
@@ -566,7 +566,7 @@ describe("AgentsSidebar", () => {
     );
   });
 
-  it("does not render the removed v27 filter and sort pills", () => {
+  it("renders the project visibility and sort controls", () => {
     conversationsByProject.set("project-1", {
       data: [],
       isLoading: false,
@@ -577,12 +577,40 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    expect(screen.queryByTestId("agents-show-all-projects-pill")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-project-sort-pill")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-show-all-projects-pill")).toHaveTextContent("All projects");
+    expect(screen.getByTestId("agents-project-sort-pill")).toHaveTextContent("Latest");
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
   });
 
-  it("shows an add project footer action instead of the archived switch", () => {
+  it("scopes project hydration until the show-all-projects filter is enabled", async () => {
+    const user = userEvent.setup();
+    const focused = project({ id: "project-1", name: "alpha" });
+    const idle = project({ id: "project-2", name: "beta" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": true, "project-2": false },
+      showAllProjects: false,
+      projectSort: "latest",
+    });
+
+    renderSidebar([focused, idle]);
+
+    expect(
+      projectConversationCalls.filter((call) => call.projectId === "project-2").at(-1)
+        ?.options?.enabled,
+    ).toBe(false);
+
+    await user.click(screen.getByTestId("agents-show-all-projects-pill"));
+
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().showAllProjects).toBe(true),
+    );
+    expect(
+      projectConversationCalls.filter((call) => call.projectId === "project-2").at(-1)
+        ?.options?.enabled,
+    ).toBe(true);
+  });
+
+  it("keeps the add project footer action alongside the restored controls", () => {
     const onCreateProject = vi.fn();
     conversationsByProject.set("project-1", {
       data: [conversation()],
@@ -598,10 +626,11 @@ describe("AgentsSidebar", () => {
     fireEvent.click(screen.getByTestId("agents-add-project"));
 
     expect(onCreateProject).toHaveBeenCalledTimes(1);
-    expect(screen.queryByLabelText("Show archived sessions")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-show-all-projects-pill")).toBeInTheDocument();
   });
 
-  it("preserves incoming project order without a sort pill", () => {
+  it("preserves incoming project order for latest sort and can sort projects alphabetically", async () => {
+    const user = userEvent.setup();
     const alpha = project({ id: "project-1", name: "alpha" });
     const beta = project({ id: "project-2", name: "beta" });
 
@@ -626,7 +655,15 @@ describe("AgentsSidebar", () => {
       "agents-project-project-2",
       "agents-project-project-1",
     ]);
-    expect(screen.queryByTestId("agents-project-sort-pill")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-project-sort-pill"));
+    await user.click(screen.getByRole("menuitemradio", { name: "A-Z" }));
+
+    expect(useAgentSessionStore.getState().projectSort).toBe("az");
+    expect(getProjectRowOrder()).toEqual([
+      "agents-project-project-1",
+      "agents-project-project-2",
+    ]);
   });
 
   it("keeps project actions visible while open and confirms before archiving", () => {
@@ -644,10 +681,14 @@ describe("AgentsSidebar", () => {
 
     const actions = screen.getByTestId("agents-project-actions-project-1");
     const trigger = within(actions).getByRole("button", { name: "Project actions" });
+    const count = within(screen.getByTestId("agents-project-row-project-1")).getByText("6");
+
+    expect(count.className).toContain("group-hover/project:opacity-0");
 
     fireEvent.pointerDown(trigger);
 
     expect(actions.className).toContain("opacity-100");
+    expect(count.className).toContain("opacity-0");
 
     fireEvent.click(screen.getByText("Archive project"));
 
@@ -708,6 +749,29 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByText("Rename session")).not.toBeInTheDocument();
   });
 
+  it("hides the session status dot when the row action menu is visible", async () => {
+    const user = userEvent.setup();
+    const conv = conversation({ id: "conversation-menu-overlap", title: "Menu overlap" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    const row = screen.getByTestId("agents-session-conversation-menu-overlap");
+    const statusSlot = row.querySelector(".agents-session-status-slot");
+    expect(statusSlot?.className).toContain("group-hover/session:opacity-0");
+
+    await user.click(within(row).getByRole("button", { name: "Session actions" }));
+
+    expect(statusSlot?.className).toContain("opacity-0");
+  });
+
   it("confirms before archiving a session", async () => {
     const user = userEvent.setup();
     const onArchiveConversation = vi.fn();
@@ -753,11 +817,11 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByTestId("agents-search-input")).toBeNull();
   });
 
-  it("toggles the project chevron via the agentSessionStore", async () => {
+  it("toggles the whole project row via the agentSessionStore", async () => {
     const user = userEvent.setup();
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true },
-      showAllProjects: false,
+      showAllProjects: true,
       projectSort: "latest",
     });
     conversationsByProject.set("project-1", {
@@ -771,35 +835,110 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    const chevron = screen.getByLabelText("Collapse project");
-    await user.click(chevron);
-    expect(useAgentSessionStore.getState().expandedProjectIds["project-1"]).toBe(false);
+    const projectRow = screen.getByTestId("agents-project-row-project-1");
+    expect(projectRow).toHaveAttribute("aria-expanded", "true");
 
-    await user.click(screen.getByLabelText("Expand project"));
+    await user.click(projectRow);
+    expect(useAgentSessionStore.getState().expandedProjectIds["project-1"]).toBe(false);
+    expect(projectRow).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(projectRow);
     expect(useAgentSessionStore.getState().expandedProjectIds["project-1"]).toBe(true);
+    expect(projectRow).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("focuses the project when the row title is clicked", async () => {
+  it("focuses and expands a project row without selecting a conversation", async () => {
     const user = userEvent.setup();
     const onFocusProject = vi.fn();
+    const onSelectConversation = vi.fn();
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": false },
+      showAllProjects: true,
+      projectSort: "latest",
+    });
     conversationsByProject.set("project-1", {
-      data: [],
-      total: 0,
+      data: [conversation({ id: "conversation-not-selected", title: "Do not select me" })],
+      total: 1,
       isLoading: false,
       hasNextPage: false,
       isFetchingNextPage: false,
       fetchNextPage: vi.fn(),
     });
-    renderSidebar([project()], { onFocusProject });
+    renderSidebar([project()], { onFocusProject, onSelectConversation });
 
-    await user.click(screen.getByText("ralphx"));
+    await user.click(screen.getByTestId("agents-project-row-project-1"));
+
     expect(onFocusProject).toHaveBeenCalledWith("project-1");
+    expect(onSelectConversation).not.toHaveBeenCalled();
+    expect(useAgentSessionStore.getState().expandedProjectIds["project-1"]).toBe(true);
+  });
+
+  it("renders a collapsed project neutrally even when it contains the selected conversation", async () => {
+    const user = userEvent.setup();
+    const selected = conversation({ id: "conversation-selected", title: "Selected run" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": true },
+      showAllProjects: true,
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [selected],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      focusedProjectId: "project-1",
+      selectedConversationId: selected.id,
+    });
+
+    const projectRow = screen.getByTestId("agents-project-row-project-1");
+    expect(projectRow).toHaveAttribute("aria-current", "true");
+
+    await user.click(projectRow);
+
+    expect(projectRow).not.toHaveAttribute("aria-current");
+    expect(screen.queryByTestId("agents-session-conversation-selected")).not.toBeInTheDocument();
+  });
+
+  it("clears focused project active styling when the project is collapsed", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": true },
+      showAllProjects: true,
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-counted", title: "Counted run" })],
+      total: 46,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      focusedProjectId: "project-1",
+      selectedConversationId: null,
+    });
+
+    const projectRow = screen.getByTestId("agents-project-row-project-1");
+    expect(projectRow).toHaveAttribute("aria-current", "true");
+    expect(projectRow).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(projectRow);
+
+    expect(projectRow).toHaveAttribute("aria-expanded", "false");
+    expect(projectRow).not.toHaveAttribute("aria-current");
   });
 
   it("renders the active runtime badge when a project is collapsed but has a running agent", () => {
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": false },
-      showAllProjects: false,
+      showAllProjects: true,
       projectSort: "latest",
     });
     const conv = conversation({ id: "conversation-running", title: "Running" });

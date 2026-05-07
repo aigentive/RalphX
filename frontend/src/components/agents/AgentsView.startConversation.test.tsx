@@ -88,10 +88,7 @@ describe("AgentsView start conversation", () => {
     }));
     resetAgentSessionState({
       selectedProjectId: null,
-      selectedConversationId: null,
-      lastSelectedConversationByProjectId: {
-        "project-1": "conversation-restored",
-      },
+      selectedConversationId: "conversation-restored",
     });
 
     renderAgentsView();

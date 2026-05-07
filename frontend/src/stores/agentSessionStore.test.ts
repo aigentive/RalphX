@@ -118,8 +118,8 @@ describe("agentSessionStore", () => {
       useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
     });
 
-    it("setFocusedProject expands only the focused project and restores last conversation", () => {
-      const { setFocusedProject, selectConversation, setProjectExpanded } =
+    it("setFocusedProject expands only the focused project without selecting a conversation", () => {
+      const { clearSelection, setFocusedProject, selectConversation, setProjectExpanded } =
         useAgentSessionStore.getState();
 
       // Seed two expanded projects + a remembered conversation for "p1"
@@ -133,11 +133,15 @@ describe("agentSessionStore", () => {
       expect(after.focusedProjectId).toBe("p2");
       expect(after.expandedProjectIds).toEqual({ p1: false, p2: true });
 
-      // Focus back to p1 — its last conversation is restored as the selected one.
+      clearSelection();
+
+      // Focus back to p1 — its last conversation remains remembered, but focus
+      // does not select it. Only selectConversation may select a conversation.
       setFocusedProject("p1");
       const restored = useAgentSessionStore.getState();
-      expect(restored.selectedProjectId).toBe("p1");
-      expect(restored.selectedConversationId).toBe("conv-1");
+      expect(restored.selectedProjectId).toBeNull();
+      expect(restored.selectedConversationId).toBeNull();
+      expect(restored.lastSelectedConversationByProjectId.p1).toBe("conv-1");
 
       // Clearing focus is a no-op for expansion.
       setFocusedProject(null);
