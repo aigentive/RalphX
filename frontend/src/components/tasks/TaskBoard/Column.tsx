@@ -39,6 +39,7 @@ import {
 import { CollapsedQuickAdd } from "./CollapsedQuickAdd";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { formatMinutesHuman } from "@/lib/formatters";
+import { TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH } from "./TaskBoard.layout";
 import {
   Tooltip,
   TooltipContent,
@@ -71,8 +72,8 @@ interface ColumnProps {
   isCollapsed?: boolean;
   /** Callback to toggle collapse state */
   onToggleCollapse?: () => void;
-  /** When `true` (compact host like a task tab), drop the 220px minWidth so
-   * columns fluidly fill the constrained width via the parent grid `1fr`. */
+  /** Preserved for host layout intent; expanded columns still keep their
+   * readable minimum and let the board scroll horizontally when constrained. */
   fillWidth?: boolean;
 }
 
@@ -175,7 +176,7 @@ function formatColumnHeaderCount(
   return `(${taskCount})`;
 }
 
-export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, fillWidth = false }: ColumnProps) {
+export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse }: ColumnProps) {
   const { setNodeRef } = useDroppable({ id: column.id });
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { active } = useDndContext();
@@ -524,13 +525,18 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
       className="flex-shrink-0 flex flex-col h-full"
       style={{
         width: "100%",
-        minWidth: fillWidth ? 0 : "220px",
+        minWidth: `${TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH}px`,
         maxWidth: "none",
         scrollSnapAlign: "start",
         paddingLeft: 0,
         paddingRight: 0,
         backgroundColor: "var(--app-content-bg)",
         transition: "width 200ms ease, min-width 200ms ease, max-width 200ms ease",
+        ...(!isLast && {
+          borderRightColor: "var(--kanban-board-divider)",
+          borderRightStyle: "solid",
+          borderRightWidth: "1px",
+        }),
       }}
     >
       {/* Column header - compact v29a section label */}

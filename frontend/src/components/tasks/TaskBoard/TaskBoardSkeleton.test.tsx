@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { TaskBoardSkeleton } from "./TaskBoardSkeleton";
+import { TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH } from "./TaskBoard.layout";
 
 describe("TaskBoardSkeleton", () => {
   it("should render with data-testid", () => {
@@ -43,6 +44,7 @@ describe("TaskBoardSkeleton", () => {
     for (let i = 0; i < 5; i++) {
       const col = screen.getByTestId(`skeleton-column-${i}`);
       expect(col.style.background).toBe("var(--kanban-column-bg)");
+      expect(col.style.minWidth).toBe(`${TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH}px`);
     }
   });
 

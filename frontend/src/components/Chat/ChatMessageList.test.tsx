@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { act } from "react";
 import {
   AT_BOTTOM_THRESHOLD,
   TEXT_LENGTH_BUCKET_SIZE,
@@ -260,6 +261,12 @@ describe("ChatMessageList - Scroll Behavior", () => {
       );
 
       expect(screen.getByTestId("chat-transcript-settling-placeholders")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-transcript-settling-placeholders")).toHaveClass(
+        "pointer-events-none",
+      );
+      expect(screen.getByTestId("chat-transcript-settling-placeholders")).toHaveClass(
+        "bg-[var(--bg-base)]",
+      );
       expect(screen.getByText("Message 10")).toBeInTheDocument();
 
       await waitFor(() =>
@@ -2500,6 +2507,9 @@ describe("ChatMessageList - Initial paint cover", () => {
     expect(
       screen.getByTestId("chat-transcript-settling-placeholders"),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("chat-transcript-settling-placeholders")).toHaveClass(
+      "pointer-events-none",
+    );
   });
 
   it("does NOT render the placeholder cover when initialPaintCoverKey is null", () => {
@@ -2526,6 +2536,138 @@ describe("ChatMessageList - Initial paint cover", () => {
     expect(
       screen.queryByTestId("chat-transcript-settling-placeholders"),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps messages mounted and clears the cover when paint readiness stalls", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    window.requestAnimationFrame = vi.fn(() => 123) as unknown as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = vi.fn() as unknown as typeof window.cancelAnimationFrame;
+
+    try {
+      const onInitialPaintReady = vi.fn();
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={createMessages(3)}
+          initialPaintCoverKey="conv-key-stalled"
+          onInitialPaintReady={onInitialPaintReady}
+        />
+      );
+
+      expect(screen.getByText("Message 1")).toBeInTheDocument();
+      expect(screen.getByText("Message 3")).toBeInTheDocument();
+      expect(screen.getByTestId("chat-transcript-settling-placeholders")).toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_500);
+      });
+
+      expect(
+        screen.queryByTestId("chat-transcript-settling-placeholders"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("Message 3")).toBeInTheDocument();
+      expect(onInitialPaintReady).toHaveBeenCalledWith("conv-key-stalled");
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not keep the cover alive by restarting the fallback on same-conversation message churn", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    window.requestAnimationFrame = vi.fn(() => 123) as unknown as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = vi.fn() as unknown as typeof window.cancelAnimationFrame;
+
+    try {
+      const onInitialPaintReady = vi.fn();
+      const { rerender } = render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={createMessages(1)}
+          initialPaintCoverKey="conv-key-churning"
+          onInitialPaintReady={onInitialPaintReady}
+        />
+      );
+
+      expect(screen.getByTestId("chat-transcript-settling-placeholders")).toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+
+      rerender(
+        <ChatMessageList
+          {...defaultProps}
+          messages={createMessages(2)}
+          initialPaintCoverKey="conv-key-churning"
+          onInitialPaintReady={onInitialPaintReady}
+        />
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+
+      expect(
+        screen.queryByTestId("chat-transcript-settling-placeholders"),
+      ).not.toBeInTheDocument();
+      expect(onInitialPaintReady).toHaveBeenCalledWith("conv-key-churning");
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not re-arm a cleared cover when the parent still passes the same conversation key", async () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    window.requestAnimationFrame = vi.fn(() => 123) as unknown as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = vi.fn() as unknown as typeof window.cancelAnimationFrame;
+
+    try {
+      const onInitialPaintReady = vi.fn();
+      const { rerender } = render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={createMessages(2)}
+          initialPaintCoverKey="conv-key-cleared"
+          onInitialPaintReady={onInitialPaintReady}
+        />
+      );
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_500);
+      });
+
+      expect(
+        screen.queryByTestId("chat-transcript-settling-placeholders"),
+      ).not.toBeInTheDocument();
+
+      rerender(
+        <ChatMessageList
+          {...defaultProps}
+          messages={createMessages(3)}
+          initialPaintCoverKey="conv-key-cleared"
+          onInitialPaintReady={onInitialPaintReady}
+        />
+      );
+
+      expect(
+        screen.queryByTestId("chat-transcript-settling-placeholders"),
+      ).not.toBeInTheDocument();
+      expect(onInitialPaintReady).toHaveBeenCalledTimes(1);
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      vi.useRealTimers();
+    }
   });
 });
 

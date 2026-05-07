@@ -922,8 +922,10 @@ export async function updateConversationTitle(
   const raw = await typedInvoke(
     "update_agent_conversation_title",
     {
-      conversationId,
-      title: title.trim(),
+      input: {
+        conversationId,
+        title: title.trim(),
+      },
     },
     ChatConversationResponseSchema
   );

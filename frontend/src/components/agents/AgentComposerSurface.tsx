@@ -465,7 +465,7 @@ export function AgentComposerSurface({
             background: "color-mix(in srgb, var(--bg-base) 16%, var(--bg-surface) 84%)",
           }}
         >
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="agent-composer-control-row flex flex-wrap items-center gap-2">
             {enableAttachments && (
               <input
                 ref={fileInputRef}
@@ -498,22 +498,24 @@ export function AgentComposerSurface({
             )}
 
             {chatFocus && chatFocus.options.length > 1 && (
-              <ComposerChatFocusPill chatFocus={chatFocus} />
+              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
+                <ComposerChatFocusPill chatFocus={chatFocus} />
+              </div>
             )}
 
-            <div className="flex min-w-0 flex-1 items-stretch gap-2">
+            <div className="flex min-w-0 flex-[0_1_auto] items-stretch gap-2">
               <ComposerRuntimePill
                 provider={provider}
                 model={model}
                 effort={effort}
-                className="flex-none"
+                className="max-w-[34rem]"
               />
             </div>
 
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button h-10 shrink-0 rounded-[12px] px-4 text-[0.75rem] font-semibold tracking-[-0.01em]",
+                "agent-composer-action-button ml-auto h-10 shrink-0 rounded-[12px] px-4 text-[0.75rem] font-semibold tracking-[-0.01em]",
                 shouldShowStop ? "min-w-[100px]" : "min-w-[118px]"
               )}
               style={{
@@ -713,15 +715,15 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
             chatFocus.testId ? `${chatFocus.testId}-pill` : "agent-composer-chat-focus-pill"
           }
           aria-label={`Chat focus: ${activeOption?.label ?? chatFocus.value}. Click to change.`}
-          className="flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors disabled:opacity-50"
+          className="flex h-10 min-w-0 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors disabled:opacity-50"
           style={triggerStyle}
         >
           <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
             Chat
           </span>
-          <span className="flex items-center gap-1.5 text-[0.8125rem] font-medium">
+          <span className="flex min-w-0 items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
-            <span>{activeOption?.label ?? "—"}</span>
+            <span className="truncate">{activeOption?.label ?? "—"}</span>
           </span>
           <ChevronDown className="h-3.5 w-3.5 opacity-70" />
         </button>
@@ -882,7 +884,7 @@ function ComposerRuntimePill({
           data-testid="agent-composer-runtime-pill"
           aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
           className={cn(
-            "flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors",
+            "flex h-10 min-w-0 items-center gap-2 rounded-[12px] border px-3 transition-colors",
             className
           )}
           style={{

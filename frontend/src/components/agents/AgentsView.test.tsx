@@ -35,6 +35,9 @@ describe("AgentsView", () => {
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
+    expect(screen.getByTestId("agents-active-conversation-panel")).toHaveStyle({
+      minWidth: "600px",
+    });
 
     fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
 

@@ -254,7 +254,7 @@ describe("design-tokens", () => {
 
     it("should pin dark Kanban column and empty-state chrome with literal v29a selectors", () => {
       expect(cssContent).toMatch(
-        /\[data-theme="dark"\]\s+\[data-testid="task-board"\],[^{]*\[data-testid="task-board-skeleton"\]\s*\{[^}]*background-color:\s*#2E2E36\s*!important;/s
+        /\[data-theme="dark"\]\s+\[data-testid="task-board"\],[^{]*\[data-testid="task-board-skeleton"\]\s*\{[^}]*background-color:\s*#18181D\s*!important;/s
       );
       expect(cssContent).toMatch(
         /\[data-theme="dark"\]\s+\[data-testid\^="column-"\]:not\(\[data-testid="column-header"\]\),[^{]*\[data-testid\^="skeleton-column-"\]\s*\{[^}]*background-color:\s*#18181D\s*!important;/s

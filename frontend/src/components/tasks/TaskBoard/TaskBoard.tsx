@@ -42,6 +42,9 @@ import { defaultWorkflow, type WorkflowColumn } from "@/types/workflow";
 import type { Task, TaskListResponse, InternalStatus } from "@/types/task";
 import { useColumnTaskCounts } from "./useColumnTaskCounts";
 import { useColumnCollapse } from "./useColumnCollapse";
+import {
+  TASK_BOARD_EXPANDED_COLUMN_FIXED_WIDTH,
+} from "./TaskBoard.layout";
 
 /**
  * Get all statuses for a column from its groups, or fallback to mapsTo
@@ -66,9 +69,9 @@ export interface TaskBoardProps {
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
   /** When `true` (compact host like a task tab / chat-panel split), expanded
-   * columns redistribute via `1fr` to fill the constrained width. When `false`
-   * (full kanban screen), expanded columns keep a fixed width — collapsing one
-   * just shifts the rest left and leaves empty space on the right. */
+   * columns redistribute via `1fr` after honoring the minimum width. When `false`
+   * (full kanban screen), expanded columns keep a fixed width once any column
+   * is collapsed. */
   fillWidth?: boolean;
 }
 
@@ -106,8 +109,8 @@ export function TaskBoard({
   const showArchived = useUiStore((s) => s.showArchived);
   const setShowArchived = useUiStore((s) => s.setShowArchived);
   // Default: full kanban screen → keep column widths fixed when one collapses
-  // (empty space appears on the right). When a task tab is open the host
-  // (or this fallback) flips to fillWidth, redistributing through `1fr`.
+  // (empty space appears on the right). Embedded hosts still redistribute
+  // through `1fr`, but expanded columns must keep a hard readable minimum.
   const selectedTaskId = useUiStore((s) => s.selectedTaskId);
   const fillWidth = fillWidthProp ?? selectedTaskId != null;
   const showMergeTasks = true;
@@ -495,24 +498,11 @@ export function TaskBoard({
               showNoPlanState || showEmptyState
                 ? undefined
                 : (() => {
-                    const anyCollapsed = displayColumns.some(
-                      (c) => !activeTask && isCollapsed(c.id)
-                    );
-                    // Full-width split when nothing is collapsed (or in compact
-                    // host) so columns fill the viewport via `1fr`. Once any
-                    // column collapses on the bare kanban screen, freeze
-                    // expanded columns to a fixed width — collapsing just
-                    // shifts the rest left and leaves space on the right.
-                    const useFixedWidths = !fillWidth && anyCollapsed;
                     return displayColumns
                       .map((column) =>
                         !activeTask && isCollapsed(column.id)
                           ? "128px"
-                          : useFixedWidths
-                            ? "320px"
-                            : fillWidth
-                              ? "minmax(0, 1fr)"
-                              : "minmax(220px, 1fr)"
+                          : `${TASK_BOARD_EXPANDED_COLUMN_FIXED_WIDTH}px`
                       )
                       .join(" ");
                   })(),

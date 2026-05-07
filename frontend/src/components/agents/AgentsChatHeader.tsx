@@ -110,6 +110,7 @@ export interface AgentsChatHeaderProps {
   onPreloadTerminal?: () => void;
   onToggleArtifacts: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
+  showTitle?: boolean;
 }
 
 export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
@@ -281,6 +282,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onPreloadTerminal,
   onToggleArtifacts,
   onSelectArtifact,
+  showTitle = true,
 }: AgentsChatHeaderProps) {
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
@@ -375,41 +377,44 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             </TooltipContent>
           </Tooltip>
         )}
-        <div className="min-w-0 flex-1">
-          {isEditing ? (
-            <Input
-              value={draftTitle}
-              onChange={(event) => setDraftTitle(event.target.value)}
-              onBlur={() => void commitTitle()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void commitTitle();
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setDraftTitle(title);
-                  setIsEditing(false);
-                }
-              }}
-              className="h-7 max-w-[260px] text-sm font-semibold"
-              autoFocus
-              aria-label="Agent title"
-            />
-          ) : (
-            <button
-              type="button"
-              className="block w-full max-w-full text-left text-sm font-semibold truncate"
-              style={{ color: "var(--text-primary)" }}
-              onClick={() => conversation && setIsEditing(true)}
-              aria-label="Edit agent title"
-              data-testid="agents-chat-title-button"
-              data-theme-button-skip="true"
-            >
-              {title}
-            </button>
-          )}
-        </div>
+        {workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null}
+        {showTitle ? (
+          <div className="min-w-0 flex-1">
+            {isEditing ? (
+              <Input
+                value={draftTitle}
+                onChange={(event) => setDraftTitle(event.target.value)}
+                onBlur={() => void commitTitle()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void commitTitle();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setDraftTitle(title);
+                    setIsEditing(false);
+                  }
+                }}
+                className="h-7 max-w-[260px] text-sm font-semibold"
+                autoFocus
+                aria-label="Agent title"
+              />
+            ) : (
+              <button
+                type="button"
+                className="block w-full max-w-full text-left text-sm font-semibold truncate"
+                style={{ color: "var(--text-primary)" }}
+                onClick={() => conversation && setIsEditing(true)}
+                aria-label="Edit agent title"
+                data-testid="agents-chat-title-button"
+                data-theme-button-skip="true"
+              >
+                {title}
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="hidden md:flex items-center gap-1 ml-auto shrink-0">
@@ -581,20 +586,16 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
   const statusColor = isBaseBlocked || isBehindBase
     ? "var(--status-warning)"
     : "var(--text-secondary)";
-  const statusBorderColor = isBaseBlocked || isBehindBase
-    ? "var(--status-warning-border)"
-    : "var(--overlay-weak)";
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
           tabIndex={0}
-          className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.6875rem] font-medium sm:max-w-[300px]"
+          className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.6875rem] font-medium sm:max-w-[300px]"
           style={{
             color: statusColor,
-            background: "var(--bg-surface)",
-            borderColor: statusBorderColor,
+            background: "transparent",
           }}
           data-testid="agents-workspace-status"
         >

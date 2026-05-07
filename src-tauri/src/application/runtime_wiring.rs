@@ -11,7 +11,15 @@ use crate::infrastructure::ExternalMcpHandle;
 #[cfg(target_os = "macos")]
 const NAVBAR_HEIGHT_PT: f64 = 48.0;
 
-pub fn create_main_window<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> tauri::Result<()> {
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_INSET_X_PT: f64 = 20.0;
+
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_TITLEBAR_INSET_Y_PT: f64 = 20.0;
+
+pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
+    app: &M,
+) -> tauri::Result<()> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
@@ -31,7 +39,10 @@ pub fn create_main_window<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> t
             // `center_traffic_lights_macos` below — tao only uses y to size
             // the draggable title bar; AppKit's auto-layout does not place
             // the buttons at the geometric center of an arbitrary navbar.
-            .traffic_light_position(Position::Logical(LogicalPosition { x: 20.0, y: 20.0 }))
+            .traffic_light_position(Position::Logical(LogicalPosition {
+                x: TRAFFIC_LIGHT_INSET_X_PT,
+                y: TRAFFIC_LIGHT_TITLEBAR_INSET_Y_PT,
+            }))
     };
 
     let webview_window = builder.build()?;
@@ -39,9 +50,56 @@ pub fn create_main_window<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> t
     let _ = webview_window.show();
 
     #[cfg(target_os = "macos")]
-    center_traffic_lights_macos(&webview_window);
+    install_macos_traffic_light_centering(&webview_window);
 
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_traffic_light_centering<R: tauri::Runtime + 'static>(
+    window: &tauri::WebviewWindow<R>,
+) {
+    request_macos_traffic_light_recenter(window);
+
+    let event_window = window.clone();
+    window.on_window_event(move |event| {
+        if should_recenter_macos_traffic_lights(event) {
+            request_macos_traffic_light_recenter(&event_window);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn request_macos_traffic_light_recenter<R: tauri::Runtime + 'static>(
+    window: &tauri::WebviewWindow<R>,
+) {
+    let recenter_window = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        center_traffic_lights_macos(&recenter_window);
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn should_recenter_macos_traffic_lights(event: &tauri::WindowEvent) -> bool {
+    matches!(
+        event,
+        tauri::WindowEvent::Resized(_)
+            | tauri::WindowEvent::ScaleFactorChanged { .. }
+            | tauri::WindowEvent::Focused(true)
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_traffic_light_target_center_y(title_bar_height: f64) -> f64 {
+    title_bar_height - NAVBAR_HEIGHT_PT / 2.0
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_traffic_light_origin_y(
+    target_center_y_in_button_parent: f64,
+    button_height: f64,
+) -> f64 {
+    target_center_y_in_button_parent - button_height / 2.0
 }
 
 /// Manually center the macOS standard window buttons (close / minimize / zoom)
@@ -49,8 +107,7 @@ pub fn create_main_window<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) -> t
 ///
 /// `traffic_light_position` only sizes the draggable title-bar container;
 /// AppKit's auto-resize then leaves the buttons anchored near the top, so we
-/// override each button's `frame.origin.y` directly. Coords are bottom-left
-/// because the buttons live inside the title-bar container view.
+/// override each button's `frame.origin.y` directly.
 #[cfg(target_os = "macos")]
 fn center_traffic_lights_macos<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     use objc2_app_kit::{NSWindow, NSWindowButton};
@@ -78,18 +135,33 @@ fn center_traffic_lights_macos<R: tauri::Runtime>(window: &tauri::WebviewWindow<
                 continue;
             };
             let frame = button.frame();
-            let Some(parent) = button.superview() else {
+            let Some(button_parent) = button.superview() else {
+                continue;
+            };
+            let Some(title_bar_container) = button_parent.superview() else {
                 continue;
             };
 
-            // Title-bar container's top edge equals the window top. In its
-            // bottom-left local coords, a y of `title_bar_h - NAVBAR/2` is
-            // the navbar's vertical center; subtract half the button height
-            // so the button *center* lands there.
-            let title_bar_height = parent.frame().size.height;
+            // Tao positions the controls inside the title-bar container
+            // (`button.superview().superview()`). Convert the target center
+            // from that container into the button parent's coordinates before
+            // setting the button frame.
+            let title_bar_height = title_bar_container.frame().size.height;
             let button_height = frame.size.height;
+            if title_bar_height <= 0.0 || button_height <= 0.0 {
+                continue;
+            }
+
+            let target_center_y = macos_traffic_light_target_center_y(title_bar_height);
+            let target_center_in_parent = button_parent.convertPoint_fromView(
+                NSPoint {
+                    x: frame.origin.x,
+                    y: target_center_y,
+                },
+                Some(&title_bar_container),
+            );
             let desired_origin_y =
-                title_bar_height - NAVBAR_HEIGHT_PT / 2.0 - button_height / 2.0;
+                macos_traffic_light_origin_y(target_center_in_parent.y, button_height);
 
             button.setFrameOrigin(NSPoint {
                 x: frame.origin.x,

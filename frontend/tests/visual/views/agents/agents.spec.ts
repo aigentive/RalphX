@@ -577,6 +577,11 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-artifact-tab-proposal")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-tasks")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-publish")).toHaveCount(0);
+    await expect(
+      page
+        .getByTestId("agents-artifact-content-plan")
+        .getByText("Tighten the Agents workspace and keep artifact routing clear."),
+    ).toBeVisible();
 
     await expect(page).toHaveScreenshot("agents-ideation-artifacts.png", {
       fullPage: false,

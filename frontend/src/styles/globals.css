@@ -312,6 +312,10 @@ a:not([class*="no-underline"]):hover {
   outline-offset: 2px;
 }
 
+input[data-agent-sidebar-search="true"]:focus-visible {
+  outline: none;
+}
+
 /* Reduce motion — OS setting OR app-level override */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -594,6 +598,18 @@ a:not([class*="no-underline"]):hover {
 
   .agent-composer-action-label {
     display: none;
+  }
+}
+
+@container (max-width: 860px) {
+  .agent-composer-chat-focus-slot {
+    order: 10;
+    flex-basis: 100%;
+  }
+
+  .agent-composer-chat-focus-slot > button {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 

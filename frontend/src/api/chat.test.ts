@@ -595,8 +595,10 @@ describe("chat api", () => {
     const result = await updateConversationTitle("c-title", " Review agent title ");
 
     expect(mockInvoke).toHaveBeenCalledWith("update_agent_conversation_title", {
-      conversationId: "c-title",
-      title: "Review agent title",
+      input: {
+        conversationId: "c-title",
+        title: "Review agent title",
+      },
     });
     expect(result.title).toBe("Review agent title");
   });

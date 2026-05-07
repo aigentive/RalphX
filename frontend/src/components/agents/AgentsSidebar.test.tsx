@@ -390,6 +390,19 @@ describe("AgentsSidebar", () => {
     expect(onShowArchivedChange).toHaveBeenCalledWith(true);
   });
 
+  it("keeps selected archived filter styling neutral", () => {
+    archivedConversationCounts.set("project-1", 4);
+
+    renderSidebar([project()], { showArchived: true });
+
+    expect(
+      screen.getByTestId("agents-show-archived-pill").getAttribute("style")
+    ).toContain("background-color: transparent");
+    expect(
+      screen.getByTestId("agents-show-archived-pill").getAttribute("style")
+    ).toContain("border-color: transparent");
+  });
+
   it("renders the static v27 Recent block above the add-project action", () => {
     conversationsByProject.set("project-1", {
       data: [conversation()],
@@ -577,9 +590,57 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
+    expect(screen.getByTestId("agents-filter-toolbar")).toHaveClass(
+      "flex",
+      "mb-2",
+      "px-3",
+    );
+    expect(screen.getByTestId("agents-filter-toolbar").getAttribute("style")).toContain(
+      "background-color: var(--bg-surface)",
+    );
     expect(screen.getByTestId("agents-show-all-projects-pill")).toHaveTextContent("All projects");
-    expect(screen.getByTestId("agents-project-sort-pill")).toHaveTextContent("Latest");
+    expect(screen.getByTestId("agents-show-all-projects-pill")).toHaveClass(
+      "whitespace-nowrap",
+      "px-2",
+    );
+    expect(
+      screen.getByTestId("agents-show-all-projects-pill").getAttribute("style")
+    ).toContain("background-color: transparent");
+    expect(
+      screen.getByTestId("agents-show-all-projects-pill").getAttribute("style")
+    ).toContain("border-color: transparent");
+    expect(screen.getByTestId("agents-project-sort-pill")).toHaveAccessibleName(
+      "Sort projects: Latest",
+    );
+    expect(screen.getByTestId("agents-project-sort-pill")).not.toHaveTextContent(
+      "Latest",
+    );
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
+  });
+
+  it("uses a soft wrapper border for sidebar search focus", async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+
+    await user.click(screen.getByTestId("agents-search-toggle"));
+    const input = screen.getByTestId("agents-search-input");
+    const searchFrame = input.parentElement as HTMLElement;
+
+    fireEvent.focus(input);
+
+    await waitFor(() =>
+      expect(searchFrame.getAttribute("style")).toContain(
+        "border-color: var(--accent-border)"
+      )
+    );
+
+    fireEvent.blur(input);
+
+    await waitFor(() =>
+      expect(searchFrame.getAttribute("style")).toContain(
+        "border-color: var(--overlay-weak)"
+      )
+    );
   });
 
   it("scopes project hydration until the show-all-projects filter is enabled", async () => {
@@ -683,7 +744,11 @@ describe("AgentsSidebar", () => {
     const trigger = within(actions).getByRole("button", { name: "Project actions" });
     const count = within(screen.getByTestId("agents-project-row-project-1")).getByText("6");
 
-    expect(count.className).toContain("group-hover/project:opacity-0");
+    expect(count.className).toContain("group-hover/project-row:opacity-0");
+    expect(actions.className).toContain("group-hover/project-row:opacity-100");
+    expect(actions.className).not.toContain("group-hover/session:opacity-100");
+    expect(trigger.className).toContain("hover:bg-transparent");
+    expect(trigger.className).toContain("data-[state=open]:bg-transparent");
 
     fireEvent.pointerDown(trigger);
 
@@ -765,10 +830,19 @@ describe("AgentsSidebar", () => {
 
     const row = screen.getByTestId("agents-session-conversation-menu-overlap");
     const statusSlot = row.querySelector(".agents-session-status-slot");
+    const dot = row.querySelector('span[aria-hidden="true"].rounded-full');
+    expect(statusSlot?.className).toContain("h-4");
+    expect(statusSlot?.className).toContain("w-4");
     expect(statusSlot?.className).toContain("group-hover/session:opacity-0");
+    expect(dot?.className).toContain("block");
+    expect(dot?.className).toContain("h-[7px]");
+    expect(dot?.className).toContain("w-[7px]");
 
-    await user.click(within(row).getByRole("button", { name: "Session actions" }));
+    const trigger = within(row).getByRole("button", { name: "Session actions" });
+    await user.click(trigger);
 
+    expect(trigger.className).toContain("hover:bg-transparent");
+    expect(trigger.className).toContain("data-[state=open]:bg-transparent");
     expect(statusSlot?.className).toContain("opacity-0");
   });
 
@@ -1175,6 +1249,7 @@ describe("AgentsSidebar", () => {
     const row = screen.getByTestId("agents-session-conversation-done");
     const dot = row.querySelector('span[aria-hidden="true"].rounded-full');
     expect(dot).not.toBeNull();
+    expect(dot?.className).toContain("block");
     expect(dot?.getAttribute("style") ?? "").toContain("var(--status-success)");
   });
 

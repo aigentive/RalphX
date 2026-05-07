@@ -61,10 +61,10 @@ function renderPlanGroup(
 }
 
 describe("PlanGroup wrapper", () => {
-  it("paints the soft overlay-weak background instead of the legacy bg-elevated mix", () => {
+  it("paints an opaque surface so the graph grid does not show through", () => {
     renderPlanGroup();
     const wrapper = screen.getByTestId("plan-group-plan-1");
-    expect(wrapper.style.backgroundColor).toBe("var(--overlay-weak)");
+    expect(wrapper.style.backgroundColor).toBe("var(--bg-surface)");
   });
 
   it("applies a 2px accent outline when the group is selected", () => {
