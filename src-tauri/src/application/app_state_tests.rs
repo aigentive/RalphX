@@ -4,8 +4,8 @@ use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, AgenticClient, ClientType, LogicalEffort,
 };
 use crate::domain::entities::{
-    ChatMessage, IdeationSession, InternalStatus, Priority, Project, ProjectId, ProposalCategory,
-    Task, TaskProposal,
+    ChatConversation, ChatMessage, IdeationSession, InternalStatus, Priority, Project, ProjectId,
+    ProposalCategory, Task, TaskProposal,
 };
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 
@@ -395,30 +395,51 @@ async fn test_resolve_session_namer_runtime_uses_default_client_even_when_ideati
 }
 
 #[tokio::test]
-async fn test_resolve_pr_describer_runtime_uses_default_client_even_when_ideation_lane_is_codex() {
+async fn test_resolve_pr_describer_runtime_uses_owning_conversation_harness_when_present() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock.clone())
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
+    state.project_repo.create(project.clone()).await.unwrap();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let runtime = state
+        .resolve_pr_describer_runtime(&conversation)
+        .await
+        .unwrap();
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "PR describer should use the harness that owns the conversation being published"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model, None);
+    assert_eq!(runtime.logical_effort, None);
+}
+
+#[tokio::test]
+async fn test_resolve_pr_describer_runtime_uses_default_client_without_provider_harness() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let state = AppState::new_test()
         .with_agent_client(default_mock.clone())
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
 
-    let project = Project::new("Codex Ideation Project".to_string(), "/tmp".to_string());
-    state.project_repo.create(project.clone()).await.unwrap();
+    let project = Project::new("Legacy Project".to_string(), "/tmp".to_string());
+    let conversation = ChatConversation::new_project(project.id);
 
-    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
-    codex_lane.model = Some("gpt-5.4".to_string());
-    codex_lane.effort = Some(LogicalEffort::XHigh);
-    state
-        .agent_lane_settings_repo
-        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
+    let runtime = state
+        .resolve_pr_describer_runtime(&conversation)
         .await
         .unwrap();
 
-    let runtime = state.resolve_pr_describer_runtime().await;
-
     assert!(
         Arc::ptr_eq(&runtime.client, &default_mock),
-        "PR describer should stay on the default helper client instead of inheriting the main ideation lane"
+        "legacy conversations without provider_harness should keep using the default helper client"
     );
     assert_eq!(runtime.harness, None);
     assert_eq!(runtime.model, None);

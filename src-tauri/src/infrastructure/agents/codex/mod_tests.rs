@@ -69,6 +69,13 @@ fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
     plugin_dir
 }
 
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .expect("canonical repo root")
+}
+
 #[test]
 fn build_codex_exec_command_sets_agent_tool_path() {
     let spawnable = build_spawnable_codex_exec_command(
@@ -565,6 +572,39 @@ fn build_codex_mcp_overrides_includes_runtime_feature_flags_from_agent_metadata(
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
         "Codex runtime feature flags should flow into config overrides: {overrides:?}"
+    );
+}
+
+#[test]
+fn build_codex_mcp_overrides_pr_describer_enables_submit_tool_without_shell() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins").join("app");
+
+    let overrides = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx:ralphx-utility-pr-describer",
+        false,
+        None,
+    )
+    .expect("PR describer Codex MCP overrides");
+
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "features.shell_tool=false"),
+        "PR describer should disable Codex shell tool: {overrides:?}"
+    );
+    assert!(
+        overrides.iter().any(|entry| entry
+            == "mcp_servers.ralphx.enabled_tools=[\"submit_agent_workspace_pr_description\"]"),
+        "PR describer enabled tools should be limited to its submit tool: {overrides:?}"
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry.starts_with("mcp_servers.ralphx.args=")
+                && entry.contains("--allowed-tools=submit_agent_workspace_pr_description")),
+        "PR describer stdio MCP args should pass the submit-tool allowlist: {overrides:?}"
     );
 }
 

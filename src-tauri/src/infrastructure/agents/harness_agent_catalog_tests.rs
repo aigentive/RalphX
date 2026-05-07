@@ -32,7 +32,11 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-const CODEX_PILOT_AGENTS: &[&str] = &["ralphx-ideation", "ralphx-utility-session-namer"];
+const CODEX_PILOT_AGENTS: &[&str] = &[
+    "ralphx-ideation",
+    "ralphx-utility-session-namer",
+    "ralphx-utility-pr-describer",
+];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-chat-task",
     "ralphx-chat-project",
@@ -244,6 +248,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
+    "ralphx-utility-pr-describer",
     "ralphx-plan-verifier",
     "ralphx-plan-critic-completeness",
     "ralphx-plan-critic-implementation-feasibility",
@@ -614,6 +619,13 @@ fn codex_runtime_features_load_from_harness_metadata() {
         Some(&false),
         "Claude no-Bash specialist should map to Codex shell_tool=false"
     );
+
+    let pr_describer = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
+    assert_eq!(
+        pr_describer.runtime_features.get("shell_tool"),
+        Some(&false),
+        "PR describer should disable Codex shell_tool declaratively"
+    );
 }
 
 #[test]
@@ -968,6 +980,34 @@ fn canonical_mcp_tools_match_runtime_yaml_for_current_owned_agents() {
     }
 }
 
+#[test]
+fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-utility-pr-describer")
+        .expect("expected canonical PR describer definition");
+    let prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-utility-pr-describer",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected PR describer Codex prompt");
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-pr-describer");
+
+    assert_eq!(
+        definition.capabilities.mcp_tools,
+        vec!["submit_agent_workspace_pr_description".to_string()]
+    );
+    assert!(
+        prompt.contains("submit_agent_workspace_pr_description"),
+        "Codex PR describer prompt should expose the submit contract"
+    );
+    assert!(
+        !prompt.contains("mcp__ralphx__"),
+        "Codex PR describer prompt should not use Claude-style MCP names"
+    );
+    assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
+}
+
 fn canonical_agent_names(root: &std::path::Path) -> Vec<String> {
     let mut names = std::fs::read_dir(root.join("agents"))
         .expect("canonical agents dir should exist")
@@ -1093,18 +1133,21 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
             "expected codex prompt path for {agent_name}"
         );
 
-        if agent_name == &"ralphx-utility-session-namer" {
+        if matches!(
+            *agent_name,
+            "ralphx-utility-session-namer" | "ralphx-utility-pr-describer"
+        ) {
             assert!(
-                claude_path
-                    .as_ref()
-                    .is_some_and(|path| path.ends_with("agents/ralphx-utility-session-namer/shared/prompt.md")),
-                "expected ralphx-utility-session-namer claude prompt to resolve through shared/prompt.md"
+                claude_path.as_ref().is_some_and(
+                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+                ),
+                "expected {agent_name} claude prompt to resolve through shared/prompt.md"
             );
             assert!(
-                codex_path
-                    .as_ref()
-                    .is_some_and(|path| path.ends_with("agents/ralphx-utility-session-namer/shared/prompt.md")),
-                "expected ralphx-utility-session-namer codex prompt to resolve through shared/prompt.md"
+                codex_path.as_ref().is_some_and(
+                    |path| path.ends_with(format!("agents/{agent_name}/shared/prompt.md"))
+                ),
+                "expected {agent_name} codex prompt to resolve through shared/prompt.md"
             );
         }
     }
@@ -1390,7 +1433,7 @@ fn codex_pilot_prompts_avoid_claude_only_team_and_task_syntax() {
         "--append-system-prompt",
     ];
 
-    for agent_name in ["ralphx-ideation", "ralphx-utility-session-namer"] {
+    for agent_name in CODEX_PILOT_AGENTS {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
             .unwrap_or_else(|| panic!("missing codex prompt for {agent_name}"));
         for banned in banned_terms {

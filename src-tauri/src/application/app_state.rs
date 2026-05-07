@@ -23,7 +23,7 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgenticClient, LogicalEffort};
-use crate::domain::entities::ChatContextType;
+use crate::domain::entities::{ChatContextType, ChatConversation};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationWorkspaceRepository,
@@ -44,7 +44,7 @@ use crate::domain::repositories::{
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
     MemoryActivityEventRepository, MemoryAgentConversationWorkspaceRepository,
@@ -255,6 +255,46 @@ impl AppState {
         std::env::set_var("RALPHX_TEST_MODE", "1");
     }
 
+    fn default_background_agent_runtime(&self) -> ResolvedBackgroundAgentRuntime {
+        ResolvedBackgroundAgentRuntime {
+            client: Arc::clone(&self.agent_clients.default_client),
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }
+    }
+
+    async fn resolve_background_agent_runtime_for_harness(
+        &self,
+        harness: AgentHarnessKind,
+        purpose: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if harness == self.agent_clients.default_harness {
+            return Ok(self.default_background_agent_runtime());
+        }
+
+        if let Some(client) = self
+            .agent_clients
+            .explicit_available_harness_client(harness)
+            .await
+        {
+            return Ok(ResolvedBackgroundAgentRuntime {
+                client,
+                harness: Some(harness),
+                model: None,
+                logical_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            });
+        }
+
+        Err(AppError::Infrastructure(format!(
+            "{purpose} harness unavailable: {harness}"
+        )))
+    }
+
     pub fn build_chat_service(&self) -> AppChatService {
         self.build_chat_service_for_runtime(None, self.app_handle.clone())
     }
@@ -352,25 +392,23 @@ impl AppState {
     }
 
     pub(crate) async fn resolve_session_namer_runtime(&self) -> ResolvedBackgroundAgentRuntime {
-        ResolvedBackgroundAgentRuntime {
-            client: Arc::clone(&self.agent_clients.default_client),
-            harness: None,
-            model: None,
-            logical_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
-        }
+        self.default_background_agent_runtime()
     }
 
-    pub(crate) async fn resolve_pr_describer_runtime(&self) -> ResolvedBackgroundAgentRuntime {
-        ResolvedBackgroundAgentRuntime {
-            client: Arc::clone(&self.agent_clients.default_client),
-            harness: None,
-            model: None,
-            logical_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
+    pub(crate) async fn resolve_pr_describer_runtime(
+        &self,
+        conversation: &ChatConversation,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = conversation.provider_harness {
+            return self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "PR describer owning conversation",
+                )
+                .await;
         }
+
+        Ok(self.default_background_agent_runtime())
     }
 
     /// Create AppState for production use with SQLite repositories.

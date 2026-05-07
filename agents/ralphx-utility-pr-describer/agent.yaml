@@ -10,3 +10,6 @@ harnesses:
     tools:
       mcp_only: true
     preapproved_cli_tools: []
+  codex:
+    runtime_features:
+      shell_tool: false
