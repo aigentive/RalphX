@@ -1,5 +1,7 @@
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
+use crate::infrastructure::agents::claude::ToolCall;
+
 const TOOL_RESULT_PREVIEW_MAX_LINES: usize = 10;
 const TOOL_RESULT_PREVIEW_MAX_CHARS: usize = 4_000;
 
@@ -176,6 +178,57 @@ pub(crate) fn build_live_tool_result_preview(
         .map(|preview| preview.result.clone())
         .unwrap_or_else(|| result.clone());
     LiveToolResultPreview { result, preview }
+}
+
+pub(crate) fn build_live_tool_result_preview_for_tool_id(
+    tool_calls: &[ToolCall],
+    conversation_id: Option<&str>,
+    message_id: Option<&str>,
+    tool_call_id: &str,
+    result: &JsonValue,
+) -> LiveToolResultPreview {
+    let original_tool_name = tool_calls
+        .iter()
+        .find(|tool_call| tool_call.id.as_deref() == Some(tool_call_id))
+        .map(|tool_call| tool_call.name.as_str());
+    let detail_ref = message_id.and_then(|message_id| {
+        conversation_id.map(|conversation_id| {
+            tool_detail_ref(conversation_id, message_id, Some(tool_call_id), None)
+        })
+    });
+
+    build_live_tool_result_preview(original_tool_name, result, detail_ref)
+}
+
+pub(crate) fn build_live_tool_result_preview_for_tool_call(
+    conversation_id: &str,
+    message_id: Option<&str>,
+    tool_call: &ToolCall,
+) -> Option<LiveToolResultPreview> {
+    let result = tool_call.result.as_ref()?;
+    let detail_ref = message_id.map(|message_id| {
+        tool_detail_ref(conversation_id, message_id, tool_call.id.as_deref(), None)
+    });
+
+    Some(build_live_tool_result_preview(
+        Some(&tool_call.name),
+        result,
+        detail_ref,
+    ))
+}
+
+pub(crate) fn live_tool_result_activity_content(result_preview: &LiveToolResultPreview) -> String {
+    serde_json::to_string(&result_preview.result).unwrap_or_default()
+}
+
+pub(crate) fn live_tool_result_activity_metadata(
+    tool_use_id: &str,
+    result_preview: &LiveToolResultPreview,
+) -> JsonValue {
+    serde_json::json!({
+        "tool_use_id": tool_use_id,
+        "result_preview_truncated": result_preview.is_previewed(),
+    })
 }
 
 pub(crate) fn preview_tool_result_object(

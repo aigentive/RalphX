@@ -1,10 +1,13 @@
 use serde_json::json;
 
 use crate::application::chat_service::tool_result_preview::{
-    build_live_tool_result_preview, build_tool_result_preview_payload, tool_detail_ref,
+    build_live_tool_result_preview, build_live_tool_result_preview_for_tool_call,
+    build_live_tool_result_preview_for_tool_id, build_tool_result_preview_payload,
+    live_tool_result_activity_content, live_tool_result_activity_metadata, tool_detail_ref,
 };
 use crate::application::chat_service::{AgentToolCallPayload, AgentToolCallPreviewFields};
 use crate::commands::unified_chat_commands::preview_tool_payloads_for_message;
+use crate::infrastructure::agents::claude::ToolCall;
 
 #[test]
 fn preview_tool_payloads_truncates_large_tool_results() {
@@ -267,4 +270,137 @@ fn live_preview_fields_flatten_into_agent_tool_call_payload_json() {
     assert_eq!(value["result_preview_omitted_lines"], 2);
     assert_eq!(value["detail_ref"]["tool_call_id"], "tool-1");
     assert!(value.get("preview").is_none());
+}
+
+#[test]
+fn live_preview_for_tool_id_uses_matching_tool_and_detail_ref() {
+    let tool_calls = vec![
+        ToolCall {
+            id: Some("tool-small".to_string()),
+            name: "Task".to_string(),
+            arguments: json!({}),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        },
+        ToolCall {
+            id: Some("tool-heavy".to_string()),
+            name: "bash".to_string(),
+            arguments: json!({ "command": "cat big.log" }),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+            stats: None,
+        },
+    ];
+    let result = json!((1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n"));
+
+    let preview = build_live_tool_result_preview_for_tool_id(
+        &tool_calls,
+        Some("conv-1"),
+        Some("msg-1"),
+        "tool-heavy",
+        &result,
+    );
+
+    assert!(preview.is_previewed());
+    assert_eq!(preview.result.as_str().unwrap().lines().count(), 10);
+    let detail_ref = &preview
+        .preview
+        .as_ref()
+        .unwrap()
+        .detail_ref
+        .as_ref()
+        .unwrap();
+    assert_eq!(detail_ref["conversation_id"], "conv-1");
+    assert_eq!(detail_ref["message_id"], "msg-1");
+    assert_eq!(detail_ref["tool_call_id"], "tool-heavy");
+
+    let unmatched = build_live_tool_result_preview_for_tool_id(
+        &tool_calls,
+        Some("conv-1"),
+        Some("msg-1"),
+        "missing-tool",
+        &result,
+    );
+    assert!(!unmatched.is_previewed());
+}
+
+#[test]
+fn live_preview_for_tool_call_builds_completed_event_payload() {
+    let tool_call = ToolCall {
+        id: Some("tool-heavy".to_string()),
+        name: "bash".to_string(),
+        arguments: json!({ "command": "cat big.log" }),
+        result: Some(json!((1..=12)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n"))),
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    };
+    let preview =
+        build_live_tool_result_preview_for_tool_call("conv-1", Some("msg-1"), &tool_call).unwrap();
+
+    let payload = AgentToolCallPayload::from_completed_tool_call(
+        &tool_call,
+        Some(&preview),
+        "conv-1",
+        "project",
+        "project-1",
+        Some(json!({ "file_path": "big.log" })),
+        Some("parent-tool".to_string()),
+        9,
+    );
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["tool_name"], "bash");
+    assert_eq!(value["result"].as_str().unwrap().lines().count(), 10);
+    assert_eq!(value["result_preview_truncated"], true);
+    assert_eq!(value["detail_ref"]["message_id"], "msg-1");
+    assert_eq!(value["diff_context"]["file_path"], "big.log");
+    assert_eq!(value["parent_tool_use_id"], "parent-tool");
+    assert_eq!(value["seq"], 9);
+}
+
+#[test]
+fn live_tool_result_payload_helpers_use_preview_result() {
+    let result = json!((1..=12)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n"));
+    let preview = build_live_tool_result_preview(
+        Some("bash"),
+        &result,
+        Some(tool_detail_ref("conv-1", "msg-1", Some("tool-heavy"), None)),
+    );
+
+    let payload = AgentToolCallPayload::from_live_tool_result(
+        "tool-heavy",
+        &preview,
+        "conv-1",
+        "project",
+        "project-1",
+        Some("parent-tool".to_string()),
+        11,
+    );
+    let value = serde_json::to_value(payload).unwrap();
+
+    assert_eq!(value["tool_name"], "result:tool-heavy");
+    assert_eq!(value["result"].as_str().unwrap().lines().count(), 10);
+    assert_eq!(value["result_preview_truncated"], true);
+    assert_eq!(value["detail_ref"]["tool_call_id"], "tool-heavy");
+    assert_eq!(value["parent_tool_use_id"], "parent-tool");
+
+    let content = live_tool_result_activity_content(&preview);
+    let metadata = live_tool_result_activity_metadata("tool-heavy", &preview);
+
+    assert!(content.contains("line 10"));
+    assert_eq!(metadata["tool_use_id"], "tool-heavy");
+    assert_eq!(metadata["result_preview_truncated"], true);
 }
