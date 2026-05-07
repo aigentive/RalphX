@@ -23,6 +23,7 @@ Daily scheduled releases:
 - Manual `Daily Release` dispatch supports `dry_run=true` to verify generation without committing, tagging, pushing, or dispatching `Release Build`.
 - Manual `Daily Release` dispatch supports `release_bump` to force `patch`, `minor`, or `major`; selecting `major` is explicit release-owner approval.
 - Manual `Daily Release` dispatch also supports `release_version` to force an exact version; do not combine it with `release_bump`.
+- Manual `Daily Release` dispatch supports `arm_runner` and `macos_runner_size` to choose the Release Build runner path; `macos_runner_size=larger` intentionally uses paid GitHub-hosted macOS larger runners.
 - Maintenance-only commits can avoid scheduled release prep when every commit after the latest tag includes `[skip daily-release]`, `[skip release]`, `[no daily-release]`, or `[no release]`.
 
 Notes:
