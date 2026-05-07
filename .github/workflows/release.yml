@@ -27,6 +27,14 @@ on:
         options:
           - self-hosted
           - github-hosted
+      macos_runner_size:
+        description: "GitHub-hosted macOS runner size for release builds"
+        required: true
+        type: choice
+        default: standard
+        options:
+          - standard
+          - larger
 
 permissions:
   contents: read
@@ -59,6 +67,7 @@ jobs:
           raw_draft="${{ github.event.inputs.draft }}"
           raw_prerelease="${{ github.event.inputs.prerelease }}"
           raw_arm_runner="${{ github.event.inputs.arm_runner }}"
+          raw_macos_runner_size="${{ github.event.inputs.macos_runner_size }}"
 
           version="${raw_version#v}"
           if [[ -z "${version}" ]]; then
@@ -76,18 +85,30 @@ jobs:
           fi
 
           arm_runs_on='"macos-15"'
+          arm_runner_kind="${raw_arm_runner}"
+          intel_runs_on='"macos-15-intel"'
+          intel_runner_kind="github-hosted"
+          if [[ "${raw_macos_runner_size}" == "larger" ]]; then
+            arm_runs_on='"macos-15-xlarge"'
+            intel_runs_on='"macos-15-large"'
+            intel_runner_kind="github-hosted-larger"
+            if [[ "${raw_arm_runner}" == "github-hosted" ]]; then
+              arm_runner_kind="github-hosted-larger"
+            fi
+          fi
           if [[ "${raw_arm_runner}" == "self-hosted" ]]; then
             arm_runs_on='["self-hosted","macOS","ARM64","ralphx-release"]'
+            arm_runner_kind="self-hosted"
           fi
 
           build_matrix="$(
             jq -cn \
               --arg arm_arch "aarch64" \
               --arg arm_runs_on "${arm_runs_on}" \
-              --arg arm_runner_kind "${raw_arm_runner}" \
+              --arg arm_runner_kind "${arm_runner_kind}" \
               --arg intel_arch "x86_64" \
-              --arg intel_runs_on '"macos-15-intel"' \
-              --arg intel_runner_kind "github-hosted" \
+              --arg intel_runs_on "${intel_runs_on}" \
+              --arg intel_runner_kind "${intel_runner_kind}" \
               '{include: [
                 {
                   arch: $arm_arch,

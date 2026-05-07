@@ -477,7 +477,7 @@ jobs:
     name: Frontend Visual Snapshots
     needs: changes
     if: needs.changes.outputs.run_visual == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
