@@ -22,6 +22,7 @@ const {
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
   closeWorkspacePrMock,
+  loadBranchBaseOptionsMock,
   getArtifactMock,
   getIdeationSessionMock,
   getIdeationChildrenMock,
@@ -45,6 +46,7 @@ const {
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
+  loadBranchBaseOptionsMock: vi.fn(),
   getArtifactMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
@@ -92,6 +94,14 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitDiffMock(...args),
   },
 }));
+
+vi.mock("@/components/shared/branchBaseOptions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/shared/branchBaseOptions")>();
+  return {
+    ...actual,
+    loadBranchBaseOptions: (...args: unknown[]) => loadBranchBaseOptionsMock(...args),
+  };
+});
 
 vi.mock("@/api/ideation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/ideation")>();
@@ -310,6 +320,33 @@ describe("AgentsArtifactPane", () => {
       updated: false,
       targetRef: "origin/main",
       baseCommit: "base-sha",
+    });
+    loadBranchBaseOptionsMock.mockResolvedValue({
+      options: [
+        {
+          key: "project_default:main",
+          label: "Project default (main)",
+          detail: "Configured project base branch",
+          source: "project",
+          selection: {
+            kind: "project_default",
+            ref: "main",
+            displayName: "Project default (main)",
+          },
+        },
+        {
+          key: "local_branch:release/0.8",
+          label: "release/0.8",
+          detail: "Local branch",
+          source: "local",
+          selection: {
+            kind: "local_branch",
+            ref: "release/0.8",
+            displayName: "release/0.8",
+          },
+        },
+      ],
+      selectedKey: "project_default:main",
     });
     closeWorkspacePrMock.mockResolvedValue(
       workspace({
@@ -1245,11 +1282,91 @@ describe("AgentsArtifactPane", () => {
         deferredHydrationTimeout,
       ),
     ).toHaveTextContent("Saved base commit is not contained in the default branch");
-    expect(screen.getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-rebase-from-base")).toBeEnabled();
     expect(screen.getByTestId("agents-review-changes")).toBeDisabled();
 
-    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    fireEvent.click(screen.getByTestId("agents-rebase-from-base"));
 
+    expect(publish).not.toHaveBeenCalled();
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+  });
+
+  it("lets blocked workspaces choose a branch and update from that base", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "blocked",
+      effectiveBaseRef: null,
+      effectiveBaseDisplayName: null,
+      baseBlockReason: "Saved base commit is not contained in the default branch",
+    });
+    updateWorkspaceFromBaseMock.mockResolvedValue({
+      workspace: workspace({
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "release/0.8",
+        baseDisplayName: "release/0.8",
+        baseCommit: "release-base",
+      }),
+      updated: true,
+      targetRef: "release/0.8",
+      baseCommit: "release-base",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: "release/0.8",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      }),
+      publish,
+    );
+
+    expect(
+      await screen.findByTestId(
+        "agents-base-blocked",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveTextContent("Saved base commit is not contained in the default branch");
+    expect(screen.getByTestId("agents-rebase-from-base")).toBeEnabled();
+
+    await userEvent.click(screen.getByTestId("agents-rebase-from-base"));
+
+    const dialog = await screen.findByRole("dialog", { name: "Rebase branch" });
+    expect(within(dialog).getByTestId("agents-rebase-base-select")).toHaveTextContent(
+      "Project default (main)",
+    );
+    expect(loadBranchBaseOptionsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDirectory: "/tmp/ralphx/conversation-1",
+        includeAgentBranches: false,
+      }),
+    );
+
+    await userEvent.click(within(dialog).getByTestId("agents-rebase-base-select"));
+    await userEvent.click(await screen.findByText("release/0.8"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rebase branch" }));
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1", {
+        kind: "local_branch",
+        ref: "release/0.8",
+        displayName: "release/0.8",
+      }),
+    );
     expect(publish).not.toHaveBeenCalled();
   });
 

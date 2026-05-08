@@ -9,7 +9,7 @@ import {
   MoreVertical,
   XCircle,
 } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { diffApi } from "@/api/diff";
 import {
   chatApi,
+  type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
 } from "@/api/chat";
 import type {
@@ -31,6 +32,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
+import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
+import {
+  fallbackBranchBaseOptions,
+  loadBranchBaseOptions,
+} from "@/components/shared/branchBaseOptions";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,6 +76,8 @@ export function AgentPublishPanel({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [commitFiles, setCommitFiles] = useState<DiffViewerFileChange[]>([]);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
+  const [rebaseDialogOpen, setRebaseDialogOpen] = useState(false);
+  const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
@@ -122,9 +130,51 @@ export function AgentPublishPanel({
       !terminalPublicationStatus,
     staleTime: 5_000,
   });
+  const freshness = freshnessQuery.data;
+  const baseStatus = freshness?.baseStatus ?? "valid";
+  const baseBlocked = baseStatus === "blocked";
+  const fallbackRebaseOptions = useMemo(() => fallbackBranchBaseOptions("main"), []);
+  const rebaseBaseOptionsQuery = useQuery({
+    queryKey: [
+      "agents",
+      "conversation-workspace-rebase-base-options",
+      conversationId,
+      workspace?.worktreePath,
+      workspace?.branchName,
+    ],
+    queryFn: async () => {
+      const result = await loadBranchBaseOptions({
+        projectId: workspace!.projectId,
+        workingDirectory: workspace!.worktreePath,
+        projectBaseBranch: "main",
+        includeAgentBranches: false,
+      });
+      const options = result.options.filter(
+        (option) => option.selection.ref !== workspace!.branchName,
+      );
+      const projectDefaultKey =
+        options.find((option) => option.source === "project")?.key ??
+        options[0]?.key ??
+        result.selectedKey;
+      return {
+        options,
+        selectedKey: projectDefaultKey,
+      };
+    },
+    enabled:
+      canHydratePublishFacts &&
+      !!conversationId &&
+      !!workspace?.worktreePath &&
+      baseBlocked,
+    staleTime: 10_000,
+  });
   const updateFromBaseMutation = useMutation({
-    mutationFn: () => chatApi.updateAgentConversationWorkspaceFromBase(conversationId!),
+    mutationFn: (base?: AgentConversationBaseSelection | null) =>
+      base
+        ? chatApi.updateAgentConversationWorkspaceFromBase(conversationId!, base)
+        : chatApi.updateAgentConversationWorkspaceFromBase(conversationId!),
     onSuccess: async (result) => {
+      setRebaseDialogOpen(false);
       queryClient.setQueryData(
         ["agents", "conversation-workspace", result.workspace.conversationId],
         result.workspace,
@@ -145,6 +195,22 @@ export function AgentPublishPanel({
       }
     },
   });
+  const rebaseBaseOptionsResult =
+    rebaseBaseOptionsQuery.data ?? fallbackRebaseOptions;
+  const rebaseBaseOptions = rebaseBaseOptionsResult.options;
+  const resolvedRebaseBaseKey = rebaseBaseOptions.some(
+    (option) => option.key === selectedRebaseBaseKey,
+  )
+    ? selectedRebaseBaseKey
+    : rebaseBaseOptionsResult.selectedKey;
+  const selectedRebaseBase =
+    rebaseBaseOptions.find((option) => option.key === resolvedRebaseBaseKey) ??
+    null;
+  useEffect(() => {
+    if (rebaseBaseOptionsQuery.data) {
+      setSelectedRebaseBaseKey(rebaseBaseOptionsQuery.data.selectedKey);
+    }
+  }, [rebaseBaseOptionsQuery.data]);
   const closePrMutation = useMutation<AgentConversationWorkspace, Error>({
     mutationFn: () => chatApi.closeAgentWorkspacePr(conversationId!),
     onSuccess: async (updatedWorkspace) => {
@@ -177,7 +243,6 @@ export function AgentPublishPanel({
   }
 
   const branch = workspace.branchName;
-  const freshness = freshnessQuery.data;
   const base = getAgentWorkspaceEffectiveBaseLabel(workspace, freshness);
   const prLabel = workspace.publicationPrNumber
     ? `PR #${workspace.publicationPrNumber}`
@@ -187,8 +252,6 @@ export function AgentPublishPanel({
   const prUrlLabel = workspace.publicationPrUrl
     ? formatPullRequestUrlLabel(workspace.publicationPrUrl)
     : null;
-  const baseStatus = freshness?.baseStatus ?? "valid";
-  const baseBlocked = baseStatus === "blocked";
   const baseRetargeted = baseStatus === "retargeted";
   const isBranchUpdateNeeded =
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
@@ -279,7 +342,14 @@ export function AgentPublishPanel({
     if (!confirmed) {
       return;
     }
-    updateFromBaseMutation.mutate();
+    updateFromBaseMutation.mutate(undefined);
+  };
+  const rebaseFromSelectedBase = () => {
+    if (!selectedRebaseBase) {
+      toast.error("Select a base branch before rebasing");
+      return;
+    }
+    updateFromBaseMutation.mutate(selectedRebaseBase.selection);
   };
   const confirmClosePr = async () => {
     const confirmed = await confirm({
@@ -517,6 +587,21 @@ export function AgentPublishPanel({
                   )}
                   Update from {baseActionLabel}
                 </Button>
+              ) : baseBlocked ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={() => setRebaseDialogOpen(true)}
+                  disabled={effectivePublishing}
+                  data-testid="agents-rebase-from-base"
+                >
+                  {isUpdatingFromBase ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <GitBranch className="h-3.5 w-3.5" />
+                  )}
+                  Rebase branch
+                </Button>
               ) : (
                 <Button
                   type="button"
@@ -655,6 +740,67 @@ export function AgentPublishPanel({
               />
             </Suspense>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={rebaseDialogOpen} onOpenChange={setRebaseDialogOpen}>
+        <DialogContent
+          className="w-[min(460px,calc(100vw-2rem))] p-4"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <DialogTitle>Rebase branch</DialogTitle>
+          <DialogDescription>
+            Choose the base branch for {branch}. Project default is selected first.
+          </DialogDescription>
+          <div className="mt-3 flex flex-col gap-2">
+            <BranchBasePicker
+              value={resolvedRebaseBaseKey}
+              onValueChange={setSelectedRebaseBaseKey}
+              options={rebaseBaseOptions}
+              placeholder={
+                rebaseBaseOptionsQuery.isLoading ? "Loading branches..." : "Base branch"
+              }
+              disabled={isUpdatingFromBase || rebaseBaseOptions.length === 0}
+              testId="agents-rebase-base-select"
+              align="start"
+              prefixLabel="Rebase from"
+              ariaLabel="Rebase from"
+              className="w-full max-w-full justify-start rounded-md border border-[var(--border-subtle)] px-3 py-2"
+            />
+            <p className="text-xs leading-relaxed text-[var(--text-muted)]">
+              {selectedRebaseBase?.detail ?? selectedRebaseBase?.selection.ref ?? ""}
+            </p>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-9 px-3 text-xs"
+              onClick={() => setRebaseDialogOpen(false)}
+              disabled={isUpdatingFromBase}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="h-9 gap-2 px-3 text-xs"
+              onClick={rebaseFromSelectedBase}
+              disabled={
+                isUpdatingFromBase ||
+                rebaseBaseOptionsQuery.isLoading ||
+                !selectedRebaseBase
+              }
+            >
+              {isUpdatingFromBase ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <GitBranch className="h-3.5 w-3.5" />
+              )}
+              Rebase branch
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
       <ConfirmationDialog {...confirmationDialogProps} />
