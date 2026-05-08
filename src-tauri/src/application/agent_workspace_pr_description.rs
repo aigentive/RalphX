@@ -117,7 +117,7 @@ pub async fn draft_agent_workspace_pr_description(
     let bootstrap = resolve_harness_agent_bootstrap(
         helper_harness,
         agent_names::AGENT_PR_DESCRIBER,
-        workspace_path.to_path_buf(),
+        PathBuf::from(&project.working_directory),
     );
 
     let output = agent_client
@@ -236,11 +236,7 @@ async fn build_conversation_context(
             message.role, message.created_at, content
         ));
         if context.chars().count() >= MAX_CONVERSATION_CONTEXT_CHARS {
-            return Ok(truncate_with_notice(
-                &context,
-                MAX_CONVERSATION_CONTEXT_CHARS,
-                "\n\n[Conversation context truncated by RalphX]\n",
-            ));
+            return Ok(truncate_chars(&context, MAX_CONVERSATION_CONTEXT_CHARS));
         }
     }
     Ok(context)
@@ -275,7 +271,9 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
          Follow the supplied pull request template structure exactly. If a section is not applicable, keep the heading and say so briefly.\n\
          Use only the supplied conversation, commit, and diff context. Do not invent validation, test results, product impact, or user-visible behavior.\n\
          Do not include command transcripts, local validation logs, or agent progress diaries.\n\
-         If the diff excerpt is truncated or ambiguous, describe that uncertainty in the Risks / Follow-Ups section.\n\
+         Do not mention bounded input limits, excerpt truncation, omitted prompt context, or ask reviewers to compensate for missing helper input.\n\
+         If the supplied code context is genuinely ambiguous, name only the product or technical risk you can infer.\n\
+         If validation evidence is absent, omit validation claims instead of treating absent validation as a risk.\n\
          Call submit_agent_workspace_pr_description exactly once with conversation_id and body_markdown. Include title only if you can produce a better reviewer-facing PR title than the existing conversation title.\n\
          Do not inspect files, run shell commands, modify files, delegate, or perform any action other than submitting the PR description.\n\
          </instructions>\n\
@@ -312,21 +310,9 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
         diff_summary = escape_xml_text(&diff_summary),
         commit_summaries = escape_xml_text(&commit_summaries),
         changed_files = escape_xml_text(&changed_files),
-        name_status = escape_xml_text(&truncate_with_notice(
-            ctx.name_status,
-            MAX_NAME_STATUS_CHARS,
-            "\n[Name-status output truncated by RalphX]\n",
-        )),
-        diff_stat = escape_xml_text(&truncate_with_notice(
-            ctx.diff_stat,
-            MAX_STAT_CHARS,
-            "\n[Diff stat output truncated by RalphX]\n",
-        )),
-        patch_excerpt = escape_xml_text(&truncate_with_notice(
-            ctx.patch_excerpt,
-            MAX_PATCH_EXCERPT_CHARS,
-            "\n[Patch excerpt truncated by RalphX]\n",
-        )),
+        name_status = escape_xml_text(&truncate_chars(ctx.name_status, MAX_NAME_STATUS_CHARS)),
+        diff_stat = escape_xml_text(&truncate_chars(ctx.diff_stat, MAX_STAT_CHARS)),
+        patch_excerpt = escape_xml_text(&truncate_chars(ctx.patch_excerpt, MAX_PATCH_EXCERPT_CHARS)),
         conversation_context = escape_xml_text(ctx.conversation_context),
     )
 }
@@ -336,7 +322,7 @@ fn format_commit_summaries(commits: &[crate::application::git_service::CommitInf
         return "No commit summaries were available.".to_string();
     }
 
-    let mut lines = commits
+    let lines = commits
         .iter()
         .take(MAX_COMMIT_SUMMARIES)
         .map(|commit| {
@@ -346,12 +332,6 @@ fn format_commit_summaries(commits: &[crate::application::git_service::CommitInf
             )
         })
         .collect::<Vec<_>>();
-    if commits.len() > MAX_COMMIT_SUMMARIES {
-        lines.push(format!(
-            "- [{} additional commits omitted by RalphX]",
-            commits.len() - MAX_COMMIT_SUMMARIES
-        ));
-    }
     lines.join("\n")
 }
 
@@ -365,13 +345,6 @@ fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats)
         .map(|file| format!("- {file}"))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn truncate_with_notice(text: &str, max_chars: usize, notice: &str) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    format!("{}{}", truncate_chars(text, max_chars), notice)
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {
@@ -719,7 +692,11 @@ mod tests {
         assert!(!context.contains("message-1 "));
         assert!(context.contains("[user at "));
         assert!(context.contains("[orchestrator at "));
-        assert!(context.contains("Conversation context truncated by RalphX"));
+        assert!(
+            !context.contains("truncated by RalphX"),
+            "conversation context should not teach the PR describer to mention prompt truncation"
+        );
+        assert!(context.chars().count() <= MAX_CONVERSATION_CONTEXT_CHARS);
     }
 
     #[test]
@@ -767,10 +744,18 @@ mod tests {
         assert!(prompt.contains("Use &lt;template&gt; &amp; context"));
         assert!(prompt.contains("2 files changed, 10 insertions, 3 deletions"));
         assert!(prompt.contains("- src/lib.rs"));
-        assert!(prompt.contains("additional commits omitted by RalphX"));
-        assert!(prompt.contains("Name-status output truncated by RalphX"));
-        assert!(prompt.contains("Diff stat output truncated by RalphX"));
-        assert!(prompt.contains("Patch excerpt truncated by RalphX"));
+        assert!(
+            !prompt.contains("omitted by RalphX"),
+            "bounded prompt data should not expose internal omission mechanics"
+        );
+        assert!(
+            !prompt.contains("truncated by RalphX"),
+            "bounded prompt data should not teach the PR describer to surface RalphX truncation mechanics"
+        );
+        assert!(
+            prompt.contains("Do not mention bounded input limits"),
+            "prompt should explicitly keep bounded-context mechanics out of reviewer-facing PR bodies"
+        );
         assert!(prompt.contains("use &lt;context&gt; &amp; facts"));
     }
 
@@ -800,7 +785,8 @@ mod tests {
     #[tokio::test]
     async fn draft_pr_description_collects_git_context_and_uses_submitted_body() {
         let (_temp_dir, repo, base) = create_reviewable_repo();
-        let project = project_for(&repo);
+        let active_project_dir = tempfile::tempdir().unwrap();
+        let project = project_for(active_project_dir.path());
         let conversation = conversation_for(&project);
         let workspace = workspace_for(&conversation, &project, &repo, &base);
         let state = AppState::new_test();
@@ -861,7 +847,7 @@ mod tests {
             config.role,
             AgentRole::Custom("ralphx-utility-pr-describer".to_string())
         );
-        assert_eq!(config.working_directory, repo);
+        assert_eq!(config.working_directory, active_project_dir.path());
         assert_eq!(
             config.agent.as_deref(),
             Some(agent_names::AGENT_PR_DESCRIBER)
@@ -870,6 +856,14 @@ mod tests {
         assert!(config
             .prompt
             .contains("submit_agent_workspace_pr_description"));
+        assert!(config.prompt.contains(&format!(
+            "<registered_project_cwd>{}</registered_project_cwd>",
+            escape_xml_text(&active_project_dir.path().display().to_string())
+        )));
+        assert!(config.prompt.contains(&format!(
+            "<effective_workspace_cwd>{}</effective_workspace_cwd>",
+            escape_xml_text(&repo.display().to_string())
+        )));
         assert!(config.prompt.contains("src/lib.rs"));
         assert!(config
             .prompt
@@ -956,11 +950,5 @@ mod tests {
         assert!(error
             .to_string()
             .contains("PR describer agent exited unsuccessfully"));
-    }
-
-    #[test]
-    fn truncation_adds_notice_when_needed() {
-        let truncated = truncate_with_notice("abcdef", 3, "[truncated]");
-        assert_eq!(truncated, "abc[truncated]");
     }
 }

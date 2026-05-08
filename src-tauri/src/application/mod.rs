@@ -49,6 +49,7 @@ pub mod services;
 pub mod review_issue_service;
 pub mod review_service;
 pub mod session_export_service;
+pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
 pub mod setup_settings;
@@ -167,6 +168,8 @@ mod prune_engine_tests;
 mod publish_resilience_tests;
 #[cfg(test)]
 mod session_export_service_tests;
+#[cfg(test)]
+mod session_namer_agent_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]
