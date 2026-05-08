@@ -30,6 +30,13 @@ fn repo_error() -> AppError {
     AppError::Database("forced repository failure".to_string())
 }
 
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_test_writer()
+        .try_init();
+}
+
 fn cleanup_project() -> Project {
     let mut project = Project::new(
         "Startup Coverage".to_string(),
@@ -79,6 +86,8 @@ fn terminal_workspace(project: &Project, pr_status: Option<&str>) -> AgentConver
 
 #[tokio::test]
 async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
+    init_tracing();
+
     let project_repo: Arc<dyn ProjectRepository> = Arc::new(ProjectListErrorRepository);
     let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -101,6 +110,8 @@ async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
 
 #[tokio::test]
 async fn startup_terminal_plan_cleanup_continues_when_plan_branch_load_fails() {
+    init_tracing();
+
     let project = cleanup_project();
     let project_repo: Arc<dyn ProjectRepository> =
         Arc::new(MemoryProjectRepository::with_projects(vec![project]));
@@ -117,6 +128,8 @@ async fn startup_terminal_plan_cleanup_continues_when_plan_branch_load_fails() {
 
 #[tokio::test]
 async fn startup_terminal_workspace_cleanup_continues_when_workspace_load_fails() {
+    init_tracing();
+
     let project = cleanup_project();
     let project_repo: Arc<dyn ProjectRepository> =
         Arc::new(MemoryProjectRepository::with_projects(vec![project]));
@@ -134,6 +147,8 @@ async fn startup_terminal_workspace_cleanup_continues_when_workspace_load_fails(
 
 #[tokio::test]
 async fn startup_terminal_plan_cleanup_records_safety_skip_reports() {
+    init_tracing();
+
     let project = cleanup_project();
     let project_repo: Arc<dyn ProjectRepository> = Arc::new(
         MemoryProjectRepository::with_projects(vec![project.clone()]),
@@ -161,6 +176,8 @@ async fn startup_terminal_plan_cleanup_records_safety_skip_reports() {
 
 #[tokio::test]
 async fn startup_terminal_workspace_cleanup_records_safety_skip_reports() {
+    init_tracing();
+
     let project = cleanup_project();
     let project_repo: Arc<dyn ProjectRepository> = Arc::new(
         MemoryProjectRepository::with_projects(vec![project.clone()]),
