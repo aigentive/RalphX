@@ -2,6 +2,7 @@ use super::*;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, AgenticClient, ClientType, LogicalEffort,
+    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
     ChatConversation, ChatMessage, IdeationSession, InternalStatus, Priority, Project, ProjectId,
@@ -333,6 +334,48 @@ async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_
 }
 
 #[tokio::test]
+async fn test_resolve_ideation_background_agent_runtime_uses_codex_default_harness() {
+    let codex_default: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test().with_agent_client(codex_default.clone());
+    state.agent_clients.default_harness = AgentHarnessKind::Codex;
+
+    let project = Project::new(
+        "Default Codex Ideation Project".to_string(),
+        "/tmp".to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
+    codex_lane.model = Some("gpt-5.4".to_string());
+    codex_lane.effort = Some(LogicalEffort::XHigh);
+    codex_lane.approval_policy = Some("on-request".to_string());
+    codex_lane.sandbox_mode = Some("read-only".to_string());
+    state
+        .agent_lane_settings_repo
+        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
+        .await
+        .unwrap();
+
+    let runtime = state
+        .resolve_ideation_background_agent_runtime(Some(project.id.as_str()))
+        .await
+        .expect("default codex runtime should resolve");
+
+    assert!(Arc::ptr_eq(&runtime.client, &codex_default));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(
+        runtime.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
+    );
+}
+
+#[tokio::test]
 async fn test_resolve_ideation_background_agent_runtime_errors_without_registered_harness_client() {
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let mut state = AppState::new_test().with_agent_client(default_mock.clone());
@@ -362,6 +405,38 @@ async fn test_resolve_ideation_background_agent_runtime_errors_without_registere
             .to_string()
             .contains("Configured ideation sidecar harness unavailable"),
         "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_session_namer_runtime_uses_codex_default_harness_client() {
+    let codex_default: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let mut state = AppState::new_test().with_agent_client(codex_default.clone());
+    state.agent_clients.default_harness = AgentHarnessKind::Codex;
+
+    let project = Project::new(
+        "Default Codex Conversation Project".to_string(),
+        "/tmp".to_string(),
+    );
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let runtime = state
+        .resolve_session_namer_runtime_for_conversation(&conversation, Some(project.id.as_str()))
+        .await
+        .expect("session namer should resolve through default Codex harness");
+
+    assert!(Arc::ptr_eq(&runtime.client, &codex_default));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model, None);
+    assert_eq!(runtime.logical_effort, None);
+    assert_eq!(
+        runtime.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
 }
 
