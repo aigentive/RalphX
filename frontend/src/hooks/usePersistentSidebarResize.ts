@@ -162,9 +162,6 @@ export function usePersistentSidebarResize(
   ]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
     try {
       if (userSidebarWidth !== null) {
         window.localStorage.setItem(storageKey, String(userSidebarWidth));
