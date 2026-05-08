@@ -1058,11 +1058,7 @@ async fn cleanup_terminal_agent_workspace_after_pr(
         Ok(Some(workspace)) => workspace,
         Ok(None) => return,
         Err(error) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                error = %error,
-                "Agent workspace PR cleanup: failed to load workspace"
-            );
+            tracing::warn!(conversation_id = conversation_id.as_str(), error = %error, "Agent workspace PR cleanup: failed to load workspace");
             return;
         }
     };
@@ -1073,12 +1069,7 @@ async fn cleanup_terminal_agent_workspace_after_pr(
                 .fetch_remote(Path::new(&project.working_directory), &workspace.base_ref)
                 .await
             {
-                tracing::warn!(
-                    conversation_id = conversation_id.as_str(),
-                    base_ref = workspace.base_ref.as_str(),
-                    error = %error,
-                    "Agent workspace PR cleanup: failed to fetch base before local branch cleanup"
-                );
+                tracing::warn!(conversation_id = conversation_id.as_str(), base_ref = workspace.base_ref.as_str(), error = %error, "Agent workspace PR cleanup: failed to fetch base before local branch cleanup");
             }
         }
     }
@@ -1091,20 +1082,10 @@ async fn cleanup_terminal_agent_workspace_after_pr(
     .await
     {
         Ok(report) => {
-            tracing::info!(
-                conversation_id = conversation_id.as_str(),
-                worktree_removed = report.worktree_removed,
-                branch_deleted = report.branch_deleted,
-                skipped_reason = report.skipped_reason.as_deref(),
-                "Agent workspace PR cleanup: local artifact cleanup completed"
-            );
+            tracing::info!(conversation_id = conversation_id.as_str(), worktree_removed = report.worktree_removed, branch_deleted = report.branch_deleted, skipped_reason = report.skipped_reason.as_deref(), "Agent workspace PR cleanup: local artifact cleanup completed");
         }
         Err(error) => {
-            tracing::warn!(
-                conversation_id = conversation_id.as_str(),
-                error = %error,
-                "Agent workspace PR cleanup: local artifact cleanup failed (non-fatal)"
-            );
+            tracing::warn!(conversation_id = conversation_id.as_str(), error = %error, "Agent workspace PR cleanup: local artifact cleanup failed (non-fatal)");
         }
     }
 }

@@ -714,31 +714,21 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "Terminal PR local cleanup: failed to list projects"
-            );
+            tracing::warn!(error = %error, "Terminal PR local cleanup: failed to list projects");
             return;
         }
     };
 
     for project in projects {
         if blocked_git_project_ids.contains(&project.id) {
-            tracing::warn!(
-                project_id = project.id.as_str(),
-                "Terminal PR local cleanup: skipping plan branches due to Git auth preflight"
-            );
+            tracing::warn!(project_id = project.id.as_str(), "Terminal PR local cleanup: skipping plan branches due to Git auth preflight");
             continue;
         }
 
         let plan_branches = match plan_branch_repo.get_by_project_id(&project.id).await {
             Ok(plan_branches) => plan_branches,
             Err(error) => {
-                tracing::warn!(
-                    project_id = project.id.as_str(),
-                    error = %error,
-                    "Terminal PR local cleanup: failed to load plan branches"
-                );
+                tracing::warn!(project_id = project.id.as_str(), error = %error, "Terminal PR local cleanup: failed to load plan branches");
                 continue;
             }
         };
@@ -760,13 +750,7 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
                     .fetch_remote(std::path::Path::new(&project.working_directory), &base_ref)
                     .await
                 {
-                    tracing::warn!(
-                        project_id = project.id.as_str(),
-                        branch = %plan_branch.branch_name,
-                        base_ref = base_ref.as_str(),
-                        error = %error,
-                        "Terminal PR local cleanup: failed to fetch plan base before cleanup"
-                    );
+                    tracing::warn!(project_id = project.id.as_str(), branch = %plan_branch.branch_name, base_ref = base_ref.as_str(), error = %error, "Terminal PR local cleanup: failed to fetch plan base before cleanup");
                 }
             }
 
@@ -776,23 +760,9 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
             )
             .await
             {
-                Ok(report) if report.branch_deleted => tracing::info!(
-                    project_id = project.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    "Terminal PR local cleanup: deleted local plan branch"
-                ),
-                Ok(report) => tracing::debug!(
-                    project_id = project.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    skipped_reason = report.skipped_reason.as_deref(),
-                    "Terminal PR local cleanup: skipped local plan branch"
-                ),
-                Err(error) => tracing::warn!(
-                    project_id = project.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    error = %error,
-                    "Terminal PR local cleanup: failed to clean local plan branch"
-                ),
+                Ok(report) if report.branch_deleted => tracing::info!(project_id = project.id.as_str(), branch = %plan_branch.branch_name, "Terminal PR local cleanup: deleted local plan branch"),
+                Ok(report) => tracing::debug!(project_id = project.id.as_str(), branch = %plan_branch.branch_name, skipped_reason = report.skipped_reason.as_deref(), "Terminal PR local cleanup: skipped local plan branch"),
+                Err(error) => tracing::warn!(project_id = project.id.as_str(), branch = %plan_branch.branch_name, error = %error, "Terminal PR local cleanup: failed to clean local plan branch"),
             }
         }
     }
@@ -807,31 +777,21 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
         Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "Terminal agent workspace cleanup: failed to list projects"
-            );
+            tracing::warn!(error = %error, "Terminal agent workspace cleanup: failed to list projects");
             return;
         }
     };
 
     for project in projects {
         if blocked_git_project_ids.contains(&project.id) {
-            tracing::warn!(
-                project_id = project.id.as_str(),
-                "Terminal agent workspace cleanup: skipping project due to Git auth preflight"
-            );
+            tracing::warn!(project_id = project.id.as_str(), "Terminal agent workspace cleanup: skipping project due to Git auth preflight");
             continue;
         }
 
         let workspaces = match workspace_repo.get_by_project_id(&project.id).await {
             Ok(workspaces) => workspaces,
             Err(error) => {
-                tracing::warn!(
-                    project_id = project.id.as_str(),
-                    error = %error,
-                    "Terminal agent workspace cleanup: failed to load workspaces"
-                );
+                tracing::warn!(project_id = project.id.as_str(), error = %error, "Terminal agent workspace cleanup: failed to load workspaces");
                 continue;
             }
         };
@@ -854,12 +814,7 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                         )
                         .await
                     {
-                        tracing::warn!(
-                            conversation_id = workspace.conversation_id.as_str(),
-                            base_ref = workspace.base_ref.as_str(),
-                            error = %error,
-                            "Terminal agent workspace cleanup: failed to fetch base before cleanup"
-                        );
+                        tracing::warn!(conversation_id = workspace.conversation_id.as_str(), base_ref = workspace.base_ref.as_str(), error = %error, "Terminal agent workspace cleanup: failed to fetch base before cleanup");
                     }
                 }
             }
@@ -871,18 +826,8 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             )
             .await
             {
-                Ok(report) => tracing::info!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    worktree_removed = report.worktree_removed,
-                    branch_deleted = report.branch_deleted,
-                    skipped_reason = report.skipped_reason.as_deref(),
-                    "Terminal agent workspace cleanup: local artifact cleanup completed"
-                ),
-                Err(error) => tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    error = %error,
-                    "Terminal agent workspace cleanup: local artifact cleanup failed"
-                ),
+                Ok(report) => tracing::info!(conversation_id = workspace.conversation_id.as_str(), worktree_removed = report.worktree_removed, branch_deleted = report.branch_deleted, skipped_reason = report.skipped_reason.as_deref(), "Terminal agent workspace cleanup: local artifact cleanup completed"),
+                Err(error) => tracing::warn!(conversation_id = workspace.conversation_id.as_str(), error = %error, "Terminal agent workspace cleanup: local artifact cleanup failed"),
             }
         }
     }

@@ -148,44 +148,21 @@ impl<'a> TransitionHandler<'a> {
                                 .await
                                 {
                                     Ok(report) if report.branch_deleted => {
-                                        tracing::info!(
-                                            task_id = task_id_str,
-                                            branch = %pb.branch_name,
-                                            "PR mode: deleted local plan branch after merge"
-                                        );
+                                        tracing::info!(task_id = task_id_str, branch = %pb.branch_name, "PR mode: deleted local plan branch after merge");
                                     }
                                     Ok(report) => {
-                                        tracing::debug!(
-                                            task_id = task_id_str,
-                                            branch = %pb.branch_name,
-                                            skipped_reason = report.skipped_reason.as_deref(),
-                                            "PR mode: skipped local plan branch cleanup"
-                                        );
+                                        tracing::debug!(task_id = task_id_str, branch = %pb.branch_name, skipped_reason = report.skipped_reason.as_deref(), "PR mode: skipped local plan branch cleanup");
                                     }
                                     Err(e) => {
-                                        tracing::warn!(
-                                            task_id = task_id_str,
-                                            branch = %pb.branch_name,
-                                            error = %e,
-                                            "PR mode: failed local plan branch cleanup (non-fatal)"
-                                        );
+                                        tracing::warn!(task_id = task_id_str, branch = %pb.branch_name, error = %e, "PR mode: failed local plan branch cleanup (non-fatal)");
                                     }
                                 }
                             }
                             Ok(None) => {
-                                tracing::debug!(
-                                    task_id = task_id_str,
-                                    project_id = pb.project_id.as_str(),
-                                    "PR mode: skipped local plan branch cleanup because project was not found"
-                                );
+                                tracing::debug!(task_id = task_id_str, project_id = pb.project_id.as_str(), "PR mode: skipped local plan branch cleanup because project was not found");
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    task_id = task_id_str,
-                                    project_id = pb.project_id.as_str(),
-                                    error = %e,
-                                    "PR mode: failed to load project for local plan branch cleanup"
-                                );
+                                tracing::warn!(task_id = task_id_str, project_id = pb.project_id.as_str(), error = %e, "PR mode: failed to load project for local plan branch cleanup");
                             }
                         }
                     }

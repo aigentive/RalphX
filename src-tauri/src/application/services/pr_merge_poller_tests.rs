@@ -12,6 +12,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+
 use super::{cleanup_terminal_agent_workspace_after_pr, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::{
     agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
@@ -20,11 +22,12 @@ use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, Project, TaskId,
+    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::GithubServiceTrait;
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryPlanBranchRepository,
 };
@@ -112,6 +115,10 @@ fn cleanup_workspace_with_conversation(
 fn expected_workspace_branch(project: &Project, conversation_id: &str) -> String {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     agent_conversation_branch_name(project, &conversation_id)
+}
+
+fn repo_error() -> AppError {
+    AppError::Database("forced workspace repository failure".to_string())
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -389,6 +396,70 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
 }
 
 #[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_returns_when_workspace_missing() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::new();
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        &conversation_id,
+        &project,
+        None,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_returns_when_workspace_lookup_fails() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(WorkspaceLookupErrorRepository);
+    let conversation_id = ChatConversationId::new();
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        &conversation_id,
+        &project,
+        None,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_logs_nonfatal_cleanup_error() {
+    let repo = tempfile::tempdir().expect("non-git repo path");
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-cleanup-error-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        &conversation_id,
+        &project,
+        None,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -460,4 +531,108 @@ fn compute_age_floor(elapsed: Duration) -> Duration {
     } else {
         Duration::from_secs(300)
     }
+}
+
+struct WorkspaceLookupErrorRepository;
+
+#[async_trait]
+impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
+    async fn create_or_update(
+        &self,
+        _workspace: AgentConversationWorkspace,
+    ) -> AppResult<AgentConversationWorkspace> {
+        Err(repo_error())
+    }
+
+    async fn get_by_conversation_id(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn get_by_project_id(
+        &self,
+        _project_id: &crate::domain::entities::ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn update_links(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _ideation_session_id: Option<&IdeationSessionId>,
+        _plan_branch_id: Option<&PlanBranchId>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_publication(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: Option<i64>,
+        _pr_url: Option<&str>,
+        _pr_status: Option<&str>,
+        _push_status: Option<&str>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _status: AgentConversationWorkspaceStatus,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn save_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _description: AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn get_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>> {
+        Err(repo_error())
+    }
+
+    async fn clear_pr_description(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn append_publication_event(
+        &self,
+        _event: AgentConversationWorkspacePublicationEvent,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn list_publication_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
+        Err(repo_error())
+    }
+
+    async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(repo_error())
+    }
+
 }
