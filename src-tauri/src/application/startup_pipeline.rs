@@ -232,6 +232,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     tracing::info!("Running PR startup recovery...");
+    tracing::info!("Running terminal PR local git cleanup...");
+    crate::application::pr_startup_recovery::cleanup_terminal_plan_branch_local_artifacts_on_startup(
+        Arc::clone(&plan_branch_repo),
+        Arc::clone(&project_repo),
+        github_service.as_ref().map(Arc::clone),
+        Arc::clone(&blocked_git_project_ids),
+    )
+    .await;
+
     crate::application::pr_startup_recovery::recover_pr_pollers(
         Arc::clone(&task_repo),
         Arc::clone(&plan_branch_repo),
@@ -275,6 +284,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     );
 
     tracing::info!("Running agent workspace PR startup recovery...");
+    crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+        Arc::clone(&agent_conversation_workspace_repo),
+        Arc::clone(&project_repo),
+        github_service.as_ref().map(Arc::clone),
+        Arc::clone(&blocked_git_project_ids),
+    )
+    .await;
+
     crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),

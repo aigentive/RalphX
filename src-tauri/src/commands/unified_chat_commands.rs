@@ -3243,6 +3243,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     state.pr_poller_registry.start_agent_workspace_polling(
         workspace.conversation_id,
         outcome.pr_number,
+        project.clone(),
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         review_chat_service,
