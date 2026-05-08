@@ -1236,6 +1236,40 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(toolCall.compareDocumentPosition(text2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    it("groups streaming text and tool widgets inside one assistant message row", () => {
+      const blocks: StreamingContentBlock[] = [
+        { type: "text", text: "First I will fetch the page." },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-1", name: GENERIC_TOOL_NAME, arguments: { url: "https://example.com" }, result: "content" },
+        },
+        { type: "text", text: "The page contains useful info." },
+      ];
+
+      const { container } = render(
+        <ChatMessageList
+          {...defaultProps}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      const firstText = screen.getByText(/First I will fetch the page/);
+      const secondText = screen.getByText(/The page contains useful info/);
+      const toolCall = screen.getByTestId("tool-call-indicator");
+      const liveAssistantRow = firstText.closest('[data-chat-message-item="true"]');
+
+      expect(liveAssistantRow).toBeInTheDocument();
+      expect(liveAssistantRow).toContainElement(toolCall);
+      expect(liveAssistantRow).toContainElement(secondText);
+      expect(liveAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
+
+      const matchingRows = Array.from(
+        container.querySelectorAll('[data-chat-message-item="true"]')
+      ).filter((row) => row.textContent?.includes("First I will fetch the page"));
+      expect(matchingRows).toHaveLength(1);
+    });
+
     it("shows loading spinner for in-progress (no result) tool call", () => {
       const blocks: StreamingContentBlock[] = [
         {
@@ -2164,7 +2198,12 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      expect(screen.getByTestId("tool-call-indicator")).toBeInTheDocument();
+      const toolCall = screen.getByTestId("tool-call-indicator");
+      const liveAssistantRow = toolCall.closest('[data-chat-message-item="true"]');
+
+      expect(toolCall).toBeInTheDocument();
+      expect(liveAssistantRow).toBeInTheDocument();
+      expect(liveAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
       expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
     });
 
