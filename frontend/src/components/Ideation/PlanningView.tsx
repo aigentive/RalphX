@@ -57,6 +57,7 @@ import { ReopenSessionDialog } from "./ReopenSessionDialog";
 import type { ReopenMode } from "./ReopenSessionDialog";
 import { useReopenSession, useResetAndReaccept, useIdeationSessions } from "@/hooks/useIdeation";
 import { usePlanBrowserLayout } from "@/hooks/usePlanBrowserLayout";
+import { usePersistentSidebarResize } from "@/hooks/usePersistentSidebarResize";
 import { ideationApi } from "@/api/ideation";
 import { useQuery } from "@tanstack/react-query";
 import { planBranchApi } from "@/api/plan-branch";
@@ -131,6 +132,10 @@ export function AnalysisBanner() {
 // Main Component
 // ============================================================================
 
+const PLAN_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY = "ralphx-plan-browser-sidebar-width";
+const PLAN_BROWSER_SIDEBAR_MIN_WIDTH = 220;
+const PLAN_BROWSER_SIDEBAR_MAX_WIDTH = 520;
+
 export function PlanningView({
   session,
   proposals,
@@ -150,6 +155,7 @@ export function PlanningView({
   const [isResizing, setIsResizing] = useState(false);
   const [isAcceptModalOpen, setIsAcceptModalOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const planBrowserSidebarRef = useRef<HTMLDivElement | null>(null);
 
   const {
     sidebarWidth,
@@ -159,6 +165,26 @@ export function PlanningView({
     closeOverlay,
     suppressTransition,
   } = usePlanBrowserLayout();
+  const {
+    handleSidebarResizeReset: handlePlanBrowserResizeReset,
+    handleSidebarResizeStart: handlePlanBrowserResizeStart,
+    isSidebarResizing: isPlanBrowserSidebarResizing,
+    userSidebarWidth: userPlanBrowserSidebarWidth,
+  } = usePersistentSidebarResize(planBrowserSidebarRef, {
+    maxWidth: PLAN_BROWSER_SIDEBAR_MAX_WIDTH,
+    minWidth: PLAN_BROWSER_SIDEBAR_MIN_WIDTH,
+    storageKey: PLAN_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY,
+  });
+  const effectiveSidebarWidth =
+    !isCollapsed && userPlanBrowserSidebarWidth !== null && sidebarWidth > 0
+      ? userPlanBrowserSidebarWidth
+      : sidebarWidth;
+  const showPlanBrowserResizeHandle =
+    !isCollapsed && !isOverlayOpen && sidebarWidth > 0;
+  const planBrowserTransition =
+    suppressTransition.current || isPlanBrowserSidebarResizing
+      ? "none"
+      : "width 300ms ease";
 
   const planArtifact = useIdeationStore((state) => state.planArtifact);
   const fetchPlanArtifact = useIdeationStore((state) => state.fetchPlanArtifact);
@@ -808,15 +834,17 @@ export function PlanningView({
 
           {/* Inline sidebar column — kept mounted to preserve query cache */}
           <div
+            ref={planBrowserSidebarRef}
             style={{
-              width: isCollapsed && !isOverlayOpen ? 0 : sidebarWidth,
-              minWidth: isCollapsed && !isOverlayOpen ? 0 : sidebarWidth,
+              width: isCollapsed && !isOverlayOpen ? 0 : effectiveSidebarWidth,
+              minWidth: isCollapsed && !isOverlayOpen ? 0 : effectiveSidebarWidth,
               flexShrink: 0,
               overflow: "hidden",
-              transition: suppressTransition.current ? "none" : "width 300ms ease",
+              transition: planBrowserTransition,
               display: isCollapsed && !isOverlayOpen ? "none" : undefined,
             }}
             aria-hidden={isCollapsed && !isOverlayOpen ? "true" : undefined}
+            data-testid="ideation-sidebar-container"
           >
             <PlanBrowser
               projectId={activeProjectId || session?.projectId || ""}
@@ -832,10 +860,19 @@ export function PlanningView({
                 onSelectSession(planId);
                 handleOpenReopenDialog("reset");
               }}
-              width={sidebarWidth || 340}
+              width={effectiveSidebarWidth || 340}
               onCollapse={toggleCollapse}
             />
           </div>
+
+          {showPlanBrowserResizeHandle && (
+            <ResizeHandle
+              isResizing={isPlanBrowserSidebarResizing}
+              onMouseDown={handlePlanBrowserResizeStart}
+              onDoubleClick={handlePlanBrowserResizeReset}
+              testId="ideation-sidebar-resize-handle"
+            />
+          )}
 
           {/* Overlay sidebar */}
           {isOverlayOpen && (
