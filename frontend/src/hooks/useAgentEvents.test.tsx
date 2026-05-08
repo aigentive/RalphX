@@ -503,6 +503,110 @@ describe("useAgentEvents", () => {
       ]);
       expect(historyQuery?.pages[0]?.totalMessageCount).toBe(1);
     });
+
+    it("only appends new history messages to the newest page", () => {
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const conversation = makeConversation();
+      const newestMessage = makeMessage({
+        id: "msg-newest",
+        content: "Newest",
+        createdAt: "2026-04-07T10:02:00.000Z",
+      });
+      const olderMessage = makeMessage({
+        id: "msg-older",
+        content: "Older",
+        createdAt: "2026-04-07T10:00:00.000Z",
+      });
+
+      queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+        ["chat", "conversation", "conv-1", "history"],
+        {
+          pages: [
+            {
+              conversation,
+              messages: [newestMessage],
+              limit: 40,
+              offset: 0,
+              totalMessageCount: 1,
+              hasOlder: true,
+            },
+            {
+              conversation,
+              messages: [olderMessage],
+              limit: 40,
+              offset: 40,
+              totalMessageCount: 1,
+              hasOlder: false,
+            },
+          ],
+          pageParams: [0, 40],
+        }
+      );
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:message_created", {
+          context_type: "project",
+          context_id: "project-1",
+          conversation_id: "conv-1",
+          message_id: "msg-live",
+          role: "user",
+          content: "Live message",
+          created_at: "2026-04-07T10:03:00.000Z",
+        });
+      });
+
+      const historyQuery = queryClient.getQueryData<
+        InfiniteData<ConversationMessagesPageResponse>
+      >(["chat", "conversation", "conv-1", "history"]);
+
+      expect(historyQuery?.pages[0]?.messages.map((message) => message.id)).toEqual([
+        "msg-newest",
+        "msg-live",
+      ]);
+      expect(historyQuery?.pages[1]?.messages).toEqual([olderMessage]);
+    });
+
+    it("ignores duplicate message ids in the single conversation cache", () => {
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const conversation = makeConversation({
+        id: "conv-1",
+        contextType: "project",
+        contextId: "project-1",
+      });
+      const existingMessage = makeMessage({
+        id: "msg-real-user",
+        conversationId: "conv-1",
+        content: "Start the agent",
+      });
+
+      queryClient.setQueryData(["chat", "conversation", "conv-1"], {
+        conversation,
+        messages: [existingMessage],
+      });
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:message_created", {
+          context_type: "project",
+          context_id: "project-1",
+          conversation_id: "conv-1",
+          message_id: "msg-real-user",
+          role: "user",
+          content: "Start the agent",
+          created_at: "2026-04-07T10:02:00.000Z",
+        });
+      });
+
+      const conversationQuery = queryClient.getQueryData<{
+        conversation: ChatConversation;
+        messages: ChatMessageResponse[];
+      }>(["chat", "conversation", "conv-1"]);
+
+      expect(conversationQuery?.messages).toEqual([existingMessage]);
+    });
   });
 
   describe("agent:run_started — storeKey param", () => {

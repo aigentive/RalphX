@@ -5,9 +5,10 @@ import {
   resetAgentSessionState,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { QueryClient } from "@tanstack/react-query";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -19,6 +20,7 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
   archiveConversationMock,
@@ -450,6 +452,93 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("clears optimistic running state when the seeded agent start fails", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const seededConversation = conversation({
+      id: "conversation-failed-start",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockRejectedValue(new Error("backend unavailable"));
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper }
+    );
+
+    await expect(
+      result.current({
+        projectId: "project-1",
+        content: "start then fail",
+        runtime: {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        mode: "edit",
+        base: null,
+        files: [],
+      })
+    ).rejects.toThrow("backend unavailable");
+
+    expect(
+      queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
+    ).toEqual({
+      conversation: expect.objectContaining({ id: "conversation-failed-start" }),
+      messages: [
+        expect.objectContaining({
+          conversationId: "conversation-failed-start",
+          role: "user",
+          content: "start then fail",
+        }),
+      ],
+    });
+    expect(
+      useChatStore.getState().agentStatus["project:conversation-failed-start"]
+    ).toBeUndefined();
+    expect(
+      useChatStore.getState().isSending["project:conversation-failed-start"]
+    ).toBeUndefined();
+  });
+
+  it("falls back to the project default when the remembered branch selection is empty", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+    );
+    expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+      "Project default (main)"
+    );
+  });
+
   it("renders remembered branch base options before hover and refreshes with a loading state on intent", async () => {
     mockAgentViewData();
     let resolveBranches: ((branches: unknown[]) => void) | null = null;
@@ -512,6 +601,14 @@ describe("AgentsView start conversation", () => {
     await waitFor(() => expect(getPlanBranchesMock).toHaveBeenCalledWith("project-1"));
     expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
     expect(screen.getAllByText("feature/cached").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByText("Project default (main)"));
+    expect(
+      useAgentSessionStore.getState().lastBranchBaseSelectionByProjectId["project-1"]
+    ).toBe("project_default:main");
+    expect(
+      useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]?.selectedKey
+    ).toBe("project_default:main");
 
     resolveBranches?.([]);
   });
