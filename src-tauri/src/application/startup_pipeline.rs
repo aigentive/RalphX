@@ -4,6 +4,7 @@ use std::time::Duration;
 use tracing::info;
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
+use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
 use crate::application::runtime_factory::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::startup_runtime_builders::{
@@ -311,6 +312,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids));
 
     let startup_ideation_recovery_claims = runner.run().await;
+
+    recover_stale_agent_workspace_publish_repairs_on_startup(
+        Arc::clone(&agent_conversation_workspace_repo),
+        Arc::clone(&agent_run_repo),
+    )
+    .await;
 
     if mode == StartupPipelineMode::Full {
         startup_background::recover_memory_archive_jobs_on_startup(

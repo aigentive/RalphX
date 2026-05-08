@@ -84,6 +84,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_needs_agent_workspace(workspace))
+            .cloned()
+            .collect())
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
@@ -203,6 +216,15 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
             workspace.publication_push_status.as_deref(),
             None | Some("pushed")
         )
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
+}
+
+fn is_active_needs_agent_workspace(workspace: &AgentConversationWorkspace) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.publication_push_status.as_deref() == Some("needs_agent")
         && !matches!(
             workspace.publication_pr_status.as_deref(),
             Some("closed") | Some("merged")
