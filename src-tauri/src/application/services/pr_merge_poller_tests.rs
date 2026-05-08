@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use super::{cleanup_terminal_agent_workspace_after_pr, PrPollerRegistry, RateLimitState};
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
@@ -80,7 +81,15 @@ fn cleanup_project(repo: &std::path::Path, worktree_parent: &std::path::Path) ->
 }
 
 fn cleanup_workspace(project: &Project, branch_name: &str) -> AgentConversationWorkspace {
-    let conversation_id = ChatConversationId::from_string("poller-cleanup-conversation");
+    cleanup_workspace_with_conversation(project, branch_name, "poller-cleanup-conversation")
+}
+
+fn cleanup_workspace_with_conversation(
+    project: &Project,
+    branch_name: &str,
+    conversation_id: &str,
+) -> AgentConversationWorkspace {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
     let worktree_path =
         resolve_agent_conversation_workspace_path(project, &conversation_id).unwrap();
     let mut workspace = AgentConversationWorkspace::new(
@@ -326,6 +335,66 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     let state = github.state();
     assert_eq!(state.fetch_remote_calls, 1);
     assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = "ralphx/poller-cleanup/agent-closed";
+    let mut workspace =
+        cleanup_workspace_with_conversation(&project, branch, "poller-closed-cleanup-conversation");
+    workspace.publication_pr_status = Some("open".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+        .await
+        .expect("create worktree");
+    std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+    run_git(&worktree_path, &["add", "."]);
+    run_git(&worktree_path, &["commit", "-m", "agent work"]);
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(crate::domain::services::github_service::PrStatus::Closed);
+    let registry = PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    );
+
+    registry.start_agent_workspace_polling(
+        conversation_id.clone(),
+        101,
+        project,
+        repo.path().to_path_buf(),
+        Arc::clone(&workspace_repo),
+        Arc::new(MockChatService::new()),
+    );
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if !worktree_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("poller should remove closed PR worktree");
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain persisted");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
+    assert!(branch_exists(repo.path(), branch));
+    assert_eq!(github.state().fetch_remote_calls, 0);
 }
 
 // ────────────────────────────────────────────────────────────────────

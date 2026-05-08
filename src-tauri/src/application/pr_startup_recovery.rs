@@ -1194,6 +1194,7 @@ mod tests {
     use crate::domain::services::github_service::{
         PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
     };
+    use crate::error::AppError;
     use crate::tests::mock_github_service::MockGithubService;
 
     fn run_git(repo: &Path, args: &[&str]) {
@@ -1409,6 +1410,139 @@ mod tests {
         let state = github.state();
         assert_eq!(state.fetch_remote_calls, 1);
         assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_cleanup_skips_blocked_projects() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/blocked-plan";
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        run_git(repo.path(), &["checkout", "main"]);
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-blocked-artifact"),
+            IdeationSessionId::from_string("startup-blocked-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(111);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+
+        let workspace_branch = "ralphx/startup-cleanup/blocked-agent";
+        let workspace = startup_workspace(&project, workspace_branch);
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+        GitService::create_worktree(repo.path(), &worktree_path, workspace_branch, "main")
+            .await
+            .expect("create worktree");
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+        let blocked = Arc::new(HashSet::from([project.id.clone()]));
+
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::clone(&blocked),
+        )
+        .await;
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            blocked,
+        )
+        .await;
+
+        assert!(branch_exists(repo.path(), branch));
+        assert!(worktree_path.exists());
+        assert_eq!(github.state().fetch_remote_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_cleanup_continues_after_fetch_failure() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/fetch-failure-plan";
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan-fetch.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge plan"],
+        );
+
+        let mut active_plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-active-artifact"),
+            IdeationSessionId::from_string("startup-fetch-session"),
+            project.id.clone(),
+            "ralphx/startup-cleanup/active-plan".to_string(),
+            "main".to_string(),
+        );
+        active_plan_branch.status = PlanBranchStatus::Active;
+        app_state
+            .plan_branch_repo
+            .create(active_plan_branch)
+            .await
+            .unwrap();
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-fetch-artifact"),
+            IdeationSessionId::from_string("startup-fetch-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(112);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
+            "simulated fetch failure".to_string(),
+        )));
+
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+        )
+        .await;
+
+        assert!(!branch_exists(repo.path(), branch));
+        assert_eq!(github.state().fetch_remote_calls, 1);
     }
 
     #[tokio::test]

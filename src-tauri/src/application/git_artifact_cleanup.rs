@@ -294,6 +294,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plan_branch_cleanup_skips_when_branch_is_not_terminal() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+        let branch = "ralphx/cleanup/plan-active";
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        run_git(repo.path(), &["checkout", "main"]);
+        let mut plan_branch = merged_pr_plan_branch(branch, project.id.clone());
+        plan_branch.status = PlanBranchStatus::Active;
+        plan_branch.pr_status = Some(PrStatus::Open);
+
+        let report = cleanup_merged_plan_branch_local_artifacts(&project, &plan_branch)
+            .await
+            .expect("cleanup should skip active branch");
+
+        assert!(!report.branch_deleted);
+        assert_eq!(
+            report.skipped_reason.as_deref(),
+            Some("plan_branch_not_merged")
+        );
+        assert!(branch_exists(repo.path(), branch));
+    }
+
+    #[tokio::test]
+    async fn merged_pr_plan_branch_cleanup_skips_missing_branch_and_target() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+        let missing_branch = merged_pr_plan_branch("ralphx/cleanup/missing", project.id.clone());
+
+        let missing_branch_report =
+            cleanup_merged_plan_branch_local_artifacts(&project, &missing_branch)
+                .await
+                .expect("cleanup should skip missing branch");
+
+        assert_eq!(
+            missing_branch_report.skipped_reason.as_deref(),
+            Some("branch_missing")
+        );
+
+        let branch = "ralphx/cleanup/missing-target";
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        run_git(repo.path(), &["checkout", "main"]);
+        let mut missing_target = merged_pr_plan_branch(branch, project.id.clone());
+        missing_target.base_branch_override = Some("missing-base".to_string());
+
+        let missing_target_report =
+            cleanup_merged_plan_branch_local_artifacts(&project, &missing_target)
+                .await
+                .expect("cleanup should skip missing target");
+
+        assert_eq!(
+            missing_target_report.skipped_reason.as_deref(),
+            Some("target_ref_missing:missing-base")
+        );
+        assert!(branch_exists(repo.path(), branch));
+    }
+
+    #[tokio::test]
     async fn merged_pr_plan_branch_cleanup_keeps_unmerged_local_branch() {
         let repo = init_repo();
         let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -394,6 +453,45 @@ mod tests {
         );
         assert!(worktree_path.exists());
         assert!(branch_exists(repo.path(), branch));
+    }
+
+    #[tokio::test]
+    async fn merged_agent_workspace_cleanup_skips_mismatched_or_non_directory_path() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+
+        let mut mismatched = workspace_for(&project, "ralphx/cleanup/mismatch", "merged");
+        mismatched.worktree_path = worktrees
+            .path()
+            .join("unexpected-worktree")
+            .to_string_lossy()
+            .to_string();
+        let mismatch_report =
+            cleanup_terminal_agent_workspace_local_artifacts(&project, &mismatched, true)
+                .await
+                .expect("cleanup should skip mismatched path");
+        assert_eq!(
+            mismatch_report.skipped_reason.as_deref(),
+            Some("workspace_path_mismatch")
+        );
+
+        let branch = "ralphx/cleanup/not-directory";
+        let workspace = workspace_for(&project, branch, "merged");
+        let worktree_path = Path::new(&workspace.worktree_path);
+        std::fs::create_dir_all(worktree_path.parent().expect("workspace parent"))
+            .expect("create workspace parent");
+        std::fs::write(worktree_path, "not a directory\n").expect("write workspace file");
+
+        let non_directory_report =
+            cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+                .await
+                .expect("cleanup should skip non-directory path");
+        assert_eq!(
+            non_directory_report.skipped_reason.as_deref(),
+            Some("workspace_path_not_directory")
+        );
+        assert!(worktree_path.exists());
     }
 
     #[tokio::test]
