@@ -157,6 +157,8 @@ mod agent_terminal_tests;
 #[cfg(test)]
 mod chat_service_output_tests;
 #[cfg(test)]
+mod git_artifact_cleanup_tests;
+#[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
 mod recovery_queue_tests;

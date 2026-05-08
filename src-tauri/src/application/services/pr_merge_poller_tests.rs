@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{cleanup_terminal_agent_workspace_after_pr, PrPollerRegistry, RateLimitState};
-use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
+};
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
@@ -81,10 +83,6 @@ fn cleanup_project(repo: &std::path::Path, worktree_parent: &std::path::Path) ->
     project
 }
 
-fn cleanup_workspace(project: &Project, branch_name: &str) -> AgentConversationWorkspace {
-    cleanup_workspace_with_conversation(project, branch_name, "poller-cleanup-conversation")
-}
-
 fn cleanup_workspace_with_conversation(
     project: &Project,
     branch_name: &str,
@@ -109,6 +107,11 @@ fn cleanup_workspace_with_conversation(
     workspace.publication_push_status = Some("pushed".to_string());
     workspace.status = AgentConversationWorkspaceStatus::Active;
     workspace
+}
+
+fn expected_workspace_branch(project: &Project, conversation_id: &str) -> String {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    agent_conversation_branch_name(project, &conversation_id)
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -299,8 +302,9 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let project = cleanup_project(repo.path(), worktrees.path());
-    let branch = "ralphx/poller-cleanup/agent-merged";
-    let workspace = cleanup_workspace(&project, branch);
+    let conversation_id_str = "poller-cleanup-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
@@ -310,7 +314,7 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
         .await
         .expect("workspace should persist");
 
-    GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+    GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
         .await
         .expect("create worktree");
     std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
@@ -318,7 +322,7 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     run_git(&worktree_path, &["commit", "-m", "agent work"]);
     run_git(
         repo.path(),
-        &["merge", "--no-ff", branch, "-m", "merge agent"],
+        &["merge", "--no-ff", &branch, "-m", "merge agent"],
     );
     let github = Arc::new(MockGithubService::new());
 
@@ -332,7 +336,7 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     .await;
 
     assert!(!worktree_path.exists());
-    assert!(!branch_exists(repo.path(), branch));
+    assert!(!branch_exists(repo.path(), &branch));
     let state = github.state();
     assert_eq!(state.fetch_remote_calls, 1);
     assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
@@ -343,12 +347,9 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let project = cleanup_project(repo.path(), worktrees.path());
-    let branch = "ralphx/poller-cleanup/agent-fetch-failure";
-    let workspace = cleanup_workspace_with_conversation(
-        &project,
-        branch,
-        "poller-fetch-failure-cleanup-conversation",
-    );
+    let conversation_id_str = "poller-fetch-failure-cleanup-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
@@ -358,7 +359,7 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
         .await
         .expect("workspace should persist");
 
-    GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+    GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
         .await
         .expect("create worktree");
     std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
@@ -366,7 +367,7 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     run_git(&worktree_path, &["commit", "-m", "agent work"]);
     run_git(
         repo.path(),
-        &["merge", "--no-ff", branch, "-m", "merge agent"],
+        &["merge", "--no-ff", &branch, "-m", "merge agent"],
     );
     let github = Arc::new(MockGithubService::new());
     github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
@@ -383,7 +384,7 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     .await;
 
     assert!(!worktree_path.exists());
-    assert!(!branch_exists(repo.path(), branch));
+    assert!(!branch_exists(repo.path(), &branch));
     assert_eq!(github.state().fetch_remote_calls, 1);
 }
 
