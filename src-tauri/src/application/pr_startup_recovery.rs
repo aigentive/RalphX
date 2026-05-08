@@ -1178,14 +1178,92 @@ fn task_metadata_bool(task: &Task, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+    use crate::application::git_service::GitService;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
-    use crate::domain::entities::{ArtifactId, IdeationSessionId};
+    use crate::domain::entities::{
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspaceStatus, ArtifactId, ChatConversationId,
+        IdeationAnalysisBaseRefKind, IdeationSessionId,
+    };
     use crate::domain::services::github_service::{
         PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
     };
     use crate::tests::mock_github_service::MockGithubService;
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_cleanup_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.email", "test@example.com"]);
+        run_git(dir.path(), &["config", "user.name", "Test User"]);
+        run_git(dir.path(), &["checkout", "-b", "main"]);
+        std::fs::write(dir.path().join("README.md"), "base\n").expect("write readme");
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "initial"]);
+        dir
+    }
+
+    fn branch_exists(repo: &Path, branch: &str) -> bool {
+        Command::new("git")
+            .args(["rev-parse", "--verify", branch])
+            .current_dir(repo)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn cleanup_project(repo: &Path, worktree_parent: &Path) -> Project {
+        let mut project = Project::new(
+            "Startup Cleanup".to_string(),
+            repo.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        project.github_pr_enabled = true;
+        project
+    }
+
+    fn startup_workspace(project: &Project, branch_name: &str) -> AgentConversationWorkspace {
+        let conversation_id = ChatConversationId::from_string("startup-cleanup-conversation");
+        let worktree_path =
+            resolve_agent_conversation_workspace_path(project, &conversation_id).unwrap();
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            branch_name.to_string(),
+            worktree_path.to_string_lossy().to_string(),
+        );
+        workspace.publication_pr_number = Some(101);
+        workspace.publication_pr_status = Some("merged".to_string());
+        workspace.publication_push_status = Some("pushed".to_string());
+        workspace.status = AgentConversationWorkspaceStatus::Active;
+        workspace
+    }
 
     fn open_pr_sync_state(head_ref_name: &str) -> PrSyncState {
         PrSyncState {
@@ -1231,6 +1309,106 @@ mod tests {
             .unwrap();
 
         (task, plan_branch)
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_plan_cleanup_deletes_merged_local_branch() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/plan-merged";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge plan"],
+        );
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-plan-artifact"),
+            IdeationSessionId::from_string("startup-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(101);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+        )
+        .await;
+
+        assert!(!branch_exists(repo.path(), branch));
+        let state = github.state();
+        assert_eq!(state.fetch_remote_calls, 1);
+        assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_agent_workspace_cleanup_removes_merged_worktree_and_branch() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/agent-merged";
+        let workspace = startup_workspace(&project, branch);
+        let worktree_path = Path::new(&workspace.worktree_path);
+
+        GitService::create_worktree(repo.path(), worktree_path, branch, "main")
+            .await
+            .expect("create worktree");
+        std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+        run_git(worktree_path, &["add", "."]);
+        run_git(worktree_path, &["commit", "-m", "agent work"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge agent"],
+        );
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+        )
+        .await;
+
+        assert!(!worktree_path.exists());
+        assert!(!branch_exists(repo.path(), branch));
+        let state = github.state();
+        assert_eq!(state.fetch_remote_calls, 1);
+        assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
     }
 
     #[tokio::test]
