@@ -22,7 +22,10 @@ use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
-use crate::domain::agents::{AgentHarnessKind, AgenticClient, LogicalEffort};
+use crate::domain::agents::{
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
+    AgenticClient, LogicalEffort,
+};
 use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
@@ -266,13 +269,43 @@ impl AppState {
         }
     }
 
+    fn background_agent_runtime_for_harness(
+        &self,
+        client: Arc<dyn AgenticClient>,
+        harness: AgentHarnessKind,
+        model: Option<String>,
+        logical_effort: Option<LogicalEffort>,
+        approval_policy: Option<String>,
+        sandbox_mode: Option<String>,
+    ) -> ResolvedBackgroundAgentRuntime {
+        ResolvedBackgroundAgentRuntime {
+            client,
+            harness: Some(harness),
+            model,
+            logical_effort,
+            approval_policy: default_approval_policy_for_harness(harness)
+                .map(str::to_string)
+                .or(approval_policy),
+            sandbox_mode: default_sandbox_mode_for_harness(harness)
+                .map(str::to_string)
+                .or(sandbox_mode),
+        }
+    }
+
     async fn resolve_background_agent_runtime_for_harness(
         &self,
         harness: AgentHarnessKind,
         purpose: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if harness == self.agent_clients.default_harness {
-            return Ok(self.default_background_agent_runtime());
+            return Ok(self.background_agent_runtime_for_harness(
+                Arc::clone(&self.agent_clients.default_client),
+                harness,
+                None,
+                None,
+                None,
+                None,
+            ));
         }
 
         if let Some(client) = self
@@ -280,14 +313,14 @@ impl AppState {
             .explicit_available_harness_client(harness)
             .await
         {
-            return Ok(ResolvedBackgroundAgentRuntime {
+            return Ok(self.background_agent_runtime_for_harness(
                 client,
-                harness: Some(harness),
-                model: None,
-                logical_effort: None,
-                approval_policy: None,
-                sandbox_mode: None,
-            });
+                harness,
+                None,
+                None,
+                None,
+                None,
+            ));
         }
 
         Err(AppError::Infrastructure(format!(
@@ -363,14 +396,14 @@ impl AppState {
             .explicit_available_harness_client(resolved.effective_harness)
             .await
         {
-            return Ok(ResolvedBackgroundAgentRuntime {
+            return Ok(self.background_agent_runtime_for_harness(
                 client,
-                harness: Some(resolved.effective_harness),
-                model: Some(resolved.model),
-                logical_effort: resolved.logical_effort,
-                approval_policy: resolved.approval_policy,
-                sandbox_mode: resolved.sandbox_mode,
-            });
+                resolved.effective_harness,
+                Some(resolved.model),
+                resolved.logical_effort,
+                resolved.approval_policy,
+                resolved.sandbox_mode,
+            ));
         }
 
         if resolved.effective_harness != self.agent_clients.default_harness {
@@ -381,14 +414,18 @@ impl AppState {
             )));
         }
 
-        Ok(ResolvedBackgroundAgentRuntime {
-            client: Arc::clone(&self.agent_clients.default_client),
-            harness: None,
-            model: None,
-            logical_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
-        })
+        if resolved.effective_harness == AgentHarnessKind::Codex {
+            return Ok(self.background_agent_runtime_for_harness(
+                Arc::clone(&self.agent_clients.default_client),
+                resolved.effective_harness,
+                Some(resolved.model),
+                resolved.logical_effort,
+                resolved.approval_policy,
+                resolved.sandbox_mode,
+            ));
+        }
+
+        Ok(self.default_background_agent_runtime())
     }
 
     pub(crate) async fn resolve_session_namer_runtime_for_project(

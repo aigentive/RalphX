@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::agents::{
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness,
     generic_harness_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
     StoredAgentLaneSettings, DEFAULT_AGENT_HARNESS,
 };
@@ -57,12 +58,20 @@ pub(crate) async fn resolve_agent_spawn_settings(
                 .unwrap_or_else(|| resolve_model(Some(agent_name))),
             logical_effort: None,
             claude_effort: None,
-            approval_policy: non_lane_defaults
-                .as_ref()
-                .and_then(|settings| settings.approval_policy.clone()),
-            sandbox_mode: non_lane_defaults
-                .as_ref()
-                .and_then(|settings| settings.sandbox_mode.clone()),
+            approval_policy: default_approval_policy_for_harness(effective_harness)
+                .map(str::to_string)
+                .or_else(|| {
+                    non_lane_defaults
+                        .as_ref()
+                        .and_then(|settings| settings.approval_policy.clone())
+                }),
+            sandbox_mode: default_sandbox_mode_for_harness(effective_harness)
+                .map(str::to_string)
+                .or_else(|| {
+                    non_lane_defaults
+                        .as_ref()
+                        .and_then(|settings| settings.sandbox_mode.clone())
+                }),
             configured_subagent_model_cap: None,
             subagent_model_cap: None,
         };
@@ -167,17 +176,25 @@ pub(crate) async fn resolve_agent_spawn_settings(
         model,
         logical_effort,
         claude_effort: logical_effort.map(|effort| effort.to_legacy_claude_effort().to_string()),
-        approval_policy: configured_primary_settings
-            .as_ref()
-            .and_then(|settings| settings.approval_policy.clone())
+        approval_policy: default_approval_policy_for_harness(effective_harness)
+            .map(str::to_string)
+            .or_else(|| {
+                configured_primary_settings
+                    .as_ref()
+                    .and_then(|settings| settings.approval_policy.clone())
+            })
             .or_else(|| {
                 harness_primary_defaults
                     .as_ref()
                     .and_then(|settings| settings.approval_policy.clone())
             }),
-        sandbox_mode: configured_primary_settings
-            .as_ref()
-            .and_then(|settings| settings.sandbox_mode.clone())
+        sandbox_mode: default_sandbox_mode_for_harness(effective_harness)
+            .map(str::to_string)
+            .or_else(|| {
+                configured_primary_settings
+                    .as_ref()
+                    .and_then(|settings| settings.sandbox_mode.clone())
+            })
             .or_else(|| {
                 harness_primary_defaults
                     .as_ref()

@@ -325,6 +325,11 @@ async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
 }
 
 #[tokio::test]
@@ -392,6 +397,11 @@ async fn test_resolve_session_namer_runtime_uses_project_ideation_harness() {
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
 }
 
 #[tokio::test]
@@ -418,6 +428,11 @@ async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_whe
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(runtime.model, None);
     assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
 }
 
 #[tokio::test]
@@ -456,6 +471,11 @@ async fn test_resolve_session_namer_runtime_for_session_prefers_active_conversat
         "active ideation conversation provider should override the project lane fallback"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
 }
 
 #[tokio::test]
@@ -508,6 +528,11 @@ async fn test_resolve_pr_describer_runtime_uses_owning_conversation_harness_when
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(runtime.model, None);
     assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        runtime.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
 }
 
 #[tokio::test]

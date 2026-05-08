@@ -1,7 +1,8 @@
 use super::{
-    build_codex_exec_args, build_codex_mcp_overrides, build_spawnable_codex_exec_command,
-    compose_codex_prompt, configure_spawn, probe_codex_cli, resolve_codex_cli_from_candidates,
-    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
+    build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
+    build_spawnable_codex_exec_command, compose_codex_prompt, configure_spawn, probe_codex_cli,
+    resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
+    CodexMcpRuntimeContext,
 };
 use crate::domain::agents::LogicalEffort;
 use std::ffi::{OsStr, OsString};
@@ -314,6 +315,65 @@ fn build_codex_exec_args_preserves_gpt55_xhigh_selection() {
     assert!(args
         .windows(2)
         .any(|pair| pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"xhigh\""));
+}
+
+#[test]
+fn build_codex_exec_args_defaults_to_mcp_safe_approval_and_sandbox() {
+    let args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig::default(),
+    )
+    .expect("build codex exec args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-s" && pair[1] == "danger-full-access"));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "approval_policy=\"never\""));
+}
+
+#[test]
+fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
+    let args = build_codex_exec_resume_args(
+        &full_codex_capabilities(),
+        "session-123",
+        &CodexExecCliConfig::default(),
+    )
+    .expect("build codex resume args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "approval_policy=\"never\""));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "sandbox_mode=\"danger-full-access\""));
+}
+
+#[test]
+fn build_codex_exec_args_enforces_mcp_safe_approval_and_sandbox_overrides() {
+    let args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            approval_policy: Some("on-request".to_string()),
+            sandbox_mode: Some("workspace-write".to_string()),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex exec args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-s" && pair[1] == "danger-full-access"));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "approval_policy=\"never\""));
+    assert!(!args
+        .windows(2)
+        .any(|pair| pair[0] == "-s" && pair[1] == "workspace-write"));
+    assert!(!args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "approval_policy=\"on-request\""));
 }
 
 #[test]

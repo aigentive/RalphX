@@ -19,11 +19,13 @@ pub use agentic_client::AgenticClient;
 pub use capabilities::{ClientCapabilities, ModelInfo};
 pub use error::{AgentError, AgentResult};
 pub use harness::{
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness,
     generic_harness_lane_defaults, standard_agent_lane_defaults, standard_harness_behavior,
     standard_harness_map, standard_harness_registry, AgentHarnessKind, AgentLane,
     AgentLaneSettings, HarnessBehavior, HarnessEffortStrategy, HarnessModelLabelStrategy,
     HarnessStreamMode, LogicalEffort, ProviderSessionRef, StoredAgentLaneSettings,
-    DEFAULT_AGENT_HARNESS, STANDARD_AGENT_HARNESSES,
+    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE, DEFAULT_AGENT_HARNESS,
+    STANDARD_AGENT_HARNESSES,
 };
 pub use model_registry::{
     built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,

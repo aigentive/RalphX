@@ -9,7 +9,8 @@ use tokio::sync::Mutex;
 
 use crate::domain::agents::{
     AgentConfig, AgentError, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
-    ClientCapabilities, ClientType, ResponseChunk,
+    ClientCapabilities, ClientType, ResponseChunk, CODEX_DEFAULT_APPROVAL_POLICY,
+    CODEX_DEFAULT_SANDBOX_MODE,
 };
 
 use super::{
@@ -74,8 +75,8 @@ impl CodexCliClient {
         CodexExecCliConfig {
             model: config.model.clone(),
             reasoning_effort: config.logical_effort,
-            approval_policy: config.approval_policy.clone(),
-            sandbox_mode: config.sandbox_mode.clone(),
+            approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+            sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             config_overrides,
             cwd: Some(config.working_directory.clone()),
             add_dirs: Vec::new(),
