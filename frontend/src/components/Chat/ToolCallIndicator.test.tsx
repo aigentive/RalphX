@@ -163,7 +163,7 @@ describe("ToolCallIndicator", () => {
     it("shows unavailable text when preview detail returns empty", async () => {
       const user = userEvent.setup();
       vi.mocked(chatApi.getAgentMessageToolCallDetail).mockResolvedValueOnce(null);
-      const toolCall: ToolCall = makeToolCall("read", {
+      const toolCall: ToolCall = makeToolCall("custom_tool", {
         id: "call-1",
         arguments: { file_path: "/tmp/big.txt" },
         result: "preview",
@@ -186,7 +186,7 @@ describe("ToolCallIndicator", () => {
       vi.mocked(chatApi.getAgentMessageToolCallDetail).mockRejectedValueOnce(
         new Error("detail endpoint failed")
       );
-      const toolCall: ToolCall = makeToolCall("edit", {
+      const toolCall: ToolCall = makeToolCall("custom_tool", {
         id: "call-1",
         arguments: { file_path: "/tmp/big.txt" },
         result: "preview",
@@ -206,7 +206,7 @@ describe("ToolCallIndicator", () => {
 
     it("expands previewed results without fetching when no detail ref exists", async () => {
       const user = userEvent.setup();
-      const toolCall: ToolCall = makeToolCall("glob", {
+      const toolCall: ToolCall = makeToolCall("custom_tool", {
         id: "call-1",
         arguments: { pattern: "**/*.ts" },
         result: "preview only",
@@ -220,22 +220,43 @@ describe("ToolCallIndicator", () => {
       expect(screen.getByText("preview only")).toBeInTheDocument();
     });
 
-    it.each(["bash", "write", "grep"] as const)(
-      "renders preview card icon branch for %s",
-      (name) => {
-        const toolCall: ToolCall = makeToolCall(name, {
-          id: `call-${name}`,
-          arguments: { value: name },
-          result: "preview",
-          resultPreviewTruncated: true,
-        });
+    it("keeps previewed registered tools on their specialized widget path", async () => {
+      const user = userEvent.setup();
+      vi.mocked(chatApi.getAgentMessageToolCallDetail).mockResolvedValueOnce({
+        toolCall: makeToolCall("bash", {
+          id: "call-bash",
+          arguments: { command: "npm test", description: "Run tests" },
+          result: "full line 1\nfull line 2\nfull line 3",
+        }),
+      });
+      const toolCall: ToolCall = makeToolCall("bash", {
+        id: "call-bash",
+        arguments: { command: "npm test", description: "Run tests" },
+        result: "preview line 1\npreview line 2",
+        resultPreviewTruncated: true,
+        detailRef: {
+          conversationId: "conv-1",
+          messageId: "msg-1",
+          toolCallId: "call-bash",
+        },
+      });
 
-        render(<ToolCallIndicator toolCall={toolCall} />);
+      render(<ToolCallIndicator toolCall={toolCall} />);
 
-        expect(screen.getByTestId("tool-call-preview-card")).toBeInTheDocument();
-        expect(screen.getAllByText(name).length).toBeGreaterThan(0);
-      }
-    );
+      expect(screen.queryByTestId("tool-call-preview-card")).not.toBeInTheDocument();
+      expect(await screen.findByText("Run tests")).toBeInTheDocument();
+      expect(screen.getByText(/preview line 2/)).toBeInTheDocument();
+      expect(chatApi.getAgentMessageToolCallDetail).not.toHaveBeenCalled();
+
+      await user.click(screen.getByText("Run tests"));
+
+      expect(chatApi.getAgentMessageToolCallDetail).toHaveBeenCalledWith({
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "call-bash",
+      });
+      expect(await screen.findByText(/full line 3/)).toBeInTheDocument();
+    });
 
     it("expands when clicked", async () => {
       const user = userEvent.setup();

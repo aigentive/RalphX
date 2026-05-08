@@ -10,9 +10,9 @@ import {
   Terminal,
   Wrench,
 } from "lucide-react";
-import { chatApi } from "@/api/chat";
 import { createSummary, formatValue, getToolVerb } from "./ToolCallIndicator.helpers";
 import type { ToolCall } from "./tool-widgets/shared.constants";
+import { useLazyToolCallDetail } from "./useLazyToolCallDetail";
 
 interface ToolCallPreviewCardProps {
   toolCall: ToolCall;
@@ -57,49 +57,22 @@ export function ToolCallPreviewCard({
   isStreaming = false,
 }: ToolCallPreviewCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [fullToolCall, setFullToolCall] = useState<ToolCall | null>(null);
-  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
+  const {
+    detailError,
+    displayToolCall,
+    fullToolCall,
+    isLoadingDetail,
+    loadDetail,
+  } = useLazyToolCallDetail(toolCall);
   const summary = useMemo(() => createSummary(toolCall), [toolCall]);
   const verb = useMemo(() => getToolVerb(toolCall.name), [toolCall.name]);
-  const hasError = Boolean(toolCall.error);
+  const hasError = Boolean(displayToolCall.error);
   const iconSize = compact ? 12 : 14;
   const chevronSize = compact ? 12 : 14;
-  const displayToolCall = fullToolCall ?? toolCall;
 
   useEffect(() => {
-    if (!isExpanded || fullToolCall || !toolCall.detailRef) {
-      return;
-    }
-
-    let cancelled = false;
-    setIsLoadingDetail(true);
-    setDetailError(null);
-
-    chatApi
-      .getAgentMessageToolCallDetail(toolCall.detailRef)
-      .then((response) => {
-        if (cancelled) return;
-        if (response?.toolCall) {
-          setFullToolCall(response.toolCall);
-        } else {
-          setDetailError("Full result is unavailable.");
-        }
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setDetailError(error instanceof Error ? error.message : "Full result failed to load.");
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingDetail(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [fullToolCall, isExpanded, toolCall.detailRef]);
+    if (isExpanded) void loadDetail();
+  }, [isExpanded, loadDetail]);
 
   return (
     <div

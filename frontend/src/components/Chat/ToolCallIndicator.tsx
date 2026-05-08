@@ -15,6 +15,7 @@ import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { DiffToolCallView } from "./DiffToolCallView";
 import { TaskToolCallCard } from "./TaskToolCallCard";
 import { getToolCallWidget } from "./tool-widgets/registry";
+import { ToolCallPreviewHydrator } from "./ToolCallPreviewHydrator";
 import { ToolCallPreviewCard } from "./ToolCallPreviewCard";
 
 // Re-export ToolCall from canonical location for backwards compatibility
@@ -61,12 +62,56 @@ function ToolIcon({ name, hasError, size = 14 }: { name: string; hasError: boole
   }
 }
 
+function renderWithPreviewHydration(
+  toolCall: ToolCall,
+  render: (toolCall: ToolCall) => React.ReactNode,
+) {
+  if (!toolCall.resultPreviewTruncated) {
+    return render(toolCall);
+  }
+
+  return (
+    <ToolCallPreviewHydrator toolCall={toolCall}>
+      {(displayToolCall) => render(displayToolCall)}
+    </ToolCallPreviewHydrator>
+  );
+}
+
 export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCall, className = "", compact = false, isStreaming = false }: ToolCallIndicatorProps) {
   // Hooks must be called unconditionally (React rules-of-hooks)
   const [isExpanded, setIsExpanded] = useState(false);
   const summary = useMemo(() => createSummary(toolCall), [toolCall]);
   const verb = useMemo(() => getToolVerb(toolCall.name), [toolCall.name]);
   const hasError = Boolean(toolCall.error);
+
+  // Delegate Edit/Write to DiffToolCallView for inline diff rendering
+  // Quick check: arguments must have file_path for diff to work (same gate as DiffToolCallView)
+  if (isDiffToolCall(toolCall.name)) {
+    const args = toolCall.arguments;
+    const hasFilePath = args != null && typeof args === "object" && typeof (args as Record<string, unknown>).file_path === "string" && (args as Record<string, unknown>).file_path !== "";
+    if (hasFilePath && !hasError) {
+      return renderWithPreviewHydration(toolCall, (displayToolCall) => (
+        <DiffToolCallView toolCall={displayToolCall} className={className} compact={compact} />
+      ));
+    }
+  }
+
+  // Delegate Task tool calls to TaskToolCallCard for subagent rendering (never compact — tasks don't nest)
+  if (isTaskToolCall(toolCall.name)) {
+    return renderWithPreviewHydration(toolCall, (displayToolCall) => (
+      <TaskToolCallCard toolCall={displayToolCall} className={className} />
+    ));
+  }
+
+  // Check widget registry for specialized renderers
+  const SpecializedWidget = getToolCallWidget(toolCall.name);
+  if (SpecializedWidget) {
+    return renderWithPreviewHydration(toolCall, (displayToolCall) => (
+      <Suspense fallback={null}>
+        {React.createElement(SpecializedWidget, { toolCall: displayToolCall, compact, className })}
+      </Suspense>
+    ));
+  }
 
   if (toolCall.resultPreviewTruncated) {
     return (
@@ -76,31 +121,6 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
         compact={compact}
         isStreaming={isStreaming}
       />
-    );
-  }
-
-  // Delegate Edit/Write to DiffToolCallView for inline diff rendering
-  // Quick check: arguments must have file_path for diff to work (same gate as DiffToolCallView)
-  if (isDiffToolCall(toolCall.name)) {
-    const args = toolCall.arguments;
-    const hasFilePath = args != null && typeof args === "object" && typeof (args as Record<string, unknown>).file_path === "string" && (args as Record<string, unknown>).file_path !== "";
-    if (hasFilePath && !hasError) {
-      return <DiffToolCallView toolCall={toolCall} className={className} compact={compact} />;
-    }
-  }
-
-  // Delegate Task tool calls to TaskToolCallCard for subagent rendering (never compact — tasks don't nest)
-  if (isTaskToolCall(toolCall.name)) {
-    return <TaskToolCallCard toolCall={toolCall} className={className} />;
-  }
-
-  // Check widget registry for specialized renderers
-  const SpecializedWidget = getToolCallWidget(toolCall.name);
-  if (SpecializedWidget) {
-    return (
-      <Suspense fallback={null}>
-        {React.createElement(SpecializedWidget, { toolCall, compact, className })}
-      </Suspense>
     );
   }
 
