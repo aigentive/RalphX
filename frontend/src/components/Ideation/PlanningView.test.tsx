@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render as rtlRender, screen } from "@testing-library/react";
+import { act, fireEvent, render as rtlRender, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
@@ -215,7 +215,24 @@ vi.mock("@/stores/projectStore", () => ({
 vi.mock("@/components/ui/ResizeHandle", () => ({
   CHAT_PANEL_DEFAULT_WIDTH: 420,
   CHAT_PANEL_MIN_WIDTH: 320,
-  ResizeHandle: ({ testId }: { testId?: string }) => <div data-testid={testId ?? "resize-handle"} />,
+  ResizeHandle: ({
+    isResizing,
+    onDoubleClick,
+    onMouseDown,
+    testId,
+  }: {
+    isResizing: boolean;
+    onDoubleClick?: React.MouseEventHandler<HTMLDivElement>;
+    onMouseDown: React.MouseEventHandler<HTMLDivElement>;
+    testId?: string;
+  }) => (
+    <div
+      data-resizing={String(isResizing)}
+      data-testid={testId ?? "resize-handle"}
+      onDoubleClick={onDoubleClick}
+      onMouseDown={onMouseDown}
+    />
+  ),
 }));
 
 if (!HTMLElement.prototype.scrollTo) {
@@ -316,6 +333,21 @@ describe("PlanningView", () => {
     vi.clearAllMocks();
     mockSetIsPlanExpanded.mockClear();
     mockIsPlanExpanded = false;
+    localStorage.clear();
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      configurable: true,
+      value: vi.fn((query: string) => ({
+        matches: query === "(min-width: 1440px)" || query === "(min-width: 1280px)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
     // Reset proposal store state between tests
     useProposalStore.setState({ lastProposalAddedAt: {} });
   });
@@ -327,6 +359,48 @@ describe("PlanningView", () => {
     expect(screen.getByTestId("ideation-header")).toBeInTheDocument();
     expect(screen.getByTestId("proposals-panel")).toBeInTheDocument();
     expect(screen.getByTestId("conversation-panel")).toBeInTheDocument();
+  });
+
+  it("resizes the desktop Plan Browser sidebar and resets the saved width", async () => {
+    render(<PlanningView {...defaultProps} />);
+
+    const sidebarContainer = screen.getByTestId("ideation-sidebar-container");
+    vi.spyOn(sidebarContainer, "getBoundingClientRect").mockReturnValue({
+      bottom: 720,
+      height: 720,
+      left: 0,
+      right: 340,
+      top: 0,
+      width: 340,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const handle = screen.getByTestId("ideation-sidebar-resize-handle");
+    expect(handle).toHaveAttribute("data-resizing", "false");
+
+    fireEvent.mouseDown(handle, { clientX: 340 });
+    await vi.waitFor(() => expect(handle).toHaveAttribute("data-resizing", "true"));
+    expect(sidebarContainer.style.transition).toBe("none");
+
+    fireEvent.mouseMove(document, { clientX: 420 });
+    fireEvent.mouseUp(document);
+
+    await vi.waitFor(() => {
+      expect(sidebarContainer.style.width).toBe("420px");
+      expect(sidebarContainer.style.minWidth).toBe("420px");
+      expect(handle).toHaveAttribute("data-resizing", "false");
+    });
+    expect(localStorage.getItem("ralphx-plan-browser-sidebar-width")).toBe("420");
+
+    fireEvent.doubleClick(handle);
+
+    await vi.waitFor(() => {
+      expect(sidebarContainer.style.width).toBe("340px");
+      expect(sidebarContainer.style.minWidth).toBe("340px");
+    });
+    expect(localStorage.getItem("ralphx-plan-browser-sidebar-width")).toBeNull();
   });
 
   it("shows title and proposal count in the header", () => {
