@@ -917,6 +917,11 @@ mod tests {
         let configs = codex_client.spawned_configs().await;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].harness, Some(AgentHarnessKind::Codex));
+        assert_eq!(configs[0].approval_policy.as_deref(), Some("never"));
+        assert_eq!(
+            configs[0].sandbox_mode.as_deref(),
+            Some("danger-full-access")
+        );
         assert_eq!(
             configs[0].agent.as_deref(),
             Some(agent_names::AGENT_PR_DESCRIBER)

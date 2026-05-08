@@ -133,6 +133,11 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
     assert!(Arc::ptr_eq(&spawn.client, &codex_client));
     assert_eq!(spawn.config.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(spawn.config.model, None);
+    assert_eq!(spawn.config.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        spawn.config.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
     assert_eq!(spawn.config.working_directory, project_dir.path());
     assert_eq!(
         spawn.config.agent.as_deref(),
@@ -181,6 +186,11 @@ async fn session_namer_session_spawn_uses_active_project_cwd_and_project_ideatio
     assert_eq!(spawn.config.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(spawn.config.approval_policy.as_deref(), Some("never"));
+    assert_eq!(
+        spawn.config.sandbox_mode.as_deref(),
+        Some("danger-full-access")
+    );
     assert_eq!(spawn.config.working_directory, project_dir.path());
     assert_eq!(
         spawn.config.agent.as_deref(),
