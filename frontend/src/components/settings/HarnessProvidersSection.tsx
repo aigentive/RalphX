@@ -1,4 +1,4 @@
-import { Cpu, ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
+import { Cpu, ExternalLink, RefreshCw, RotateCcw, ShieldCheck } from "lucide-react";
 
 import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
 import type { UpdateAgentProviderSettingsInput } from "@/api/harness-providers";
@@ -15,7 +15,12 @@ import { Switch } from "@/components/ui/switch";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { AGENT_EFFORT_CATALOG, type AgentEffort } from "@/lib/agent-models";
+import {
+  AGENT_EFFORT_CATALOG,
+  agentEffortOptionsForModel,
+  defaultModelForProvider,
+  type AgentProvider,
+} from "@/lib/agent-models";
 
 import { ErrorBanner, SectionCard } from "./SettingsView.shared";
 
@@ -40,13 +45,21 @@ const CLAUDE_PERMISSION_MODES = [
 
 const CODEX_APPROVAL_POLICIES = ["never", "on-request", "on-failure", "untrusted"] as const;
 const CODEX_SANDBOX_MODES = ["danger-full-access", "workspace-write", "read-only"] as const;
+const PROVIDER_DEFAULT_SELECT_VALUE = "__harness_default__";
+const CODEX_MCP_LOCK_COPY =
+  "RalphX MCP tools currently require Codex to run with Never approval and Danger Full Access.";
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
 }
 
 function effortLabel(effort: string): string {
+  if (effort === PROVIDER_DEFAULT_SELECT_VALUE) return "Harness default";
   return AGENT_EFFORT_CATALOG.find((entry) => entry.id === effort)?.label ?? effort;
+}
+
+function isAgentProvider(value: string): value is AgentProvider {
+  return value === "claude" || value === "codex";
 }
 
 function ProviderBadge({ provider }: { provider: AgentProviderSettingsResponse }) {
@@ -122,6 +135,7 @@ export function HarnessProvidersSection() {
   const updateProvider = async (
     provider: AgentProviderSettingsResponse,
     changes: Partial<AgentProviderSettingsResponse> & {
+      resetToDefaults?: boolean;
       applyToAllLanes?: boolean;
     },
   ) => {
@@ -147,6 +161,9 @@ export function HarnessProvidersSection() {
       input.claudeAllowDangerouslySkipPermissions =
         changes.claudeAllowDangerouslySkipPermissions;
     }
+    if (changes.resetToDefaults !== undefined) {
+      input.resetToDefaults = changes.resetToDefaults;
+    }
     if (changes.applyToAllLanes !== undefined) {
       input.applyToAllLanes = changes.applyToAllLanes;
     }
@@ -167,6 +184,24 @@ export function HarnessProvidersSection() {
     });
   };
 
+  const resetProviderDefaults = async (
+    provider: AgentProviderSettingsResponse,
+  ) => {
+    const confirmed = await confirm({
+      title: `Reset ${providerLabel(provider.provider)} defaults?`,
+      description: provider.isDefault
+        ? "Restore this provider's built-in defaults and apply them to all agent lanes."
+        : "Restore this provider's built-in defaults without changing enabled/default status.",
+      confirmText: "Reset",
+      cancelText: "Cancel",
+    });
+    if (!confirmed) return;
+    await updateProvider(provider, {
+      resetToDefaults: true,
+      applyToAllLanes: provider.isDefault,
+    });
+  };
+
   return (
     <SectionCard
       icon={<ShieldCheck className="h-5 w-5" />}
@@ -177,7 +212,7 @@ export function HarnessProvidersSection() {
         <ErrorBanner error={displayedError} onDismiss={() => undefined} />
       )}
 
-      <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
+      <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
         <div className="min-w-0">
           <div className="text-sm font-medium text-[var(--text-primary)]">
             Default Provider
@@ -201,18 +236,27 @@ export function HarnessProvidersSection() {
 
       <div className="space-y-4">
         {providers.map((provider) => {
+          const agentProvider = isAgentProvider(provider.provider)
+            ? provider.provider
+            : "claude";
           const providerModels = models.filter(
             (model) => model.provider === provider.provider && model.enabled,
           );
-          const selectedModel =
-            provider.model ?? providerModels[0]?.modelId ?? "";
+          const selectedModel = provider.model ?? PROVIDER_DEFAULT_SELECT_VALUE;
           const selectedModelEntry = providerModels.find(
             (model) => model.modelId === selectedModel,
           );
-          const selectedEffort =
-            (provider.effort as AgentEffort | null | undefined) ??
-            selectedModelEntry?.defaultEffort ??
-            "medium";
+          const selectedModelId =
+            provider.model ?? defaultModelForProvider(agentProvider);
+          const effortOptions = agentEffortOptionsForModel(
+            agentProvider,
+            selectedModelId,
+          );
+          const selectedEffort = provider.effort ?? PROVIDER_DEFAULT_SELECT_VALUE;
+          const hasCustomModel =
+            provider.model != null &&
+            provider.model.trim() !== "" &&
+            selectedModelEntry == null;
 
           return (
             <div
@@ -261,18 +305,36 @@ export function HarnessProvidersSection() {
                   <Select
                     value={selectedModel}
                     onValueChange={(model) =>
-                      void updateProvider(provider, { model })
+                      void updateProvider(provider, {
+                        model:
+                          model === PROVIDER_DEFAULT_SELECT_VALUE ? "" : model,
+                      })
                     }
                     disabled={isUpdating || providerModels.length === 0}
                   >
                     <SelectTrigger id={`provider-model-${provider.provider}`}>
                       <SelectValue>
                         <span className="truncate">
-                          {selectedModelEntry?.menuLabel ?? selectedModel}
+                          {provider.model == null
+                            ? "Harness default"
+                            : selectedModelEntry?.menuLabel ?? provider.model}
                         </span>
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem
+                        value={PROVIDER_DEFAULT_SELECT_VALUE}
+                        textValue="Harness default"
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-[var(--text-primary)]">
+                            Harness default
+                          </span>
+                          <span className="text-xs text-[var(--text-muted)]">
+                            Use the provider's built-in default model.
+                          </span>
+                        </div>
+                      </SelectItem>
                       {providerModels.map((model) => (
                         <SelectItem
                           key={model.modelId}
@@ -291,6 +353,21 @@ export function HarnessProvidersSection() {
                           </div>
                         </SelectItem>
                       ))}
+                      {hasCustomModel && provider.model && (
+                        <SelectItem
+                          value={provider.model}
+                          textValue={provider.model}
+                        >
+                          <div className="flex flex-col">
+                            <span className="text-[var(--text-primary)]">
+                              Custom model
+                            </span>
+                            <span className="text-xs text-[var(--text-muted)]">
+                              {provider.model}
+                            </span>
+                          </div>
+                        </SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
@@ -302,7 +379,10 @@ export function HarnessProvidersSection() {
                   <Select
                     value={selectedEffort}
                     onValueChange={(effort) =>
-                      void updateProvider(provider, { effort })
+                      void updateProvider(provider, {
+                        effort:
+                          effort === PROVIDER_DEFAULT_SELECT_VALUE ? "" : effort,
+                      })
                     }
                     disabled={isUpdating}
                   >
@@ -310,7 +390,20 @@ export function HarnessProvidersSection() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {AGENT_EFFORT_CATALOG.map((effort) => (
+                      <SelectItem
+                        value={PROVIDER_DEFAULT_SELECT_VALUE}
+                        textValue="Harness default"
+                      >
+                        <div className="flex flex-col">
+                          <span className="text-[var(--text-primary)]">
+                            Harness default
+                          </span>
+                          <span className="text-xs text-[var(--text-muted)]">
+                            Use the provider's built-in default effort.
+                          </span>
+                        </div>
+                      </SelectItem>
+                      {effortOptions.map((effort) => (
                         <SelectItem key={effort.id} value={effort.id}>
                           {effortLabel(effort.id)}
                         </SelectItem>
@@ -327,10 +420,8 @@ export function HarnessProvidersSection() {
                       </Label>
                       <Select
                         value={provider.approvalPolicy ?? "never"}
-                        onValueChange={(approvalPolicy) =>
-                          void updateProvider(provider, { approvalPolicy })
-                        }
-                        disabled={isUpdating}
+                        onValueChange={() => undefined}
+                        disabled
                       >
                         <SelectTrigger id="codex-approval-policy">
                           <SelectValue />
@@ -349,10 +440,8 @@ export function HarnessProvidersSection() {
                       <Label htmlFor="codex-sandbox-mode">Sandbox Mode</Label>
                       <Select
                         value={provider.sandboxMode ?? "danger-full-access"}
-                        onValueChange={(sandboxMode) =>
-                          void updateProvider(provider, { sandboxMode })
-                        }
-                        disabled={isUpdating}
+                        onValueChange={() => undefined}
+                        disabled
                       >
                         <SelectTrigger id="codex-sandbox-mode">
                           <SelectValue />
@@ -366,6 +455,9 @@ export function HarnessProvidersSection() {
                         </SelectContent>
                       </Select>
                     </div>
+                    <p className="md:col-span-2 text-xs text-[var(--text-muted)]">
+                      {CODEX_MCP_LOCK_COPY}
+                    </p>
                   </>
                 )}
 
@@ -399,13 +491,19 @@ export function HarnessProvidersSection() {
                       </Select>
                     </div>
 
-                    <div className="flex items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
-                      <Label
-                        htmlFor="claude-dangerous-skip"
-                        className="text-xs text-[var(--text-primary)]"
-                      >
-                        Skip Permissions
-                      </Label>
+                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="claude-dangerous-skip"
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Skip Permissions
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Passes --dangerously-skip-permissions and bypasses
+                          Claude permission prompts for RalphX-launched runs.
+                        </p>
+                      </div>
                       <Switch
                         id="claude-dangerous-skip"
                         checked={provider.claudeDangerouslySkipPermissions}
@@ -418,13 +516,20 @@ export function HarnessProvidersSection() {
                       />
                     </div>
 
-                    <div className="flex items-center justify-between rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
-                      <Label
-                        htmlFor="claude-allow-dangerous-skip"
-                        className="text-xs text-[var(--text-primary)]"
-                      >
-                        Allow Skip Option
-                      </Label>
+                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor="claude-allow-dangerous-skip"
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Allow Skip Option
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Makes Claude's dangerous skip mode available as an
+                          option. Allow Skip Option does not bypass prompts by
+                          itself.
+                        </p>
+                      </div>
                       <Switch
                         id="claude-allow-dangerous-skip"
                         checked={provider.claudeAllowDangerouslySkipPermissions}
@@ -440,7 +545,17 @@ export function HarnessProvidersSection() {
                 )}
               </div>
 
-              <div className="flex justify-end border-t border-[var(--border-subtle)] px-4 py-3">
+              <div className="flex justify-end gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isUpdating}
+                  onClick={() => void resetProviderDefaults(provider)}
+                >
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Reset {providerLabel(provider.provider)}
+                </Button>
                 <Button
                   type="button"
                   variant={provider.isDefault ? "secondary" : "default"}

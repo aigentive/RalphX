@@ -1,6 +1,11 @@
 use crate::application::{harness_runtime_registry::HarnessRuntimeProbe, AppState, AGENT_LANES};
-use crate::domain::agents::{AgentHarnessKind, AgentLane, AgentProviderSettings, LogicalEffort};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentLane, AgentProviderSettings, LogicalEffort,
+    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+};
+use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::{
     apply_provider_to_global_lanes, merge_input, parse_effort, parse_provider, provider_status,
@@ -20,6 +25,7 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         claude_permission_mode: None,
         claude_dangerously_skip_permissions: None,
         claude_allow_dangerously_skip_permissions: None,
+        reset_to_defaults: false,
         apply_to_all_lanes: false,
     }
 }
@@ -119,6 +125,68 @@ fn merge_clears_blank_sandbox_and_claude_permission_defaults() {
 
     assert_eq!(merged.sandbox_mode, None);
     assert_eq!(merged.claude_permission_mode, None);
+}
+
+#[test]
+fn merge_clears_blank_effort_to_harness_default() {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    settings.effort = Some(LogicalEffort::High);
+    let next = UpdateAgentProviderSettingsInput {
+        effort: Some(" ".to_string()),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert_eq!(merged.effort, None);
+}
+
+#[test]
+fn merge_locks_codex_policy_and_sandbox_to_mcp_required_defaults() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    let next = UpdateAgentProviderSettingsInput {
+        approval_policy: Some("on-request".to_string()),
+        sandbox_mode: Some("workspace-write".to_string()),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert_eq!(
+        merged.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        merged.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
+    );
+}
+
+#[test]
+fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.model = Some("claude-opus-4.5".to_string());
+    settings.effort = Some(LogicalEffort::Max);
+    settings.claude_permission_mode = Some("acceptEdits".to_string());
+    settings.claude_dangerously_skip_permissions = false;
+    let next = UpdateAgentProviderSettingsInput {
+        reset_to_defaults: true,
+        ..input("claude")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert!(merged.enabled);
+    assert!(merged.is_default);
+    assert_eq!(merged.model.as_deref(), Some("sonnet"));
+    assert_eq!(merged.effort, Some(LogicalEffort::Medium));
+    assert_eq!(
+        merged.claude_permission_mode.as_deref(),
+        Some("bypassPermissions")
+    );
+    assert!(merged.claude_dangerously_skip_permissions);
 }
 
 #[test]
@@ -317,6 +385,46 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
 
     assert_eq!(response.default_provider.as_deref(), Some("codex"));
     assert!(!response.requires_onboarding);
+    for lane in AGENT_LANES {
+        let stored = state
+            .agent_lane_settings_repo
+            .get_global(lane)
+            .await
+            .expect("read lane")
+            .expect("lane settings");
+        assert_eq!(stored.settings.harness, AgentHarnessKind::Codex);
+        assert_eq!(stored.settings.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(stored.settings.effort, Some(LogicalEffort::High));
+    }
+}
+
+#[tokio::test]
+async fn update_first_enabled_provider_sets_default_and_applies_all_global_lanes() {
+    let mut state = AppState::new_test();
+    state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let probes = HashMap::from([
+        (AgentHarnessKind::Codex, ready_probe("/usr/bin/codex")),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        enabled: Some(true),
+        model: Some("gpt-5.4".to_string()),
+        effort: Some("high".to_string()),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    assert_eq!(response.default_provider.as_deref(), Some("codex"));
+    let stored_default = state
+        .agent_provider_settings_repo
+        .get_default()
+        .await
+        .expect("read default")
+        .expect("default provider");
+    assert_eq!(stored_default.provider, AgentHarnessKind::Codex);
     for lane in AGENT_LANES {
         let stored = state
             .agent_lane_settings_repo

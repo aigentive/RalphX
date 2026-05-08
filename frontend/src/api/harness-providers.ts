@@ -48,6 +48,7 @@ export interface UpdateAgentProviderSettingsInput {
   claudePermissionMode?: string | null;
   claudeDangerouslySkipPermissions?: boolean;
   claudeAllowDangerouslySkipPermissions?: boolean;
+  resetToDefaults?: boolean;
   applyToAllLanes?: boolean;
 }
 

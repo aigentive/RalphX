@@ -23,3 +23,5 @@ paths:
 | Prefer provider-neutral concrete names | Shared app/runtime types, builders, and comments should prefer provider-neutral names like `AppChatService`; keep Claude-named concrete aliases only where compatibility still requires them. |
 | New harnesses extend the shared surface | Adding another harness must start from the shared registries/bundles/adapters and docs, not from a new pairwise `claude+X` special case. |
 | Settings/docs must stay in sync | Any user-visible harness capability, limitation, or lane-setting change must update user docs and the relevant `.claude/rules` file in the same PR. |
+| Providers own readiness/defaults | Provider settings own CLI readiness, enablement, default-provider selection, provider defaults, and first-enable lane application; lane settings only choose among enabled/validated providers. |
+| Codex MCP launch modes are locked | Until RalphX MCP supports weaker Codex modes, Codex approval/sandbox defaults and settings must remain `never` / `danger-full-access`. |

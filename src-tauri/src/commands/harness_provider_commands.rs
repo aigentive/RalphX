@@ -8,7 +8,7 @@ use crate::application::{
 };
 use crate::domain::agents::{
     generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings, AgentProviderSettings,
-    LogicalEffort,
+    LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
 
@@ -59,6 +59,8 @@ pub struct UpdateAgentProviderSettingsInput {
     pub claude_dangerously_skip_permissions: Option<bool>,
     pub claude_allow_dangerously_skip_permissions: Option<bool>,
     #[serde(default)]
+    pub reset_to_defaults: bool,
+    #[serde(default)]
     pub apply_to_all_lanes: bool,
 }
 
@@ -69,13 +71,33 @@ fn parse_provider(value: &str) -> Result<AgentHarnessKind, String> {
 }
 
 fn parse_effort(value: Option<String>) -> Result<Option<LogicalEffort>, String> {
-    value
-        .map(|effort| {
-            effort
-                .parse::<LogicalEffort>()
-                .map_err(|err| format!("Invalid provider effort: {err}"))
-        })
-        .transpose()
+    match value {
+        Some(effort) if effort.trim().is_empty() => Ok(None),
+        Some(effort) => effort
+            .parse::<LogicalEffort>()
+            .map(Some)
+            .map_err(|err| format!("Invalid provider effort: {err}")),
+        None => Ok(None),
+    }
+}
+
+fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
+    let defaults = AgentProviderSettings::disabled_defaults(settings.provider);
+    settings.model = defaults.model;
+    settings.effort = defaults.effort;
+    settings.approval_policy = defaults.approval_policy;
+    settings.sandbox_mode = defaults.sandbox_mode;
+    settings.claude_permission_mode = defaults.claude_permission_mode;
+    settings.claude_dangerously_skip_permissions = defaults.claude_dangerously_skip_permissions;
+    settings.claude_allow_dangerously_skip_permissions =
+        defaults.claude_allow_dangerously_skip_permissions;
+}
+
+fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
+    if settings.provider == AgentHarnessKind::Codex {
+        settings.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+        settings.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
+    }
 }
 
 fn merge_input(
@@ -83,6 +105,9 @@ fn merge_input(
     input: UpdateAgentProviderSettingsInput,
     provider_available: bool,
 ) -> Result<AgentProviderSettings, String> {
+    if input.reset_to_defaults {
+        reset_configurable_defaults(&mut settings);
+    }
     if let Some(model) = input.model {
         settings.model = if model.trim().is_empty() {
             None
@@ -141,6 +166,7 @@ fn merge_input(
         }
         settings.is_default = is_default;
     }
+    enforce_provider_constraints(&mut settings);
     Ok(settings)
 }
 
@@ -299,14 +325,23 @@ async fn update_provider_settings_with_probes(
     let probe = probes
         .get(&provider)
         .ok_or_else(|| format!("{provider} probe unavailable"))?;
-    let existing = state
+    let stored = state
         .agent_provider_settings_repo
-        .get(provider)
+        .list()
         .await
-        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())?;
+    let existing = stored
+        .iter()
+        .find(|row| row.provider == provider)
+        .cloned()
         .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(provider));
-    let apply_to_all_lanes = input.apply_to_all_lanes;
-    let settings = merge_input(existing, input, probe.available)?;
+    let first_enabled_provider =
+        input.enabled == Some(true) && stored.iter().all(|row| !row.enabled);
+    let apply_to_all_lanes = input.apply_to_all_lanes || first_enabled_provider;
+    let mut settings = merge_input(existing, input, probe.available)?;
+    if first_enabled_provider {
+        settings.is_default = true;
+    }
     let saved = state
         .agent_provider_settings_repo
         .upsert(&settings)

@@ -195,10 +195,20 @@ describe("HarnessProvidersSection", () => {
 
     openSelectById("provider-model-codex");
     expect(
+      screen.getByRole("option", { name: /Harness default/ }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("option", {
         name: /gpt-5\.4.*Strong model for everyday coding\./,
       }),
     ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /Harness default/ }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      model: "",
+    });
+
+    openSelectById("provider-model-codex");
     await user.click(screen.getByRole("option", { name: /gpt-5\.4/ }));
     expect(updateProviderAsync).toHaveBeenCalledWith({
       provider: "codex",
@@ -246,25 +256,27 @@ describe("HarnessProvidersSection", () => {
     render(<HarnessProvidersSection />);
 
     openSelectById("provider-effort-codex");
+    expect(
+      screen.getByRole("option", { name: /Harness default/ }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /Harness default/ }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      effort: "",
+    });
+
+    openSelectById("provider-effort-codex");
     await user.click(screen.getByRole("option", { name: "High" }));
     expect(updateProviderAsync).toHaveBeenCalledWith({
       provider: "codex",
       effort: "high",
     });
 
-    openSelectById("codex-approval-policy");
-    await user.click(screen.getByRole("option", { name: "on-request" }));
-    expect(updateProviderAsync).toHaveBeenCalledWith({
-      provider: "codex",
-      approvalPolicy: "on-request",
-    });
-
-    openSelectById("codex-sandbox-mode");
-    await user.click(screen.getByRole("option", { name: "workspace-write" }));
-    expect(updateProviderAsync).toHaveBeenCalledWith({
-      provider: "codex",
-      sandboxMode: "workspace-write",
-    });
+    expect(document.getElementById("codex-approval-policy")).toBeDisabled();
+    expect(document.getElementById("codex-sandbox-mode")).toBeDisabled();
+    expect(
+      screen.getByText(/RalphX MCP tools currently require Codex to run with Never approval and Danger Full Access/i),
+    ).toBeInTheDocument();
 
     openSelectById("claude-permission-mode");
     await user.click(screen.getByRole("option", { name: "default" }));
@@ -278,11 +290,36 @@ describe("HarnessProvidersSection", () => {
       provider: "claude",
       claudeDangerouslySkipPermissions: false,
     });
+    expect(
+      screen.getByText(/Passes --dangerously-skip-permissions/i),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByLabelText("Allow Skip Option"));
     expect(updateProviderAsync).toHaveBeenCalledWith({
       provider: "claude",
       claudeAllowDangerouslySkipPermissions: false,
+    });
+    expect(
+      screen.getByText(/Allow Skip Option does not bypass prompts by itself/i),
+    ).toBeInTheDocument();
+  });
+
+  it("resets provider defaults and applies them to lanes when the provider is default", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    await user.click(screen.getByRole("button", { name: "Reset Codex" }));
+
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Reset Codex defaults?",
+        confirmText: "Reset",
+      }),
+    );
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      resetToDefaults: true,
+      applyToAllLanes: true,
     });
   });
 

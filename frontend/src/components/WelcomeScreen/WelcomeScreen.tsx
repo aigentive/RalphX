@@ -146,7 +146,9 @@ export default function WelcomeScreen({
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            {providerSetupRequired ? "Choose your agent harness." : "Describe it. Ship it."}
+            {providerSetupRequired
+              ? "The best way to ship software with AI"
+              : "Describe it. Ship it."}
           </p>
         </div>
 
@@ -160,15 +162,23 @@ export default function WelcomeScreen({
               data-testid="welcome-provider-step"
               data-current="true"
               data-status="current"
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-md border px-3 py-2 text-sm"
+              className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
               style={{
                 backgroundColor: "var(--bg-elevated)",
                 borderColor: "var(--accent-primary)",
                 color: "var(--text-primary)",
               }}
             >
-              <Settings className="h-4 w-4 shrink-0" />
-              <span className="truncate font-medium">Provider</span>
+              <Settings className="mt-0.5 h-4 w-4 shrink-0" />
+              <span className="min-w-0">
+                <span className="block truncate font-medium">Provider</span>
+                <span
+                  className="block truncate text-[0.6875rem]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Choose your agent harness.
+                </span>
+              </span>
             </div>
             <div
               data-testid="welcome-project-step"

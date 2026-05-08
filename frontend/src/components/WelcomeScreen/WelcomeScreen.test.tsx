@@ -27,6 +27,9 @@ describe("WelcomeScreen", () => {
       />,
     );
 
+    expect(
+      screen.getByText("The best way to ship software with AI"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Choose your agent harness.")).toBeInTheDocument();
     expect(screen.getByTestId("welcome-setup-steps")).toBeInTheDocument();
     expect(screen.getByTestId("welcome-project-step")).toHaveAttribute(
