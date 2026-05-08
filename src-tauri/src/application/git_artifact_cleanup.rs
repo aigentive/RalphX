@@ -495,6 +495,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn merged_agent_workspace_cleanup_tolerates_missing_worktree_path() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+        let workspace = workspace_for(&project, "ralphx/cleanup/missing-worktree", "merged");
+        let worktree_path = Path::new(&workspace.worktree_path);
+
+        let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, false)
+            .await
+            .expect("cleanup should tolerate missing worktree path");
+
+        assert!(!report.worktree_removed);
+        assert!(!report.branch_deleted);
+        assert!(!worktree_path.exists());
+    }
+
+    #[tokio::test]
     async fn merged_agent_workspace_cleanup_removes_clean_worktree_and_merged_branch() {
         let repo = init_repo();
         let worktrees = tempfile::tempdir().expect("worktree parent");

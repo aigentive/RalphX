@@ -22,6 +22,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::GithubServiceTrait;
+use crate::error::AppError;
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryPlanBranchRepository,
 };
@@ -335,6 +336,55 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     let state = github.state();
     assert_eq!(state.fetch_remote_calls, 1);
     assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = "ralphx/poller-cleanup/agent-fetch-failure";
+    let workspace = cleanup_workspace_with_conversation(
+        &project,
+        branch,
+        "poller-fetch-failure-cleanup-conversation",
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+        .await
+        .expect("create worktree");
+    std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+    run_git(&worktree_path, &["add", "."]);
+    run_git(&worktree_path, &["commit", "-m", "agent work"]);
+    run_git(
+        repo.path(),
+        &["merge", "--no-ff", branch, "-m", "merge agent"],
+    );
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
+        "simulated fetch failure".to_string(),
+    )));
+
+    cleanup_terminal_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        &conversation_id,
+        &project,
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        true,
+    )
+    .await;
+
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(repo.path(), branch));
+    assert_eq!(github.state().fetch_remote_calls, 1);
 }
 
 #[tokio::test]

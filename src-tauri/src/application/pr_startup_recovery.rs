@@ -1413,6 +1413,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_terminal_agent_workspace_cleanup_continues_after_fetch_failure() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/agent-fetch-failure";
+        let workspace = startup_workspace(&project, branch);
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+
+        GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+            .await
+            .expect("create worktree");
+        std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+        run_git(&worktree_path, &["add", "."]);
+        run_git(&worktree_path, &["commit", "-m", "agent work"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge agent"],
+        );
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
+            "simulated fetch failure".to_string(),
+        )));
+
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+        )
+        .await;
+
+        assert!(!worktree_path.exists());
+        assert!(!branch_exists(repo.path(), branch));
+        assert_eq!(github.state().fetch_remote_calls, 1);
+    }
+
+    #[tokio::test]
     async fn startup_terminal_cleanup_skips_blocked_projects() {
         let app_state = AppState::new_test();
         let repo = init_cleanup_repo();
