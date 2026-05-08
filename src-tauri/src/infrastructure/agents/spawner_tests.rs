@@ -3,6 +3,7 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings, AgentOutput,
     AgentResponse, AgentResult, AgenticClient, ClientCapabilities, ClientType, ResponseChunk,
+    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::entities::{GitMode, Project, ProjectId, Task, TaskId};
@@ -1037,7 +1038,7 @@ async fn test_spawn_uses_reexecutor_lane_for_reexecuting_task() {
     let mut lane_settings = AgentLaneSettings::new(AgentHarnessKind::Codex);
     lane_settings.model = Some("gpt-5.4-mini".to_string());
     lane_settings.effort = Some(crate::domain::agents::LogicalEffort::Medium);
-    lane_settings.approval_policy = Some("never".to_string());
+    lane_settings.approval_policy = Some("on-request".to_string());
     lane_settings.sandbox_mode = Some("read-only".to_string());
     agent_lane_settings_repo
         .upsert_for_project(
@@ -1072,8 +1073,14 @@ async fn test_spawn_uses_reexecutor_lane_for_reexecuting_task() {
         config.logical_effort,
         Some(crate::domain::agents::LogicalEffort::Medium)
     );
-    assert_eq!(config.approval_policy.as_deref(), Some("never"));
-    assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+    assert_eq!(
+        config.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        config.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
+    );
 }
 
 #[tokio::test]
