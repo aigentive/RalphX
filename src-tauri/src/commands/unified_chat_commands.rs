@@ -27,6 +27,7 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::agent_workspace_bridge::wake_agent_workspace_for_bridge_events;
 use crate::application::agent_workspace_pr_description::draft_agent_workspace_pr_description;
+use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_result_object, tool_detail_ref,
 };
@@ -383,8 +384,26 @@ fn emit_workspace_changed_when_done(
 
 async fn agent_workspace_response_for_state(
     state: &AppState,
-    workspace: AgentConversationWorkspace,
+    mut workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
+    if recover_stale_publish_repair_for_workspace(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        workspace.clone(),
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    {
+        if let Some(refreshed) = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            workspace = refreshed;
+        }
+    }
+
     let linked_plan_branch_id = workspace.linked_plan_branch_id.clone();
     let mut response = AgentConversationWorkspaceResponse::from(workspace);
 
@@ -2185,6 +2204,21 @@ pub async fn get_agent_conversation_workspace_freshness(
                 conversation_id
             )
         })?;
+    if recover_stale_publish_repair_for_workspace(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
+        workspace.clone(),
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    {
+        workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(workspace);
+    }
 
     let project = state
         .project_repo
