@@ -2098,8 +2098,9 @@ fn test_config_harnesses_claude_file_contains_expected_runtime_defaults() {
         "project".to_string(),
         "local".to_string()
     ]));
-    assert_eq!(parsed.claude.permission_mode, "default");
-    assert!(!parsed.claude.dangerously_skip_permissions);
+    assert_eq!(parsed.claude.permission_mode, "bypassPermissions");
+    assert!(parsed.claude.dangerously_skip_permissions);
+    assert!(!parsed.claude.allow_dangerously_skip_permissions);
     assert_eq!(parsed.claude.permission_prompt_tool, "permission_request");
     assert!(parsed.claude.append_system_prompt_file);
     assert_eq!(parsed.claude.settings_profile.as_deref(), Some("default"));
@@ -2128,7 +2129,9 @@ fn test_embedded_config_omits_claude_globals_and_overlay_restores_expected_defau
             "local".to_string()
         ])
     );
-    assert_eq!(parsed.claude.permission_mode, "default");
+    assert_eq!(parsed.claude.permission_mode, "bypassPermissions");
+    assert!(parsed.claude.dangerously_skip_permissions);
+    assert!(!parsed.claude.allow_dangerously_skip_permissions);
     assert_eq!(parsed.claude.permission_prompt_tool, "mcp__ralphx__permission_request");
     assert_eq!(parsed.claude.default_effort, "medium");
 
@@ -2995,7 +2998,7 @@ fn test_permission_mode_memory_capture_is_accept_edits() {
 
 #[test]
 fn test_permission_mode_chat_agent_is_none() {
-    // Non-worker agents should NOT have a permission_mode override (inherits global "default")
+    // Non-worker agents should NOT have a permission_mode override; they inherit the global mode.
     let config = get_agent_config("ralphx-chat-task").expect("ralphx-chat-task should exist");
     assert_eq!(
         config.permission_mode, None,

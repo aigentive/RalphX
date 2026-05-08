@@ -20,12 +20,13 @@ use crate::application::{
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentRunRepository, AppStateRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryArchiveRepository,
-    MemoryEntryRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, PlanBranchRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::WebhookPublisher;
@@ -62,6 +63,7 @@ pub(crate) struct StartupPipelineDeps {
     pub memory_entry_repo: Arc<dyn MemoryEntryRepository>,
     pub execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
+    pub agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     pub ideation_effort_settings_repo: Arc<dyn IdeationEffortSettingsRepository>,
     pub ideation_model_settings_repo: Arc<dyn IdeationModelSettingsRepository>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
@@ -115,6 +117,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         memory_entry_repo,
         execution_settings_repo,
         agent_lane_settings_repo,
+        agent_provider_settings_repo,
         ideation_effort_settings_repo,
         ideation_model_settings_repo,
         interactive_process_registry,
@@ -171,6 +174,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         running_agent_registry: Arc::clone(&running_agent_registry),
         memory_event_repo: Arc::clone(&memory_event_repo),
         agent_clients: agent_clients.clone(),
+        agent_provider_settings_repo: Arc::clone(&agent_provider_settings_repo),
         plan_branch_repo: Arc::clone(&plan_branch_repo),
         github_service: github_service.as_ref().map(Arc::clone),
         pr_poller_registry: Arc::clone(&pr_poller_registry),
@@ -182,6 +186,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         execution_state: Arc::clone(&execution_state),
         execution_settings_repo: Arc::clone(&execution_settings_repo),
         agent_lane_settings_repo: Arc::clone(&agent_lane_settings_repo),
+        agent_provider_settings_repo: Arc::clone(&agent_provider_settings_repo),
         plan_branch_repo: Arc::clone(&plan_branch_repo),
         interactive_process_registry: Arc::clone(&interactive_process_registry),
         agent_clients: agent_clients.clone(),
@@ -270,6 +275,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_runtime_support(
         Some(Arc::clone(&execution_settings_repo)),
         Some(Arc::clone(&agent_lane_settings_repo)),
+        Some(Arc::clone(&agent_provider_settings_repo)),
         None,
         Some(Arc::clone(&interactive_process_registry)),
     )
@@ -358,6 +364,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             chat_runtime_deps: recovery_chat_service_deps.clone(),
             execution_settings_repo: Arc::clone(&execution_settings_repo),
             agent_lane_settings_repo: Arc::clone(&agent_lane_settings_repo),
+            agent_provider_settings_repo: Arc::clone(&agent_provider_settings_repo),
             plan_branch_repo: Arc::clone(&plan_branch_repo),
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             app_handle: app_handle.clone(),

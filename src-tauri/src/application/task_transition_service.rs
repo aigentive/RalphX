@@ -34,11 +34,11 @@ use crate::domain::entities::{
     InternalStatus, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -864,6 +864,7 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     artifact_repo: Option<Arc<dyn ArtifactRepository>>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
 
     /// Activity event repository for emitting merge pipeline audit events.
@@ -946,6 +947,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             Arc::clone(&self.execution_state),
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
+            self.agent_provider_settings_repo.as_ref().map(Arc::clone),
             Arc::clone(
                 self.ideation_session_repo
                     .as_ref()
@@ -962,6 +964,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         execution_state: Arc<ExecutionState>,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
     ) -> Arc<dyn AgentSpawner> {
@@ -972,6 +975,11 @@ impl<R: Runtime> TaskTransitionService<R> {
             .with_harness_clients(agent_clients.iter_explicit_harness_clients())
             .with_repos(Arc::clone(&task_repo), Arc::clone(&project_repo))
             .with_execution_state(Arc::clone(&execution_state));
+        let spawner = if let Some(provider_repo) = agent_provider_settings_repo {
+            spawner.with_agent_provider_settings_repo(provider_repo)
+        } else {
+            spawner
+        };
         let spawner = if let (Some(execution_repo), Some(agent_lane_repo)) =
             (execution_settings_repo, agent_lane_settings_repo)
         {
@@ -1052,6 +1060,9 @@ impl<R: Runtime> TaskTransitionService<R> {
         if let Some(repo) = self.agent_lane_settings_repo.as_ref() {
             service = service.with_agent_lane_settings_repo(Arc::clone(repo));
         }
+        if let Some(repo) = self.agent_provider_settings_repo.as_ref() {
+            service = service.with_agent_provider_settings_repo(Arc::clone(repo));
+        }
         if let Some(repo) = self.plan_branch_repo.as_ref() {
             service = service.with_plan_branch_repo(Arc::clone(repo));
         }
@@ -1096,6 +1107,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             Arc::clone(&task_repo),
             Arc::clone(&project_repo),
             Arc::clone(&execution_state),
+            None,
             None,
             None,
             Arc::clone(&ideation_session_repo),
@@ -1202,6 +1214,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             artifact_repo: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             review_repo: None,
             activity_event_repo: activity_event_repo_for_services,
             team_mode: None,
@@ -1288,8 +1301,16 @@ impl<R: Runtime> TaskTransitionService<R> {
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo));
+        let app_agent_provider_settings_repo = self
+            ._app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
         if let Some(agent_lane_settings_repo) = app_agent_lane_settings_repo.as_ref() {
             self.agent_lane_settings_repo = Some(Arc::clone(agent_lane_settings_repo));
+        }
+        if let Some(agent_provider_settings_repo) = app_agent_provider_settings_repo.as_ref() {
+            self.agent_provider_settings_repo = Some(Arc::clone(agent_provider_settings_repo));
         }
 
         self.execution_settings_repo = Some(Arc::clone(&repo));
@@ -1305,6 +1326,16 @@ impl<R: Runtime> TaskTransitionService<R> {
         repo: Arc<dyn AgentLaneSettingsRepository>,
     ) -> Self {
         self.agent_lane_settings_repo = Some(Arc::clone(&repo));
+        self.rebuild_chat_service();
+        self.rebuild_agent_spawner();
+        self
+    }
+
+    pub fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(Arc::clone(&repo));
         self.rebuild_chat_service();
         self.rebuild_agent_spawner();
         self

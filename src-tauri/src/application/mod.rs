@@ -35,6 +35,7 @@ pub mod pending_session_drain;
 pub mod permission_state;
 pub mod plan_ranking;
 pub mod priority_service;
+pub(crate) mod provider_onboarding_gate;
 pub mod pr_startup_recovery;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -118,6 +119,9 @@ pub use plan_ranking::{
     compute_interaction_score, compute_recency_score, ScoreBreakdown,
 };
 pub use priority_service::PriorityService;
+pub(crate) use provider_onboarding_gate::{
+    ensure_provider_spawn_enabled, resolve_enabled_default_provider,
+};
 pub use recovery_queue::{ProcessSummary, RecoveryItem, RecoveryPriority, RecoveryQueue};
 pub use ready_task_scheduler::spawn_ready_task_scheduler_if_needed;
 pub use prune_engine::PruneEngine;

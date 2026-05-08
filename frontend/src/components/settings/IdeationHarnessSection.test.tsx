@@ -37,6 +37,55 @@ vi.mock("@/hooks/useAgentModels", async () => {
   };
 });
 
+vi.mock("@/hooks/useHarnessProviders", () => ({
+  useHarnessProviders: () => ({
+    settings: {
+      providers: [
+        {
+          provider: "claude",
+          enabled: true,
+          isDefault: false,
+          model: "sonnet",
+          effort: "medium",
+          approvalPolicy: null,
+          sandboxMode: null,
+          claudePermissionMode: "bypassPermissions",
+          claudeDangerouslySkipPermissions: true,
+          claudeAllowDangerouslySkipPermissions: false,
+          available: true,
+          binaryFound: true,
+          binaryPath: "/usr/local/bin/claude",
+          status: "Available claude detected at /usr/local/bin/claude.",
+          error: null,
+          missingCoreExecFeatures: [],
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          provider: "codex",
+          enabled: true,
+          isDefault: true,
+          model: "gpt-5.5",
+          effort: "xhigh",
+          approvalPolicy: "never",
+          sandboxMode: "danger-full-access",
+          claudePermissionMode: null,
+          claudeDangerouslySkipPermissions: false,
+          claudeAllowDangerouslySkipPermissions: false,
+          available: true,
+          binaryFound: true,
+          binaryPath: "/usr/local/bin/codex",
+          status: "Available codex detected at /usr/local/bin/codex.",
+          error: null,
+          missingCoreExecFeatures: [],
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      defaultProvider: "codex",
+      requiresOnboarding: false,
+    },
+  }),
+}));
+
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
   selectActiveProject: (state: { activeProject: unknown }) => state.activeProject,

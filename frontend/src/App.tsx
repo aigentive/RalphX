@@ -56,6 +56,7 @@ import { useProposalMutations } from "@/hooks/useProposals";
 import { useApplyProposals } from "@/hooks/useApplyProposals";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
@@ -179,6 +180,10 @@ function AppContent() {
 
   // Fetch projects from backend
   const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const {
+    settings: providerSettings,
+    isLoading: isLoadingProviderSettings,
+  } = useHarnessProviders();
 
   // Project creation wizard state
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
@@ -233,6 +238,8 @@ function AppContent() {
   // can lag behind, causing a brief flash where store.projects is {} while
   // fetchedProjects already has data.
   const hasNoProjects = !isLoadingProjects && (!fetchedProjects || fetchedProjects.length === 0);
+  const providerSetupRequired =
+    !isLoadingProviderSettings && providerSettings.requiresOnboarding;
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";
@@ -464,9 +471,13 @@ function AppContent() {
     }
   };
 
-  const handleOpenSettings = () => {
+  const handleOpenSettings = useCallback(() => {
     openModal("settings");
-  };
+  }, [openModal]);
+
+  const handleOpenProviderSettings = useCallback(() => {
+    openModal("settings", { section: "providers" });
+  }, [openModal]);
 
   const handleBattleModeToggle = useCallback(() => {
     if (battleModeActive) {
@@ -780,15 +791,18 @@ function AppContent() {
           currentView={currentView}
           onViewChange={handleViewChange}
           onOpenSettings={handleOpenSettings}
-          hideViews={hasNoProjects || showWelcomeOverlay}
+          hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
         />
 
       {/* Main content area - shows WelcomeScreen or normal content */}
-      {(hasNoProjects || showWelcomeOverlay) ? (
+      {(hasNoProjects || showWelcomeOverlay || providerSetupRequired) ? (
         /* Empty state or manual overlay: animated welcome screen */
         <WelcomeScreen
           onCreateProject={handleOpenProjectWizard}
-          onClose={showWelcomeOverlay ? handleCloseWelcomeOverlay : undefined}
+          onSetupProviders={handleOpenProviderSettings}
+          providerSetupRequired={providerSetupRequired}
+          hasProjects={!hasNoProjects}
+          onClose={showWelcomeOverlay && !providerSetupRequired ? handleCloseWelcomeOverlay : undefined}
         />
       ) : (
         /* Normal content with view-specific content and optional panels */

@@ -51,8 +51,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    DelegatedSessionRepository, ExecutionSettingsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
     StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
@@ -603,6 +604,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -675,6 +677,7 @@ impl<R: Runtime> AppChatService<R> {
             delegated_session_repo,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
@@ -721,6 +724,14 @@ impl<R: Runtime> AppChatService<R> {
         repo: Arc<dyn AgentLaneSettingsRepository>,
     ) -> Self {
         self.agent_lane_settings_repo = Some(repo);
+        self
+    }
+
+    pub fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(repo);
         self
     }
 
@@ -1732,6 +1743,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
         }
 
+        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+            crate::application::resolve_enabled_default_provider(
+                provider_repo,
+                "send_agent_message",
+            )
+            .await
+            .map_err(ChatServiceError::SpawnFailed)?;
+        }
+
         // Runtime halt barrier for all slot-consuming contexts: do not start new
         // task/review/merge/ideation work while the global execution state is
         // paused/stopped. Fresh idle ideation prompts must be durable because
@@ -2671,6 +2691,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             )
             .await;
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);
+        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+            crate::application::ensure_provider_spawn_enabled(
+                provider_repo,
+                resolved_spawn_settings.effective_harness,
+                "send_agent_message",
+            )
+            .await
+            .map_err(ChatServiceError::SpawnFailed)?;
+        }
         let runtime_team_mode = chat_service_helpers::effective_team_mode_for_harness(
             team_mode_val,
             resolved_spawn_settings.effective_harness,

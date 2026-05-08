@@ -116,6 +116,11 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
                     .try_state::<AppState>()
                     .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo))
             }),
+            self.app_handle.and_then(|handle| {
+                handle
+                    .try_state::<AppState>()
+                    .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo))
+            }),
             self.plan_branch_repo.clone(),
             self.interactive_process_registry.clone(),
         )

@@ -16,6 +16,7 @@ pub mod diff_commands;
 pub mod execution_commands;
 pub mod external_mcp_commands;
 pub mod git_commands;
+pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
 pub mod merge_pipeline_commands;
@@ -101,6 +102,10 @@ pub use execution_commands::{
     ActiveProjectState, ExecutionState, RestartResult, ResumeCategory, RunningProcessesResponse,
 };
 pub use health::health_check;
+pub use harness_provider_commands::{
+    get_agent_provider_settings, update_agent_provider_settings,
+    AgentProviderSettingsResponse, AgentProvidersSettingsResponse,
+};
 pub use ideation_commands::{
     analyze_dependencies, apply_proposals_to_kanban,
     archive_ideation_session, assess_all_priorities, assess_proposal_priority,

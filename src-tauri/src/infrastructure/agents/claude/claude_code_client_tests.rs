@@ -2,6 +2,13 @@ use super::*;
 use crate::domain::agents::AgentRole;
 use crate::infrastructure::agents::claude::build_mcp_config_with_runtime_context;
 
+fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str)
+}
+
 #[test]
 fn test_claude_code_client_new() {
     let client = ClaudeCodeClient::new();
@@ -102,6 +109,25 @@ fn test_build_cli_args_basic() {
     assert!(args.contains(&"stream-json".to_string()));
     assert!(args.contains(&"--permission-prompt-tool".to_string()));
     assert!(args.contains(&"mcp__ralphx__permission_request".to_string()));
+}
+
+#[test]
+fn test_build_cli_args_defaults_to_most_permissive_claude_permissions() {
+    let client = ClaudeCodeClient::new();
+    let config = AgentConfig::worker("Test prompt");
+
+    let args = client
+        .build_cli_args(&config, None, false)
+        .expect("build_cli_args should succeed in test");
+
+    assert_eq!(
+        arg_value(&args, "--permission-mode"),
+        Some("bypassPermissions")
+    );
+    assert!(
+        args.contains(&"--dangerously-skip-permissions".to_string()),
+        "Claude agent spawns must bypass permission prompts by default"
+    );
 }
 
 #[test]
@@ -613,6 +639,20 @@ fn test_build_teammate_cli_args_has_skip_permissions() {
     assert!(
         args.contains(&"--dangerously-skip-permissions".to_string()),
         "Teammates must skip permissions"
+    );
+}
+
+#[test]
+fn test_build_teammate_cli_args_uses_bypass_permission_mode() {
+    let client = ClaudeCodeClient::new();
+    let config = test_teammate_config();
+    let args = client
+        .build_teammate_cli_args(&config)
+        .expect("build_teammate_cli_args should succeed in test");
+
+    assert_eq!(
+        arg_value(&args, "--permission-mode"),
+        Some("bypassPermissions")
     );
 }
 

@@ -9,16 +9,25 @@
  */
 
 import { useEffect, useState } from "react";
-import { Sparkles, X } from "lucide-react";
+import { Settings, Sparkles, X } from "lucide-react";
 import AgentConstellation from "./AgentConstellation";
 
 interface WelcomeScreenProps {
   onCreateProject: () => void;
+  onSetupProviders?: () => void;
+  providerSetupRequired?: boolean;
+  hasProjects?: boolean;
   /** Optional callback when closing manually-opened welcome screen (via ⌘⇧W or Escape) */
   onClose?: (() => void) | undefined;
 }
 
-export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScreenProps) {
+export default function WelcomeScreen({
+  onCreateProject,
+  onSetupProviders,
+  providerSetupRequired = false,
+  hasProjects = false,
+  onClose,
+}: WelcomeScreenProps) {
   // Track idle state for keyboard hint pulse animation
   const [isIdle, setIsIdle] = useState(false);
 
@@ -40,12 +49,24 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
       }
       if ((event.metaKey || event.ctrlKey) && event.key === "n") {
         event.preventDefault();
+        if (providerSetupRequired) {
+          onSetupProviders?.();
+          return;
+        }
         onCreateProject();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCreateProject]);
+  }, [onCreateProject, onSetupProviders, providerSetupRequired]);
+
+  const action = providerSetupRequired ? onSetupProviders : onCreateProject;
+  const Icon = providerSetupRequired ? Settings : Sparkles;
+  const actionLabel = providerSetupRequired
+    ? "Set Up Provider"
+    : hasProjects
+      ? "Continue"
+      : "Start Your First Project";
 
   return (
     <div
@@ -124,7 +145,7 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            Describe it. Ship it.
+            {providerSetupRequired ? "Choose your agent harness." : "Describe it. Ship it."}
           </p>
         </div>
 
@@ -138,7 +159,7 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
         >
           {/* Primary CTA button with glow */}
           <button
-            onClick={onCreateProject}
+            onClick={action}
             className="group flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] cta-button"
             style={{
               backgroundColor: "var(--accent-primary)",
@@ -149,31 +170,33 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
             }}
             data-testid="create-first-project-button"
           >
-            <Sparkles className="w-4 h-4 transition-transform group-hover:rotate-12" />
-            Start Your First Project
+            <Icon className="w-4 h-4 transition-transform group-hover:rotate-12" />
+            {actionLabel}
           </button>
 
           {/* Keyboard shortcut hint with idle pulse */}
-          <p
-            className={`text-sm transition-all duration-300 ${isIdle ? "keyboard-hint-pulse" : ""}`}
-            style={{
-              color: "var(--text-muted)",
-              fontFamily: "var(--font-body)",
-            }}
-          >
-            Press{" "}
-            <kbd
-              className="px-2 py-0.5 rounded text-xs font-medium"
+          {!providerSetupRequired && (
+            <p
+              className={`text-sm transition-all duration-300 ${isIdle ? "keyboard-hint-pulse" : ""}`}
               style={{
-                backgroundColor: "var(--bg-elevated)",
-                color: "var(--text-secondary)",
-                border: "1px solid var(--border-default)",
+                color: "var(--text-muted)",
+                fontFamily: "var(--font-body)",
               }}
             >
-              ⌘N
-            </kbd>{" "}
-            to create a project
-          </p>
+              Press{" "}
+              <kbd
+                className="px-2 py-0.5 rounded text-xs font-medium"
+                style={{
+                  backgroundColor: "var(--bg-elevated)",
+                  color: "var(--text-secondary)",
+                  border: "1px solid var(--border-default)",
+                }}
+              >
+                ⌘N
+              </kbd>{" "}
+              to create a project
+            </p>
+          )}
         </div>
       </div>
 

@@ -208,6 +208,18 @@ vi.mock("@/hooks/useMergePipeline", () => ({
   useMergePipeline: vi.fn().mockReturnValue({ data: undefined }),
 }));
 
+vi.mock("@/hooks/useHarnessProviders", () => ({
+  useHarnessProviders: vi.fn().mockReturnValue({
+    settings: {
+      providers: [],
+      defaultProvider: "codex",
+      requiresOnboarding: false,
+    },
+    providers: [],
+    isLoading: false,
+  }),
+}));
+
 // Mock other required hooks
 vi.mock("@/hooks/useReviews", () => ({
   reviewKeys: {

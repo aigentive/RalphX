@@ -8,8 +8,12 @@ use crate::application::harness_runtime_registry::{
 };
 use crate::application::ideation_effort_bootstrap::seed_ideation_effort_defaults;
 use crate::application::ideation_model_bootstrap::seed_ideation_model_settings;
-use crate::application::{load_or_seed_agent_lane_settings_defaults, load_or_seed_execution_settings_defaults};
+use crate::application::{
+    load_or_seed_agent_lane_settings_defaults, load_or_seed_execution_settings_defaults,
+};
 use crate::commands::ExecutionState;
+use crate::domain::agents::AgentHarnessKind;
+use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
 
 pub(crate) fn initialize_settings_defaults(
     app_state: &AppState,
@@ -20,6 +24,7 @@ pub(crate) fn initialize_settings_defaults(
     let init_settings_repo = Arc::clone(&app_state.execution_settings_repo);
     let init_global_settings_repo = Arc::clone(&app_state.global_execution_settings_repo);
     let init_agent_lane_settings_repo = Arc::clone(&app_state.agent_lane_settings_repo);
+    let init_agent_provider_settings_repo = Arc::clone(&app_state.agent_provider_settings_repo);
     let execution_defaults = default_execution_settings_config();
     let agent_harness_defaults = default_agent_harness_settings_config();
     tauri::async_runtime::block_on(async move {
@@ -82,6 +87,23 @@ pub(crate) fn initialize_settings_defaults(
             Err(e) => {
                 warn!(
                     "Failed to load/seed agent harness defaults from database, using runtime fallbacks: {}",
+                    e
+                );
+            }
+        }
+
+        match init_agent_provider_settings_repo
+            .get(AgentHarnessKind::Claude)
+            .await
+        {
+            Ok(Some(settings)) => {
+                apply_claude_provider_permission_settings(&settings);
+                info!("Initialized Claude permission defaults from provider settings");
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(
+                    "Failed to load Claude provider settings for permission defaults: {}",
                     e
                 );
             }

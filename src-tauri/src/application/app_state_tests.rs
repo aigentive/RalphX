@@ -501,8 +501,8 @@ async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_whe
         "session namer should use the harness that owns the conversation being titled"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model, None);
-    assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         runtime.sandbox_mode.as_deref(),
@@ -546,6 +546,8 @@ async fn test_resolve_session_namer_runtime_for_session_prefers_active_conversat
         "active ideation conversation provider should override the project lane fallback"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         runtime.sandbox_mode.as_deref(),
@@ -573,9 +575,9 @@ async fn test_resolve_session_namer_runtime_uses_default_without_provider_or_lan
         Arc::ptr_eq(&runtime.client, &default_mock),
         "legacy session namer should keep using the default helper client without provider or lane metadata"
     );
-    assert_eq!(runtime.harness, None);
-    assert_eq!(runtime.model, None);
-    assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
+    assert_eq!(runtime.model.as_deref(), Some("sonnet"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
 }
 
 #[tokio::test]
@@ -601,8 +603,8 @@ async fn test_resolve_pr_describer_runtime_uses_owning_conversation_harness_when
         "PR describer should use the harness that owns the conversation being published"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model, None);
-    assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         runtime.sandbox_mode.as_deref(),
@@ -628,11 +630,27 @@ async fn test_resolve_pr_describer_runtime_uses_default_client_without_provider_
 
     assert!(
         Arc::ptr_eq(&runtime.client, &default_mock),
-        "legacy conversations without provider_harness should keep using the default helper client"
+        "conversations without provider_harness should use the enabled default provider client"
     );
-    assert_eq!(runtime.harness, None);
-    assert_eq!(runtime.model, None);
-    assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
+    assert_eq!(runtime.model.as_deref(), Some("sonnet"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
+}
+
+#[tokio::test]
+async fn test_resolve_pr_describer_runtime_requires_enabled_default_provider() {
+    let mut state = AppState::new_test();
+    state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+
+    let project = Project::new("Unconfigured Provider Project".to_string(), "/tmp".to_string());
+    let conversation = ChatConversation::new_project(project.id);
+
+    let error = match state.resolve_pr_describer_runtime(&conversation).await {
+        Ok(_) => panic!("missing default provider should block helper spawns"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("Harness > Providers"));
 }
 
 #[tokio::test]

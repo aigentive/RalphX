@@ -1,4 +1,5 @@
 export type SettingsSectionId =
+  | "providers"
   | "execution"
   | "execution-harnesses"
   | "models"
@@ -13,6 +14,7 @@ export type SettingsSectionId =
   | "accessibility";
 
 export type SettingsGroupId =
+  | "harness"
   | "general"
   | "workspace"
   | "ideation"
@@ -26,6 +28,7 @@ export interface SettingsSectionMeta {
 }
 
 export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
+  { id: "harness", label: "Harness" },
   { id: "workspace", label: "Workspace" },
   { id: "general", label: "General" },
   { id: "ideation", label: "Ideation" },
@@ -33,14 +36,15 @@ export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
   { id: "preferences", label: "Preferences" },
 ];
 
-export const DEFAULT_SETTINGS_SECTION: SettingsSectionId = "repository";
+export const DEFAULT_SETTINGS_SECTION: SettingsSectionId = "providers";
 
 export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
+  { id: "providers", groupId: "harness", label: "Providers" },
+  { id: "models", groupId: "harness", label: "Models" },
   { id: "repository", groupId: "workspace", label: "Repository" },
   { id: "project-analysis", groupId: "workspace", label: "Setup & Validation" },
   { id: "execution", groupId: "general", label: "Execution" },
   { id: "execution-harnesses", groupId: "general", label: "Execution Agents" },
-  { id: "models", groupId: "general", label: "Models" },
   { id: "global-execution", groupId: "general", label: "Global Capacity" },
   { id: "review", groupId: "general", label: "Review Policy" },
   { id: "ideation-workflow", groupId: "ideation", label: "Planning & Verification" },

@@ -21,8 +21,8 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{ChatContextType, IdeationSessionId, TaskId};
 use crate::domain::repositories::{
-    AgentLaneSettingsRepository, ExecutionSettingsRepository, IdeationSessionRepository,
-    ProjectRepository, TaskRepository,
+    AgentLaneSettingsRepository, AgentProviderSettingsRepository, ExecutionSettingsRepository,
+    IdeationSessionRepository, ProjectRepository, TaskRepository,
 };
 use crate::domain::services::RunningAgentRegistry;
 use crate::domain::state_machine::AgentSpawner;
@@ -50,6 +50,8 @@ pub struct AgenticClientSpawner {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     /// Provider-neutral lane settings for harness selection
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    /// Provider enablement/default settings for onboarding gating
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     /// Ideation session repo for ideation-aware project slot counting
     ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
     /// Running registry for project-aware slot counting
@@ -80,6 +82,7 @@ impl AgenticClientSpawner {
             project_repo: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             ideation_session_repo: None,
             running_agent_registry: None,
             event_bus: None,
@@ -159,6 +162,14 @@ impl AgenticClientSpawner {
         I: IntoIterator<Item = (AgentHarnessKind, Arc<dyn AgenticClient>)>,
     {
         self.harness_clients.extend(clients);
+        self
+    }
+
+    pub fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(repo);
         self
     }
 
@@ -387,9 +398,25 @@ impl AgenticClientSpawner {
         String,
     > {
         let Some(context_type) = Self::context_type_for_agent(agent_type) else {
+            if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+                crate::application::ensure_provider_spawn_enabled(
+                    provider_repo,
+                    self.default_harness,
+                    "state-machine agent spawn",
+                )
+                .await?;
+            }
             return Ok((self.default_harness, None, None, None, None));
         };
         let Some(agent_name) = Self::resolve_process_agent_name(agent_type) else {
+            if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+                crate::application::ensure_provider_spawn_enabled(
+                    provider_repo,
+                    self.default_harness,
+                    "state-machine agent spawn",
+                )
+                .await?;
+            }
             return Ok((self.default_harness, None, None, None, None));
         };
         let entity_status = self.resolve_task_status(task_id).await;
@@ -406,6 +433,14 @@ impl AgenticClientSpawner {
         .await;
 
         let harness = resolved.effective_harness;
+        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+            crate::application::ensure_provider_spawn_enabled(
+                provider_repo,
+                harness,
+                "state-machine agent spawn",
+            )
+            .await?;
+        }
         let client = self.resolve_client_for_harness(harness).ok_or_else(|| {
             format!("Configured execution harness {} is not registered in the runtime", harness)
         })?;

@@ -26,9 +26,10 @@ tool_sets:
 claude:
   mcp_server_name: ralphx
   setting_sources: [user, project, local]
-  permission_mode: default
+  permission_mode: bypassPermissions
   default_effort: medium
-  dangerously_skip_permissions: false
+  dangerously_skip_permissions: true
+  allow_dangerously_skip_permissions: false
   permission_prompt_tool: permission_request
   append_system_prompt_file: true
   # Passed to claude CLI via `--settings`. See docs/ai-docs/claude-code/settings.md.

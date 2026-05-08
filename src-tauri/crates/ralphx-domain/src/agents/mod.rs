@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod error;
 pub mod harness;
 pub mod model_registry;
+pub mod provider_settings;
 pub mod types;
 
 // Re-export key types
@@ -24,6 +25,8 @@ pub use harness::{
     standard_harness_map, standard_harness_registry, AgentHarnessKind, AgentLane,
     AgentLaneSettings, HarnessBehavior, HarnessEffortStrategy, HarnessModelLabelStrategy,
     HarnessStreamMode, LogicalEffort, ProviderSessionRef, StoredAgentLaneSettings,
+    CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
     CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE, DEFAULT_AGENT_HARNESS,
     STANDARD_AGENT_HARNESSES,
 };
@@ -32,6 +35,7 @@ pub use model_registry::{
     default_model_for_provider, lightweight_model_for_provider, AgentModelDefinition,
     AgentModelRegistrySnapshot, AgentModelSource,
 };
+pub use provider_settings::AgentProviderSettings;
 pub use types::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentRole, ClientType, ResponseChunk,
 };

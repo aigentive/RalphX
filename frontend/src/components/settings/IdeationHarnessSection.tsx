@@ -27,6 +27,7 @@ import {
 } from "@/api/ideation-harness";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useAgentHarnessSettings } from "@/hooks/useIdeationHarnessSettings";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import {
   agentEffortOptionsForModel,
   agentModelOptionsForProvider,
@@ -540,6 +541,7 @@ interface HarnessRowProps {
     }>,
   ) => void;
   modelRegistry: AgentModelRegistry;
+  harnessOptions: typeof HARNESS_OPTIONS;
 }
 
 function SummaryPill({ children }: { children: React.ReactNode }) {
@@ -560,6 +562,7 @@ function HarnessRow({
   onHarnessChange,
   onLaneChange,
   modelRegistry,
+  harnessOptions,
 }: HarnessRowProps) {
   const meta = LANE_META[lane.lane];
   const configuredHarness = lane.configuredHarness ?? lane.effectiveHarness;
@@ -628,7 +631,7 @@ function HarnessRow({
           <Select
             value={configuredHarness}
             onValueChange={(value) => onHarnessChange(value as KnownHarness)}
-            disabled={disabled}
+            disabled={disabled || harnessOptions.length === 0}
           >
             <SelectTrigger
               id={`harness-${lane.lane}`}
@@ -638,13 +641,13 @@ function HarnessRow({
             >
               <SelectValue placeholder="Select provider">
                 <span className="truncate">
-                  {HARNESS_OPTIONS.find((o) => o.value === configuredHarness)?.label ??
+              {HARNESS_OPTIONS.find((o) => o.value === configuredHarness)?.label ??
                     configuredHarness}
                 </span>
               </SelectValue>
             </SelectTrigger>
             <SelectContent className="bg-[var(--bg-elevated)] border-[var(--border-default)]">
-              {HARNESS_OPTIONS.map((option) => (
+              {harnessOptions.map((option) => (
                 <SelectItem
                   key={option.value}
                   value={option.value}
@@ -852,6 +855,7 @@ function HarnessSubsection({
   isGlobal,
   tabValue,
   modelRegistry,
+  harnessOptions,
 }: {
   projectId: string | null;
   projectName: string | null;
@@ -860,6 +864,7 @@ function HarnessSubsection({
   isGlobal: boolean;
   tabValue: HarnessTabValue;
   modelRegistry: AgentModelRegistry;
+  harnessOptions: typeof HARNESS_OPTIONS;
 }) {
   const [showError, setShowError] = useState(false);
   const {
@@ -1015,6 +1020,7 @@ function HarnessSubsection({
                     onHarnessChange={(value) => handleHarnessChange(lane.lane, value)}
                     onLaneChange={(patch) => handleLaneSettingsChange(lane, patch)}
                     modelRegistry={modelRegistry}
+                    harnessOptions={harnessOptions}
                   />
                 );
               })}
@@ -1043,6 +1049,15 @@ function AgentHarnessSection({
   const projectId = activeProject?.id ?? null;
   const projectName = activeProject?.name ?? null;
   const { registry: modelRegistry } = useAgentModels();
+  const { settings: providerSettings } = useHarnessProviders();
+  const enabledProviders = new Set(
+    providerSettings.providers
+      .filter((provider) => provider.enabled && provider.available)
+      .map((provider) => provider.provider),
+  );
+  const harnessOptions = HARNESS_OPTIONS.filter((option) =>
+    enabledProviders.has(option.value),
+  );
 
   // Fetch global lanes for effective value resolution in project rows
   const { lanes: globalLanes } = useAgentHarnessSettings(null);
@@ -1089,6 +1104,7 @@ function AgentHarnessSection({
             isGlobal={true}
             tabValue="global"
             modelRegistry={modelRegistry}
+            harnessOptions={harnessOptions}
           />
         </TabsContent>
         <TabsContent value="project" className="mt-4">
@@ -1100,6 +1116,7 @@ function AgentHarnessSection({
             isGlobal={false}
             tabValue="project"
             modelRegistry={modelRegistry}
+            harnessOptions={harnessOptions}
           />
         </TabsContent>
       </Tabs>

@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::process::Child;
 use tracing::Instrument;
 
@@ -975,6 +975,12 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         .with_runtime_support(
                             Some(exec_settings.clone()),
                             agent_lane_settings_repo.as_ref().map(Arc::clone),
+                            app_handle
+                                .as_ref()
+                                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                                .map(|app_state| {
+                                    Arc::clone(&app_state.agent_provider_settings_repo)
+                                }),
                             None,
                             None,
                         )

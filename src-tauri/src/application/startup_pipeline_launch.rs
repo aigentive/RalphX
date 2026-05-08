@@ -37,6 +37,8 @@ fn build_startup_pipeline_deps(
     let startup_memory_entry_repo = Arc::clone(&app_state.memory_entry_repo);
     let startup_execution_settings_repo = Arc::clone(&app_state.execution_settings_repo);
     let startup_agent_lane_settings_repo = Arc::clone(&app_state.agent_lane_settings_repo);
+    let startup_agent_provider_settings_repo =
+        Arc::clone(&app_state.agent_provider_settings_repo);
     let startup_ideation_effort_settings_repo =
         Arc::clone(&app_state.ideation_effort_settings_repo);
     let startup_ideation_model_settings_repo = Arc::clone(&app_state.ideation_model_settings_repo);
@@ -75,6 +77,7 @@ fn build_startup_pipeline_deps(
         memory_entry_repo: startup_memory_entry_repo,
         execution_settings_repo: startup_execution_settings_repo,
         agent_lane_settings_repo: startup_agent_lane_settings_repo,
+        agent_provider_settings_repo: startup_agent_provider_settings_repo,
         ideation_effort_settings_repo: startup_ideation_effort_settings_repo,
         ideation_model_settings_repo: startup_ideation_model_settings_repo,
         interactive_process_registry: startup_interactive_process_registry,
