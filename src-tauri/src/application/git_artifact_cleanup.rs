@@ -194,15 +194,20 @@ mod tests {
         );
     }
 
+    fn init_repo_at(repo: &Path) {
+        std::fs::create_dir_all(repo).expect("create repo path");
+        run_git(repo, &["init"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        run_git(repo, &["config", "user.name", "Test User"]);
+        run_git(repo, &["checkout", "-b", "main"]);
+        std::fs::write(repo.join("README.md"), "base\n").expect("write readme");
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "initial"]);
+    }
+
     fn init_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
-        run_git(dir.path(), &["init"]);
-        run_git(dir.path(), &["config", "user.email", "test@example.com"]);
-        run_git(dir.path(), &["config", "user.name", "Test User"]);
-        run_git(dir.path(), &["checkout", "-b", "main"]);
-        std::fs::write(dir.path().join("README.md"), "base\n").expect("write readme");
-        run_git(dir.path(), &["add", "."]);
-        run_git(dir.path(), &["commit", "-m", "initial"]);
+        init_repo_at(dir.path());
         dir
     }
 
@@ -402,6 +407,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn merged_pr_plan_branch_cleanup_accepts_origin_base_ref() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+        let branch = "ralphx/cleanup/plan-origin-base";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(
+            repo.path(),
+            &["update-ref", "refs/remotes/origin/main", branch],
+        );
+        run_git(repo.path(), &["checkout", "main"]);
+
+        let mut plan_branch = merged_pr_plan_branch(branch, project.id.clone());
+        plan_branch.base_branch_override = Some("origin/main".to_string());
+        let report = cleanup_merged_plan_branch_local_artifacts(&project, &plan_branch)
+            .await
+            .expect("cleanup should succeed");
+
+        assert!(report.branch_deleted);
+        assert!(!branch_exists(repo.path(), branch));
+    }
+
+    #[tokio::test]
+    async fn merged_pr_plan_branch_cleanup_reports_delete_failure() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+        let branch = "ralphx/cleanup/plan-delete-failure";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge plan"],
+        );
+        run_git(repo.path(), &["checkout", branch]);
+
+        let plan_branch = merged_pr_plan_branch(branch, project.id.clone());
+        let error = cleanup_merged_plan_branch_local_artifacts(&project, &plan_branch)
+            .await
+            .expect_err("deleting the checked-out branch should fail");
+
+        assert!(error.to_string().contains("Failed to delete local branch"));
+        assert!(branch_exists(repo.path(), branch));
+    }
+
+    #[tokio::test]
     async fn closed_agent_workspace_cleanup_removes_clean_worktree_but_keeps_branch() {
         let repo = init_repo();
         let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -509,6 +568,58 @@ mod tests {
         assert!(!report.worktree_removed);
         assert!(!report.branch_deleted);
         assert!(!worktree_path.exists());
+    }
+
+    #[tokio::test]
+    async fn merged_agent_workspace_cleanup_skips_project_root_path() {
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let mut project = project_for(Path::new("/placeholder"), worktrees.path());
+        let conversation_id = ChatConversationId::from_string("conversation-cleanup");
+        let project_root =
+            resolve_agent_conversation_workspace_path(&project, &conversation_id).unwrap();
+        init_repo_at(&project_root);
+        project.working_directory = project_root.to_string_lossy().to_string();
+        let workspace = workspace_for(&project, "ralphx/cleanup/project-root", "merged");
+
+        let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+            .await
+            .expect("cleanup should skip project root");
+
+        assert!(!report.worktree_removed);
+        assert!(!report.branch_deleted);
+        assert_eq!(
+            report.skipped_reason.as_deref(),
+            Some("workspace_points_to_project_root")
+        );
+        assert!(project_root.exists());
+    }
+
+    #[tokio::test]
+    async fn merged_agent_workspace_cleanup_deletes_branch_when_worktree_missing() {
+        let repo = init_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = project_for(repo.path(), worktrees.path());
+        let branch = "ralphx/cleanup/missing-worktree-merged";
+        let workspace = workspace_for(&project, branch, "merged");
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("agent.txt"), "agent\n").expect("write agent");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "agent work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge agent"],
+        );
+
+        let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+            .await
+            .expect("cleanup should delete merged branch without a worktree");
+
+        assert!(!report.worktree_removed);
+        assert!(report.branch_deleted);
+        assert!(!branch_exists(repo.path(), branch));
+        assert!(!Path::new(&workspace.worktree_path).exists());
     }
 
     #[tokio::test]
