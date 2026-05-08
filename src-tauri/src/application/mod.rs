@@ -161,6 +161,8 @@ mod git_artifact_cleanup_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
+mod pr_startup_recovery_tests;
+#[cfg(test)]
 mod recovery_queue_tests;
 #[cfg(test)]
 mod runtime_wiring_tests;
