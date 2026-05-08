@@ -30,6 +30,7 @@ pub use agent_config::{
     ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
     SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
 };
+pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;
 pub use claude_code_client::ClaudeCodeClient;
 pub use claude_code_client::{

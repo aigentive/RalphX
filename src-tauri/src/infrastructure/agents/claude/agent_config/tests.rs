@@ -232,6 +232,22 @@ fn test_default_config_paths_use_config_directory_layout() {
 }
 
 #[test]
+fn test_runtime_config_dir_path_resolution_uses_bundled_config_dir() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_dir = temp_dir.path().join("Resources").join("config");
+
+    assert_eq!(
+        config_path_for_runtime_config_dir(Some(&config_dir)),
+        config_dir.join("ralphx.yaml")
+    );
+
+    assert_eq!(
+        config_path_for_runtime_config_dir(None),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/ralphx.yaml")
+    );
+}
+
+#[test]
 fn test_live_runtime_agents_no_longer_reference_deprecated_plugin_prompt_paths() {
     for agent in agent_configs() {
         if agent.name == SHORT_IDEATION_TEAM_MEMBER {
@@ -2165,6 +2181,58 @@ fn test_embedded_config_omits_external_mcp_and_overlay_restores_expected_default
     assert_eq!(parsed.runtime.external_mcp.max_restart_attempts, 3);
     assert_eq!(parsed.runtime.external_mcp.restart_delay_ms, 2000);
     assert_eq!(parsed.runtime.external_mcp.human_wait_timeout_secs, 285);
+}
+
+#[test]
+fn test_embedded_external_mcp_overlay_restores_expected_defaults() {
+    let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let overlay = load_embedded_external_mcp_config_overlay()
+        .expect("embedded external MCP overlay should parse");
+
+    apply_external_mcp_config_overlay(&mut parsed, overlay);
+    let parsed = resolve_loaded_config_with_lookup(parsed, &|_| None).expect("config should load");
+
+    assert!(parsed.runtime.external_mcp.enabled);
+    assert_eq!(parsed.runtime.external_mcp.port, 3848);
+    assert_eq!(parsed.runtime.external_mcp.host, "127.0.0.1");
+}
+
+#[test]
+fn test_external_mcp_overlay_file_takes_precedence_over_embedded_defaults() {
+    let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let overlay_path = temp_dir.path().join("external-mcp.yaml");
+    std::fs::write(
+        &overlay_path,
+        r#"
+external_mcp:
+  enabled: false
+  port: 4999
+  host: "0.0.0.0"
+"#,
+    )
+    .expect("write external MCP overlay");
+
+    apply_external_mcp_overlay_or_embedded_from_path(&mut parsed, &overlay_path);
+    let parsed = resolve_loaded_config_with_lookup(parsed, &|_| None).expect("config should load");
+
+    assert!(!parsed.runtime.external_mcp.enabled);
+    assert_eq!(parsed.runtime.external_mcp.port, 4999);
+    assert_eq!(parsed.runtime.external_mcp.host, "0.0.0.0");
+}
+
+#[test]
+fn test_external_mcp_overlay_falls_back_to_embedded_defaults_when_file_missing() {
+    let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing_overlay_path = temp_dir.path().join("missing-external-mcp.yaml");
+
+    apply_external_mcp_overlay_or_embedded_from_path(&mut parsed, &missing_overlay_path);
+    let parsed = resolve_loaded_config_with_lookup(parsed, &|_| None).expect("config should load");
+
+    assert!(parsed.runtime.external_mcp.enabled);
+    assert_eq!(parsed.runtime.external_mcp.port, 3848);
+    assert_eq!(parsed.runtime.external_mcp.host, "127.0.0.1");
 }
 
 // ── Agent extends inheritance tests ─────────────────────────────

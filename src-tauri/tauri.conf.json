@@ -29,7 +29,8 @@
     ],
     "resources": {
       "../plugins/app": "plugins/app",
-      "../agents": "agents"
+      "../agents": "agents",
+      "../config": "config"
     },
     "macOS": {
       "minimumSystemVersion": "13.0",
