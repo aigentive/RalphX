@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::application::{probe_supported_harnesses, AppState, AGENT_LANES};
+use crate::application::{
+    harness_runtime_registry::HarnessRuntimeProbe, probe_supported_harnesses, AppState, AGENT_LANES,
+};
 use crate::domain::agents::{
     generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings, AgentProviderSettings,
     LogicalEffort,
@@ -209,6 +213,13 @@ async fn read_provider_settings(
     state: &AppState,
 ) -> Result<AgentProvidersSettingsResponse, String> {
     let probes = probe_supported_harnesses();
+    read_provider_settings_with_probes(state, &probes).await
+}
+
+async fn read_provider_settings_with_probes(
+    state: &AppState,
+    probes: &HashMap<AgentHarnessKind, HarnessRuntimeProbe>,
+) -> Result<AgentProvidersSettingsResponse, String> {
     let stored = state
         .agent_provider_settings_repo
         .list()
@@ -226,16 +237,17 @@ async fn read_provider_settings(
                 .find(|row| row.provider == provider)
                 .cloned()
                 .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(provider));
-            let probe = probes.get(&provider).cloned().unwrap_or_else(|| {
-                crate::application::harness_runtime_registry::HarnessRuntimeProbe {
+            let probe = probes
+                .get(&provider)
+                .cloned()
+                .unwrap_or_else(|| HarnessRuntimeProbe {
                     binary_path: None,
                     binary_found: false,
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
                     error: Some(format!("{provider} probe unavailable")),
-                }
-            });
+                });
             to_response(settings, probe)
         })
         .collect::<Vec<_>>();
@@ -274,8 +286,16 @@ pub async fn update_agent_provider_settings(
     input: UpdateAgentProviderSettingsInput,
     state: State<'_, AppState>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    let provider = parse_provider(&input.provider)?;
     let probes = probe_supported_harnesses();
+    update_provider_settings_with_probes(input, &state, &probes).await
+}
+
+async fn update_provider_settings_with_probes(
+    input: UpdateAgentProviderSettingsInput,
+    state: &AppState,
+    probes: &HashMap<AgentHarnessKind, HarnessRuntimeProbe>,
+) -> Result<AgentProvidersSettingsResponse, String> {
+    let provider = parse_provider(&input.provider)?;
     let probe = probes
         .get(&provider)
         .ok_or_else(|| format!("{provider} probe unavailable"))?;
@@ -301,7 +321,7 @@ pub async fn update_agent_provider_settings(
         apply_provider_to_global_lanes(&state, &saved).await?;
     }
 
-    read_provider_settings(&state).await
+    read_provider_settings_with_probes(state, probes).await
 }
 
 #[cfg(test)]

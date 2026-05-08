@@ -1,13 +1,18 @@
 use super::ideation_harness_availability::{
     build_harness_override_availability, build_lane_harness_availability,
+    team_mode_supported_for_context, validate_chat_runtime_for_context,
     validate_claude_runtime_path, LaneHarnessAvailability, ResolvedLaneHarnessConfig,
 };
 use crate::application::harness_runtime_registry::{
     standard_harness_probe_registry, HarnessRuntimeProbe,
 };
+use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, AgentLane};
 use crate::domain::entities::ChatContextType;
+use crate::domain::repositories::AgentProviderSettingsRepository;
+use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 fn unavailable_probe(error: &str) -> HarnessRuntimeProbe {
     HarnessRuntimeProbe {
@@ -215,4 +220,39 @@ fn project_chat_runtime_override_uses_requested_harness_probe() {
         availability.binary_path.as_deref(),
         Some("/opt/homebrew/bin/codex")
     );
+}
+
+#[tokio::test]
+async fn chat_runtime_validation_requires_enabled_default_provider_first() {
+    let mut state = AppState::new_test();
+    state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+
+    let error = validate_chat_runtime_for_context(
+        &state,
+        ChatContextType::Project,
+        "project-without-provider",
+        "project chat",
+    )
+    .await
+    .expect_err("missing default provider should block before runtime probe");
+
+    assert!(error.contains("Settings > Harness > Providers"));
+}
+
+#[tokio::test]
+async fn project_context_team_mode_uses_default_provider_harness() {
+    let mut state = AppState::new_test();
+    let provider_repo = Arc::new(
+        MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex),
+    );
+    state.agent_provider_settings_repo = provider_repo as Arc<dyn AgentProviderSettingsRepository>;
+
+    let supported = team_mode_supported_for_context(
+        &state,
+        ChatContextType::Project,
+        "project-default-provider",
+    )
+    .await;
+
+    assert!(!supported);
 }

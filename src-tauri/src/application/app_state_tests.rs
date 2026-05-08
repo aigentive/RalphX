@@ -428,8 +428,8 @@ async fn test_resolve_session_namer_runtime_uses_codex_default_harness_client() 
 
     assert!(Arc::ptr_eq(&runtime.client, &codex_default));
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model, None);
-    assert_eq!(runtime.logical_effort, None);
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(
         runtime.approval_policy.as_deref(),
         Some(CODEX_DEFAULT_APPROVAL_POLICY)

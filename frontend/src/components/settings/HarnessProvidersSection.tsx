@@ -63,6 +63,43 @@ function ProviderBadge({ provider }: { provider: AgentProviderSettingsResponse }
   );
 }
 
+function ProviderCliStatus({
+  provider,
+}: {
+  provider: AgentProviderSettingsResponse;
+}) {
+  const statusTone = provider.available
+    ? "bg-[var(--status-success)]"
+    : "bg-[var(--status-warning)]";
+  const statusLabel = provider.available ? "CLI Ready" : "CLI Not Ready";
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className={`h-2 w-2 rounded-full ${statusTone}`} aria-hidden="true" />
+        <span className="font-medium text-[var(--text-secondary)]">{statusLabel}</span>
+        {provider.binaryPath && (
+          <code className="rounded border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[0.6875rem] text-[var(--text-muted)]">
+            {provider.binaryPath}
+          </code>
+        )}
+      </div>
+      <p className="text-xs text-[var(--text-muted)]">{provider.status}</p>
+      {!provider.available && (
+        <a
+          href={PROVIDER_INSTALL_LINKS[provider.provider]}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-xs text-[var(--accent-primary)] hover:underline"
+        >
+          Install instructions
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+    </div>
+  );
+}
+
 export function HarnessProvidersSection() {
   const {
     settings,
@@ -169,10 +206,12 @@ export function HarnessProvidersSection() {
           );
           const selectedModel =
             provider.model ?? providerModels[0]?.modelId ?? "";
+          const selectedModelEntry = providerModels.find(
+            (model) => model.modelId === selectedModel,
+          );
           const selectedEffort =
             (provider.effort as AgentEffort | null | undefined) ??
-            providerModels.find((model) => model.modelId === selectedModel)
-              ?.defaultEffort ??
+            selectedModelEntry?.defaultEffort ??
             "medium";
 
           return (
@@ -194,20 +233,7 @@ export function HarnessProvidersSection() {
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-[var(--text-muted)]">
-                    {provider.status}
-                  </p>
-                  {!provider.available && (
-                    <a
-                      href={PROVIDER_INSTALL_LINKS[provider.provider]}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 text-xs text-[var(--accent-primary)] hover:underline"
-                    >
-                      Install instructions
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  )}
+                  <ProviderCliStatus provider={provider} />
                 </div>
                 <div className="flex items-center gap-3">
                   <Label
@@ -240,12 +266,29 @@ export function HarnessProvidersSection() {
                     disabled={isUpdating || providerModels.length === 0}
                   >
                     <SelectTrigger id={`provider-model-${provider.provider}`}>
-                      <SelectValue />
+                      <SelectValue>
+                        <span className="truncate">
+                          {selectedModelEntry?.menuLabel ?? selectedModel}
+                        </span>
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {providerModels.map((model) => (
-                        <SelectItem key={model.modelId} value={model.modelId}>
-                          {model.menuLabel}
+                        <SelectItem
+                          key={model.modelId}
+                          value={model.modelId}
+                          textValue={model.menuLabel}
+                        >
+                          <div className="flex flex-col">
+                            <span className="text-[var(--text-primary)]">
+                              {model.menuLabel}
+                            </span>
+                            {model.description && (
+                              <span className="text-xs text-[var(--text-muted)]">
+                                {model.description}
+                              </span>
+                            )}
+                          </div>
                         </SelectItem>
                       ))}
                     </SelectContent>

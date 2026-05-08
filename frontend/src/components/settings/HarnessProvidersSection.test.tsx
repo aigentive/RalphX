@@ -1,0 +1,309 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
+import { useAgentModels } from "@/hooks/useAgentModels";
+import { useConfirmation } from "@/hooks/useConfirmation";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+
+import { HarnessProvidersSection } from "./HarnessProvidersSection";
+
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: vi.fn(),
+}));
+
+vi.mock("@/hooks/useHarnessProviders", () => ({
+  useHarnessProviders: vi.fn(),
+}));
+
+vi.mock("@/hooks/useConfirmation", () => ({
+  useConfirmation: vi.fn(),
+}));
+
+const providerUpdatedAt = new Date().toISOString();
+const refetchProviders = vi.fn();
+const updateProviderAsync = vi.fn();
+const confirm = vi.fn();
+
+if (!HTMLElement.prototype.scrollIntoView) {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    value: vi.fn(),
+    writable: true,
+  });
+}
+
+const settings: AgentProvidersSettingsResponse = {
+  defaultProvider: "codex",
+  requiresOnboarding: false,
+  providers: [
+    {
+      provider: "codex",
+      enabled: true,
+      isDefault: true,
+      model: "gpt-5.5",
+      effort: "xhigh",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+      claudePermissionMode: null,
+      claudeDangerouslySkipPermissions: false,
+      claudeAllowDangerouslySkipPermissions: false,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/opt/homebrew/bin/codex",
+      status: "Available codex detected at /opt/homebrew/bin/codex.",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: providerUpdatedAt,
+    },
+    {
+      provider: "claude",
+      enabled: false,
+      isDefault: false,
+      model: "sonnet",
+      effort: "medium",
+      approvalPolicy: null,
+      sandboxMode: null,
+      claudePermissionMode: "bypassPermissions",
+      claudeDangerouslySkipPermissions: true,
+      claudeAllowDangerouslySkipPermissions: true,
+      available: false,
+      binaryFound: false,
+      binaryPath: null,
+      status: "Claude CLI not found",
+      error: "Claude CLI not found",
+      missingCoreExecFeatures: [],
+      updatedAt: providerUpdatedAt,
+    },
+  ],
+};
+
+function mockProviders(
+  nextSettings: AgentProvidersSettingsResponse = settings,
+  overrides: Partial<ReturnType<typeof useHarnessProviders>> = {},
+) {
+  vi.mocked(useHarnessProviders).mockReturnValue({
+    settings: nextSettings,
+    providers: nextSettings.providers,
+    isLoading: false,
+    isPlaceholderData: false,
+    isError: false,
+    error: null,
+    refetchProviders,
+    updateProviderAsync,
+    isUpdating: false,
+    updateError: null,
+    ...overrides,
+  } as ReturnType<typeof useHarnessProviders>);
+}
+
+function openSelectById(id: string) {
+  const trigger = document.getElementById(id);
+  expect(trigger).not.toBeNull();
+  fireEvent.keyDown(trigger!, { key: "ArrowDown", code: "ArrowDown" });
+}
+
+describe("HarnessProvidersSection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    confirm.mockResolvedValue(true);
+    mockProviders();
+    vi.mocked(useAgentModels).mockReturnValue({
+      models: [
+        {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          menuLabel: "gpt-5.5",
+          enabled: true,
+          defaultEffort: "xhigh",
+          description: "Frontier model for complex coding.",
+        },
+        {
+          provider: "codex",
+          modelId: "gpt-5.4",
+          menuLabel: "gpt-5.4",
+          enabled: true,
+          defaultEffort: "high",
+          description: "Strong model for everyday coding.",
+        },
+        {
+          provider: "claude",
+          modelId: "sonnet",
+          menuLabel: "sonnet",
+          enabled: true,
+          defaultEffort: "medium",
+          description: "Claude Sonnet model alias.",
+        },
+      ],
+    } as ReturnType<typeof useAgentModels>);
+    vi.mocked(useConfirmation).mockReturnValue({
+      confirm,
+      confirmationDialogProps: {
+        isOpen: false,
+        options: null,
+        onConfirm: vi.fn(),
+        onCancel: vi.fn(),
+      },
+      ConfirmationDialog: () => null,
+    });
+  });
+
+  it("renders provider readiness, defaults, and repair guidance", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    expect(screen.getByText("Default Provider")).toBeInTheDocument();
+    expect(screen.getAllByText("Codex").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Enabled").length).toBeGreaterThan(0);
+    expect(screen.getByText("Default")).toBeInTheDocument();
+    expect(screen.getByText("CLI Ready")).toBeInTheDocument();
+    expect(screen.getByText("/opt/homebrew/bin/codex")).toBeInTheDocument();
+    expect(screen.getByText("Claude CLI not found")).toBeInTheDocument();
+    expect(screen.getByText("CLI Not Ready")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /Install instructions/ }),
+    ).toHaveAttribute("href", "https://docs.anthropic.com/en/docs/claude-code/setup");
+
+    await user.click(screen.getByRole("button", { name: /Re-check/ }));
+    expect(refetchProviders).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getAllByRole("switch")[0]!);
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      enabled: false,
+    });
+  });
+
+  it("updates provider model settings and applies an enabled provider as default", async () => {
+    const user = userEvent.setup();
+    const nextSettings: AgentProvidersSettingsResponse = {
+      ...settings,
+      providers: [
+        { ...settings.providers[0]!, isDefault: false },
+        {
+          ...settings.providers[1]!,
+          enabled: true,
+          available: true,
+          binaryFound: true,
+          binaryPath: "/opt/homebrew/bin/claude",
+          status: "Available claude detected at /opt/homebrew/bin/claude.",
+        },
+      ],
+    };
+    mockProviders(nextSettings);
+    render(<HarnessProvidersSection />);
+
+    openSelectById("provider-model-codex");
+    expect(
+      screen.getByRole("option", {
+        name: /gpt-5\.4.*Strong model for everyday coding\./,
+      }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /gpt-5\.4/ }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const claudeCard = screen.getByText("Claude").closest(".rounded-md");
+    expect(claudeCard).not.toBeNull();
+    await user.click(
+      within(claudeCard as HTMLElement).getByRole("button", {
+        name: "Apply as Default",
+      }),
+    );
+
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Use Claude by default?",
+        confirmText: "Apply to all lanes",
+      }),
+    );
+    expect(updateProviderAsync).toHaveBeenLastCalledWith({
+      provider: "claude",
+      isDefault: true,
+      applyToAllLanes: true,
+    });
+  });
+
+  it("updates provider effort, policy, sandbox, and Claude permission defaults", async () => {
+    const user = userEvent.setup();
+    const nextSettings: AgentProvidersSettingsResponse = {
+      ...settings,
+      providers: [
+        settings.providers[0]!,
+        {
+          ...settings.providers[1]!,
+          enabled: true,
+          available: true,
+          binaryFound: true,
+          binaryPath: "/opt/homebrew/bin/claude",
+          status: "Available claude detected at /opt/homebrew/bin/claude.",
+        },
+      ],
+    };
+    mockProviders(nextSettings);
+    render(<HarnessProvidersSection />);
+
+    openSelectById("provider-effort-codex");
+    await user.click(screen.getByRole("option", { name: "High" }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      effort: "high",
+    });
+
+    openSelectById("codex-approval-policy");
+    await user.click(screen.getByRole("option", { name: "on-request" }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      approvalPolicy: "on-request",
+    });
+
+    openSelectById("codex-sandbox-mode");
+    await user.click(screen.getByRole("option", { name: "workspace-write" }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      sandboxMode: "workspace-write",
+    });
+
+    openSelectById("claude-permission-mode");
+    await user.click(screen.getByRole("option", { name: "default" }));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "claude",
+      claudePermissionMode: "default",
+    });
+
+    await user.click(screen.getByLabelText("Skip Permissions"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "claude",
+      claudeDangerouslySkipPermissions: false,
+    });
+
+    await user.click(screen.getByLabelText("Allow Skip Option"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "claude",
+      claudeAllowDangerouslySkipPermissions: false,
+    });
+  });
+
+  it("shows load and save errors from provider settings", () => {
+    mockProviders(settings, {
+      isError: true,
+      error: new Error("Provider settings failed"),
+    });
+
+    render(<HarnessProvidersSection />);
+
+    expect(screen.getByText("Provider settings failed")).toBeInTheDocument();
+  });
+
+  it("shows provider update errors", () => {
+    mockProviders(settings, {
+      updateError: new Error("Provider update failed"),
+    });
+
+    render(<HarnessProvidersSection />);
+
+    expect(screen.getByText("Provider update failed")).toBeInTheDocument();
+  });
+});

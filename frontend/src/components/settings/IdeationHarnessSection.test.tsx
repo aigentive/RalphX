@@ -1,13 +1,18 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ExecutionHarnessSection,
   IdeationHarnessSection,
 } from "./IdeationHarnessSection";
+import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import type { AgentHarnessLaneView } from "@/api/ideation-harness";
+import { useConfirmation } from "@/hooks/useConfirmation";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useAgentHarnessSettings } from "@/hooks/useIdeationHarnessSettings";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
 vi.mock("@/hooks/useIdeationHarnessSettings", () => ({
   useAgentHarnessSettings: vi.fn(),
@@ -38,52 +43,11 @@ vi.mock("@/hooks/useAgentModels", async () => {
 });
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
-  useHarnessProviders: () => ({
-    settings: {
-      providers: [
-        {
-          provider: "claude",
-          enabled: true,
-          isDefault: false,
-          model: "sonnet",
-          effort: "medium",
-          approvalPolicy: null,
-          sandboxMode: null,
-          claudePermissionMode: "bypassPermissions",
-          claudeDangerouslySkipPermissions: true,
-          claudeAllowDangerouslySkipPermissions: false,
-          available: true,
-          binaryFound: true,
-          binaryPath: "/usr/local/bin/claude",
-          status: "Available claude detected at /usr/local/bin/claude.",
-          error: null,
-          missingCoreExecFeatures: [],
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          provider: "codex",
-          enabled: true,
-          isDefault: true,
-          model: "gpt-5.5",
-          effort: "xhigh",
-          approvalPolicy: "never",
-          sandboxMode: "danger-full-access",
-          claudePermissionMode: null,
-          claudeDangerouslySkipPermissions: false,
-          claudeAllowDangerouslySkipPermissions: false,
-          available: true,
-          binaryFound: true,
-          binaryPath: "/usr/local/bin/codex",
-          status: "Available codex detected at /usr/local/bin/codex.",
-          error: null,
-          missingCoreExecFeatures: [],
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-      defaultProvider: "codex",
-      requiresOnboarding: false,
-    },
-  }),
+  useHarnessProviders: vi.fn(),
+}));
+
+vi.mock("@/hooks/useConfirmation", () => ({
+  useConfirmation: vi.fn(),
 }));
 
 vi.mock("@/stores/projectStore", () => ({
@@ -137,6 +101,78 @@ const globalLanes: AgentHarnessLaneView[] = [
 ];
 
 const updateLane = vi.fn();
+const confirm = vi.fn();
+const providerUpdatedAt = new Date().toISOString();
+
+const enabledProviderSettings: AgentProvidersSettingsResponse = {
+  providers: [
+    {
+      provider: "claude",
+      enabled: true,
+      isDefault: false,
+      model: "sonnet",
+      effort: "medium",
+      approvalPolicy: null,
+      sandboxMode: null,
+      claudePermissionMode: "bypassPermissions",
+      claudeDangerouslySkipPermissions: true,
+      claudeAllowDangerouslySkipPermissions: false,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/usr/local/bin/claude",
+      status: "Available claude detected at /usr/local/bin/claude.",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: providerUpdatedAt,
+    },
+    {
+      provider: "codex",
+      enabled: true,
+      isDefault: true,
+      model: "gpt-5.5",
+      effort: "xhigh",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+      claudePermissionMode: null,
+      claudeDangerouslySkipPermissions: false,
+      claudeAllowDangerouslySkipPermissions: false,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/usr/local/bin/codex",
+      status: "Available codex detected at /usr/local/bin/codex.",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: providerUpdatedAt,
+    },
+  ],
+  defaultProvider: "codex",
+  requiresOnboarding: false,
+};
+
+const noProviderSettings: AgentProvidersSettingsResponse = {
+  providers: [],
+  defaultProvider: null,
+  requiresOnboarding: true,
+};
+
+function mockProviderSettings(
+  settings: AgentProvidersSettingsResponse,
+  overrides: Partial<ReturnType<typeof useHarnessProviders>> = {},
+) {
+  vi.mocked(useHarnessProviders).mockReturnValue({
+    settings,
+    providers: settings.providers,
+    isLoading: false,
+    isPlaceholderData: false,
+    isError: false,
+    error: null,
+    refetchProviders: vi.fn(),
+    updateProviderAsync: vi.fn(),
+    isUpdating: false,
+    updateError: null,
+    ...overrides,
+  } as ReturnType<typeof useHarnessProviders>);
+}
 
 if (!HTMLElement.prototype.hasPointerCapture) {
   Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
@@ -174,6 +210,9 @@ function openSelect(testId: string) {
 describe("IdeationHarnessSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    useUiStore.getState().closeModal();
+    mockProviderSettings(enabledProviderSettings);
     vi.mocked(useProjectStore).mockReturnValue({
       id: "project-1",
       name: "Project One",
@@ -189,6 +228,17 @@ describe("IdeationHarnessSection", () => {
       saveError: null,
       resetError: vi.fn(),
     }));
+    vi.mocked(useConfirmation).mockReturnValue({
+      confirm,
+      confirmationDialogProps: {
+        isOpen: false,
+        options: null,
+        onConfirm: vi.fn(),
+        onCancel: vi.fn(),
+      },
+      ConfirmationDialog: () => null,
+    });
+    confirm.mockResolvedValue(true);
   });
 
   it("renders Codex-only lane controls for Codex lanes", () => {
@@ -210,6 +260,70 @@ describe("IdeationHarnessSection", () => {
     );
     expect(screen.getByText("Ideation Agents")).toBeInTheDocument();
     expect(screen.queryByText("Execution Worker")).not.toBeInTheDocument();
+  });
+
+  it("persists the selected agent settings tab", async () => {
+    const user = userEvent.setup();
+    render(<IdeationHarnessSection />);
+
+    await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
+
+    expect(screen.getByRole("tab", { name: "Project Overrides" })).toHaveAttribute(
+      "data-state",
+      "active",
+    );
+    expect(localStorage.getItem("ralphx-settings-harness-tab")).toBe(
+      JSON.stringify({ ideation: "project" }),
+    );
+  });
+
+  it("hides lane controls until a default provider is enabled", () => {
+    mockProviderSettings(noProviderSettings);
+
+    render(<IdeationHarnessSection />);
+
+    expect(screen.getByText("Provider Setup Required")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Enable, validate, and set a default provider/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open Providers/ }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Primary Ideation")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Primary Ideation provider"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Available codex detected at /usr/local/bin/codex."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("links the no-provider notice to Harness Providers settings", () => {
+    mockProviderSettings(noProviderSettings);
+
+    render(<ExecutionHarnessSection />);
+    fireEvent.click(screen.getByRole("button", { name: /Open Providers/ }));
+
+    const state = useUiStore.getState();
+    expect(state.activeModal).toBe("settings");
+    expect(state.modalContext).toEqual({ section: "providers" });
+  });
+
+  it("holds lane controls behind a loading notice while provider settings are placeholder data", () => {
+    mockProviderSettings(noProviderSettings, { isPlaceholderData: true });
+
+    render(<IdeationHarnessSection />);
+
+    expect(screen.getByText("Loading Providers")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Checking configured providers before showing agent lane controls.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Primary Ideation")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Open Providers/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders settings notices with explicit token-backed paint styles", () => {
@@ -254,6 +368,65 @@ describe("IdeationHarnessSection", () => {
     });
   });
 
+  it("updates lane provider and effort from enabled provider options", async () => {
+    const user = userEvent.setup();
+    render(<IdeationHarnessSection />);
+
+    openSelect("harness-ideation_primary");
+    await user.click(screen.getByRole("option", { name: /Claude/ }));
+    expect(updateLane).toHaveBeenCalledWith(
+      {
+        lane: "ideation_primary",
+        harness: "claude",
+        model: null,
+        effort: null,
+        approvalPolicy: null,
+        sandboxMode: null,
+      },
+      { onError: expect.any(Function) },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Collapse all" }));
+    await user.click(screen.getByRole("button", { name: "Expand all" }));
+
+    fireEvent.keyDown(screen.getByLabelText("Primary Ideation effort"), {
+      key: "ArrowDown",
+      code: "ArrowDown",
+    });
+    await user.click(screen.getAllByRole("option", { name: /High/ })[0]!);
+    expect(updateLane).toHaveBeenLastCalledWith(
+      {
+        lane: "ideation_primary",
+        harness: "codex",
+        model: "gpt-5.5",
+        effort: "high",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+      },
+      { onError: expect.any(Function) },
+    );
+  });
+
+  it("applies verifier Codex defaults when switching the verifier provider", async () => {
+    const user = userEvent.setup();
+    render(<IdeationHarnessSection />);
+
+    openSelect("harness-ideation_verifier");
+    await user.click(screen.getByRole("option", { name: /Codex/ }));
+
+    expect(updateLane).toHaveBeenCalledWith(
+      {
+        lane: "ideation_verifier",
+        harness: "codex",
+        model: "gpt-5.4-mini",
+        effort: "medium",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+      },
+      { onError: expect.any(Function) },
+    );
+  });
+
   it("shows Codex model presets in the model select", async () => {
     render(<IdeationHarnessSection />);
 
@@ -269,7 +442,7 @@ describe("IdeationHarnessSection", () => {
     expect(
       screen.getByRole("option", {
         name: /gpt-5\.4-mini.*Small, fast, and cost-efficient model for simpler coding tasks\./,
-      })
+      }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: /gpt-5\.3-codex.*Coding-optimized model\./ })
@@ -339,6 +512,121 @@ describe("IdeationHarnessSection", () => {
     );
     expect(hasWarn).toBe(true);
   });
+
+  it("shows missing provider feature warnings without repeating probe success copy", async () => {
+    const warnLanes: AgentHarnessLaneView[] = [
+      {
+        ...globalLanes[0]!,
+        effectiveHarness: "claude",
+        missingCoreExecFeatures: ["streaming"],
+        error: null,
+      },
+      globalLanes[1]!,
+    ];
+    vi.mocked(useAgentHarnessSettings).mockImplementation((projectId) => ({
+      lanes: projectId === null ? warnLanes : [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateLane,
+      isUpdating: false,
+      saveError: null,
+      resetError: vi.fn(),
+    }));
+
+    render(<IdeationHarnessSection />);
+
+    expect(
+      await screen.findByText("Needs attention · Effective: claude"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Missing Codex features: streaming."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("codex detected at /usr/local/bin/codex."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses the generic warning copy for non-Codex lane provider issues", () => {
+    const warnLanes: AgentHarnessLaneView[] = [
+      {
+        ...globalLanes[0]!,
+        configuredHarness: "claude",
+        effectiveHarness: "claude",
+        missingCoreExecFeatures: ["streaming"],
+        error: null,
+      },
+      globalLanes[1]!,
+    ];
+    vi.mocked(useAgentHarnessSettings).mockImplementation((projectId) => ({
+      lanes: projectId === null ? warnLanes : [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateLane,
+      isUpdating: false,
+      saveError: null,
+      resetError: vi.fn(),
+    }));
+
+    render(<IdeationHarnessSection />);
+
+    expect(
+      screen.getByText("This lane needs provider attention before it can run."),
+    ).toBeInTheDocument();
+  });
+
+  it("resets a lane to the configured default provider after confirmation", async () => {
+    render(<IdeationHarnessSection />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Reset Verification to default provider",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Reset Verification to default provider?",
+          confirmText: "Reset lane",
+        }),
+      );
+      expect(updateLane).toHaveBeenCalledWith(
+        {
+          lane: "ideation_verifier",
+          harness: "codex",
+          model: "gpt-5.5",
+          effort: "xhigh",
+          approvalPolicy: "never",
+          sandboxMode: "danger-full-access",
+        },
+        { onError: expect.any(Function) },
+      );
+    });
+  });
+
+  it("leaves a lane unchanged when reset confirmation is cancelled", async () => {
+    confirm.mockResolvedValue(false);
+    render(<IdeationHarnessSection />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Reset Verification to default provider",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: "Reset Verification to default provider?",
+        }),
+      );
+    });
+    expect(updateLane).not.toHaveBeenCalled();
+  });
 });
 
 describe("ExecutionHarnessSection", () => {
@@ -404,5 +692,58 @@ describe("ExecutionHarnessSection", () => {
     expect(screen.getByTestId("model-execution_worker")).toHaveClass("items-center");
     expect(screen.getByLabelText("Execution Worker effort")).toHaveClass("h-9");
     expect(screen.getByLabelText("Execution Worker effort")).toHaveClass("items-center");
+  });
+
+  it("applies Codex defaults when switching an execution lane to Codex", async () => {
+    const user = userEvent.setup();
+    const executionWorker: AgentHarnessLaneView = {
+      lane: "execution_worker",
+      row: {
+        projectId: null,
+        lane: "execution_worker",
+        harness: "claude",
+        model: null,
+        effort: null,
+        approvalPolicy: null,
+        sandboxMode: null,
+        updatedAt: new Date().toISOString(),
+      },
+      configuredHarness: "claude",
+      effectiveHarness: "claude",
+      binaryPath: "/usr/local/bin/claude",
+      binaryFound: true,
+      probeSucceeded: true,
+      available: true,
+      missingCoreExecFeatures: [],
+      error: null,
+    };
+    vi.mocked(useAgentHarnessSettings).mockImplementation((projectId) => ({
+      lanes: projectId === null ? [...globalLanes, executionWorker] : [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateLane,
+      isUpdating: false,
+      saveError: null,
+      resetError: vi.fn(),
+    }));
+
+    render(<ExecutionHarnessSection />);
+
+    openSelect("harness-execution_worker");
+    await user.click(screen.getByRole("option", { name: /Codex/ }));
+
+    expect(updateLane).toHaveBeenCalledWith(
+      {
+        lane: "execution_worker",
+        harness: "codex",
+        model: "gpt-5.5",
+        effort: "xhigh",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+      },
+      { onError: expect.any(Function) },
+    );
   });
 });

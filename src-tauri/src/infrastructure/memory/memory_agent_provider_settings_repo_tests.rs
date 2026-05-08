@@ -33,6 +33,14 @@ async fn upsert_tracks_one_default_provider() {
 }
 
 #[tokio::test]
+async fn default_constructor_starts_empty() {
+    let repo = MemoryAgentProviderSettingsRepository::default();
+
+    assert!(repo.list().await.expect("list providers").is_empty());
+    assert!(repo.get_default().await.expect("get default").is_none());
+}
+
+#[tokio::test]
 async fn test_constructor_can_seed_enabled_test_providers() {
     let repo =
         MemoryAgentProviderSettingsRepository::with_all_providers_enabled(AgentHarnessKind::Codex);

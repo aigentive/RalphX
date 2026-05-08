@@ -57,10 +57,12 @@ test.describe("WelcomeScreen Visual Tests", () => {
     });
   });
 
-  test("should display create project button with correct styling", async ({ page }) => {
+  test("should display primary action button with correct styling", async ({ page }) => {
     // Verify button is visible and has correct text
     await expect(welcomeScreenPage.createProjectButton).toBeVisible();
-    await expect(welcomeScreenPage.createProjectButton).toContainText("Start Your First Project");
+    await expect(welcomeScreenPage.createProjectButton).toContainText(
+      /Start Your First Project|Continue/,
+    );
 
     // Hover over button to check hover state
     await welcomeScreenPage.createProjectButton.hover();

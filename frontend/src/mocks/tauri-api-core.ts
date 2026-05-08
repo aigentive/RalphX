@@ -54,6 +54,132 @@ const mockExternalMcpConfig = {
   nodePath: null as string | null,
 };
 
+const mockAgentProviderSettings = {
+  providers: [
+    {
+      provider: "codex",
+      enabled: true,
+      isDefault: true,
+      model: "gpt-5.5",
+      effort: "medium",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+      claudePermissionMode: null,
+      claudeDangerouslySkipPermissions: false,
+      claudeAllowDangerouslySkipPermissions: false,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/opt/homebrew/bin/codex",
+      status: "ready",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: "2026-05-08T00:00:00Z",
+    },
+    {
+      provider: "claude",
+      enabled: false,
+      isDefault: false,
+      model: "claude-sonnet-4-6",
+      effort: null,
+      approvalPolicy: "never",
+      sandboxMode: null,
+      claudePermissionMode: "bypassPermissions",
+      claudeDangerouslySkipPermissions: true,
+      claudeAllowDangerouslySkipPermissions: true,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/opt/homebrew/bin/claude",
+      status: "ready",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: "2026-05-08T00:00:00Z",
+    },
+  ],
+  defaultProvider: "codex",
+  requiresOnboarding: false,
+};
+
+const mockAgentModels = [
+  {
+    provider: "codex",
+    modelId: "gpt-5.5",
+    label: "GPT-5.5",
+    menuLabel: "GPT-5.5",
+    description: "Frontier Codex model for complex agent work.",
+    supportedEfforts: ["low", "medium", "high", "xhigh"],
+    defaultEffort: "medium",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "codex",
+    modelId: "gpt-5.4-mini",
+    label: "GPT-5.4 Mini",
+    menuLabel: "GPT-5.4 Mini",
+    description: "Fast Codex model for lighter agent work.",
+    supportedEfforts: ["low", "medium", "high"],
+    defaultEffort: "medium",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+  {
+    provider: "claude",
+    modelId: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    menuLabel: "Claude Sonnet",
+    description: "Balanced Claude model for agent work.",
+    supportedEfforts: ["medium"],
+    defaultEffort: "medium",
+    source: "built_in",
+    enabled: true,
+    createdAt: null,
+    updatedAt: null,
+  },
+];
+
+const mockAgentLanes = [
+  "ideation_primary",
+  "ideation_verifier",
+  "ideation_subagent",
+  "ideation_verifier_subagent",
+  "execution_worker",
+  "execution_reviewer",
+  "execution_reexecutor",
+  "execution_merger",
+] as const;
+
+function mockAgentLaneSettings(projectId: string | null) {
+  return mockAgentLanes.map((lane) => ({
+    projectId,
+    lane,
+    harness: "codex",
+    model: null,
+    effort: null,
+    approvalPolicy: "never",
+    sandboxMode: "danger-full-access",
+    updatedAt: "2026-05-08T00:00:00Z",
+  }));
+}
+
+function mockAgentHarnessAvailability(projectId: string | null) {
+  return mockAgentLanes.map((lane) => ({
+    projectId,
+    lane,
+    configuredHarness: "codex",
+    effectiveHarness: "codex",
+    binaryPath: "/opt/homebrew/bin/codex",
+    binaryFound: true,
+    probeSucceeded: true,
+    available: true,
+    missingCoreExecFeatures: [],
+    error: null,
+  }));
+}
+
 function toSnakeConversation(conversation: ChatConversation) {
   return {
     id: conversation.id,
@@ -263,6 +389,54 @@ const commandHandlers: Record<
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
+  get_agent_provider_settings: async () => mockAgentProviderSettings,
+  update_agent_provider_settings: async (args) => {
+    const input = args.input as Partial<
+      (typeof mockAgentProviderSettings.providers)[number]
+    > & { provider?: string; isDefault?: boolean };
+    const provider = mockAgentProviderSettings.providers.find(
+      (entry) => entry.provider === input.provider,
+    );
+    if (provider) {
+      Object.assign(provider, input, { updatedAt: new Date(0).toISOString() });
+      if (input.isDefault) {
+        for (const entry of mockAgentProviderSettings.providers) {
+          entry.isDefault = entry.provider === provider.provider;
+        }
+        mockAgentProviderSettings.defaultProvider = provider.provider;
+        mockAgentProviderSettings.requiresOnboarding = false;
+      }
+    }
+    return mockAgentProviderSettings;
+  },
+  list_agent_models: async () => mockAgentModels,
+  get_agent_lane_settings: async (args) =>
+    mockAgentLaneSettings((args.projectId as string | null | undefined) ?? null),
+  get_agent_harness_availability: async (args) =>
+    mockAgentHarnessAvailability(
+      (args.projectId as string | null | undefined) ?? null,
+    ),
+  update_agent_lane_settings: async (args) => {
+    const input = args.input as {
+      projectId?: string | null;
+      lane: (typeof mockAgentLanes)[number];
+      harness: string;
+      model?: string | null;
+      effort?: string | null;
+      approvalPolicy?: string | null;
+      sandboxMode?: string | null;
+    };
+    return {
+      projectId: input.projectId ?? null,
+      lane: input.lane,
+      harness: input.harness,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+      approvalPolicy: input.approvalPolicy ?? null,
+      sandboxMode: input.sandboxMode ?? null,
+      updatedAt: "2026-05-08T00:00:00Z",
+    };
+  },
   get_project: async (args) => mockProjectsApi.get(args.projectId as string),
   get_git_branches: async (args) => mockGetGitBranches(args.workingDirectory as string),
   get_git_current_branch: async (args) => mockGetGitCurrentBranch(args.workingDirectory as string),

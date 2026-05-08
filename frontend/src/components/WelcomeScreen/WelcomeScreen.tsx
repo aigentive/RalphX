@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Settings, Sparkles, X } from "lucide-react";
+import { CheckCircle2, Settings, Sparkles, X } from "lucide-react";
 import AgentConstellation from "./AgentConstellation";
 
 interface WelcomeScreenProps {
@@ -67,6 +67,7 @@ export default function WelcomeScreen({
     : hasProjects
       ? "Continue"
       : "Start Your First Project";
+  const projectStepStatus = hasProjects ? "complete" : "pending";
 
   return (
     <div
@@ -148,6 +149,47 @@ export default function WelcomeScreen({
             {providerSetupRequired ? "Choose your agent harness." : "Describe it. Ship it."}
           </p>
         </div>
+
+        {providerSetupRequired && (
+          <div
+            data-testid="welcome-setup-steps"
+            className="mb-8 flex w-full max-w-md items-center justify-center gap-2"
+            style={{ animation: "fadeSlideIn 0.6s ease-out 0.1s forwards" }}
+          >
+            <div
+              data-testid="welcome-provider-step"
+              data-current="true"
+              data-status="current"
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md border px-3 py-2 text-sm"
+              style={{
+                backgroundColor: "var(--bg-elevated)",
+                borderColor: "var(--accent-primary)",
+                color: "var(--text-primary)",
+              }}
+            >
+              <Settings className="h-4 w-4 shrink-0" />
+              <span className="truncate font-medium">Provider</span>
+            </div>
+            <div
+              data-testid="welcome-project-step"
+              data-current="false"
+              data-status={projectStepStatus}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md border px-3 py-2 text-sm"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {hasProjects ? (
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--status-success)]" />
+              ) : (
+                <Sparkles className="h-4 w-4 shrink-0" />
+              )}
+              <span className="truncate font-medium">Project</span>
+            </div>
+          </div>
+        )}
 
         {/* CTA section */}
         <div

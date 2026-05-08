@@ -92,6 +92,21 @@ pub(crate) fn initialize_settings_defaults(
             }
         }
 
+        match init_agent_provider_settings_repo.get_default().await {
+            Ok(Some(settings)) if settings.enabled => {}
+            Ok(_) => {
+                init_execution_state.pause();
+                info!("Paused execution because no enabled default provider is configured");
+            }
+            Err(e) => {
+                init_execution_state.pause();
+                warn!(
+                    "Paused execution because provider settings could not be read: {}",
+                    e
+                );
+            }
+        }
+
         match init_agent_provider_settings_repo
             .get(AgentHarnessKind::Claude)
             .await
@@ -133,4 +148,40 @@ pub(crate) fn initialize_settings_defaults(
             Err(e) => tracing::warn!("Failed to seed ideation model settings: {}", e),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::application::AppState;
+    use crate::domain::agents::DEFAULT_AGENT_HARNESS;
+    use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+
+    #[test]
+    fn initialize_settings_defaults_pauses_execution_without_default_provider() {
+        let mut app_state = AppState::new_test();
+        app_state.agent_provider_settings_repo =
+            Arc::new(MemoryAgentProviderSettingsRepository::new());
+        let execution_state = Arc::new(ExecutionState::new());
+
+        initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+
+        assert!(execution_state.is_paused());
+    }
+
+    #[test]
+    fn initialize_settings_defaults_keeps_execution_running_with_default_provider() {
+        let mut app_state = AppState::new_test();
+        app_state.agent_provider_settings_repo =
+            Arc::new(MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                DEFAULT_AGENT_HARNESS,
+            ));
+        let execution_state = Arc::new(ExecutionState::new());
+
+        initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+
+        assert!(!execution_state.is_paused());
+    }
 }

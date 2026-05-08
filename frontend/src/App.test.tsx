@@ -14,6 +14,7 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { toast } from "sonner";
 
 vi.mock("sonner", () => ({
@@ -360,6 +361,15 @@ function resetStores() {
 describe("App", () => {
   beforeEach(() => {
     resetStores();
+    vi.mocked(useHarnessProviders).mockReturnValue({
+      settings: {
+        providers: [],
+        defaultProvider: "codex",
+        requiresOnboarding: false,
+      },
+      providers: [],
+      isLoading: false,
+    } as never);
 
     // Setup default mock return values for execution hooks
     vi.mocked(useExecutionStatus).mockReturnValue({
@@ -1064,6 +1074,37 @@ describe("App", () => {
       expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
       expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();
+    });
+
+    it("routes existing users without a default provider to provider setup", async () => {
+      const user = userEvent.setup();
+      vi.mocked(useHarnessProviders).mockReturnValue({
+        settings: {
+          providers: [],
+          defaultProvider: null,
+          requiresOnboarding: true,
+        },
+        providers: [],
+        isLoading: false,
+      } as never);
+
+      render(<App />);
+
+      expect(screen.getByTestId("welcome-screen")).toBeInTheDocument();
+      expect(screen.getByTestId("welcome-provider-step")).toHaveAttribute(
+        "data-current",
+        "true",
+      );
+      expect(screen.getByTestId("welcome-project-step")).toHaveAttribute(
+        "data-status",
+        "complete",
+      );
+      expect(screen.queryByTestId("nav-agents")).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: /set up provider/i }));
+
+      expect(useUiStore.getState().activeModal).toBe("settings");
+      expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
     });
   });
 
