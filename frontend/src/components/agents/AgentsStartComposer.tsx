@@ -7,10 +7,11 @@ import type {
 } from "@/api/chat";
 import type { Project } from "@/types/project";
 import { withAlpha } from "@/lib/theme-colors";
-import type {
-  AgentEffort,
-  AgentProvider,
-  AgentRuntimeSelection,
+import {
+  useAgentSessionStore,
+  type AgentEffort,
+  type AgentProvider,
+  type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -123,6 +124,18 @@ export function AgentsStartComposer({
   const startFromRequestRef = useRef(0);
   const animatedHeadingWord = useAnimatedStarterWord();
   const { registry: modelRegistry } = useAgentModels();
+  const branchBaseCacheByProjectId = useAgentSessionStore(
+    (s) => s.branchBaseCacheByProjectId
+  );
+  const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
+    (s) => s.lastBranchBaseSelectionByProjectId
+  );
+  const setBranchBaseCacheForProject = useAgentSessionStore(
+    (s) => s.setBranchBaseCacheForProject
+  );
+  const setLastBranchBaseSelectionForProject = useAgentSessionStore(
+    (s) => s.setLastBranchBaseSelectionForProject
+  );
 
   const normalizedRuntime = useMemo(
     () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME, modelRegistry),
@@ -249,6 +262,16 @@ export function AgentsStartComposer({
     [modelId, modelRegistry, persistRuntimePreference, projectId, provider]
   );
 
+  const handleStartFromChange = useCallback(
+    (nextKey: string) => {
+      setSelectedStartFromKey(nextKey);
+      if (activeProjectId) {
+        setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
+      }
+    },
+    [activeProjectId, setLastBranchBaseSelectionForProject]
+  );
+
   const handleFilesSelected = (files: File[]) => {
     if (attachments.length + files.length > MAX_FILES) {
       setError(`Cannot upload more than ${MAX_FILES} files total`);
@@ -290,10 +313,26 @@ export function AgentsStartComposer({
     }
 
     const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
-    setStartFromOptions(fallback.options);
-    setSelectedStartFromKey(fallback.selectedKey);
+    const cached = branchBaseCacheByProjectId[activeProjectId];
+    const options = cached?.options.length ? cached.options : fallback.options;
+    const preferredKey =
+      lastBranchBaseSelectionByProjectId[activeProjectId] ??
+      cached?.selectedKey ??
+      fallback.selectedKey;
+    setStartFromOptions(options);
+    setSelectedStartFromKey(
+      resolveBranchSelectionKey(options, preferredKey) ??
+        resolveBranchSelectionKey(options, fallback.selectedKey) ??
+        fallback.selectedKey
+    );
     setIsLoadingStartFrom(false);
-  }, [activeProjectBaseBranch, activeProjectId, activeProjectWorkingDirectory]);
+  }, [
+    activeProjectBaseBranch,
+    activeProjectId,
+    activeProjectWorkingDirectory,
+    branchBaseCacheByProjectId,
+    lastBranchBaseSelectionByProjectId,
+  ]);
 
   const ensureStartFromOptionsLoaded = useCallback(() => {
     if (
@@ -317,8 +356,20 @@ export function AgentsStartComposer({
         if (startFromRequestRef.current !== requestId) {
           return;
         }
+        const preferredKey =
+          (activeProjectId
+            ? lastBranchBaseSelectionByProjectId[activeProjectId]
+            : null) ??
+          selectedStartFromKey ??
+          result.selectedKey;
+        const nextSelectedKey =
+          resolveBranchSelectionKey(result.options, preferredKey) ??
+          resolveBranchSelectionKey(result.options, result.selectedKey) ??
+          result.selectedKey;
         setStartFromOptions(result.options);
-        setSelectedStartFromKey(result.selectedKey);
+        setSelectedStartFromKey(nextSelectedKey);
+        setBranchBaseCacheForProject(activeProjectId, result.options, nextSelectedKey);
+        setLastBranchBaseSelectionForProject(activeProjectId, nextSelectedKey);
         setHydratedStartFromProjectId(activeProjectId);
         setIsLoadingStartFrom(false);
       })
@@ -326,9 +377,6 @@ export function AgentsStartComposer({
         if (startFromRequestRef.current !== requestId) {
           return;
         }
-        const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
-        setStartFromOptions(fallback.options);
-        setSelectedStartFromKey(fallback.selectedKey);
         setHydratedStartFromProjectId(activeProjectId);
         setIsLoadingStartFrom(false);
       });
@@ -338,6 +386,10 @@ export function AgentsStartComposer({
     activeProjectWorkingDirectory,
     hydratedStartFromProjectId,
     isLoadingStartFrom,
+    lastBranchBaseSelectionByProjectId,
+    selectedStartFromKey,
+    setBranchBaseCacheForProject,
+    setLastBranchBaseSelectionForProject,
   ]);
 
   const handleRemoveAttachment = (attachmentId: string) => {
@@ -545,11 +597,12 @@ export function AgentsStartComposer({
             />
             <BranchBasePicker
               value={selectedStartFromKey}
-              onValueChange={setSelectedStartFromKey}
+              onValueChange={handleStartFromChange}
               options={startFromOptions}
               placeholder={isLoadingStartFrom ? "Loading branch..." : "Base branch"}
               disabled={!activeProjectId || (isLoadingStartFrom && startFromOptions.length === 0)}
               testId="agents-start-base"
+              isLoading={isLoadingStartFrom}
               onIntent={ensureStartFromOptionsLoaded}
               onOpenChange={(open) => {
                 if (open) {
@@ -575,6 +628,16 @@ export function AgentsStartComposer({
       </div>
     </div>
   );
+}
+
+function resolveBranchSelectionKey(
+  options: BranchBaseOption[],
+  preferredKey: string | null | undefined
+) {
+  if (!preferredKey) {
+    return null;
+  }
+  return options.some((option) => option.key === preferredKey) ? preferredKey : null;
 }
 
 

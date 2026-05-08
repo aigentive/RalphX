@@ -81,12 +81,44 @@ function appendMessageToConversationHistory(
 
   return {
     ...data,
-    pages: data.pages.map((page, index) => ({
-      ...page,
-      messages: index === 0 ? [...page.messages, message] : page.messages,
-      totalMessageCount: page.totalMessageCount + 1,
-    })),
+    pages: data.pages.map((page, index) => {
+      if (index !== 0) {
+        return page;
+      }
+      const messages = replaceMatchingOptimisticMessage(page.messages, message);
+      return {
+        ...page,
+        messages,
+        totalMessageCount:
+          page.totalMessageCount + (messages.length > page.messages.length ? 1 : 0),
+      };
+    }),
   };
+}
+
+function replaceMatchingOptimisticMessage(
+  messages: ChatMessageResponse[],
+  message: ChatMessageResponse
+) {
+  if (messages.some((item) => item.id === message.id)) {
+    return messages;
+  }
+
+  const optimisticIndex = messages.findIndex(
+    (item) =>
+      item.id.startsWith("optimistic:") &&
+      item.conversationId === message.conversationId &&
+      item.role === message.role &&
+      item.content === message.content
+  );
+
+  if (optimisticIndex === -1) {
+    return [...messages, message];
+  }
+
+  const nextMessages = [...messages];
+  nextMessages[optimisticIndex] = message;
+  return nextMessages;
 }
 
 function shouldRouteRunStartSelectionToCallerStoreKey(
@@ -430,12 +462,13 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
             chatKeys.conversation(activeConversationId),
             (oldData) => {
               if (!oldData) return oldData;
-              const existingMessages = oldData.messages ?? [];
-              if (existingMessages.some(m => m.id === message_id)) {
-                return oldData;
-              }
-
-              return { ...oldData, messages: [...existingMessages, newMessage] };
+              return {
+                ...oldData,
+                messages: replaceMatchingOptimisticMessage(
+                  oldData.messages ?? [],
+                  newMessage
+                ),
+              };
             }
           );
           queryClient.setQueryData<ConversationHistoryCacheData>(

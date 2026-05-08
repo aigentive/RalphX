@@ -507,6 +507,8 @@ export function resetAgentSessionState(
     lastRuntimeByProjectId: {
       "project-1": runtime,
     },
+    branchBaseCacheByProjectId: {},
+    lastBranchBaseSelectionByProjectId: {},
     ...overrides,
   });
 }
