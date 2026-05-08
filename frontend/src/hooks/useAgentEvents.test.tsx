@@ -437,6 +437,72 @@ describe("useAgentEvents", () => {
       expect(historyQuery?.pages[0]?.totalMessageCount).toBe(2);
       expect((historyQuery as unknown as { messages?: unknown }).messages).toBeUndefined();
     });
+
+    it("replaces matching optimistic starter messages instead of duplicating them", () => {
+      const { queryClient, wrapper } = createWrapperWithClient();
+      const conversation = makeConversation({
+        id: "conv-1",
+        contextType: "project",
+        contextId: "project-1",
+      });
+      const optimisticMessage = makeMessage({
+        id: "optimistic:conv-1:initial-user",
+        conversationId: "conv-1",
+        content: "Start the agent",
+        createdAt: "2026-04-07T10:00:00.000Z",
+      });
+
+      queryClient.setQueryData(["chat", "conversation", "conv-1"], {
+        conversation,
+        messages: [optimisticMessage],
+      });
+      queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+        ["chat", "conversation", "conv-1", "history"],
+        {
+          pages: [
+            {
+              conversation,
+              messages: [optimisticMessage],
+              limit: 40,
+              offset: 0,
+              totalMessageCount: 1,
+              hasOlder: false,
+            },
+          ],
+          pageParams: [0],
+        }
+      );
+
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:message_created", {
+          context_type: "project",
+          context_id: "project-1",
+          conversation_id: "conv-1",
+          message_id: "msg-real-user",
+          role: "user",
+          content: "Start the agent",
+          created_at: "2026-04-07T10:02:00.000Z",
+        });
+      });
+
+      const conversationQuery = queryClient.getQueryData<{
+        conversation: ChatConversation;
+        messages: ChatMessageResponse[];
+      }>(["chat", "conversation", "conv-1"]);
+      const historyQuery = queryClient.getQueryData<
+        InfiniteData<ConversationMessagesPageResponse>
+      >(["chat", "conversation", "conv-1", "history"]);
+
+      expect(conversationQuery?.messages.map((message) => message.id)).toEqual([
+        "msg-real-user",
+      ]);
+      expect(historyQuery?.pages[0]?.messages.map((message) => message.id)).toEqual([
+        "msg-real-user",
+      ]);
+      expect(historyQuery?.pages[0]?.totalMessageCount).toBe(1);
+    });
   });
 
   describe("agent:run_started — storeKey param", () => {
