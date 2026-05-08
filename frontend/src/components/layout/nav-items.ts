@@ -5,10 +5,10 @@
 
 import {
   Activity,
-  Bot,
+  Briefcase,
+  GitBranch,
   LayoutGrid,
   Lightbulb,
-  Network,
   Puzzle,
   TrendingUp,
 } from "lucide-react";
@@ -27,7 +27,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
   {
     view: "agents",
     label: "Agents",
-    icon: Bot,
+    icon: Briefcase,
     shortcut: "⌘1",
     visible: () => true,
   },
@@ -41,7 +41,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
   {
     view: "graph",
     label: "Graph",
-    icon: Network,
+    icon: GitBranch,
     shortcut: "⌘3",
     visible: () => true,
   },

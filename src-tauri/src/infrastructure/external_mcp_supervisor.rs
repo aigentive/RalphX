@@ -269,13 +269,11 @@ impl ExternalMcpSupervisor {
         if matches!(
             health_check,
             HealthCheckResult::Ready | HealthCheckResult::Degraded
-        ) {
-            if self
-                .detect_startup_bind_conflict(&stderr_lines, spawn_start, attempts)
-                .await
-            {
-                return;
-            }
+        ) && self
+            .detect_startup_bind_conflict(&stderr_lines, spawn_start, attempts)
+            .await
+        {
+            return;
         }
 
         match health_check {

@@ -20,18 +20,63 @@ on:
         required: true
         type: boolean
         default: false
+      release_bump:
+        description: "Optional manual bump override. Use major only for an explicitly approved v1 milestone."
+        required: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      release_version:
+        description: "Optional exact version override, e.g. 0.42.0 or v1.0.0. Do not combine with release_bump."
+        required: false
+        type: string
+        default: ""
+      linux_runner:
+        description: "Runner to use for Daily Release prep and Release Build metadata jobs"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - github-hosted
+          - self-hosted
       arm_runner:
         description: "Runner to use for the macOS ARM release build"
         required: true
         type: choice
-        default: self-hosted
+        default: blacksmith
         options:
+          - blacksmith
+          - depot
           - self-hosted
           - github-hosted
+      intel_runner:
+        description: "Runner to use for the macOS Intel release build"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - self-hosted
+          - github-hosted
+      macos_runner_size:
+        description: "GitHub-hosted macOS runner size for the release build"
+        required: true
+        type: choice
+        default: standard
+        options:
+          - standard
+          - larger
       codex_model:
         description: "Codex model for version proposal and release notes"
         required: true
-        default: gpt-5.4
+        default: gpt-5.5
       codex_reasoning_effort:
         description: "Codex reasoning effort for version proposal and release notes"
         required: true
@@ -55,19 +100,24 @@ jobs:
   prepare-and-dispatch:
     name: Prepare daily release
     if: ${{ github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ secrets.RELEASE_AUTOMATION_TOKEN || github.token }}
       CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
-      RELEASE_PROPOSAL_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.4' }}
-      RELEASE_NOTES_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.4' }}
+      RELEASE_PROPOSAL_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.5' }}
+      RELEASE_NOTES_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_model || 'gpt-5.5' }}
       RELEASE_PROPOSAL_REASONING_EFFORT: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_reasoning_effort || 'xhigh' }}
       RELEASE_NOTES_REASONING_EFFORT: ${{ github.event_name == 'workflow_dispatch' && inputs.codex_reasoning_effort || 'xhigh' }}
+      MANUAL_RELEASE_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.release_bump || 'auto' }}
+      MANUAL_RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
       DRAFT_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
       PRERELEASE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
-      ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'self-hosted' }}
+      LINUX_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_runner || 'blacksmith' }}
+      ARM_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.arm_runner || 'blacksmith' }}
+      INTEL_RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.intel_runner || 'blacksmith' }}
+      MACOS_RUNNER_SIZE: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_runner_size || 'standard' }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v6
@@ -140,18 +190,59 @@ jobs:
           fi
 
           latest_tag="${{ steps.range.outputs.latest_tag }}"
+          current_version="${latest_tag#v}"
           proposal_path=".artifacts/release-notes/proposal-from-${latest_tag}.md"
+          manual_bump="${MANUAL_RELEASE_BUMP:-auto}"
+          manual_version="$(printf '%s' "${MANUAL_RELEASE_VERSION:-}" | tr -d '[:space:]')"
 
-          ./scripts/propose-release.sh \
-            --from "${latest_tag}" \
-            --to HEAD \
-            --accept \
-            --output "${proposal_path}"
+          source ./scripts/release-analysis-common.sh
 
-          version="$(head -n 1 .artifacts/release-notes/.version | tr -d '[:space:]')"
-          if [[ -z "${version}" ]]; then
-            echo "Codex release proposal did not persist a version." >&2
+          if [[ -n "${manual_version}" && "${manual_bump}" != "auto" ]]; then
+            echo "Use either release_bump or release_version, not both." >&2
             exit 1
+          fi
+
+          if [[ -n "${manual_version}" ]]; then
+            version="$(release_analysis_normalize_version "${manual_version}")"
+            release_analysis_assert_version_greater "${current_version}" "${version}"
+            release_analysis_assert_major_bump_allowed "${current_version}" "${version}" "manual"
+            release_analysis_write_selected_version "${version}"
+            echo "Using manually supplied release version ${version}." >> "${GITHUB_STEP_SUMMARY}"
+          elif [[ "${manual_bump}" != "auto" ]]; then
+            release_analysis_compute_candidate_versions "${current_version}"
+            case "${manual_bump}" in
+              patch)
+                version="${RELEASE_ANALYSIS_NEXT_PATCH}"
+                ;;
+              minor)
+                version="${RELEASE_ANALYSIS_NEXT_MINOR}"
+                ;;
+              major)
+                version="${RELEASE_ANALYSIS_NEXT_MAJOR}"
+                ;;
+              *)
+                echo "Invalid release_bump: ${manual_bump}" >&2
+                exit 1
+                ;;
+            esac
+            release_analysis_assert_version_greater "${current_version}" "${version}"
+            release_analysis_assert_major_bump_allowed "${current_version}" "${version}" "manual"
+            release_analysis_write_selected_version "${version}"
+            echo "Using manually selected ${manual_bump} release bump -> ${version}." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            ./scripts/propose-release.sh \
+              --from "${latest_tag}" \
+              --to HEAD \
+              --accept \
+              --output "${proposal_path}"
+
+            version="$(head -n 1 .artifacts/release-notes/.version | tr -d '[:space:]')"
+            if [[ -z "${version}" ]]; then
+              echo "Codex release proposal did not persist a version." >&2
+              exit 1
+            fi
+            release_analysis_assert_version_greater "${current_version}" "${version}"
+            release_analysis_assert_major_bump_allowed "${current_version}" "${version}" "automatic"
           fi
 
           tag="v${version}"
@@ -176,7 +267,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          version="${{ steps.release_prep.outputs.version }}"
           tag="${{ steps.release_prep.outputs.tag }}"
 
           git fetch origin main
@@ -222,7 +312,10 @@ jobs:
             -f "version=${version}" \
             -f "draft=${DRAFT_RELEASE}" \
             -f "prerelease=${PRERELEASE_RELEASE}" \
-            -f "arm_runner=${ARM_RUNNER}"
+            -f "linux_runner=${LINUX_RUNNER}" \
+            -f "arm_runner=${ARM_RUNNER}" \
+            -f "intel_runner=${INTEL_RUNNER}" \
+            -f "macos_runner_size=${MACOS_RUNNER_SIZE}"
 
           echo "Dispatched Release Build for ${tag}." >> "${GITHUB_STEP_SUMMARY}"
 

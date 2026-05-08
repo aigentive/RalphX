@@ -13,6 +13,7 @@ interface AgentsConversationMainRegionProps {
   activeProjectId: string | null;
   activeProjectOptions: ActiveConversationPanelProps["activeProjectOptions"];
   activeWorkspace: ActiveConversationPanelProps["activeWorkspace"];
+  activeWorkspaceFreshness: ActiveConversationPanelProps["activeWorkspaceFreshness"];
   attachedIdeationSessionId: ActiveConversationPanelProps["attachedIdeationSessionId"];
   availableArtifactTabs: ActiveConversationPanelProps["availableArtifactTabs"];
   chatFocus: ActiveConversationPanelProps["chatFocus"];
@@ -23,6 +24,7 @@ interface AgentsConversationMainRegionProps {
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
+  onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
@@ -52,6 +54,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   activeProjectId,
   activeProjectOptions,
   activeWorkspace,
+  activeWorkspaceFreshness,
   attachedIdeationSessionId,
   availableArtifactTabs,
   chatFocus,
@@ -62,6 +65,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   isLoadingProjects,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
+  onActiveEffortChange,
   onActiveModelChange,
   onAgentUserMessageSent,
   onCreateProject,
@@ -92,6 +96,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         activeProjectId={activeProjectId}
         activeProjectOptions={activeProjectOptions}
         activeWorkspace={activeWorkspace}
+        activeWorkspaceFreshness={activeWorkspaceFreshness}
         attachedIdeationSessionId={attachedIdeationSessionId}
         availableArtifactTabs={availableArtifactTabs}
         chatFocus={chatFocus}
@@ -99,6 +104,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
+        onActiveEffortChange={onActiveEffortChange}
         onActiveModelChange={onActiveModelChange}
         onAgentUserMessageSent={onAgentUserMessageSent}
         onFocusIdeationSession={onFocusIdeationSession}

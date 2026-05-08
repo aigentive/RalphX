@@ -119,7 +119,7 @@ export const DiffToolCallView = React.memo(function DiffToolCallView({
 
         {/* Tool name badge */}
         <span
-          className={`${compact ? "text-[9px]" : "text-[10px]"} px-1.5 py-0.5 rounded flex-shrink-0`}
+          className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0`}
           style={{
             backgroundColor: "var(--bg-surface)",
             color: "var(--text-secondary)",
@@ -131,14 +131,14 @@ export const DiffToolCallView = React.memo(function DiffToolCallView({
 
         {/* File path */}
         <span
-          className={`${compact ? "text-[11px]" : "text-xs"} truncate font-mono flex-1 min-w-0`}
+          className={`${compact ? "text-[0.6875rem]" : "text-xs"} truncate font-mono flex-1 min-w-0`}
           style={{ color: "var(--text-secondary)" }}
         >
           {shortenPath(filePath)}
         </span>
 
         {/* Stats badge */}
-        <span className={`flex-shrink-0 flex items-center gap-1 ${compact ? "text-[9px]" : "text-[10px]"} font-mono`}>
+        <span className={`flex-shrink-0 flex items-center gap-1 ${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-mono`}>
           {additions > 0 && (
             <span style={{ color: "var(--status-success)" }}>+{additions}</span>
           )}
@@ -150,7 +150,7 @@ export const DiffToolCallView = React.memo(function DiffToolCallView({
         {/* Streaming indicator */}
         {isStreaming && (
           <span
-            className={`${compact ? "text-[9px]" : "text-[10px]"} px-1.5 py-0.5 rounded flex-shrink-0 animate-pulse`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0 animate-pulse`}
             style={{
               backgroundColor: withAlpha("var(--accent-primary)", 15),
               color: "var(--accent-primary)",
@@ -172,7 +172,7 @@ export const DiffToolCallView = React.memo(function DiffToolCallView({
         <div
           style={{
             fontFamily: "var(--font-mono)",
-            fontSize: "11px",
+            fontSize: "0.6875rem",
             lineHeight: "20px",
           }}
         >

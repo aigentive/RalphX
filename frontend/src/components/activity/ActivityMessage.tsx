@@ -158,7 +158,7 @@ export function ActivityMessage({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-7 px-2 text-[11px] border-[var(--border-subtle)] bg-[var(--bg-base)] hover:bg-[var(--bg-hover)]"
+                className="h-7 px-2 text-[0.6875rem] border-[var(--border-subtle)] bg-[var(--bg-base)] hover:bg-[var(--bg-hover)]"
                 onClick={(event) => {
                   event.stopPropagation();
                   navigateToIdeationSession(followupSessionId);
@@ -276,7 +276,7 @@ export function ActivityMessage({
         </div>
 
         {/* Timestamp - right-aligned with subtle styling */}
-        <span className="text-[11px] text-[var(--text-muted)] opacity-60 shrink-0 ml-auto pl-3 tabular-nums">
+        <span className="text-[0.6875rem] text-[var(--text-muted)] opacity-60 shrink-0 ml-auto pl-3 tabular-nums">
           {formatTimestamp(timestamp)}
         </span>
       </div>
@@ -286,7 +286,7 @@ export function ActivityMessage({
         <div className="mx-3 pb-3 border-t border-[var(--border-subtle)]">
           <div className="pt-2.5 relative">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-medium text-[var(--text-muted)] uppercase tracking-wide">
+              <span className="text-[0.625rem] font-medium text-[var(--text-muted)] uppercase tracking-wide">
                 {type === "tool_call" ? "Raw JSON" : "Details"}
               </span>
               <Button

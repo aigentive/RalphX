@@ -26,6 +26,7 @@ mod chat_service_streaming;
 mod chat_service_types;
 pub mod freshness_routing;
 mod streaming_state_cache;
+pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
@@ -117,10 +118,11 @@ pub use chat_service_types::{
     events, AgentChunkPayload, AgentConversationCreatedPayload, AgentErrorPayload,
     AgentHookPayload, AgentMessageCreatedPayload, AgentMessageQueuedPayload, AgentQueueSentPayload,
     AgentRunCompletedPayload, AgentRunStartedPayload, AgentTaskCompletedPayload,
-    AgentTaskStartedPayload, AgentToolCallPayload, ChatConversationWithMessages, ChatServiceError,
-    SendCallerContext, SendResult, TeamArtifactCreatedPayload, TeamCostUpdatePayload,
-    TeamCreatedPayload, TeamDisbandedPayload, TeamMessagePayload, TeamTeammateIdlePayload,
-    TeamTeammateShutdownPayload, TeamTeammateSpawnedPayload,
+    AgentTaskStartedPayload, AgentToolCallPayload, AgentToolCallPreviewFields,
+    ChatConversationWithMessages, ChatServiceError, SendCallerContext, SendResult,
+    TeamArtifactCreatedPayload, TeamCostUpdatePayload, TeamCreatedPayload, TeamDisbandedPayload,
+    TeamMessagePayload, TeamTeammateIdlePayload, TeamTeammateShutdownPayload,
+    TeamTeammateSpawnedPayload,
 };
 pub use streaming_state_cache::{
     CachedStreamingTask, CachedToolCall, ConversationStreamingState, StreamingStateCache,
@@ -1429,9 +1431,13 @@ impl<R: Runtime> AppChatService<R> {
             )));
         }
 
-        let updated_workspace = rollover_agent_conversation_workspace(&project, &workspace)
-            .await
-            .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
+        let rollover_result = rollover_agent_conversation_workspace(&project, &workspace).await;
+        self.emit_event(
+            "agent:workspace_changed",
+            serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+        );
+        let updated_workspace =
+            rollover_result.map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
         let updated_workspace = repo
             .create_or_update(updated_workspace)
             .await
@@ -1810,7 +1816,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 context_id,
                 runtime_context_id = %runtime_context_id,
                 queued_message_id = %queued.id,
-                "chat_service.send_message: execution paused, queued Claude-backed message instead of spawning"
+                "chat_service.send_message: execution paused, queued agent message instead of spawning"
             );
             return Ok(SendResult {
                 conversation_id: conversation.id.as_str().to_string(),

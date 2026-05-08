@@ -26,7 +26,7 @@ function TaskCardBadge({
 }) {
   return (
     <span
-      className={`text-[10px] px-1.5 py-0.5 rounded flex-shrink-0 ${className}`.trim()}
+      className={`text-[0.625rem] px-1.5 py-0.5 rounded flex-shrink-0 ${className}`.trim()}
       style={style}
       title={title}
     >

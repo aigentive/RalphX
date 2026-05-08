@@ -65,7 +65,8 @@ Updated: 2026-04-07
   - `/codex/noninteractive`
   - `/codex/models`
 - Official docs confirm:
-  - `gpt-5.4` is the recommended general Codex model
+  - `gpt-5.5` is the recommended starting point for complex reasoning and coding
+  - `gpt-5.4` remains a current lower-cost Codex-compatible model
   - `gpt-5.4-mini` is recommended for lighter tasks and subagents
   - `model_reasoning_effort` exists in Codex config
   - `approval_policy` exists in Codex config
@@ -120,7 +121,7 @@ Updated: 2026-04-07
 
 ### Reefagent config examples
 
-- `codex.model: codex:gpt-5.4`
+- `codex.model: codex:gpt-5.5`
 - `codex.reasoningEffort: xhigh`
 - `codex.executionPolicy: supervised`
 - `codex-agent.executionPolicy: autonomous`

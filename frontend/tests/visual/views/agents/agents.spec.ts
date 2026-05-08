@@ -477,6 +477,21 @@ async function seedAgentsScenario(page: Page) {
   });
 }
 
+async function seedGitAuthRepairIssue(page: Page) {
+  await page.evaluate(() => {
+    window.__mockGhAuthStatus = true;
+    window.__mockGitAuthDiagnostics = {
+      fetchUrl: "https://github.com/mock/project.git",
+      pushUrl: "git@github.com:mock/project.git",
+      fetchKind: "HTTPS",
+      pushKind: "SSH",
+      mixedAuthModes: true,
+      canSwitchToSsh: true,
+      suggestedSshUrl: "git@github.com:mock/project.git",
+    };
+  });
+}
+
 test.describe("Agents View", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -525,6 +540,25 @@ test.describe("Agents View", () => {
     });
   });
 
+  test("commit publish pane shows git auth repair actions", async ({ page }) => {
+    await setupAgentsView(page);
+    await seedGitAuthRepairIssue(page);
+    await seedAgentsScenario(page);
+    await selectAgentConversation(page, editConversationId);
+
+    await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
+    await page.getByTestId("agents-publish-workspace").click();
+    await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
+    await expect(page.getByTestId("git-auth-repair-panel")).toBeVisible();
+    await expect(page.getByTestId("git-auth-switch-ssh")).toBeVisible();
+    await expect(page.getByTestId("git-auth-setup-gh")).toBeVisible();
+
+    await expect(page).toHaveScreenshot("agents-publish-git-auth-repair.png", {
+      fullPage: false,
+      maxDiffPixelRatio: 0.01,
+    });
+  });
+
   test("ideation workspace shows only ideation artifacts", async ({ page }) => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
@@ -543,6 +577,11 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-artifact-tab-proposal")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-tasks")).toBeVisible();
     await expect(page.getByTestId("agents-artifact-tab-publish")).toHaveCount(0);
+    await expect(
+      page
+        .getByTestId("agents-artifact-content-plan")
+        .getByText("Tighten the Agents workspace and keep artifact routing clear."),
+    ).toBeVisible();
 
     await expect(page).toHaveScreenshot("agents-ideation-artifacts.png", {
       fullPage: false,
@@ -550,16 +589,19 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("archived sidebar filter matches visual contract", async ({ page }) => {
+  test("v27 sidebar tree and static recent block match visual contract", async ({ page }) => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
 
-    await expect(page.getByTestId("agents-show-archived-pill")).toContainText("1");
-    await page.getByTestId("agents-show-archived-pill").click();
-    await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toBeVisible();
-    await expect(page.getByTestId(`agents-session-${editConversationId}`)).toHaveCount(0);
+    await expect(page.getByTestId("agents-show-all-projects-pill")).toBeVisible();
+    await expect(page.getByTestId("agents-project-sort-pill")).toBeVisible();
+    await expect(page.getByTestId("agents-show-archived-pill")).toBeVisible();
+    // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
+    await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
+    await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
+    await expect(page.getByTestId(`agents-session-${archivedConversationId}`)).toHaveCount(0);
 
-    await expect(page).toHaveScreenshot("agents-archived-sidebar.png", {
+    await expect(page).toHaveScreenshot("agents-v27-sidebar-recent.png", {
       fullPage: false,
       maxDiffPixelRatio: 0.01,
     });
@@ -572,6 +614,7 @@ test.describe("Agents View", () => {
     await selectAgentConversation(page, editConversationId);
     await expect(page.getByTestId("agents-publish-workspace")).toBeVisible();
     await page.getByTestId("agents-publish-workspace").click();
+    await expect(page.getByTestId("agents-publish-pane")).toBeVisible();
 
     const submitButton = page.getByTestId("agents-conversation-submit");
     await expect(submitButton).toBeVisible();

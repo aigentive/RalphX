@@ -15,8 +15,9 @@ describe("ThemeSelector", () => {
     render(<ThemeSelector />);
 
     expect(screen.getByTestId("theme-selector")).toBeInTheDocument();
-    expect(screen.getByTestId("theme-option-dark")).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByTestId("theme-option-light")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("theme-selector-trigger")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("theme-selector-trigger")).toHaveTextContent("Dark");
+    expect(screen.queryByTestId("theme-option-dark")).not.toBeInTheDocument();
   });
 
   it("updates the theme store and DOM attribute when clicking a theme option", async () => {
@@ -24,11 +25,24 @@ describe("ThemeSelector", () => {
 
     render(<ThemeSelector />);
 
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.getByTestId("theme-selector-trigger").getAttribute("style")).toContain(
+      "background-color: var(--bg-hover)"
+    );
+    expect(screen.getByTestId("theme-selector-trigger").getAttribute("style")).toContain(
+      "border-color: var(--border-strong)"
+    );
+    expect(screen.getByTestId("theme-selector-trigger").getAttribute("style")).toContain(
+      "color: var(--text-primary)"
+    );
+    expect(screen.getByTestId("theme-option-dark")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("theme-option-light")).toHaveAttribute("aria-checked", "false");
+
     await user.click(screen.getByTestId("theme-option-light"));
 
     expect(useThemeStore.getState().theme).toBe("light");
     expect(document.documentElement).toHaveAttribute("data-theme", "light");
-    expect(screen.getByTestId("theme-option-light")).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByTestId("theme-option-dark")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("theme-selector-trigger")).toHaveTextContent("Light");
+    expect(screen.queryByTestId("theme-option-light")).not.toBeInTheDocument();
   });
 });

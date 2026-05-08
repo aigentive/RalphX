@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
@@ -84,6 +84,73 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-chat-title-button")).toHaveAttribute(
       "data-theme-button-skip",
       "true"
+    );
+  });
+
+  it("can hide the inline title when the breadcrumb owns rename", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+        showTitle={false}
+      />
+    );
+
+    expect(screen.queryByTestId("agents-chat-title-button")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-chat-title-group")).toBeInTheDocument();
+  });
+
+  it("renames from the legacy inline title path when it is visible", async () => {
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ title: "Old title" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={onRenameConversation}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit agent title" }));
+    const input = screen.getByRole("textbox", { name: "Agent title" });
+    fireEvent.change(input, { target: { value: "New title" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(onRenameConversation).toHaveBeenCalledWith("conversation-1", "New title")
+    );
+  });
+
+  it("cancels the legacy inline title editor on Escape", () => {
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ title: "Stable title" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={onRenameConversation}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit agent title" }));
+    const input = screen.getByRole("textbox", { name: "Agent title" });
+    fireEvent.change(input, { target: { value: "Discarded title" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(onRenameConversation).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Edit agent title" })).toHaveTextContent(
+      "Stable title"
     );
   });
 
@@ -339,7 +406,7 @@ describe("AgentsChatHeader", () => {
     expect(screen.getAllByText("Pending")).toHaveLength(4);
   });
 
-  it("keeps the primary header focused on title and actions when a workspace is available", () => {
+  it("shows workspace status in the left header group", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation()}
@@ -352,7 +419,17 @@ describe("AgentsChatHeader", () => {
       />
     );
 
-    expect(screen.queryByTestId("agents-workspace-status")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-chat-title-group")).toContainElement(
+      screen.getByTestId("agents-workspace-status")
+    );
+    expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
+      "agent-abcdef12"
+    );
+    expect(screen.getByTestId("agents-workspace-status")).not.toHaveClass("border");
+    expect(screen.getByTestId("agents-workspace-status")).toHaveStyle({
+      background: "transparent",
+    });
+    expect(screen.getByTestId("chat-session-chips")).toBeInTheDocument();
   });
 
   it("shows the workspace branch status inside the focus subheader", () => {
@@ -536,7 +613,7 @@ describe("AgentsChatHeader", () => {
     );
 
     expect(screen.queryByTestId("agents-publish-workspace")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("agents-workspace-status")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
   it("hides ideation artifact shortcuts for edit-mode conversations", () => {

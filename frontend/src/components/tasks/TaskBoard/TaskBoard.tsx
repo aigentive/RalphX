@@ -1,14 +1,13 @@
 /**
  * TaskBoard - Main kanban board component with drag-drop support
  *
- * Design: macOS Tahoe "Liquid Glass" (2024 WWDC aesthetic)
- * - Multi-layer translucent depth with precise backdrop-blur
- * - Warm ambient luminosity from accent glow
- * - Horizontal scroll with momentum and snap
- * - Premium Apple-grade typography and spacing
+ * Design: v29a Kanban
+ * - Flat 48px toolbar
+ * - Stable full-height column grid with 1px dividers
+ * - Theme-specific card, empty-state, and status surfaces
  */
 
-import { useState, useEffect, useMemo, useSyncExternalStore, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -29,7 +28,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { usePlanStore, selectActiveExecutionPlanId } from "@/stores/planStore";
 import { Toggle } from "@/components/ui/toggle";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Archive, BarChart2, GitMerge, FileText, Sparkles } from "lucide-react";
+import { BarChart2, Database, FileText, Sparkles } from "lucide-react";
 import { api } from "@/lib/tauri";
 import { useTaskSearch } from "@/hooks/useTaskSearch";
 import { TaskSearchBar } from "../TaskSearchBar";
@@ -43,6 +42,9 @@ import { defaultWorkflow, type WorkflowColumn } from "@/types/workflow";
 import type { Task, TaskListResponse, InternalStatus } from "@/types/task";
 import { useColumnTaskCounts } from "./useColumnTaskCounts";
 import { useColumnCollapse } from "./useColumnCollapse";
+import {
+  TASK_BOARD_EXPANDED_COLUMN_FIXED_WIDTH,
+} from "./TaskBoard.layout";
 
 /**
  * Get all statuses for a column from its groups, or fallback to mapsTo
@@ -66,6 +68,11 @@ export interface TaskBoardProps {
   onTaskSelect?: (taskId: string) => void;
   /** Opens the global plan quick switcher with source attribution */
   onOpenPlanQuickSwitcher?: (source: SelectionSource) => void;
+  /** When `true` (compact host like a task tab / chat-panel split), expanded
+   * columns redistribute via `1fr` after honoring the minimum width. When `false`
+   * (full kanban screen), expanded columns keep a fixed width once any column
+   * is collapsed. */
+  fillWidth?: boolean;
 }
 
 export function TaskBoard({
@@ -73,6 +80,7 @@ export function TaskBoard({
   ideationSessionId: ideationSessionIdProp,
   onTaskSelect,
   onOpenPlanQuickSwitcher,
+  fillWidth: fillWidthProp,
 }: TaskBoardProps) {
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
@@ -100,8 +108,12 @@ export function TaskBoard({
   const openModal = useUiStore((s) => s.openModal);
   const showArchived = useUiStore((s) => s.showArchived);
   const setShowArchived = useUiStore((s) => s.setShowArchived);
-  const showMergeTasks = useUiStore((s) => s.showMergeTasks);
-  const setShowMergeTasks = useUiStore((s) => s.setShowMergeTasks);
+  // Default: full kanban screen → keep column widths fixed when one collapses
+  // (empty space appears on the right). Embedded hosts still redistribute
+  // through `1fr`, but expanded columns must keep a hard readable minimum.
+  const selectedTaskId = useUiStore((s) => s.selectedTaskId);
+  const fillWidth = fillWidthProp ?? selectedTaskId != null;
+  const showMergeTasks = true;
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const boardSearchQuery = useUiStore((s) => s.boardSearchQuery);
   const setBoardSearchQuery = useUiStore((s) => s.setBoardSearchQuery);
@@ -126,38 +138,6 @@ export function TaskBoard({
     queryKey: ["archived-count", projectId, ideationSessionId],
     queryFn: () => api.tasks.getArchivedCount(projectId, ideationSessionId),
   });
-
-  // Count merge tasks reactively from query cache without render-phase setState.
-  const getMergeTaskCountSnapshot = useCallback((): number => {
-    let count = 0;
-    for (const col of columns) {
-      const key = infiniteTaskKeys.list({
-        projectId,
-        statuses: getColumnStatuses(col),
-        includeArchived: showArchived,
-        ideationSessionId,
-        executionPlanId: effectiveExecutionPlanId,
-      });
-      const colData = queryClient.getQueryData<InfiniteData<TaskListResponse>>(key);
-      if (colData?.pages) {
-        for (const page of colData.pages) {
-          count += page.tasks.filter((t: Task) => t.category === "plan_merge").length;
-        }
-      }
-    }
-    return count;
-  }, [columns, projectId, showArchived, ideationSessionId, effectiveExecutionPlanId, queryClient]);
-
-  const subscribeToQueryCache = useCallback(
-    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
-    [queryClient]
-  );
-
-  const mergeTaskCount = useSyncExternalStore(
-    subscribeToQueryCache,
-    getMergeTaskCountSnapshot,
-    getMergeTaskCountSnapshot
-  );
 
   // Search functionality
   const {
@@ -423,12 +403,26 @@ export function TaskBoard({
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
-      {/* Container for the entire board including header */}
-      <div className="flex flex-col h-full">
-        {/* Header bar - macOS Tahoe: minimal, flat */}
-        <div className="px-4 py-2 flex items-center gap-3">
+      <div
+        data-testid="task-board-root"
+        className="flex h-full flex-col overflow-hidden"
+        style={{ backgroundColor: "var(--app-content-bg)" }}
+      >
+        {/* v29a flat Kanban toolbar */}
+        <div
+          data-testid="kanban-toolbar"
+          className="flex items-center gap-3 px-4"
+          style={{
+            minHeight: "48px",
+            height: "48px",
+            backgroundColor: "var(--kanban-toolbar-bg)",
+            borderBottomColor: "var(--kanban-toolbar-border, #2E2E36)",
+            borderBottomStyle: "solid",
+            borderBottomWidth: "1px",
+          }}
+        >
           {/* Search Bar is always visible on Kanban */}
-          <div className="flex-1 max-w-md">
+          <div className="w-[280px] shrink-0">
             <TaskSearchBar
               value={boardSearchQuery || ''}
               onChange={setBoardSearchQuery}
@@ -449,54 +443,41 @@ export function TaskBoard({
             />
           )}
 
-          {/* Show Archived toggle - simple Tahoe style */}
-          {archivedCount > 0 && (
-            <Toggle
-              pressed={showArchived}
-              onPressedChange={setShowArchived}
-              aria-label="Toggle show archived tasks"
-              className="gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium transition-colors"
+          {/* Archived tab - v29a keeps this in the subbar; merge tasks stay in Done groups. */}
+          <Toggle
+            pressed={showArchived}
+            onPressedChange={setShowArchived}
+            aria-label="Toggle show archived tasks"
+            className="h-[30px] max-w-[380px] gap-2 rounded-[6px] px-2.5 text-[0.7812rem] font-medium transition-colors"
+            style={{
+              backgroundColor: showArchived ? "var(--bg-hover)" : "transparent",
+              borderColor: showArchived ? "var(--border-default)" : "transparent",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: showArchived ? "var(--text-primary)" : "var(--text-muted)",
+            }}
+          >
+            <Database className="h-[13px] w-[13px] shrink-0" />
+            <span className="truncate">Archived</span>
+            <span
+              className="shrink-0 text-[0.6875rem]"
               style={{
-                background: showArchived
-                  ? "var(--accent-muted)"
-                  : "transparent",
-                color: showArchived
-                  ? "var(--accent-primary)"
-                  : "var(--text-muted)",
+                color: showArchived ? "var(--text-secondary)" : "var(--text-muted)",
+                fontFamily:
+                  "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
               }}
             >
-              <Archive className="h-3.5 w-3.5" />
-              <span>Archived ({archivedCount})</span>
-            </Toggle>
-          )}
-
-          {/* Show Merge Tasks toggle */}
-          {mergeTaskCount > 0 && (
-            <Toggle
-              pressed={showMergeTasks}
-              onPressedChange={setShowMergeTasks}
-              aria-label="Toggle show merge tasks"
-              className="gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium transition-colors"
-              style={{
-                background: showMergeTasks
-                  ? "var(--accent-muted)"
-                  : "transparent",
-                color: showMergeTasks
-                  ? "var(--accent-primary)"
-                  : "var(--text-muted)",
-              }}
-            >
-              <GitMerge className="h-3.5 w-3.5" />
-              <span>Merge ({mergeTaskCount})</span>
-            </Toggle>
-          )}
+              ({archivedCount})
+            </span>
+          </Toggle>
 
           {/* Project stats popover */}
           <Popover open={isStatsOpen} onOpenChange={setIsStatsOpen}>
             <PopoverTrigger asChild>
               <button
-                className="ml-auto flex items-center justify-center w-7 h-7 rounded text-muted-foreground hover:text-foreground hover:bg-[var(--overlay-faint)] transition-colors"
+                className="ml-auto flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-[var(--bg-hover)] transition-colors"
                 aria-label="Project stats"
+                style={{ border: "1px solid transparent" }}
               >
                 <BarChart2 className="w-4 h-4" />
               </button>
@@ -507,16 +488,35 @@ export function TaskBoard({
           </Popover>
         </div>
 
-        {/* TaskBoard container - macOS Tahoe: clean, flat, minimal */}
+        {/* TaskBoard container - v29a grid with 1px dividers */}
         <div
           data-testid="task-board"
-          className="task-board relative flex items-stretch py-4 overflow-x-auto flex-1"
+          className="task-board relative flex-1 overflow-x-auto"
           style={{
-            /* Solid dark background with subtle cool tint - like Tahoe Finder */
-            background: "var(--bg-base)",
+            display: showNoPlanState || showEmptyState ? "flex" : "grid",
+            gridTemplateColumns:
+              showNoPlanState || showEmptyState
+                ? undefined
+                : (() => {
+                    return displayColumns
+                      .map((column) =>
+                        !activeTask && isCollapsed(column.id)
+                          ? "128px"
+                          : `${TASK_BOARD_EXPANDED_COLUMN_FIXED_WIDTH}px`
+                      )
+                      .join(" ");
+                  })(),
+            justifyContent: "start",
+            gridAutoRows: "1fr",
+            gap: showNoPlanState || showEmptyState ? undefined : "1px",
+            alignItems: "stretch",
+            backgroundColor: showNoPlanState || showEmptyState
+              ? "var(--app-content-bg)"
+              : "var(--kanban-board-divider)",
+            minHeight: 0,
             scrollSnapType: "x proximity",
-            scrollPaddingLeft: "16px",
-            scrollPaddingRight: "16px",
+            scrollPaddingLeft: "0px",
+            scrollPaddingRight: "0px",
             WebkitOverflowScrolling: "touch",
           }}
         >
@@ -629,6 +629,7 @@ export function TaskBoard({
                     executionPlanId={effectiveExecutionPlanId}
                     isCollapsed={columnCollapsed}
                     onToggleCollapse={() => toggleCollapse(column.id)}
+                    fillWidth={fillWidth}
                     {...(onTaskSelect !== undefined && { onTaskSelect })}
                   />
                 );

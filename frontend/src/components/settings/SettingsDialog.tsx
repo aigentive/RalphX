@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { X } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -12,25 +17,22 @@ import { useUiStore } from "@/stores/uiStore";
 import type { ProjectSettings } from "@/types/settings";
 
 import {
+  DEFAULT_SETTINGS_SECTION,
   SETTINGS_GROUPS,
   SETTINGS_SECTIONS,
+  isSettingsSectionId,
   type SettingsSectionId,
 } from "./settings-registry";
 import { loadActiveSection, saveActiveSection } from "./settings-ui-state";
-import { AccessibilitySection } from "./AccessibilitySection";
-import { ApiKeysSection } from "./ApiKeysSection";
-import { ExternalMcpSettingsPanel } from "./ExternalMcpSettingsPanel";
-import { RepositorySettingsSection } from "./RepositorySettingsSection";
-
 import {
-  ExecutionHarnessSection,
-  IdeationHarnessSection,
-} from "./IdeationHarnessSection";
-import { IdeationSettingsPanel } from "./IdeationSettingsPanel";
-import { ProjectAnalysisSection } from "./ProjectAnalysisSection";
-import ExecutionSection from "./sections/ExecutionSection";
-import GlobalExecutionSection from "./sections/GlobalExecutionSection";
-import ReviewPolicySection from "./sections/ReviewPolicySection";
+  cancelScheduledJob,
+  scheduleAfterPaint,
+  sectionModuleLoaders,
+  useDeferredDialogFrame,
+  useDeferredHydratedSection,
+  type ScheduledJob,
+} from "./SettingsDialog.performance";
+import { SettingsSectionContent } from "./SettingsSectionContent";
 
 export interface SettingsDialogProps {
   executionSettings: ProjectSettings | null;
@@ -54,71 +56,110 @@ export default function SettingsDialog({
   const isOpen = activeModal === "settings";
 
   const [activeSection, setActiveSectionState] = useState<SettingsSectionId>(
-    () => loadActiveSection() ?? "execution",
+    () => loadActiveSection() ?? DEFAULT_SETTINGS_SECTION,
+  );
+  const shouldRenderFrame = useDeferredDialogFrame(isOpen);
+  const isSectionHydrated = useDeferredHydratedSection(isOpen, activeSection);
+  const persistJobRef = useRef<ScheduledJob | null>(null);
+  const closeJobRef = useRef<ScheduledJob | null>(null);
+  const warmedSectionsRef = useRef<Partial<Record<SettingsSectionId, true>>>({});
+  const [isClosing, setIsClosing] = useState(false);
+
+  const persistActiveSection = useCallback((section: SettingsSectionId) => {
+    cancelScheduledJob(persistJobRef.current);
+    persistJobRef.current = scheduleAfterPaint(() => {
+      persistJobRef.current = null;
+      saveActiveSection(section);
+    });
+  }, []);
+
+  const setActiveSection = useCallback(
+    (section: SettingsSectionId) => {
+      setActiveSectionState(section);
+      persistActiveSection(section);
+    },
+    [persistActiveSection],
   );
 
-  const setActiveSection = (section: SettingsSectionId) => {
-    setActiveSectionState(section);
-    saveActiveSection(section);
-  };
+  const warmSection = useCallback((section: SettingsSectionId) => {
+    if (warmedSectionsRef.current[section]) {
+      return;
+    }
+    warmedSectionsRef.current[section] = true;
+    void sectionModuleLoaders[section]();
+  }, []);
+
+  const requestClose = useCallback(() => {
+    if (closeJobRef.current) {
+      return;
+    }
+    setIsClosing(true);
+    closeJobRef.current = scheduleAfterPaint(() => {
+      closeJobRef.current = null;
+      closeModal();
+    });
+  }, [closeModal]);
+
+  useEffect(
+    () => () => {
+      cancelScheduledJob(persistJobRef.current);
+      cancelScheduledJob(closeJobRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isOpen) {
+      cancelScheduledJob(closeJobRef.current);
+      closeJobRef.current = null;
+    }
+    setIsClosing(false);
+  }, [isOpen]);
 
   useEffect(() => {
     if (isOpen) {
-      const section = modalContext?.["section"] as SettingsSectionId | undefined;
-      if (section) {
+      const section = modalContext?.["section"];
+      if (isSettingsSectionId(section)) {
         setActiveSection(section);
       }
     }
-  }, [isOpen, modalContext]);
+  }, [isOpen, modalContext, setActiveSection]);
 
   const activeSectionMeta = SETTINGS_SECTIONS.find((s) => s.id === activeSection);
 
   const disabled = isLoadingSettings || isSavingSettings;
 
-  const sectionRenderers = {
-    execution: () =>
-      executionSettings ? (
-        <ExecutionSection
-          settings={executionSettings.execution}
-          onChange={(changes) =>
-            onSettingsChange({ ...executionSettings, execution: { ...executionSettings.execution, ...changes } })
-          }
-          disabled={disabled}
-        />
-      ) : null,
-    "execution-harnesses": () => <ExecutionHarnessSection />,
-    "global-execution": () => <GlobalExecutionSection />,
-    review: () => <ReviewPolicySection />,
-    repository: () => <RepositorySettingsSection />,
-    "project-analysis": () => <ProjectAnalysisSection />,
-    "ideation-workflow": () => <IdeationSettingsPanel />,
-    "ideation-harnesses": () => <IdeationHarnessSection />,
-    "api-keys": () => <ApiKeysSection />,
-    "external-mcp": () => <ExternalMcpSettingsPanel />,
-    accessibility: () => <AccessibilitySection />,
-  };
-
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && closeModal()}>
-      <DialogContent
-        data-testid="settings-dialog"
-        className="p-0 gap-0 overflow-hidden flex flex-col max-w-[95vw] w-[95vw] h-[95vh] bg-[var(--dialog-bg)] border border-[var(--dialog-border-color)]"
-        hideCloseButton={true}
-      >
+    <Dialog open={isOpen} onOpenChange={(open) => !open && requestClose()}>
+      {shouldRenderFrame && (
+        <DialogContent
+          forceMount
+          data-testid="settings-dialog"
+          overlayClassName="settings-layer__scrim"
+          className={`settings-modal p-0 gap-0 overflow-hidden flex flex-col max-w-[95vw] w-[95vw] h-[95vh] bg-[var(--dialog-bg)] border border-[var(--dialog-border-color)] duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none ${
+            isClosing ? "pointer-events-none opacity-0 scale-[0.98]" : ""
+          }`}
+          style={{
+            backgroundColor: "var(--dialog-bg)",
+            borderColor: "var(--dialog-border-color)",
+            boxShadow: "var(--dialog-shadow)",
+          }}
+          hideCloseButton={true}
+        >
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">
           Configure execution, ideation, workspace, and access settings.
         </DialogDescription>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--dialog-border-color)] bg-[var(--dialog-bg)] shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-[var(--text-primary)]">
+        <div className="settings-modal__head shrink-0">
+          <div className="settings-modal__crumbs">
+            <span className="lbl">
               Settings
             </span>
             {activeSectionMeta && (
               <>
-                <span className="text-[var(--text-secondary)] text-sm">/</span>
-                <span className="text-sm text-[var(--text-secondary)]">
+                <span className="sep">/</span>
+                <span className="cur">
                   {activeSectionMeta.label}
                 </span>
               </>
@@ -126,8 +167,8 @@ export default function SettingsDialog({
           </div>
           <button
             type="button"
-            onClick={closeModal}
-            className="rounded-md p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+            onClick={requestClose}
+            className="settings-modal__close focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
             aria-label="Close settings"
           >
             <X className="h-4 w-4" />
@@ -135,16 +176,16 @@ export default function SettingsDialog({
         </div>
 
         {/* Body */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="settings-modal__body flex-1 overflow-hidden">
           {/* Left rail — hidden below lg breakpoint */}
-          <nav className="hidden lg:flex w-[280px] flex-shrink-0 flex-col overflow-y-auto border-r border-[var(--dialog-border-color)] py-3 bg-[var(--dialog-rail-bg)]">
+          <nav className="settings-nav hidden lg:flex flex-shrink-0 flex-col overflow-y-auto">
             {SETTINGS_GROUPS.map((group) => {
               const groupSections = SETTINGS_SECTIONS.filter(
                 (s) => s.groupId === group.id
               );
               return (
-                <div key={group.id} className="mb-4">
-                  <p className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] opacity-60">
+                <div key={group.id} className="settings-nav__group">
+                  <p className="settings-nav__label">
                     {group.label}
                   </p>
                   {groupSections.map((section) => {
@@ -157,6 +198,8 @@ export default function SettingsDialog({
                         data-section={section.id}
                         data-testid={`settings-section-${section.id}`}
                         aria-label={section.label}
+                        onPointerEnter={() => warmSection(section.id)}
+                        onFocus={() => warmSection(section.id)}
                         onClick={() => setActiveSection(section.id)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
@@ -165,11 +208,7 @@ export default function SettingsDialog({
                           }
                         }}
                         aria-current={isActive ? "page" : undefined}
-                        className={`mx-2 flex min-h-[36px] items-center rounded-md px-3 py-1.5 text-sm cursor-pointer transition-colors ${
-                          isActive
-                            ? "bg-[var(--nav-active-bg)] text-[var(--nav-active-text)] font-semibold"
-                            : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
-                        }`}
+                        className="settings-nav__item"
                       >
                         <span className="block truncate">{section.label}</span>
                       </div>
@@ -185,7 +224,7 @@ export default function SettingsDialog({
             <select
               value={activeSection}
               onChange={(e) => setActiveSection(e.target.value as SettingsSectionId)}
-              className="w-full rounded-md px-3 py-1.5 text-sm text-[var(--text-primary)] bg-[var(--bg-surface)] border border-[var(--border-subtle)] focus:outline-none"
+              className="settings-input w-full focus:outline-none"
             >
               {SETTINGS_GROUPS.map((group) => {
                 const groupSections = SETTINGS_SECTIONS.filter(
@@ -205,14 +244,16 @@ export default function SettingsDialog({
           </div>
 
           {/* Right pane */}
-          <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="settings-pane min-w-0 flex-1 overflow-hidden flex flex-col">
             <ScrollArea className="flex-1">
-              <div className="p-6">
-                {sectionRenderers[activeSection]?.() ?? (
-                  <p className="text-sm text-[var(--text-secondary)]">
-                    Section not found.
-                  </p>
-                )}
+              <div className="settings-pane__inner">
+                <SettingsSectionContent
+                  section={activeSection}
+                  executionSettings={executionSettings}
+                  disabled={disabled}
+                  isHydrated={isSectionHydrated}
+                  onSettingsChange={onSettingsChange}
+                />
               </div>
             </ScrollArea>
           </div>
@@ -223,7 +264,8 @@ export default function SettingsDialog({
             {settingsError}
           </div>
         )}
-      </DialogContent>
+        </DialogContent>
+      )}
     </Dialog>
   );
 }

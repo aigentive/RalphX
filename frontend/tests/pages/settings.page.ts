@@ -1,4 +1,4 @@
-import { Page, Locator } from "@playwright/test";
+import { expect, Page, Locator } from "@playwright/test";
 import { BasePage } from "./base.page";
 
 export class SettingsPage extends BasePage {
@@ -99,6 +99,21 @@ export class SettingsPage extends BasePage {
     } else {
       await this.openViaStore(sectionId);
     }
+  }
+
+  async waitForSection(sectionId: string, heading: string) {
+    const sectionButton = this.settingsDialog.locator(
+      `[data-testid="settings-section-${sectionId}"]`,
+    );
+    await expect(sectionButton).toHaveAttribute("aria-current", "page", {
+      timeout: 10000,
+    });
+    await expect(this.page.getByTestId("settings-section-loading")).toBeHidden({
+      timeout: 10000,
+    });
+    await expect(
+      this.settingsDialog.getByRole("heading", { name: heading, exact: true }),
+    ).toBeVisible({ timeout: 10000 });
   }
 
   /** Close the settings dialog via the close button */

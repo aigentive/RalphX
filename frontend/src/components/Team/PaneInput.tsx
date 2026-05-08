@@ -69,7 +69,7 @@ export const PaneInput = React.memo(function PaneInput({
         onKeyDown={handleKeyDown}
         placeholder={`Message ${teammateName}...`}
         disabled={isDisabled}
-        className="flex-1 text-[11px] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 disabled:opacity-40"
+        className="flex-1 text-[0.6875rem] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0 disabled:opacity-40"
         style={{
           color: "var(--text-primary)",
           boxShadow: "none",

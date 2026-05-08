@@ -233,7 +233,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
             Ideation Studio
           </h1>
           <p
-            className="text-[14px] leading-relaxed mb-6 max-w-xs mx-auto"
+            className="text-[0.875rem] leading-relaxed mb-6 max-w-xs mx-auto"
             style={{ color: "var(--text-secondary)" }}
           >
             Select a session from the sidebar or start a new brainstorming session.
@@ -251,7 +251,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
               className="max-w-[min(100%,440px)] justify-center rounded-xl border px-3 py-2"
             />
             <p
-              className="mt-2 text-[12px] text-center"
+              className="mt-2 text-[0.75rem] text-center"
               style={{ color: "var(--text-secondary)" }}
             >
               {isLoadingStartFrom
@@ -265,7 +265,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
               {/* Team Mode Selector */}
               <div className="mb-6">
                 <p
-                  className="text-[12px] font-medium tracking-wide uppercase mb-3"
+                  className="text-[0.75rem] font-medium tracking-wide uppercase mb-3"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Ideation Mode
@@ -277,7 +277,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
                       <button
                         key={mode.value}
                         onClick={() => setTeamMode(mode.value)}
-                        className="px-4 py-2.5 rounded-xl text-[13px] font-medium transition-all duration-150"
+                        className="px-4 py-2.5 rounded-xl text-[0.8125rem] font-medium transition-all duration-150"
                         style={{
                           background: isSelected ? "var(--accent-muted)" : "var(--overlay-faint)",
                           border: `1px solid ${isSelected ? "var(--accent-primary)" : "var(--overlay-weak)"}`,
@@ -316,10 +316,10 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
 
                 {/* Info text */}
                 <p
-                  className="text-[12px] mt-3 flex items-center justify-center gap-1.5"
+                  className="text-[0.75rem] mt-3 flex items-center justify-center gap-1.5"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  <span className="text-[14px]">&#9432;</span>
+                  <span className="text-[0.875rem]">&#9432;</span>
                   The lead agent will decide what specialist roles to create based on your task.
                 </p>
               </div>
@@ -330,7 +330,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
           <Button
             onClick={handleStartSession}
             disabled={isCreating}
-            className="h-11 px-6 text-[14px] font-semibold tracking-[-0.01em] border-0 transition-colors duration-150 mt-4"
+            className="h-11 px-6 text-[0.875rem] font-semibold tracking-[-0.01em] border-0 transition-colors duration-150 mt-4"
             style={{
               background: isCreating ? withAlpha("var(--accent-primary)", 60) : "var(--accent-primary)",
               color: "var(--text-on-accent)",
@@ -359,7 +359,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
           <button
             onClick={() => setShowTaskPicker(true)}
             disabled={isCreatingFromTask}
-            className="flex items-center justify-center gap-2 mx-auto mt-5 text-[13px] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center justify-center gap-2 mx-auto mt-5 text-[0.8125rem] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ color: "var(--text-secondary)" }}
             onMouseEnter={(e) => {
               if (!isCreatingFromTask) {
@@ -391,7 +391,7 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
               }
             }}
             disabled={isImporting}
-            className="flex items-center justify-center gap-2 mx-auto mt-3 text-[13px] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center justify-center gap-2 mx-auto mt-3 text-[0.8125rem] transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ color: "var(--text-secondary)" }}
             onMouseEnter={(e) => {
               if (!isImporting) {
@@ -420,9 +420,9 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
             className="flex items-center justify-center gap-4 mt-8"
             style={{ color: "var(--text-muted)" }}
           >
-            <div className="flex items-center gap-1.5 text-[11px]">
+            <div className="flex items-center gap-1.5 text-[0.6875rem]">
               <kbd
-                className="px-2 py-1 rounded-md text-[10px] font-medium"
+                className="px-2 py-1 rounded-md text-[0.625rem] font-medium"
                 style={{
                   background: "var(--overlay-faint)",
                   border: "1px solid var(--overlay-weak)",
@@ -432,9 +432,9 @@ export function StartSessionPanel({ onNewSession }: StartSessionPanelProps) {
               </kbd>
               <span>New</span>
             </div>
-            <div className="flex items-center gap-1.5 text-[11px]">
+            <div className="flex items-center gap-1.5 text-[0.6875rem]">
               <kbd
-                className="px-2 py-1 rounded-md text-[10px] font-medium"
+                className="px-2 py-1 rounded-md text-[0.625rem] font-medium"
                 style={{
                   background: "var(--overlay-faint)",
                   border: "1px solid var(--overlay-weak)",

@@ -398,7 +398,7 @@ pub fn parse_codex_cli_capabilities(
 pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> {
     let version_output = run_codex_command(cli_path, &["--version"])?;
     let root_help = run_codex_command(cli_path, &["--help"])?;
-    let exec_help = run_codex_command(cli_path, &["exec", "--help"])?;
+    let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
     Ok(parse_codex_cli_capabilities(
         &root_help,
         &exec_help,
@@ -407,9 +407,46 @@ pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> 
 }
 
 pub fn resolve_codex_cli() -> Result<ResolvedCodexCli, String> {
-    let path = find_codex_cli().ok_or_else(|| "Codex CLI not found".to_string())?;
-    let capabilities = probe_codex_cli(&path)?;
-    Ok(ResolvedCodexCli { path, capabilities })
+    resolve_codex_cli_from_candidates(
+        crate::infrastructure::tool_paths::find_codex_cli_candidates(),
+    )
+}
+
+fn resolve_codex_cli_from_candidates<I>(candidates: I) -> Result<ResolvedCodexCli, String>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut first_incompatible: Option<ResolvedCodexCli> = None;
+    let mut errors = Vec::new();
+
+    for path in candidates {
+        match probe_codex_cli(&path) {
+            Ok(capabilities) if capabilities.has_core_exec_support() => {
+                return Ok(ResolvedCodexCli { path, capabilities });
+            }
+            Ok(capabilities) => {
+                if first_incompatible.is_none() {
+                    first_incompatible = Some(ResolvedCodexCli { path, capabilities });
+                }
+            }
+            Err(error) => {
+                errors.push(format!("{}: {}", path.display(), error));
+            }
+        }
+    }
+
+    if let Some(resolved) = first_incompatible {
+        return Ok(resolved);
+    }
+
+    if errors.is_empty() {
+        Err("Codex CLI not found".to_string())
+    } else {
+        Err(format!(
+            "No launchable Codex CLI could be probed: {}",
+            errors.join("; ")
+        ))
+    }
 }
 
 pub fn build_codex_exec_args(
@@ -631,8 +668,14 @@ fn write_codex_prompt_debug_artifact(
 }
 
 fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = StdCommand::new(cli_path)
-        .args(args)
+    let mut command = StdCommand::new(cli_path);
+    command.args(args);
+    command.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
 
@@ -649,13 +692,22 @@ fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+fn run_codex_optional_command(cli_path: &Path, args: &[&str]) -> String {
+    run_codex_command(cli_path, args).unwrap_or_default()
+}
+
 fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
+    cmd.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {

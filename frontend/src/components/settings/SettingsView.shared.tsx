@@ -9,7 +9,6 @@
  */
 
 import { useCallback, useRef } from "react";
-import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -66,28 +65,22 @@ export function SettingRow({
   return (
     <div
       className={cn(
-        "flex items-start justify-between py-3 border-b border-[var(--border-subtle)] last:border-0 -mx-2 px-2 rounded-md transition-colors",
-        !isDisabled && "hover:bg-[var(--bg-hover)]",
+        "settings-row",
         isDisabled && "opacity-50"
       )}
     >
-      <div
-        className={cn(
-          "flex-1 min-w-0 pr-4",
-          isSubSetting && "pl-4 border-l-2 border-[var(--border-subtle)]"
-        )}
-      >
+      <div className={cn("min-w-0", isSubSetting && "pl-4")}>
         <Label
           htmlFor={id}
-          className="text-sm font-medium text-[var(--text-primary)]"
+          className="settings-row__label"
         >
           {label}
         </Label>
-        <p id={`${id}-desc`} className="text-xs text-[var(--text-muted)] mt-0.5">
+        <p id={`${id}-desc`} className="settings-row__help">
           {description}
         </p>
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="settings-row__control">{children}</div>
     </div>
   );
 }
@@ -149,7 +142,7 @@ export function ToggleSettingRow({
         onClick={markUserIntent}
         disabled={disabled}
         aria-describedby={`${id}-desc`}
-        className="data-[state=checked]:bg-[var(--accent-primary)]"
+        className="settings-toggle data-[state=checked]:bg-[var(--accent-primary)]"
       />
     </SettingRow>
   );
@@ -194,7 +187,7 @@ export function NumberSettingRow({
       isSubSetting={isSubSetting}
       isDisabled={disabled}
     >
-      <div className="flex items-center gap-2">
+      <div className="settings-row__control">
         <Input
           type="number"
           id={id}
@@ -211,7 +204,7 @@ export function NumberSettingRow({
               onChange(val);
             }
           }}
-          className="w-20 text-right bg-[var(--bg-surface)] border-[var(--border-default)] focus:border-[var(--accent-primary)] focus:ring-[var(--accent-primary)] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          className="settings-input w-20 text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
         />
         {unit && (
           <span className="text-xs text-[var(--text-muted)]">{unit}</span>
@@ -262,7 +255,7 @@ export function SelectSettingRow<T extends string>({
           id={id}
           data-testid={id}
           aria-describedby={`${id}-desc`}
-          className="w-[200px] bg-[var(--bg-surface)] border-[var(--border-default)] focus:ring-[var(--accent-primary)]"
+          className="settings-select w-[200px] focus:ring-[var(--accent-primary)]"
         >
           {/* Styleguide §8: trigger shows label only; description is
               dropdown-item context, never a truncated second line in the trigger. */}
@@ -304,21 +297,20 @@ export interface SectionCardProps {
 
 export function SectionCard({ icon, title, description, children }: SectionCardProps) {
   return (
-    <Card className="rounded-lg bg-[var(--card-bg)] border border-[var(--card-border)] shadow-[var(--card-shadow)]">
-      <div className="flex items-start gap-3 p-5 pb-0">
-        <div className="p-2 rounded-lg shrink-0 bg-[var(--card-icon-bg)] border border-[var(--card-icon-border)] [&>svg]:text-[var(--card-icon-color)]">
+    <div className="settings-section">
+      <div className="settings-pane-head">
+        <div className="settings-pane-head__icon p-2 rounded-lg shrink-0 [&>svg]:text-[var(--card-icon-color)]">
           {icon}
         </div>
         <div>
-          <h3 className="text-sm font-semibold tracking-tight text-[var(--text-primary)]">
+          <h3 className="settings-pane-head__title">
             {title}
           </h3>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">{description}</p>
+          <p className="settings-pane-head__sub">{description}</p>
         </div>
       </div>
-      <Separator className="my-4 bg-[var(--border-subtle)]" />
-      <div className="px-5 pb-5 space-y-1">{children}</div>
-    </Card>
+      <div className="settings-section__content">{children}</div>
+    </div>
   );
 }
 
@@ -333,7 +325,7 @@ export function SettingsSkeleton() {
       className="p-6 space-y-6 max-w-[720px] mx-auto"
     >
       {[1, 2, 3, 4, 5].map((i) => (
-        <Card key={i} className="p-5 bg-[var(--bg-elevated)] border-[var(--border-default)]">
+        <div key={i} className="p-5 rounded-[10px] bg-[var(--bg-elevated)] border border-[var(--border-default)]">
           <div className="flex items-center gap-3 mb-4">
             <Skeleton className="w-9 h-9 rounded-lg" />
             <div className="space-y-2">
@@ -353,7 +345,7 @@ export function SettingsSkeleton() {
               </div>
             ))}
           </div>
-        </Card>
+        </div>
       ))}
     </div>
   );

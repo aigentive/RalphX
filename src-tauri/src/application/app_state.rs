@@ -13,6 +13,7 @@ use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
     build_transition_service_from_deps, ChatRuntimeFactoryDeps, RuntimeFactoryDeps,
 };
+use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
 use crate::application::PermissionState;
@@ -22,15 +23,16 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, AgenticClient, LogicalEffort};
-use crate::domain::entities::ChatContextType;
+use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentProfileRepository, AgentRunRepository, ApiKeyRepository,
-    AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
+    AgentRunRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
+    ArtifactFlowRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, DelegatedSessionRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
     PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
@@ -42,15 +44,15 @@ use crate::domain::repositories::{
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
     MemoryActivityEventRepository, MemoryAgentConversationWorkspaceRepository,
-    MemoryAgentLaneSettingsRepository, MemoryAgentProfileRepository, MemoryAgentRunRepository,
-    MemoryApiKeyRepository, MemoryAppStateRepository, MemoryArtifactBucketRepository,
-    MemoryArtifactFlowRepository, MemoryArtifactRepository, MemoryChatAttachmentRepository,
-    MemoryChatConversationRepository, MemoryChatMessageRepository,
-    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
+    MemoryAgentProfileRepository, MemoryAgentRunRepository, MemoryApiKeyRepository,
+    MemoryAppStateRepository, MemoryArtifactBucketRepository, MemoryArtifactFlowRepository,
+    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
+    MemoryChatMessageRepository, MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
@@ -68,10 +70,11 @@ use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
     SqliteActivePlanRepository, SqliteActivityEventRepository,
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
-    SqliteAgentProfileRepository, SqliteAgentRunRepository, SqliteApiKeyRepository,
-    SqliteAppStateRepository, SqliteArtifactBucketRepository, SqliteArtifactFlowRepository,
-    SqliteArtifactRepository, SqliteChatAttachmentRepository, SqliteChatConversationRepository,
-    SqliteChatMessageRepository, SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
+    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository, SqliteAgentRunRepository,
+    SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
+    SqliteArtifactFlowRepository, SqliteArtifactRepository, SqliteChatAttachmentRepository,
+    SqliteChatConversationRepository, SqliteChatMessageRepository,
+    SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
     SqliteGlobalExecutionSettingsRepository, SqliteIdeationEffortSettingsRepository,
     SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
@@ -138,6 +141,8 @@ pub struct AppState {
     pub ideation_model_settings_repo: Arc<dyn IdeationModelSettingsRepository>,
     /// Provider-neutral lane settings repository for multi-harness routing
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
+    /// Provider/model compatibility and custom model registry
+    pub agent_model_registry_repo: Arc<dyn AgentModelRegistryRepository>,
     /// Session link repository for managing parent-child session relationships
     pub session_link_repo: Arc<dyn SessionLinkRepository>,
     /// Task proposal repository
@@ -232,6 +237,9 @@ pub struct AppState {
     pub session_merge_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Sessions where user has enabled auto-accept for verification. Ephemeral.
     pub auto_accept_sessions: Arc<Mutex<HashSet<String>>>,
+    /// Startup Git/GitHub recovery gate. Set when startup defers Git-dependent
+    /// work and cleared after an explicit repair resumes that work.
+    pub(crate) startup_git_auth_recovery_state: Arc<StartupGitAuthRecoveryState>,
 }
 
 impl AppState {
@@ -245,6 +253,46 @@ impl AppState {
 
     fn enable_claude_test_mode() {
         std::env::set_var("RALPHX_TEST_MODE", "1");
+    }
+
+    fn default_background_agent_runtime(&self) -> ResolvedBackgroundAgentRuntime {
+        ResolvedBackgroundAgentRuntime {
+            client: Arc::clone(&self.agent_clients.default_client),
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }
+    }
+
+    async fn resolve_background_agent_runtime_for_harness(
+        &self,
+        harness: AgentHarnessKind,
+        purpose: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if harness == self.agent_clients.default_harness {
+            return Ok(self.default_background_agent_runtime());
+        }
+
+        if let Some(client) = self
+            .agent_clients
+            .explicit_available_harness_client(harness)
+            .await
+        {
+            return Ok(ResolvedBackgroundAgentRuntime {
+                client,
+                harness: Some(harness),
+                model: None,
+                logical_effort: None,
+                approval_policy: None,
+                sandbox_mode: None,
+            });
+        }
+
+        Err(AppError::Infrastructure(format!(
+            "{purpose} harness unavailable: {harness}"
+        )))
     }
 
     pub fn build_chat_service(&self) -> AppChatService {
@@ -343,15 +391,67 @@ impl AppState {
         })
     }
 
-    pub(crate) async fn resolve_session_namer_runtime(&self) -> ResolvedBackgroundAgentRuntime {
-        ResolvedBackgroundAgentRuntime {
-            client: Arc::clone(&self.agent_clients.default_client),
-            harness: None,
-            model: None,
-            logical_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
+    pub(crate) async fn resolve_session_namer_runtime_for_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_ideation_background_agent_runtime(project_id)
+            .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_session(
+        &self,
+        session: &IdeationSession,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(conversation) = self
+            .chat_conversation_repo
+            .get_active_for_context(ChatContextType::Ideation, session.id.as_str())
+            .await?
+        {
+            return self
+                .resolve_session_namer_runtime_for_conversation(
+                    &conversation,
+                    Some(session.project_id.as_str()),
+                )
+                .await;
         }
+
+        self.resolve_session_namer_runtime_for_project(Some(session.project_id.as_str()))
+            .await
+    }
+
+    pub(crate) async fn resolve_session_namer_runtime_for_conversation(
+        &self,
+        conversation: &ChatConversation,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = conversation.provider_harness {
+            return self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "session namer owning conversation",
+                )
+                .await;
+        }
+
+        self.resolve_session_namer_runtime_for_project(project_id)
+            .await
+    }
+
+    pub(crate) async fn resolve_pr_describer_runtime(
+        &self,
+        conversation: &ChatConversation,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        if let Some(harness) = conversation.provider_harness {
+            return self
+                .resolve_background_agent_runtime_for_harness(
+                    harness,
+                    "PR describer owning conversation",
+                )
+                .await;
+        }
+
+        Ok(self.default_background_agent_runtime())
     }
 
     /// Create AppState for production use with SQLite repositories.
@@ -460,6 +560,9 @@ impl AppState {
             agent_lane_settings_repo: Arc::new(SqliteAgentLaneSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
+                Arc::clone(&shared_conn),
+            )),
             session_link_repo: Arc::new(SqliteSessionLinkRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -564,6 +667,7 @@ impl AppState {
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
+            startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -638,6 +742,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -689,6 +794,7 @@ impl AppState {
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
+            startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -746,6 +852,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -797,6 +904,7 @@ impl AppState {
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
+            startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -864,6 +972,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -923,6 +1032,7 @@ impl AppState {
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
+            startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(
@@ -972,6 +1082,7 @@ impl AppState {
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
+            agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::clone(&task_proposal_repo),
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),
@@ -1023,6 +1134,7 @@ impl AppState {
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             auto_accept_sessions: Arc::new(Mutex::new(HashSet::new())),
+            startup_git_auth_recovery_state: Arc::new(StartupGitAuthRecoveryState::default()),
 
             streaming_state_cache: crate::application::chat_service::StreamingStateCache::new(),
             interactive_process_registry: Arc::new(

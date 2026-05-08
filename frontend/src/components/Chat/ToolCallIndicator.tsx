@@ -15,6 +15,7 @@ import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { DiffToolCallView } from "./DiffToolCallView";
 import { TaskToolCallCard } from "./TaskToolCallCard";
 import { getToolCallWidget } from "./tool-widgets/registry";
+import { ToolCallPreviewCard } from "./ToolCallPreviewCard";
 
 // Re-export ToolCall from canonical location for backwards compatibility
 export type { ToolCall } from "./tool-widgets/shared.constants";
@@ -66,6 +67,17 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
   const summary = useMemo(() => createSummary(toolCall), [toolCall]);
   const verb = useMemo(() => getToolVerb(toolCall.name), [toolCall.name]);
   const hasError = Boolean(toolCall.error);
+
+  if (toolCall.resultPreviewTruncated) {
+    return (
+      <ToolCallPreviewCard
+        toolCall={toolCall}
+        className={className}
+        compact={compact}
+        isStreaming={isStreaming}
+      />
+    );
+  }
 
   // Delegate Edit/Write to DiffToolCallView for inline diff rendering
   // Quick check: arguments must have file_path for diff to work (same gate as DiffToolCallView)
@@ -135,7 +147,7 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
 
           {/* Tool name badge - macOS Tahoe flat style */}
           <span
-            className={`${compact ? "text-[9px]" : "text-[10px]"} px-1.5 py-0.5 rounded flex-shrink-0`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0`}
             style={{
               /* macOS Tahoe: subtle solid background */
               backgroundColor: hasError ? "var(--status-error-muted)" : "var(--bg-surface)",
@@ -148,7 +160,7 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
 
           {/* Verb */}
           <span
-            className={`${compact ? "text-[11px]" : "text-xs"} font-medium`}
+            className={`${compact ? "text-[0.6875rem]" : "text-xs"} font-medium`}
             style={{ color: "var(--text-secondary)" }}
           >
             {verb}
@@ -166,7 +178,7 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
           {/* Error indicator */}
           {hasError && (
             <span
-              className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium px-1.5 py-0.5 rounded ml-auto`}
+              className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium px-1.5 py-0.5 rounded ml-auto`}
               style={{
                 /* macOS Tahoe: subtle error background */
                 backgroundColor: "var(--status-error-muted)",
@@ -186,7 +198,7 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
             <span style={{ width: `${iconSize}px` }} />
           </div>
           <span
-            className={`${compact ? "text-[10px]" : "text-[11px]"} font-mono break-all`}
+            className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} font-mono break-all`}
             style={{
               color: hasError ? "var(--status-error)" : "var(--text-secondary)",
             }}
@@ -203,7 +215,7 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
               <span style={{ width: `${iconSize}px` }} />
             </div>
             <span
-              className={`${compact ? "text-[9px]" : "text-[10px]"}`}
+              className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"}`}
               style={{ color: "var(--text-muted)" }}
             >
               {summary.subtitle}
@@ -225,13 +237,13 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
           {/* Arguments - shown directly */}
           <div>
             <div
-              className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium mb-1 uppercase tracking-wide`}
+              className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium mb-1 uppercase tracking-wide`}
               style={{ color: "var(--text-muted)" }}
             >
               Arguments
             </div>
             <pre
-              className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded overflow-x-auto max-w-full ${compact ? "max-h-32" : "max-h-48"}`}
+              className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded overflow-x-auto max-w-full ${compact ? "max-h-32" : "max-h-48"}`}
               style={{
                 /* macOS Tahoe: flat dark background */
                 backgroundColor: "var(--bg-surface)",
@@ -249,13 +261,13 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
           {toolCall.result != null && !hasError && (
             <div>
               <div
-                className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium mb-1 uppercase tracking-wide`}
+                className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium mb-1 uppercase tracking-wide`}
                 style={{ color: "var(--text-muted)" }}
               >
                 Result
               </div>
               <pre
-                className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded overflow-x-auto max-w-full ${compact ? "max-h-32" : "max-h-48"}`}
+                className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded overflow-x-auto max-w-full ${compact ? "max-h-32" : "max-h-48"}`}
                 style={{
                   /* macOS Tahoe: flat dark background */
                   backgroundColor: "var(--bg-surface)",
@@ -274,13 +286,13 @@ export const ToolCallIndicator = React.memo(function ToolCallIndicator({ toolCal
           {hasError && (
             <div>
               <div
-                className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium mb-1 uppercase tracking-wide`}
+                className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium mb-1 uppercase tracking-wide`}
                 style={{ color: "var(--status-error)" }}
               >
                 Error
               </div>
               <pre
-                className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded overflow-x-auto`}
+                className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded overflow-x-auto`}
                 style={{
                   /* macOS Tahoe: error tinted background */
                   backgroundColor: "var(--status-error-muted)",

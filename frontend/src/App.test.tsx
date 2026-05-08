@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { chatApi } from "@/api/chat";
+import { ideationApi } from "@/api/ideation";
+import { chatKeys } from "@/hooks/useChat";
+import { getQueryClient } from "@/lib/queryClient";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
@@ -9,6 +14,14 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  Toaster: () => null,
+  toast: {
+    error: vi.fn(),
+  },
+}));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -214,6 +227,11 @@ vi.mock("@/hooks/useReviews", () => ({
     isLoading: false,
   }),
   useTasksAwaitingReview: vi.fn().mockReturnValue({
+    allTasks: [],
+    aiTasks: [],
+    humanTasks: [],
+    aiCount: 0,
+    humanCount: 0,
     totalCount: 0,
     isLoading: false,
   }),
@@ -322,6 +340,9 @@ function resetStores() {
     projects: { "demo-project-1": { id: "demo-project-1", name: "Demo Project", workingDirectory: "/tmp/demo", createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" } as never },
     isInitialized: true,
   });
+
+  useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
+  getQueryClient().clear();
 }
 
 describe("App", () => {
@@ -360,15 +381,49 @@ describe("App", () => {
     expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
   });
 
-  it("should display project selector", () => {
+  it("renders the v27 mini rail logo and flat active highlight", () => {
     render(<App />);
-    // ProjectSelector is mocked, check for the mock element
-    expect(screen.getByTestId("project-selector-mock")).toBeInTheDocument();
+
+    const brandSvg = screen.getByTestId("left-nav-brand").querySelector("svg");
+    expect(brandSvg).toHaveClass("h-[44px]", "w-[44px]");
+
+    const activeButton = screen.getByTestId("nav-agents");
+    expect(activeButton.className).toContain("h-[44px] w-[44px]");
+    expect(activeButton.className).not.toContain("focus-visible:ring");
+    expect(activeButton.className).toContain(
+      "focus-visible:[outline:2px_solid_var(--border-focus)]"
+    );
+    expect(activeButton).toHaveStyle({
+      backgroundColor: "var(--bg-hover)",
+      color: "var(--nav-rail-active-color)",
+      boxShadow: "var(--nav-rail-active-shadow)",
+    });
+    expect(activeButton.querySelector(".left-nav-rail__active-border")).toBeInTheDocument();
+
+    expect(screen.getByTestId("nav-kanban")).toHaveStyle({
+      color: "var(--nav-rail-inactive-color)",
+    });
   });
 
   it("should display theme selector", () => {
     render(<App />);
     expect(screen.getByTestId("theme-selector")).toBeInTheDocument();
+  });
+
+  it("keeps only one topbar dropdown open at a time", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.getByTestId("theme-option-dark")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("font-scale-selector-trigger"));
+    expect(screen.queryByTestId("theme-option-dark")).not.toBeInTheDocument();
+    expect(screen.getByTestId("font-scale-option-default")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.queryByTestId("font-scale-option-default")).not.toBeInTheDocument();
+    expect(screen.getByTestId("theme-option-dark")).toBeInTheDocument();
   });
 
   it("should have main element with flex layout", () => {
@@ -378,11 +433,339 @@ describe("App", () => {
     expect(mainElement).toHaveClass("h-screen", "flex", "flex-col");
   });
 
-  it("should render header with RalphX branding", () => {
+  it("selecting a font-scale option closes the dropdown and updates the trigger label", async () => {
+    const user = userEvent.setup();
+    const { useThemeStore } = await import("@/stores/themeStore");
+    const initial = useThemeStore.getState().fontScale;
+    try {
+      render(<App />);
+
+      await user.click(screen.getByTestId("font-scale-selector-trigger"));
+      await user.click(screen.getByTestId("font-scale-option-lg"));
+      // Dropdown closed.
+      expect(screen.queryByTestId("font-scale-option-lg")).not.toBeInTheDocument();
+      // Trigger label reflects the new option (110%).
+      expect(screen.getByTestId("font-scale-selector").textContent).toMatch(/110%/);
+    } finally {
+      // Reset persisted fontScale so order-dependent v27 chrome tests still see 100%.
+      useThemeStore.getState().setFontScale(initial);
+    }
+  });
+
+  it("should render the v27 top navigation chrome", () => {
     render(<App />);
     const header = screen.getByRole("banner");
     expect(header).toBeInTheDocument();
-    expect(header).toHaveClass("flex", "items-center", "justify-between");
+    expect(header).toHaveAttribute("data-testid", "app-header");
+    expect(header.getAttribute("style")).toContain(
+      "background-color: var(--app-navbar-bg)"
+    );
+    expect(header.getAttribute("style")).toContain("border-bottom-color: var(--app-navbar-border)");
+    expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
+      "background-color: var(--app-rail-bg)"
+    );
+    expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
+      "border-right-color: var(--app-rail-border)"
+    );
+    expect(screen.queryByTestId("window-traffic-lights")).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/New run"
+    );
+    const commandSearch = screen.getByTestId("topbar-command-search");
+    expect(commandSearch).toBeInTheDocument();
+    expect(commandSearch).toHaveClass("h-8", "w-[320px]", "rounded-[6px]");
+    expect(commandSearch.getAttribute("style")).toContain("background-color: var(--bg-elevated)");
+    expect(commandSearch.getAttribute("style")).toContain("border-color: var(--border-default)");
+    expect(screen.getByTestId("font-scale-selector")).toHaveTextContent("100%");
+    expect(screen.queryByTestId("project-selector-mock")).not.toBeInTheDocument();
+  });
+
+  it("shows the selected agent conversation in the Agents breadcrumb", () => {
+    const queryClient = getQueryClient();
+    useAgentSessionStore.setState({
+      selectedConversationId: "conversation-breadcrumb",
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory("conversation-breadcrumb"), {
+      pages: [
+        {
+          conversation: {
+            id: "conversation-breadcrumb",
+            contextType: "project",
+            contextId: "demo-project-1",
+            providerSessionId: null,
+            providerHarness: null,
+            title: "List worktree directory contents",
+            messageCount: 0,
+            lastMessageAt: null,
+            createdAt: "2026-05-07T00:00:00Z",
+            updatedAt: "2026-05-07T00:00:00Z",
+            archivedAt: null,
+          },
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/List worktree directory contents"
+    );
+  });
+
+  it("renames the selected agent conversation from the Agents breadcrumb", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-rename",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "List worktree directory contents",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    const updateTitle = vi.spyOn(chatApi, "updateConversationTitle").mockResolvedValue({
+      ...conversation,
+      title: "Renamed agent run",
+      updatedAt: "2026-05-07T00:01:00Z",
+    });
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    expect(screen.getByTestId("agent-breadcrumb-title")).toHaveAttribute(
+      "data-theme-button-skip",
+      "true"
+    );
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    expect(input).toHaveClass("border-transparent");
+    await user.clear(input);
+    await user.type(input, "Renamed agent run{enter}");
+
+    await waitFor(() =>
+      expect(updateTitle).toHaveBeenCalledWith(conversation.id, "Renamed agent run")
+    );
+    expect(updateTitle).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Renamed agent run"
+    );
+  });
+
+  it("renames ideation-backed agent conversations from the Agents breadcrumb", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-ideation-rename",
+      contextType: "ideation",
+      contextId: "ideation-session-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Review proposal set",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    const updateConversationTitle = vi
+      .spyOn(chatApi, "updateConversationTitle")
+      .mockResolvedValue({
+        ...conversation,
+        title: "Renamed ideation run",
+        updatedAt: "2026-05-07T00:01:00Z",
+      });
+    const updateSessionTitle = vi
+      .spyOn(ideationApi.sessions, "updateTitle")
+      .mockResolvedValue({ id: "ideation-session-1", title: "Renamed ideation run" } as never);
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    await user.clear(input);
+    await user.type(input, "Renamed ideation run{enter}");
+
+    await waitFor(() =>
+      expect(updateConversationTitle).toHaveBeenCalledWith(
+        conversation.id,
+        "Renamed ideation run"
+      )
+    );
+    expect(updateSessionTitle).toHaveBeenCalledWith(
+      "ideation-session-1",
+      "Renamed ideation run"
+    );
+  });
+
+  it("restores the breadcrumb title and shows an error when breadcrumb rename fails", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-rename-failure",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Original title",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    vi.spyOn(chatApi, "updateConversationTitle").mockRejectedValue(
+      new Error("Rename failed")
+    );
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversation(conversation.id), {
+      conversation,
+      messages: [],
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+    queryClient.setQueryData(
+      chatKeys.conversationList(conversation.contextType, conversation.contextId),
+      [conversation]
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    await user.clear(input);
+    await user.type(input, "Broken title{enter}");
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Rename failed")
+    );
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Original title"
+    );
+  });
+
+  it("cancels breadcrumb rename on Escape without saving", async () => {
+    const user = userEvent.setup();
+    const queryClient = getQueryClient();
+    const conversation = {
+      id: "conversation-breadcrumb-rename-cancel",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Original breadcrumb title",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+    const updateTitle = vi.spyOn(chatApi, "updateConversationTitle");
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
+      pages: [
+        {
+          conversation,
+          messages: [],
+          limit: 1,
+          offset: 0,
+          totalMessageCount: 0,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Rename agent conversation" }));
+    const input = screen.getByRole("textbox", { name: "Rename agent conversation" });
+    await user.clear(input);
+    await user.type(input, "Should not save{escape}");
+
+    expect(updateTitle).not.toHaveBeenCalled();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Original breadcrumb title"
+    );
+  });
+
+  it("uses the v27 panel surface for the right reviews sidebar", () => {
+    useUiStore.setState({ reviewsPanelOpen: true });
+
+    render(<App />);
+
+    expect(screen.getByTestId("reviews-panel-shell").getAttribute("style")).toContain(
+      "background-color: var(--app-sidebar-bg)"
+    );
+    expect(screen.getByTestId("reviews-panel-shell").getAttribute("style")).toContain(
+      "border-left-color: var(--app-sidebar-border)"
+    );
+    expect(screen.getByTestId("reviews-panel-frame").getAttribute("style")).toContain(
+      "background-color: var(--app-sidebar-bg)"
+    );
+    expect(screen.getByTestId("reviews-panel-frame").getAttribute("style")).toContain(
+      "box-shadow: none"
+    );
   });
 
   it("should render Agents view by default", () => {
@@ -500,6 +883,7 @@ describe("App", () => {
 
       // Settings is now a modal — activeModal is set, current view stays visible underneath
       expect(useUiStore.getState().activeModal).toBe("settings");
+      expect(useUiStore.getState().modalContext).toBeUndefined();
       expect(screen.getByTestId("agents-view-mock")).toBeInTheDocument();
     });
 
@@ -607,6 +991,7 @@ describe("App", () => {
       fireEvent.keyDown(window, { key: "6", metaKey: true });
 
       expect(useUiStore.getState().activeModal).toBe("settings");
+      expect(useUiStore.getState().modalContext).toBeUndefined();
     });
 
     it("should work with Ctrl key (for non-Mac)", () => {
@@ -652,8 +1037,8 @@ describe("App", () => {
       expect(screen.queryByTestId("nav-graph")).toBeNull();
       expect(screen.queryByTestId("nav-kanban")).toBeNull();
 
-      // Right-side controls are hidden
-      expect(screen.queryByTestId("reviews-toggle")).toBeNull();
+      // v27 topbar controls stay mounted even when the project-scoped rail collapses.
+      expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();
 
       // Settings button still rendered (only thing left in Navigation)
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();

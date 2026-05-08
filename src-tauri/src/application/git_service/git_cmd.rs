@@ -7,6 +7,7 @@
 //! - Configurable retry attempts with backoff for known transient errors.
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
+use crate::infrastructure::git_auth::apply_git_subprocess_env;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use std::path::Path;
 use std::process::{Output, Stdio};
@@ -55,12 +56,20 @@ fn is_transient_error(stderr: &str) -> bool {
     TRANSIENT_PATTERNS.iter().any(|pat| stderr.contains(pat))
 }
 
+fn build_git_command(args: &[String], cwd: &Path, env: &[(String, String)]) -> Command {
+    let mut cmd = Command::new(resolve_git_cli_path());
+    apply_git_subprocess_env(&mut cmd);
+    cmd.args(args).current_dir(cwd).kill_on_drop(true);
+    for (key, val) in env {
+        cmd.env(key, val);
+    }
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    cmd
+}
+
 /// Execute a single git command asynchronously with `kill_on_drop(true)`.
 async fn exec_git_async(args: &[String], cwd: &Path) -> AppResult<Output> {
-    Command::new(resolve_git_cli_path())
-        .args(args)
-        .current_dir(cwd)
-        .kill_on_drop(true)
+    build_git_command(args, cwd, &[])
         .output()
         .await
         .map_err(|e| {
@@ -82,12 +91,8 @@ async fn exec_git_with_env_async(
     cwd: &Path,
     env: &[(String, String)],
 ) -> AppResult<Output> {
-    let mut cmd = Command::new(resolve_git_cli_path());
-    cmd.args(args).current_dir(cwd).kill_on_drop(true);
-    for (key, val) in env {
-        cmd.env(key, val);
-    }
-    cmd.output()
+    build_git_command(args, cwd, env)
+        .output()
         .await
         .map_err(|e| AppError::GitOperation(format!("git {}: {}", args.join(" "), e)))
 }
@@ -205,16 +210,9 @@ pub(crate) async fn run_status(args: &[&str], cwd: &Path) -> AppResult<bool> {
     let timeout_secs = git_runtime_config().cmd_timeout_secs;
 
     let result = timeout(Duration::from_secs(timeout_secs), async {
-        Command::new(resolve_git_cli_path())
-            .args(&args)
-            .current_dir(&cwd)
-            .kill_on_drop(true)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let mut cmd = build_git_command(&args, &cwd, &[]);
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.status().await.map(|s| s.success()).unwrap_or(false)
     })
     .await
     .map_err(|_| {

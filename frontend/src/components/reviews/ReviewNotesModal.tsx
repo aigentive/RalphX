@@ -83,6 +83,7 @@ export function ReviewNotesModal({
         data-testid="review-notes-modal"
         data-has-fix-description={showFixDescription ? "true" : "false"}
         className="max-w-md"
+        aria-describedby={undefined}
       >
         <DialogHeader>
           <div className="flex items-center gap-3">

@@ -53,6 +53,7 @@ import {
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import { resolveConversationAgentMode } from "./agentConversationMode";
 import {
+  getAgentWorkspaceEffectiveBaseLabel,
   hasPublishedWorkspacePr,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
@@ -109,6 +110,7 @@ export interface AgentsChatHeaderProps {
   onPreloadTerminal?: () => void;
   onToggleArtifacts: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
+  showTitle?: boolean;
 }
 
 export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
@@ -148,7 +150,7 @@ export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
       {showFocusSwitcher && activeOption ? (
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
           <span
-            className="shrink-0 text-[11px] font-medium uppercase tracking-[0.08em]"
+            className="shrink-0 text-[0.6875rem] font-medium uppercase tracking-[0.08em]"
             style={{ color: "var(--text-muted)" }}
           >
             Chat
@@ -159,7 +161,7 @@ export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
                 type="button"
                 aria-label={`Chat focus: ${activeOption.label}. Click to switch.`}
                 data-testid="agents-chat-focus-trigger"
-                className="inline-flex h-6 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-2 text-[12px] font-medium transition-colors"
+                className="inline-flex h-6 max-w-[200px] shrink-0 items-center gap-1.5 rounded-full border px-2 text-[0.75rem] font-medium transition-colors"
                 style={
                   activeToneStyle
                     ? {
@@ -210,7 +212,7 @@ export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
                     }
                     data-active={selected ? "true" : "false"}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+                      "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition-colors",
                       selected ? "cursor-default" : "cursor-pointer",
                     )}
                     style={
@@ -280,6 +282,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onPreloadTerminal,
   onToggleArtifacts,
   onSelectArtifact,
+  showTitle = true,
 }: AgentsChatHeaderProps) {
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
@@ -374,41 +377,44 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             </TooltipContent>
           </Tooltip>
         )}
-        <div className="min-w-0 flex-1">
-          {isEditing ? (
-            <Input
-              value={draftTitle}
-              onChange={(event) => setDraftTitle(event.target.value)}
-              onBlur={() => void commitTitle()}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void commitTitle();
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setDraftTitle(title);
-                  setIsEditing(false);
-                }
-              }}
-              className="h-7 max-w-[260px] text-sm font-semibold"
-              autoFocus
-              aria-label="Agent title"
-            />
-          ) : (
-            <button
-              type="button"
-              className="block w-full max-w-full text-left text-sm font-semibold truncate"
-              style={{ color: "var(--text-primary)" }}
-              onClick={() => conversation && setIsEditing(true)}
-              aria-label="Edit agent title"
-              data-testid="agents-chat-title-button"
-              data-theme-button-skip="true"
-            >
-              {title}
-            </button>
-          )}
-        </div>
+        {workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null}
+        {showTitle ? (
+          <div className="min-w-0 flex-1">
+            {isEditing ? (
+              <Input
+                value={draftTitle}
+                onChange={(event) => setDraftTitle(event.target.value)}
+                onBlur={() => void commitTitle()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void commitTitle();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setDraftTitle(title);
+                    setIsEditing(false);
+                  }
+                }}
+                className="h-7 max-w-[260px] text-sm font-semibold"
+                autoFocus
+                aria-label="Agent title"
+              />
+            ) : (
+              <button
+                type="button"
+                className="block w-full max-w-full text-left text-sm font-semibold truncate"
+                style={{ color: "var(--text-primary)" }}
+                onClick={() => conversation && setIsEditing(true)}
+                aria-label="Edit agent title"
+                data-testid="agents-chat-title-button"
+                data-theme-button-skip="true"
+              >
+                {title}
+              </button>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="hidden md:flex items-center gap-1 ml-auto shrink-0">
@@ -567,25 +573,29 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
       (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),
     staleTime: 10_000,
   });
-  const isBehindBase = !terminalStatus && Boolean(freshness?.isBaseAhead);
+  const isBaseBlocked = freshness?.baseStatus === "blocked";
+  const isBehindBase = !isBaseBlocked && !terminalStatus && Boolean(freshness?.isBaseAhead);
   const statusLabel = terminalStatus
     ? terminalStatus.replace(/_/g, " ")
+    : isBaseBlocked
+      ? "Base unavailable"
     : isBehindBase
       ? "Behind base"
       : (workspace.publicationPushStatus ?? workspace.status).replace(/_/g, " ");
-  const baseLabel =
-    freshness?.baseDisplayName ?? freshness?.baseRef ?? workspace.baseDisplayName ?? workspace.baseRef;
+  const baseLabel = getAgentWorkspaceEffectiveBaseLabel(workspace, freshness);
+  const statusColor = isBaseBlocked || isBehindBase
+    ? "var(--status-warning)"
+    : "var(--text-secondary)";
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
           tabIndex={0}
-          className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium sm:max-w-[300px]"
+          className="inline-flex min-w-0 max-w-[180px] items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.6875rem] font-medium sm:max-w-[300px]"
           style={{
-            color: isBehindBase ? "var(--status-warning)" : "var(--text-secondary)",
-            background: "var(--bg-surface)",
-            borderColor: isBehindBase ? "var(--status-warning-border)" : "var(--overlay-weak)",
+            color: statusColor,
+            background: "transparent",
           }}
           data-testid="agents-workspace-status"
         >
@@ -593,7 +603,12 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
           <span className="truncate font-mono">{branch.short}</span>
           <span
             className="h-1 w-1 shrink-0 rounded-full"
-            style={{ background: isBehindBase ? "var(--status-warning)" : "var(--accent-primary)" }}
+            style={{
+              background:
+                isBaseBlocked || isBehindBase
+                  ? "var(--status-warning)"
+                  : "var(--accent-primary)",
+            }}
           />
           <span className="shrink-0 capitalize">{statusLabel}</span>
         </div>
@@ -602,6 +617,7 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
         <div className="space-y-1">
           <div>Branch: {branch.full}</div>
           <div>Base: {baseLabel}</div>
+          {freshness?.baseBlockReason && <div>{freshness.baseBlockReason}</div>}
           {workspace.publicationPrUrl && (
             <div>
               PR:{" "}

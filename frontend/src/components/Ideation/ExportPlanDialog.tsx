@@ -92,6 +92,7 @@ export function ExportPlanDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-w-md"
+        aria-describedby={undefined}
         style={{
           backgroundColor: "var(--bg-elevated)",
           borderColor: "var(--border-subtle)",

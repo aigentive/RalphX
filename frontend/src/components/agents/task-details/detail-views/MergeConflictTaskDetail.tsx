@@ -61,7 +61,7 @@ function ConflictFilesList({
 
   if (files.length === 0) {
     return (
-      <p className="text-[13px] text-text-primary/50 italic">
+      <p className="text-[0.8125rem] text-text-primary/50 italic">
         No conflict files recorded
       </p>
     );
@@ -99,7 +99,7 @@ function ConflictFilesList({
             )}
             <FileWarning className="w-4 h-4 shrink-0" style={{ color: "var(--status-warning)" }} />
             <span
-              className="text-[13px] font-mono text-text-primary/70 truncate text-left"
+              className="text-[0.8125rem] font-mono text-text-primary/70 truncate text-left"
               title={file}
             >
               {file}
@@ -144,11 +144,11 @@ function ConflictFilesList({
 function ResolutionInstructions({ branchName }: { branchName: string }) {
   return (
     <div className="space-y-3">
-      <p className="text-[13px] text-text-primary/60">
+      <p className="text-[0.8125rem] text-text-primary/60">
         The AI agent could not automatically resolve the merge conflicts.
         Please resolve them manually:
       </p>
-      <ol className="list-decimal list-inside space-y-2 text-[13px] text-text-primary/50">
+      <ol className="list-decimal list-inside space-y-2 text-[0.8125rem] text-text-primary/50">
         <li>Open the conflicting files in your editor</li>
         <li>Resolve the conflicts (remove conflict markers)</li>
         <li>Stage the resolved files: <code className="text-text-primary/70 bg-[var(--overlay-faint)] px-1 rounded">git add .</code></li>
@@ -183,7 +183,7 @@ function ActionButtonsCard({
         onClick={onRetry}
         disabled={isProcessing}
         variant="ghost"
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "var(--text-secondary)",
           backgroundColor: "var(--bg-elevated)",
@@ -196,7 +196,7 @@ function ActionButtonsCard({
         data-testid="resolve-conflict-button"
         onClick={onResolve}
         disabled={isProcessing}
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
           backgroundColor: "var(--status-success)",
@@ -213,7 +213,7 @@ function ActionButtonsCard({
         data-testid="cancel-task-button"
         onClick={onCancel}
         disabled={isProcessing}
-        className="h-9 px-4 gap-2 rounded-lg font-medium text-[13px]"
+        className="h-9 px-4 gap-2 rounded-lg font-medium text-[0.8125rem]"
         style={{
           color: "white",
           backgroundColor: "#ff4545",
@@ -402,7 +402,7 @@ export function MergeConflictTaskDetail({ task, isHistorical = false }: MergeCon
           {isConflictDetectionEnabled && isLoadingConflicts && conflictFiles.length === 0 ? (
             <div className="flex items-center gap-2 py-2">
               <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--status-warning)" }} />
-              <span className="text-[13px] text-text-primary/50">Detecting conflicts...</span>
+              <span className="text-[0.8125rem] text-text-primary/50">Detecting conflicts...</span>
             </div>
           ) : (
             <ConflictFilesList files={conflictFiles} taskId={task.id} />
@@ -423,7 +423,7 @@ export function MergeConflictTaskDetail({ task, isHistorical = false }: MergeCon
       {/* Error Display */}
       {error && (
         <div
-          className="p-3 rounded-lg text-[13px]"
+          className="p-3 rounded-lg text-[0.8125rem]"
           style={{
             backgroundColor: statusTint("error", 12),
             color: "var(--status-error)",

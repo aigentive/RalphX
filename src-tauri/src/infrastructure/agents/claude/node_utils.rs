@@ -12,8 +12,8 @@ mod tests;
 /// Priority:
 /// 1. `RALPHX_NODE_PATH` env var (explicit override)
 /// 2. `which::which("node")` (PATH-based lookup)
-/// 3. `/opt/homebrew/bin/node` (Homebrew ARM / Apple Silicon)
-/// 4. `/usr/local/bin/node` (Homebrew Intel)
+/// 3. `$NVM_BIN/node` and `$VOLTA_HOME/bin/node`
+/// 4. `/opt/homebrew/bin/node` and `/usr/local/bin/node`
 /// 5. login shell `command -v node` (covers nvm/asdf/volta shell init)
 /// 6. `"node"` (last resort — rely on whatever PATH the process has)
 ///

@@ -138,7 +138,7 @@ function AttachmentCard({
       {/* File info */}
       <div className="flex-1 min-w-0">
         <p
-          className={compact ? "text-[11px]" : "text-xs"}
+          className={compact ? "text-[0.6875rem]" : "text-xs"}
           style={{
             color: "var(--text-primary)",
             overflow: "hidden",
@@ -150,7 +150,7 @@ function AttachmentCard({
           {attachment.fileName}
         </p>
         <p
-          className="text-[10px]"
+          className="text-[0.625rem]"
           style={{
             color: "var(--text-muted)",
           }}

@@ -142,6 +142,7 @@ pub enum LogicalEffort {
     High,
     #[serde(rename = "xhigh")]
     XHigh,
+    Max,
 }
 
 impl fmt::Display for LogicalEffort {
@@ -151,6 +152,7 @@ impl fmt::Display for LogicalEffort {
             Self::Medium => write!(f, "medium"),
             Self::High => write!(f, "high"),
             Self::XHigh => write!(f, "xhigh"),
+            Self::Max => write!(f, "max"),
         }
     }
 }
@@ -164,8 +166,9 @@ impl FromStr for LogicalEffort {
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::XHigh),
+            "max" => Ok(Self::Max),
             other => Err(format!(
-                "Invalid logical effort '{}'. Valid values: low, medium, high, xhigh",
+                "Invalid logical effort '{}'. Valid values: low, medium, high, xhigh, max",
                 other
             )),
         }
@@ -173,13 +176,14 @@ impl FromStr for LogicalEffort {
 }
 
 impl LogicalEffort {
-    /// Claude's current "max" bucket is the closest legacy equivalent to `xhigh`.
+    /// Convert to Claude CLI effort labels for legacy Claude-only callsites.
     pub fn to_legacy_claude_effort(self) -> &'static str {
         match self {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
-            Self::XHigh => "max",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -277,19 +281,25 @@ pub fn generic_harness_lane_defaults(
 
             match lane {
                 AgentLane::IdeationPrimary => {
-                    settings.model = Some("gpt-5.4".to_string());
+                    settings.model = Some(
+                        super::model_registry::default_model_for_provider(harness).to_string(),
+                    );
                     settings.effort = Some(LogicalEffort::XHigh);
                     settings.approval_policy = Some("never".to_string());
                     settings.sandbox_mode = Some("danger-full-access".to_string());
                 }
                 AgentLane::IdeationVerifier => {
-                    settings.model = Some("gpt-5.4-mini".to_string());
+                    settings.model = Some(
+                        super::model_registry::lightweight_model_for_provider(harness).to_string(),
+                    );
                     settings.effort = Some(LogicalEffort::Medium);
                     settings.approval_policy = Some("never".to_string());
                     settings.sandbox_mode = Some("danger-full-access".to_string());
                 }
                 AgentLane::IdeationSubagent | AgentLane::IdeationVerifierSubagent => {
-                    settings.model = Some("gpt-5.4-mini".to_string());
+                    settings.model = Some(
+                        super::model_registry::lightweight_model_for_provider(harness).to_string(),
+                    );
                     settings.effort = Some(LogicalEffort::Medium);
                     settings.approval_policy = Some("never".to_string());
                     settings.sandbox_mode = Some("danger-full-access".to_string());
@@ -298,7 +308,9 @@ pub fn generic_harness_lane_defaults(
                 | AgentLane::ExecutionReviewer
                 | AgentLane::ExecutionReexecutor
                 | AgentLane::ExecutionMerger => {
-                    settings.model = Some("gpt-5.4".to_string());
+                    settings.model = Some(
+                        super::model_registry::default_model_for_provider(harness).to_string(),
+                    );
                     settings.effort = Some(LogicalEffort::XHigh);
                     settings.approval_policy = Some("never".to_string());
                     settings.sandbox_mode = Some("danger-full-access".to_string());

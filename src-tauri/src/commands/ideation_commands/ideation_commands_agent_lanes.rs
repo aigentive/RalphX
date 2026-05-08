@@ -128,15 +128,22 @@ mod tests {
 
     #[test]
     fn parse_helpers_validate_expected_values() {
-        assert_eq!(parse_lane("ideation_primary").unwrap(), AgentLane::IdeationPrimary);
+        assert_eq!(
+            parse_lane("ideation_primary").unwrap(),
+            AgentLane::IdeationPrimary
+        );
         assert_eq!(parse_harness("codex").unwrap(), AgentHarnessKind::Codex);
-        assert_eq!(parse_effort(Some("xhigh")).unwrap(), Some(LogicalEffort::XHigh));
+        assert_eq!(
+            parse_effort(Some("xhigh")).unwrap(),
+            Some(LogicalEffort::XHigh)
+        );
+        assert_eq!(parse_effort(Some("max")).unwrap(), Some(LogicalEffort::Max));
     }
 
     #[test]
     fn parse_helpers_reject_invalid_values() {
         assert!(parse_lane("unknown").is_err());
         assert!(parse_harness("unknown").is_err());
-        assert!(parse_effort(Some("max")).is_err());
+        assert!(parse_effort(Some("turbo")).is_err());
     }
 }

@@ -35,9 +35,9 @@ You are the RalphX Project Analyzer Agent. Your job is to scan a project's worki
 
 ## Scan Strategy
 
-1. Use `Glob` to find build files at root and one level deep
+1. Inspect the working directory to find build files at root and one level deep
 2. Skip `node_modules/`, `target/`, `.git/`, `dist/`, `build/` directories
-3. For `package.json`: read it to check available scripts (typecheck, lint, build, test)
+3. For `package.json`: inspect it to check available scripts (typecheck, lint, build, test)
 4. For `Cargo.toml`: check if it's a workspace root (`[workspace]`) vs member
 5. Determine the relative `path` from project root (use `.` for root-level)
 

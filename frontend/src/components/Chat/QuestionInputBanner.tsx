@@ -77,7 +77,7 @@ function OptionChip({
     >
       {/* Number circle */}
       <span
-        className="inline-flex items-center justify-center flex-shrink-0 text-[10px] font-bold"
+        className="inline-flex items-center justify-center flex-shrink-0 text-[0.625rem] font-bold"
         style={{
           width: 18,
           height: 18,
@@ -95,7 +95,7 @@ function OptionChip({
       {/* Checkmark for multi-select */}
       {multiSelect && (
         <span
-          className="text-[10px]"
+          className="text-[0.625rem]"
           style={{
             color: selected ? "var(--accent-primary)" : "var(--text-muted)",
             marginLeft: -2,
@@ -253,7 +253,7 @@ export function QuestionInputBanner({
             >
               {/* ? icon in circle */}
               <span
-                className="flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
+                className="flex items-center justify-center flex-shrink-0 text-[0.6875rem] font-bold"
                 style={{
                   width: 20,
                   height: 20,
@@ -266,7 +266,7 @@ export function QuestionInputBanner({
               </span>
 
               <span
-                className="text-[11px] font-semibold flex-1"
+                className="text-[0.6875rem] font-semibold flex-1"
                 style={{ color: "var(--text-muted)" }}
               >
                 {question.header ?? "Question from agent"}
@@ -325,7 +325,7 @@ export function QuestionInputBanner({
               }}
             >
               <div
-                className="text-[13px] font-medium leading-snug [&>p]:mb-0 [&>ul]:mb-0 [&>ol]:mb-0"
+                className="text-[0.8125rem] font-medium leading-snug [&>p]:mb-0 [&>ul]:mb-0 [&>ol]:mb-0"
                 style={{
                   color: "var(--text-primary)",
                   marginBottom: 10,

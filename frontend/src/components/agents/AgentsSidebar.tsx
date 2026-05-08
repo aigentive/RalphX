@@ -9,14 +9,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  AlertTriangle,
   Archive,
-  Bot,
-  CheckCircle2,
+  ArrowDownUp,
   ChevronLeft,
-  ChevronDown,
   ChevronRight,
-  Circle,
   Folder,
   MoreHorizontal,
   Pencil,
@@ -24,7 +20,6 @@ import {
   RotateCcw,
   Search,
   X,
-  XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -68,12 +63,26 @@ import {
 import { useProjectAgentConversations } from "./useProjectAgentConversations";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
+const AGENTS_SEARCH_DEBOUNCE_MS = 180;
+
 const PROJECT_SORT_LABELS: Record<AgentProjectSort, string> = {
   latest: "Latest",
   az: "A-Z",
   za: "Z-A",
 };
-const AGENTS_SEARCH_DEBOUNCE_MS = 180;
+
+const STATIC_RECENT_RUNS = [
+  {
+    title: "Add ranking to reefbot homepage",
+    project: "reefbot.ai",
+    time: "2h",
+  },
+  {
+    title: "Tighten kanban drag handles",
+    project: "shapeapp",
+    time: "yesterday",
+  },
+];
 
 interface AgentsSidebarProps {
   projects: Project[];
@@ -112,18 +121,19 @@ export function AgentsSidebar({
 }: AgentsSidebarProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const showAllProjects = useAgentSessionStore((s) => s.showAllProjects);
-  const projectSort = useAgentSessionStore((s) => s.projectSort);
-  const setShowAllProjects = useAgentSessionStore((s) => s.setShowAllProjects);
-  const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
   const normalizedSearchInput = searchQuery.trim().toLowerCase();
   const normalizedSearch = useDebouncedValue(
     normalizedSearchInput,
     AGENTS_SEARCH_DEBOUNCE_MS
   );
-  const pinnedProjectId = pinnedConversation?.projectId ?? null;
+  const showAllProjects = useAgentSessionStore((s) => s.showAllProjects);
+  const setShowAllProjects = useAgentSessionStore((s) => s.setShowAllProjects);
+  const projectSort = useAgentSessionStore((s) => s.projectSort);
+  const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
   const shouldHydrateAllSidebarProjects =
     showAllProjects || showArchived || normalizedSearch.length > 0;
+  const pinnedProjectId = pinnedConversation?.projectId ?? null;
   const archivedCountProjectIds = useMemo(() => {
     if (shouldHydrateAllSidebarProjects) {
       return projects.map((project) => project.id);
@@ -139,81 +149,58 @@ export function AgentsSidebar({
     if (projectIds.size === 0 && projects[0]) {
       projectIds.add(projects[0].id);
     }
-
-    return projects
-      .filter((project) => projectIds.has(project.id))
-      .map((project) => project.id);
-  }, [
-    focusedProjectId,
-    pinnedProjectId,
-    projects,
-    shouldHydrateAllSidebarProjects,
-  ]);
+    return Array.from(projectIds);
+  }, [focusedProjectId, pinnedProjectId, projects, shouldHydrateAllSidebarProjects]);
   const { totalArchivedCount } = useArchivedConversationCounts(archivedCountProjectIds);
   const orderedProjects = useMemo(() => {
     if (projectSort === "latest") {
       return projects;
     }
 
-    const sorted = [...projects].sort((left, right) =>
-      left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
+    const sortedProjects = [...projects].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
     );
-
-    return projectSort === "za" ? sorted.reverse() : sorted;
+    return projectSort === "za" ? sortedProjects.reverse() : sortedProjects;
   }, [projectSort, projects]);
 
   return (
     <aside
       className="w-full h-full flex flex-col border-r overflow-hidden"
       style={{
-        background: "color-mix(in srgb, var(--bg-surface) 92%, transparent)",
-        backdropFilter: "blur(20px) saturate(180%)",
-        WebkitBackdropFilter: "blur(20px) saturate(180%)",
-        borderColor: "var(--overlay-faint)",
-        // Inner edge shadow is light-mode only — token resolves to `none`
-        // in the dark theme so we don't bleed shadow over already-dark
-        // surfaces.
-        boxShadow: "var(--sidebar-edge-shadow, none)",
+        backgroundColor: "var(--app-sidebar-bg)",
+        borderRightColor: "var(--app-sidebar-border)",
+        borderRightStyle: "solid",
+        borderRightWidth: "1px",
+        boxShadow: "none",
       }}
       data-testid="agents-sidebar"
     >
       <div
-        className="px-3.5 pt-3.5 pb-2.5 flex items-center gap-2 shrink-0"
-        style={{
-          borderColor: "var(--overlay-faint)",
-        }}
+        className="flex shrink-0 items-center gap-3 px-3 pb-2 pt-3"
       >
-        <Bot className="w-4 h-4 shrink-0" style={{ color: "var(--accent-primary)" }} />
-        <span className="text-[14px] font-semibold tracking-[-0.01em] truncate" style={{ color: "var(--text-primary)" }}>
-          Agents
-        </span>
+        <button
+          type="button"
+          className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2 pr-2.5 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          onClick={onCreateAgent}
+          aria-label="New agent"
+          data-testid="agents-new-agent"
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-subtle)",
+            color: "var(--text-primary)",
+            letterSpacing: "-0.005em",
+            boxShadow: "none",
+          }}
+        >
+          <Plus className="h-[13px] w-[13px]" style={{ color: "var(--text-muted)" }} />
+          <span>New</span>
+        </button>
         <div className="ml-auto flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button
+              <button
                 type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0 rounded-md border-0 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
-                onClick={onCreateAgent}
-                aria-label="New agent"
-                data-testid="agents-new-agent"
-                style={{ boxShadow: "none" }}
-              >
-                <Plus className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              New agent
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 w-7 p-0 rounded-md border-0 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+                className="grid h-7 w-7 place-items-center rounded-[6px] border-0 p-0 transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                 onClick={() => {
                   setIsSearchOpen((open) => {
                     if (open) {
@@ -224,10 +211,10 @@ export function AgentsSidebar({
                 }}
                 aria-label={isSearchOpen ? "Close search" : "Search"}
                 data-testid="agents-search-toggle"
-                style={{ boxShadow: "none" }}
+                style={{ color: "var(--text-muted)", boxShadow: "none" }}
               >
-                {isSearchOpen ? <X className="w-4 h-4" /> : <Search className="w-4 h-4" />}
-              </Button>
+                {isSearchOpen ? <X className="h-3.5 w-3.5" /> : <Search className="h-3.5 w-3.5" />}
+              </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
               {isSearchOpen ? "Close search" : "Search"}
@@ -236,18 +223,16 @@ export function AgentsSidebar({
           {onCollapse && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
+                <button
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0 rounded-md border-0 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+                  className="grid h-7 w-7 place-items-center rounded-[6px] border-0 p-0 transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                   onClick={onCollapse}
                   aria-label="Collapse sidebar"
                   data-testid="agents-sidebar-collapse-button"
-                  style={{ boxShadow: "none" }}
+                  style={{ color: "var(--text-muted)", boxShadow: "none" }}
                 >
-                  <ChevronLeft className="w-4 h-4" />
-                </Button>
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">
                 Collapse sidebar
@@ -262,8 +247,12 @@ export function AgentsSidebar({
           <div
             className="relative flex items-center"
             style={{
-              background: "var(--overlay-faint)",
-              border: "1px solid var(--overlay-weak)",
+              backgroundColor: "var(--overlay-faint)",
+              borderColor: isSearchFocused
+                ? "var(--accent-border)"
+                : "var(--overlay-weak)",
+              borderStyle: "solid",
+              borderWidth: "1px",
               borderRadius: "6px",
             }}
           >
@@ -274,14 +263,17 @@ export function AgentsSidebar({
             <input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
+              onFocus={() => setIsSearchFocused(true)}
+              onBlur={() => setIsSearchFocused(false)}
               placeholder="Search"
-              className="w-full h-7 pl-8 pr-8 text-[12px] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
+              className="w-full h-7 pl-8 pr-8 text-[0.75rem] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
               style={{
                 color: "var(--text-primary)",
                 caretColor: "var(--accent-primary)",
               }}
               autoFocus
               data-testid="agents-search-input"
+              data-agent-sidebar-search="true"
             />
             {searchQuery !== "" && (
               <button
@@ -299,47 +291,63 @@ export function AgentsSidebar({
       )}
 
       {projects.length > 0 && (
-        <div className="px-3.5 pb-2 flex items-center gap-2 shrink-0">
+        <div
+          className="mb-2 flex h-8 shrink-0 items-center gap-1 px-3"
+          role="toolbar"
+          aria-label="Agent list filters"
+          data-testid="agents-filter-toolbar"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+          }}
+        >
           <button
             type="button"
-            onClick={() => setShowAllProjects(!showAllProjects)}
             data-testid="agents-show-all-projects-pill"
-            className="h-7 inline-flex items-center rounded-full border px-2.5 text-[11px] font-medium transition-colors outline-none ring-0 focus:outline-none focus-visible:outline-none"
+            aria-pressed={showAllProjects}
+            onClick={() => setShowAllProjects(!showAllProjects)}
+            className="inline-flex h-full min-w-0 shrink-0 items-center justify-start whitespace-nowrap rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
             style={{
-              color: showAllProjects ? "var(--text-primary)" : "var(--text-secondary)",
-              background: showAllProjects
-                ? withAlpha("var(--accent-primary)", 12)
-                : "transparent",
-              borderColor: showAllProjects ? withAlpha("var(--accent-primary)", 30) : "var(--overlay-weak)",
+              backgroundColor: "transparent",
+              borderColor: "transparent",
+              color: showAllProjects ? "var(--text-primary)" : "var(--text-muted)",
+              boxShadow: "none",
             }}
           >
             All projects
           </button>
 
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                data-testid="agents-project-sort-pill"
-                className="h-7 inline-flex items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors outline-none ring-0 focus:outline-none focus-visible:outline-none"
-                style={{
-                  color: "var(--text-secondary)",
-                  background: "transparent",
-                  borderColor: "var(--overlay-weak)",
-                }}
-              >
-                {PROJECT_SORT_LABELS[projectSort]}
-                <ChevronDown className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid="agents-project-sort-pill"
+                    aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
+                    className="inline-flex h-full w-8 shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-transparent text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+                    style={{
+                      backgroundColor: "transparent",
+                      borderColor: "transparent",
+                      color: "var(--text-muted)",
+                      boxShadow: "none",
+                    }}
+                  >
+                    <ArrowDownUp className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                Sort projects: {PROJECT_SORT_LABELS[projectSort]}
+              </TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="start" className="min-w-[120px]">
               <DropdownMenuRadioGroup
                 value={projectSort}
                 onValueChange={(value) => setProjectSort(value as AgentProjectSort)}
               >
-                {Object.entries(PROJECT_SORT_LABELS).map(([value, label]) => (
-                  <DropdownMenuRadioItem key={value} value={value} className="text-xs">
-                    {label}
+                {(["latest", "az", "za"] as AgentProjectSort[]).map((sort) => (
+                  <DropdownMenuRadioItem key={sort} value={sort} className="text-xs">
+                    {PROJECT_SORT_LABELS[sort]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -349,24 +357,24 @@ export function AgentsSidebar({
           {(showArchived || totalArchivedCount > 0) && (
             <button
               type="button"
-              onClick={() => onShowArchivedChange(!showArchived)}
               data-testid="agents-show-archived-pill"
-              className="h-7 inline-flex items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors outline-none ring-0 focus:outline-none focus-visible:outline-none"
+              aria-pressed={showArchived}
+              aria-label="Show archived sessions"
+              onClick={() => onShowArchivedChange(!showArchived)}
+              className="ml-auto inline-flex h-full min-w-0 shrink-0 items-center justify-end gap-1.5 whitespace-nowrap rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
               style={{
-                color: showArchived ? "var(--text-primary)" : "var(--text-secondary)",
-                background: showArchived
-                  ? withAlpha("var(--accent-primary)", 12)
-                  : "transparent",
-                borderColor: showArchived
-                  ? withAlpha("var(--accent-primary)", 30)
-                  : "var(--overlay-weak)",
+                backgroundColor: "transparent",
+                borderColor: "transparent",
+                color: showArchived ? "var(--text-primary)" : "var(--text-muted)",
+                boxShadow: "none",
               }}
             >
-              Archived
+              <span>Archived</span>
               <span
-                className="text-[10px] font-semibold leading-none"
+                className="rounded-full px-1.5 text-[0.625rem] font-semibold leading-[1.6]"
                 style={{
-                  color: showArchived ? "var(--accent-primary)" : "var(--text-muted)",
+                  backgroundColor: "var(--overlay-weak)",
+                  color: "var(--text-secondary)",
                 }}
               >
                 {totalArchivedCount}
@@ -376,7 +384,7 @@ export function AgentsSidebar({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto py-1.5 border-t" style={{ borderColor: "var(--overlay-faint)" }}>
+      <div className="flex-1 overflow-y-auto px-3 pb-3 pt-0.5">
         {projects.length === 0 ? (
           <div className="h-full px-5 flex flex-col items-center justify-center text-center gap-3">
             <div className="space-y-1">
@@ -417,22 +425,29 @@ export function AgentsSidebar({
         )}
       </div>
 
+      <StaticRecentRuns />
+
       <div
-        className="px-3.5 py-3 border-t shrink-0"
-        style={{ borderColor: "var(--overlay-faint)" }}
+        className="shrink-0 border-t px-3 py-3"
+        style={{
+          borderTopColor: "var(--app-sidebar-border)",
+          borderTopStyle: "solid",
+          borderTopWidth: "1px",
+        }}
       >
         <button
           type="button"
           onClick={onCreateProject}
           data-testid="agents-add-project"
-          className="w-full h-10 inline-flex items-center justify-center gap-2 rounded-xl border border-dashed text-[12px] font-medium transition-colors outline-none ring-0 focus:outline-none focus-visible:outline-none"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-[6px] border border-dashed px-3 py-2 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
           style={{
-            color: "var(--text-secondary)",
-            borderColor: "var(--overlay-weak)",
-            background: "transparent",
+            color: "var(--text-muted)",
+            borderColor: "var(--border-strong)",
+            backgroundColor: "transparent",
+            boxShadow: "none",
           }}
         >
-          <Plus className="w-4 h-4" />
+          <Plus className="h-[13px] w-[13px]" />
           Add project
         </button>
       </div>
@@ -472,6 +487,7 @@ function ProjectSessionGroup({
   showAllProjects,
 }: ProjectSessionGroupProps) {
   const projectActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [renameDialogConversation, setRenameDialogConversation] =
@@ -479,8 +495,10 @@ function ProjectSessionGroup({
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
   const [archiveDialogConversation, setArchiveDialogConversation] =
     useState<AgentConversation | null>(null);
-  const expanded = useAgentSessionStore((s) => s.expandedProjectIds[project.id] ?? true);
-  const toggleProjectExpanded = useAgentSessionStore((s) => s.toggleProjectExpanded);
+  const [openSessionActionsId, setOpenSessionActionsId] = useState<string | null>(null);
+  const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
+  const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
+  const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
   const shouldEnableConversationQuery =
     showAllProjects ||
     showArchived ||
@@ -511,6 +529,11 @@ function ProjectSessionGroup({
       (agentStatuses[rowKey] ?? "idle") !== "idle"
     );
   }).length;
+  const isCurrentProject = expanded && isFocused;
+  const handleProjectRowToggle = () => {
+    onFocusProject(project.id);
+    setProjectExpanded(project.id, !expanded);
+  };
   const openRenameDialog = (conversation: AgentConversation) => {
     setRenameDraftTitle(conversation.title || "Untitled agent");
     setRenameDialogConversation(conversation);
@@ -531,77 +554,75 @@ function ProjectSessionGroup({
   if (
     !conversations.isLoading &&
     visibleConversations.length === 0 &&
-    (showArchived ||
-      searchQuery.length > 0 ||
-      !showAllProjects)
+    (showArchived || searchQuery.length > 0 || !showAllProjects)
   ) {
     return null;
   }
 
   return (
-    <div className="mt-1.5" data-testid={`agents-project-${project.id}`}>
-      <div className="px-3">
-        <div className="group/project">
-          <div
-            className="w-full min-h-8 px-1.5 py-1 flex items-center gap-1.5 rounded-md transition-colors duration-150"
-            style={{
-              color: isFocused ? "var(--text-primary)" : "var(--text-muted)",
-              background: "transparent",
-            }}
+    <div className="my-1 flex flex-col gap-0.5" data-testid={`agents-project-${project.id}`}>
+        <div className="relative">
+          <div className="group/project-row relative">
+          <button
+            type="button"
+            className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+            data-testid={`agents-project-row-${project.id}`}
+            aria-expanded={expanded}
+            aria-label={`${expanded ? "Collapse" : "Expand"} project ${project.name}`}
+            aria-current={isCurrentProject ? "true" : undefined}
+            onClick={handleProjectRowToggle}
           >
-            <button
-              type="button"
-              className="h-4.5 w-4.5 flex items-center justify-center rounded outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none shrink-0"
-              onClick={() => toggleProjectExpanded(project.id)}
-              aria-label={expanded ? "Collapse project" : "Expand project"}
+            <span
+              className="agents-project-chevron grid h-3 w-3 place-items-center rounded"
+              aria-hidden="true"
             >
-              {expanded ? (
-                <ChevronDown className="w-4 h-4" />
-              ) : (
-                <ChevronRight className="w-4 h-4" />
-              )}
-            </button>
-            <button
-              type="button"
-              className="min-w-0 flex-1 flex items-center gap-2 bg-transparent border-0 p-0 text-left shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
-              onClick={() => onFocusProject(project.id)}
-              style={{ boxShadow: "none" }}
-            >
-              <Folder className="w-3.5 h-3.5 shrink-0" />
-              <span className="min-w-0 flex-1 flex items-center gap-2">
-                <span className="text-[11px] font-semibold tracking-[-0.01em] truncate">
-                  {project.name}
-                </span>
-                {totalConversationCount > 0 && (
-                  <span
-                    className="shrink-0 text-[10px] font-medium leading-none"
-                    style={{
-                      color: isFocused ? "var(--accent-primary)" : "var(--text-muted)",
-                    }}
-                  >
-                    {totalConversationCount}
-                  </span>
-                )}
-              </span>
-            </button>
-            {!expanded && activeRuntimeCount > 0 && (
+              <ChevronRight
+                className={`h-2.5 w-2.5 transition-transform duration-[120ms] ${expanded ? "rotate-90" : ""}`}
+                strokeWidth={2}
+              />
+            </span>
+            <Folder
+              className="agents-project-icon h-3.5 w-3.5 shrink-0"
+              strokeWidth={1.8}
+            />
+            <span className="min-w-0 truncate">
+              {project.name}
+            </span>
+            {totalConversationCount > 0 && (
               <span
-                className="text-[10px] px-1.5 rounded-full font-medium leading-[16px]"
+                className={`agents-project-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6] transition-opacity duration-150 ${
+                  projectActionsOpen
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0"
+                }`}
+              >
+                {totalConversationCount}
+              </span>
+            )}
+            {totalConversationCount === 0 && !expanded && activeRuntimeCount > 0 && (
+              <span
+                className={`agents-project-active-count grid min-w-[18px] place-items-center rounded-full px-1.5 text-[0.6562rem] font-medium leading-[1.6] transition-opacity duration-150 ${
+                  projectActionsOpen
+                    ? "opacity-0"
+                    : "opacity-100 group-hover/project-row:opacity-0 group-focus-within/project-row:opacity-0"
+                }`}
                 style={{
                   color: "var(--accent-primary)",
-                  background: withAlpha("var(--accent-primary)", 15),
+                  backgroundColor: withAlpha("var(--accent-primary)", 15),
                 }}
               >
                 {activeRuntimeCount}
               </span>
             )}
+          </button>
             <div
-              className={`flex items-center gap-0.5 transition-opacity duration-150 ${
+              className={`absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-[6px] transition-opacity duration-150 ${
                 projectActionsOpen
                   ? "opacity-100"
-                  : "opacity-0 group-hover/project:opacity-100 group-focus-within/project:opacity-100"
+                  : "opacity-0 group-hover/project-row:opacity-100 group-focus-within/project-row:opacity-100"
               }`}
               data-testid={`agents-project-actions-${project.id}`}
+              onClick={(event) => event.stopPropagation()}
             >
               <DropdownMenu
                 onOpenChange={(open) => {
@@ -619,7 +640,7 @@ function ProjectSessionGroup({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-5.5 w-5.5 p-0 rounded border-0 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+                    className="h-5.5 w-5.5 rounded border-0 bg-transparent p-0 outline-none ring-0 hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 data-[state=open]:bg-transparent"
                     aria-label="Project actions"
                     data-theme-button-skip="true"
                     style={{ boxShadow: "none" }}
@@ -627,7 +648,13 @@ function ProjectSessionGroup({
                     <MoreHorizontal className="w-3.5 h-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent
+                  align="end"
+                  onCloseAutoFocus={(event) => {
+                    event.preventDefault();
+                    projectActionsTriggerRef.current?.blur();
+                  }}
+                >
                   <DropdownMenuItem
                     className="gap-2 text-xs"
                     onClick={() => setArchiveDialogOpen(true)}
@@ -730,8 +757,8 @@ function ProjectSessionGroup({
                   <span className="font-medium">
                     {archiveDialogConversation?.title || "Untitled agent"}
                   </span>{" "}
-                  from the active conversation list. You can restore it later from the
-                  archived filter.
+                  from the active conversation list. You can restore it later from
+                  archived sessions.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -752,7 +779,7 @@ function ProjectSessionGroup({
           </AlertDialog>
 
           {expanded && (
-            <div className="mt-0.5 ml-5 space-y-0.5">
+            <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
                 {visibleConversations.map((conversation) => {
                   const rowKey = getAgentConversationStoreKey(conversation);
                   const activeConversationId = activeConversationIds[rowKey] ?? null;
@@ -762,103 +789,124 @@ function ProjectSessionGroup({
                   const title = conversation.title || "Untitled agent";
                   const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
                   const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
-                  const statusLabel = conversation.archivedAt
-                    ? `Archived * ${createdLabel}`
-                    : createdLabel;
+                  const branchLabel = project.baseBranch ?? "master";
+                  const runtimeState = getSessionRuntimeState(
+                    conversation,
+                    isActiveRuntime,
+                    agentStatus
+                  );
+                  const showRuntimeState = runtimeState === "running";
+                  const sessionActionsOpen = openSessionActionsId === conversation.id;
 
                   return (
                     <div
                       key={conversation.id}
-                      className="group/session"
+                      className="group/session relative"
                       data-testid={`agents-session-${conversation.id}`}
                     >
-                      <div
-                        className="w-full min-h-[30px] px-1.5 py-1 flex items-center gap-1.5 cursor-pointer rounded-md transition-all duration-150 ease-out"
+                      <button
+                        type="button"
+                        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                        onClick={() => onSelectConversation(project.id, conversation)}
+                        aria-current={isSelected ? "true" : undefined}
                         style={{
-                          color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
-                          background: isSelected
-                            ? withAlpha("var(--accent-primary)", 6)
-                            : "transparent",
                           opacity: conversation.archivedAt ? 0.58 : 1,
+                          boxShadow: "none",
                         }}
+                      >
+                        <span className="min-w-0 flex flex-col gap-px">
+                          <span
+                            className="agents-session-title min-w-0 truncate text-[0.8125rem] leading-[1.35] tracking-[-0.005em]"
+                          >
+                            {title}
+                          </span>
+                          <span
+                            className="agents-session-meta min-w-0 truncate text-[0.6875rem] leading-[1.35]"
+                            style={{
+                              fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                            }}
+                          >
+                            <span>{branchLabel}</span>
+                            <span>{" · "}</span>
+                            <span title={createdTitle || undefined}>{createdLabel}</span>
+                            {showRuntimeState && (
+                              <>
+                                <span>{" · "}</span>
+                                <SessionRuntimeLabel state={runtimeState} />
+                              </>
+                            )}
+                          </span>
+                        </span>
+                        <span
+                          className={`agents-session-status-slot grid h-4 w-4 place-items-center justify-self-end transition-opacity duration-150 ${
+                            sessionActionsOpen
+                              ? "opacity-0"
+                              : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+                          }`}
                         >
-                          <button
+                          <SessionStatusDot state={runtimeState} selected={isSelected} />
+                        </span>
+                      </button>
+                      <DropdownMenu
+                        onOpenChange={(open) => {
+                          setOpenSessionActionsId(open ? conversation.id : null);
+                          if (!open) {
+                            requestAnimationFrame(() => {
+                              sessionActionsTriggerRefs.current[conversation.id]?.blur();
+                            });
+                          }
+                        }}
+                      >
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            ref={(node) => {
+                              sessionActionsTriggerRefs.current[conversation.id] = node;
+                            }}
                             type="button"
-                            className="min-w-0 flex-1 flex items-center gap-1.5 bg-transparent border-0 p-0 text-left shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
-                            onClick={() => onSelectConversation(project.id, conversation)}
+                            variant="ghost"
+                            size="sm"
+                            className="absolute right-2 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 bg-transparent p-0 opacity-0 outline-none ring-0 transition-opacity hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:bg-transparent data-[state=open]:opacity-100"
+                            aria-label="Session actions"
                             style={{ boxShadow: "none" }}
                           >
-                            <span
-                              className="w-3.5 h-3.5 flex items-center justify-center shrink-0"
-                              style={{
-                                color: isSelected ? "var(--accent-primary)" : "var(--text-muted)",
-                              }}
+                            <MoreHorizontal className="h-3.5 w-3.5" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          onCloseAutoFocus={(event) => {
+                            event.preventDefault();
+                            sessionActionsTriggerRefs.current[conversation.id]?.blur();
+                          }}
+                        >
+                          <DropdownMenuItem
+                            className="gap-2 text-xs"
+                            onClick={() => openRenameDialog(conversation)}
                           >
-                            <SessionStateGlyph
-                              isSelected={isSelected}
-                              isActiveRuntime={isActiveRuntime}
-                              status={agentStatus}
-                              />
-                            </span>
-                            <span className="min-w-0 flex-1 flex items-baseline gap-2 leading-none">
-                              <span className="min-w-0 truncate text-[10.75px] font-medium tracking-[-0.01em]">
-                                {title}
-                              </span>
-                              <span
-                                className="shrink-0 text-[10px]"
-                                title={createdTitle || undefined}
-                                style={{ color: "var(--text-muted)" }}
-                              >
-                                {statusLabel}
-                              </span>
-                            </span>
-                          </button>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-5.5 w-5.5 p-0 rounded shrink-0 border-0 outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 opacity-0 group-hover/session:opacity-100 data-[state=open]:opacity-100"
-                                aria-label="Session actions"
-                                style={{
-                                  boxShadow: "none",
-                                  ...(isSelected ? { opacity: 1 } : {}),
-                                }}
-                              >
-                                <MoreHorizontal className="w-3.5 h-3.5" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem
-                                className="gap-2 text-xs"
-                                onClick={() => openRenameDialog(conversation)}
-                              >
-                                <Pencil className="w-3.5 h-3.5" />
-                                Rename session
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              {conversation.archivedAt ? (
-                                <DropdownMenuItem
-                                  className="gap-2 text-xs"
-                                  onClick={() => onRestoreConversation(conversation)}
-                                >
-                                  <RotateCcw className="w-3.5 h-3.5" />
-                                  Restore session
-                                </DropdownMenuItem>
-                              ) : (
-                                <DropdownMenuItem
-                                  className="gap-2 text-xs"
-                                  onClick={() => setArchiveDialogConversation(conversation)}
-                                >
-                                  <Archive className="w-3.5 h-3.5" />
-                                  Archive session
-                                </DropdownMenuItem>
-                              )}
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                      </div>
+                            <Pencil className="w-3.5 h-3.5" />
+                            Rename session
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          {conversation.archivedAt ? (
+                            <DropdownMenuItem
+                              className="gap-2 text-xs"
+                              onClick={() => onRestoreConversation(conversation)}
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              Restore session
+                            </DropdownMenuItem>
+                          ) : (
+                            <DropdownMenuItem
+                              className="gap-2 text-xs"
+                              onClick={() => setArchiveDialogConversation(conversation)}
+                            >
+                              <Archive className="w-3.5 h-3.5" />
+                              Archive session
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                     );
                   })}
 
@@ -866,7 +914,7 @@ function ProjectSessionGroup({
                   <div className="py-0.5">
                     <button
                       type="button"
-                      className="inline-flex items-center pl-[26px] text-[10.75px] font-medium transition-colors"
+                      className="inline-flex items-center pl-[26px] text-[0.6719rem] font-medium transition-colors"
                       onClick={() => void conversations.fetchNextPage()}
                       disabled={conversations.isFetchingNextPage}
                       data-testid={`agents-load-more-${project.id}`}
@@ -881,14 +929,13 @@ function ProjectSessionGroup({
                 )}
 
                 {conversations.isLoading && (
-                  <div className="py-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                  <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                     Loading...
                   </div>
                 )}
             </div>
           )}
         </div>
-      </div>
     </div>
   );
 }
@@ -904,57 +951,166 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debouncedValue;
 }
 
-function SessionStateGlyph({
-  isSelected,
-  isActiveRuntime,
-  status,
-}: {
-  isSelected: boolean;
-  isActiveRuntime: boolean;
-  status: string;
-}) {
-  if (isActiveRuntime) {
-    if (status === "needs_approval") {
-      return (
-        <AlertTriangle
-          className="w-3 h-3 shrink-0"
-          style={{ color: "var(--status-warning)" }}
-        />
-      );
-    }
+function StaticRecentRuns() {
+  return (
+    <div
+      className="shrink-0 border-t px-3 pb-1.5 pt-3"
+      data-testid="agents-static-recent"
+      aria-hidden="true"
+      title="Coming soon"
+      style={{
+        borderColor: "var(--app-sidebar-border)",
+        display: "none",
+      }}
+    >
+      <div className="mb-2 flex items-center justify-between px-1">
+        <span
+          className="text-[0.6562rem] font-semibold uppercase leading-none tracking-[0.12em]"
+          style={{ color: "var(--text-muted)" }}
+        >
+          Recent
+        </span>
+        <button
+          type="button"
+          className="rounded-[4px] px-1 text-[0.6875rem] font-medium leading-none outline-none transition-colors hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          style={{ color: "var(--text-muted)", boxShadow: "none" }}
+        >
+          View all
+        </button>
+      </div>
+      <div className="flex flex-col gap-0.5">
+        {STATIC_RECENT_RUNS.map((run) => (
+          <button
+            type="button"
+            key={run.title}
+            className="group/recent grid w-full grid-cols-[7px_minmax(0,1fr)_12px] items-center gap-[9px] rounded-[6px] px-2 py-1.5 text-left text-[var(--text-secondary)] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+            style={{ boxShadow: "none" }}
+          >
+            <span
+              className="block h-[7px] w-[7px] rounded-full"
+              style={{ background: "var(--status-success)" }}
+            />
+            <span className="min-w-0">
+              <span
+                className="block whitespace-normal break-words text-[0.7812rem] font-medium leading-[1.4] [text-overflow:clip]"
+                style={{
+                  overflow: "visible",
+                  textOverflow: "clip",
+                  whiteSpace: "normal",
+                  width: "168px",
+                }}
+              >
+                {run.title}
+              </span>
+              <span
+                className="block truncate text-[0.6562rem] leading-[1.4]"
+                style={{
+                  color: "var(--text-muted)",
+                  fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                }}
+              >
+                {run.project}
+                <span>{" · "}</span>
+                {run.time}
+              </span>
+            </span>
+            <ChevronRight
+              aria-hidden="true"
+              className="h-3 w-3 opacity-0 transition-opacity duration-[120ms] group-hover/recent:opacity-100"
+              style={{ color: "var(--text-subtle)" }}
+              strokeWidth={2}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-    if (status === "failed" || status === "error") {
-      return (
-        <XCircle
-          className="w-3 h-3 shrink-0"
-          style={{ color: "var(--status-error)" }}
-        />
-      );
-    }
+type SessionRuntimeState = "running" | "queued" | "done" | "blocked" | "archived";
 
-    if (status === "completed") {
-      return (
-        <CheckCircle2
-          className="w-3 h-3 shrink-0"
-          style={{ color: "var(--status-success)" }}
-        />
-      );
-    }
+function getSessionRuntimeState(
+  conversation: AgentConversation,
+  isActiveRuntime: boolean,
+  status: string
+): SessionRuntimeState {
+  if (conversation.archivedAt) {
+    return "archived";
+  }
 
-    if (status !== "idle") {
-      return (
-        <Circle
-          className="w-2.5 h-2.5 shrink-0 fill-current"
-          style={{ color: "var(--status-info)" }}
-        />
-      );
-    }
+  if (!isActiveRuntime || status === "idle") {
+    return "queued";
+  }
+
+  if (status === "completed") {
+    return "done";
+  }
+
+  if (status === "failed" || status === "error" || status === "needs_approval") {
+    return "blocked";
+  }
+
+  return "running";
+}
+
+function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {
+  if (state !== "running") {
+    return null;
   }
 
   return (
-    <Circle
-      className="w-2.5 h-2.5 shrink-0 fill-current"
-      style={{ color: isSelected ? "var(--accent-primary)" : "var(--text-muted)" }}
-    />
+    <span className="agents-session-runtime-label font-medium">
+      running
+    </span>
   );
+}
+
+function SessionStatusDot({
+  state,
+}: {
+  state: SessionRuntimeState;
+  selected: boolean;
+}) {
+  if (state === "running") {
+    return (
+      <span
+        aria-hidden="true"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
+        style={{
+          backgroundColor: "var(--accent-primary)",
+          border: "1.5px solid transparent",
+        }}
+      />
+    );
+  }
+
+  if (state === "done") {
+    return (
+      <span
+        aria-hidden="true"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
+        style={{
+          backgroundColor: "var(--status-success)",
+          border: "1.5px solid transparent",
+        }}
+      />
+    );
+  }
+
+  if (state === "queued") {
+    return (
+      <span
+        aria-hidden="true"
+        className="block h-[7px] w-[7px] shrink-0 rounded-full"
+        style={{
+          backgroundColor: "transparent",
+          borderColor: "var(--text-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1.5px",
+        }}
+      />
+    );
+  }
+
+  return null;
 }

@@ -494,13 +494,12 @@ describe("PlanItem", () => {
     it("re-renders when isSelected changes (visual confirmation)", () => {
       const { rerender, getByTestId } = render(<PlanItem {...defaultProps} isSelected={false} />);
       const item = getByTestId("plan-item-session-1");
-      // Not selected: transparent background
-      expect(item.style.background).toBe("transparent");
+      // Not selected: aria-current absent (CSS handles unselected styling)
+      expect(item.getAttribute("aria-current")).toBeNull();
 
       rerender(<PlanItem {...defaultProps} isSelected={true} />);
-      // Selected: non-transparent background (jsdom normalizes hsla to rgba)
-      expect(item.style.background).not.toBe("transparent");
-      expect(item.style.background).not.toBe("");
+      // Selected: aria-current="true" toggles the agents-session-row[aria-current] CSS rule
+      expect(item.getAttribute("aria-current")).toBe("true");
     });
 
     it("does not visually change item B when only item A's isSelected changes", () => {
@@ -528,7 +527,7 @@ describe("PlanItem", () => {
       );
 
       const itemB = getByTestId("plan-item-session-B");
-      const initialBBackground = itemB.style.background;
+      const initialBAriaCurrent = itemB.getAttribute("aria-current");
 
       // Change only A's isSelected
       rerender(
@@ -538,11 +537,10 @@ describe("PlanItem", () => {
         </>
       );
 
-      // B's visual state is unchanged
-      expect(itemB.style.background).toBe(initialBBackground);
-      // A changed to selected state (non-transparent)
-      expect(getByTestId("plan-item-session-A").style.background).not.toBe("transparent");
-      expect(getByTestId("plan-item-session-A").style.background).not.toBe("");
+      // B's selection state is unchanged
+      expect(itemB.getAttribute("aria-current")).toBe(initialBAriaCurrent);
+      // A flipped to selected state
+      expect(getByTestId("plan-item-session-A").getAttribute("aria-current")).toBe("true");
     });
   });
 });

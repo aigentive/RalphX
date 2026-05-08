@@ -87,7 +87,7 @@ function MarkdownPreview({ content, compact }: { content: string; compact?: bool
   const previewLines = lines.slice(0, 5);
 
   return (
-    <div className={`${compact ? "text-[10.5px]" : "text-[11.5px]"} leading-[1.55] py-1.5`}>
+    <div className={`${compact ? "text-[0.6562rem]" : "text-[0.7188rem]"} leading-[1.55] py-1.5`}>
       {previewLines.map((line, i) => {
         const trimmed = line.trim();
 
@@ -96,7 +96,7 @@ function MarkdownPreview({ content, compact }: { content: string; compact?: bool
           return (
             <div
               key={i}
-              className={`${compact ? "text-xs" : "text-[13px]"} font-semibold mb-1`}
+              className={`${compact ? "text-xs" : "text-[0.8125rem]"} font-semibold mb-1`}
               style={{ color: "var(--text-primary)" }}
             >
               {trimmed.replace(/^#+\s*/, "")}
@@ -109,7 +109,7 @@ function MarkdownPreview({ content, compact }: { content: string; compact?: bool
           return (
             <div
               key={i}
-              className={`${compact ? "text-[10.5px]" : "text-[11.5px]"} font-semibold mt-1.5`}
+              className={`${compact ? "text-[0.6562rem]" : "text-[0.7188rem]"} font-semibold mt-1.5`}
               style={{ color: "var(--text-primary)" }}
             >
               {trimmed.replace(/^#+\s*/, "")}
@@ -122,7 +122,7 @@ function MarkdownPreview({ content, compact }: { content: string; compact?: bool
           return (
             <div
               key={i}
-              className={`${compact ? "text-[10px]" : "text-[11px]"} font-semibold mt-1`}
+              className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} font-semibold mt-1`}
               style={{ color: "var(--text-primary)" }}
             >
               {trimmed.replace(/^#+\s*/, "")}
@@ -140,7 +140,7 @@ function MarkdownPreview({ content, compact }: { content: string; compact?: bool
           return (
             <div
               key={i}
-              className={`${compact ? "text-[10px]" : "text-[10.5px]"} mt-0.5`}
+              className={`${compact ? "text-[0.625rem]" : "text-[0.6562rem]"} mt-0.5`}
               style={{
                 color: "var(--text-secondary)",
                 fontFamily: "var(--font-mono)",
@@ -155,7 +155,7 @@ function MarkdownPreview({ content, compact }: { content: string; compact?: bool
         return (
           <div
             key={i}
-            className={`${compact ? "text-[10px]" : "text-[11px]"} mt-0.5`}
+            className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} mt-0.5`}
             style={{ color: "var(--text-secondary)" }}
           >
             {trimmed}
@@ -237,7 +237,7 @@ export const ArtifactWidget = React.memo(function ArtifactWidget({
   const header = (
     <>
       <span
-        className="text-[9px] px-1.5 py-px rounded font-semibold uppercase tracking-wider flex-shrink-0"
+        className="text-[0.5625rem] px-1.5 py-px rounded font-semibold uppercase tracking-wider flex-shrink-0"
         style={{
           background: "var(--bg-hover)",
           color: "var(--text-muted)",
@@ -247,7 +247,7 @@ export const ArtifactWidget = React.memo(function ArtifactWidget({
         {artifactTypeLabel(parsed.artifactType)}
       </span>
       <span
-        className={`${compact ? "text-[11px]" : "text-[11.5px]"} font-medium flex-1 min-w-0 truncate`}
+        className={`${compact ? "text-[0.6875rem]" : "text-[0.7188rem]"} font-medium flex-1 min-w-0 truncate`}
         style={{ color: "var(--text-secondary)" }}
       >
         {parsed.title}
@@ -268,7 +268,7 @@ export const ArtifactWidget = React.memo(function ArtifactWidget({
         <MarkdownPreview content={parsed.content} compact={compact} />
       ) : (
         <div
-          className={`${compact ? "text-[10px]" : "text-[10.5px]"} py-1`}
+          className={`${compact ? "text-[0.625rem]" : "text-[0.6562rem]"} py-1`}
           style={{ color: "var(--text-muted)" }}
         >
           No content preview available
@@ -299,7 +299,7 @@ function ArtifactListView({ toolCall, compact }: { toolCall: ToolCall; compact: 
   const header = (
     <>
       <span
-        className={`${compact ? "text-[11px]" : "text-[11.5px]"} font-medium flex-1 min-w-0 truncate`}
+        className={`${compact ? "text-[0.6875rem]" : "text-[0.7188rem]"} font-medium flex-1 min-w-0 truncate`}
         style={{ color: "var(--text-secondary)" }}
       >
         {headerTitle}

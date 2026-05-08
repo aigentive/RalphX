@@ -3,10 +3,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@/lib/tauri";
 import { createMockTask } from "@/test/mock-data";
+import { useUiStore } from "@/stores/uiStore";
 import { TaskBoard } from "./TaskBoard";
 import type { TaskListResponse } from "@/types/task";
 import type { InfiniteData } from "@tanstack/react-query";
@@ -225,6 +226,20 @@ describe("TaskBoard", () => {
         expect(board).toHaveClass("overflow-x-auto");
       });
     });
+
+    it("keeps the kanban toolbar divider on the v29a line token", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+
+      render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("kanban-toolbar")).toHaveStyle({
+          borderBottomColor: "var(--kanban-toolbar-border, #2E2E36)",
+          borderBottomStyle: "solid",
+          borderBottomWidth: "1px",
+        });
+      });
+    });
   });
 
   describe("error handling", () => {
@@ -236,6 +251,65 @@ describe("TaskBoard", () => {
       await waitFor(() => {
         expect(screen.getByTestId("task-board-error")).toBeInTheDocument();
       });
+    });
+  });
+
+  describe("toolbar interactions", () => {
+    it("clears boardSearchQuery when search bar close button is clicked", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+
+      // Seed the uiStore with a non-null search query so the close handler is meaningful
+      act(() => {
+        useUiStore.getState().setBoardSearchQuery("hello");
+      });
+      expect(useUiStore.getState().boardSearchQuery).toBe("hello");
+
+      render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      const closeBtn = await screen.findByRole("button", { name: /close search/i });
+      fireEvent.click(closeBtn);
+
+      await waitFor(() => {
+        expect(useUiStore.getState().boardSearchQuery).toBeNull();
+      });
+    });
+
+    it("invokes onOpenPlanQuickSwitcher when PlanSelectorInline trigger fires", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+      const onOpenPlanQuickSwitcher = vi.fn();
+
+      render(
+        <TaskBoard projectId="p1" onOpenPlanQuickSwitcher={onOpenPlanQuickSwitcher} />,
+        { wrapper: createWrapper() },
+      );
+
+      const trigger = await screen.findByTestId("plan-selector-inline-trigger");
+      fireEvent.click(trigger);
+
+      expect(onOpenPlanQuickSwitcher).toHaveBeenCalledWith("kanban_inline");
+    });
+  });
+
+  describe("fillWidth prop", () => {
+    it("keeps fixed 300px columns when fillWidth=true so the host scrolls instead of stretching lanes", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+      render(<TaskBoard projectId="p1" fillWidth />, { wrapper: createWrapper() });
+
+      const board = await screen.findByTestId("task-board");
+      const tpl = (board as HTMLElement).style.gridTemplateColumns;
+      expect(tpl).toContain("300px");
+      expect(tpl).not.toContain("1fr");
+      expect(tpl).not.toContain("minmax(0, 1fr)");
+    });
+
+    it("uses fixed 300px expanded columns when fillWidth is unset", async () => {
+      vi.mocked(getActiveWorkflowColumns).mockResolvedValue(createMockColumns());
+      render(<TaskBoard projectId="p1" />, { wrapper: createWrapper() });
+
+      const board = await screen.findByTestId("task-board");
+      const tpl = (board as HTMLElement).style.gridTemplateColumns;
+      expect(tpl).toContain("300px");
+      expect(tpl).not.toContain("1fr");
     });
   });
 });

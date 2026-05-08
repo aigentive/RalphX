@@ -44,6 +44,7 @@ pub use agent_run::{
 pub use agent_conversation_workspace::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrDescription,
 };
 pub use event_type::{EventType, ParseEventTypeError};
 pub use api_key::{

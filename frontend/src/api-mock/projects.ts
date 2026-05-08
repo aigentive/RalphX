@@ -88,7 +88,7 @@ export const mockProjectsApi = {
 const mockWorkflowColumns: WorkflowSchema["columns"] = [
   {
     id: "draft",
-    name: "Backlog",
+    name: "Draft",
     mapsTo: "backlog" as InternalStatus,
   },
   {
@@ -98,12 +98,12 @@ const mockWorkflowColumns: WorkflowSchema["columns"] = [
   },
   {
     id: "in_progress",
-    name: "Executing",
+    name: "In Progress",
     mapsTo: "executing" as InternalStatus,
   },
   {
     id: "in_review",
-    name: "Review",
+    name: "In Review",
     mapsTo: "pending_review" as InternalStatus,
   },
   {

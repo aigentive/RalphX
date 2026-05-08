@@ -238,7 +238,7 @@ function TextBubble({
         borderRadius: getCornerRadius(),
       }}
     >
-      <div className="text-[13px] leading-relaxed">
+      <div className="text-[0.8125rem] leading-relaxed">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
           {content}
         </ReactMarkdown>
@@ -374,7 +374,7 @@ export function ChatMessage({
         data-testid="chat-message-timestamp"
         dateTime={message.createdAt}
         title={timestamp.title || undefined}
-        className="text-[10px] mt-1 px-1 text-text-primary/40"
+        className="text-[0.625rem] mt-1 px-1 text-text-primary/40"
         role="time"
       >
         {timestamp.label}

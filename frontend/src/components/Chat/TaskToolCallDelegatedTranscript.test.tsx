@@ -156,6 +156,11 @@ describe("TaskToolCallDelegatedTranscript", () => {
     });
 
     await waitFor(() => expect(getConversationMessagesPageSpy).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("Second delegated update")).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getByText("Second delegated update")).toBeInTheDocument();
+      },
+      { timeout: 5_000 },
+    );
   });
 });

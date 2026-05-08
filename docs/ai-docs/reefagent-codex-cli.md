@@ -148,6 +148,8 @@ From `config.example.yaml`:
 - `codex-agent.executionPolicy: autonomous`
 - `codex-mini-agent.model: codex:codex-mini`
 
+RalphX now uses `gpt-5.5` as its own primary Codex default; the Reefagent value above is retained only as the historical source snapshot.
+
 This is the closest existing template for the RalphX defaults you requested.
 
 ## Side-by-side provider matrix
@@ -222,7 +224,7 @@ Reefagent separates provider model strings from the rest of the agent identity.
 RalphX equivalent:
 
 - settings must let the user combine harness + model + effort per lane
-- example: Codex + `gpt-5.4` + `xhigh` for ideation, Codex + `gpt-5.4-mini` + `medium` for verification, Claude for execution
+- example: Codex + `gpt-5.5` + `xhigh` for ideation, Codex + `gpt-5.4-mini` + `medium` for verification, Claude for execution
 
 ### Share prompt construction, not provider internals
 

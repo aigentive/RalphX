@@ -1,7 +1,8 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
+    ProjectId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -47,6 +48,42 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project/agent-11111111".to_string(),
         "/tmp/ralphx/agent-11111111".to_string(),
     )
+}
+
+#[tokio::test]
+async fn pr_description_round_trips_and_clears() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    repo.save_pr_description(
+        &conversation_id,
+        AgentWorkspacePrDescription::new(
+            Some("Describe agent workspace publish".to_string()),
+            "## Summary\n\n- Added publish descriptions".to_string(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let saved = repo
+        .get_pr_description(&conversation_id)
+        .await
+        .unwrap()
+        .expect("description should be saved");
+    assert_eq!(
+        saved.title.as_deref(),
+        Some("Describe agent workspace publish")
+    );
+    assert!(saved.body_markdown.contains("## Summary"));
+
+    repo.clear_pr_description(&conversation_id).await.unwrap();
+    assert!(repo
+        .get_pr_description(&conversation_id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -142,4 +179,48 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     assert_eq!(workspaces.len(), 1);
     assert_eq!(workspaces[0].conversation_id, published.conversation_id);
     assert_eq!(workspaces[0].publication_pr_number, Some(72));
+}
+
+#[tokio::test]
+async fn list_active_needs_agent_workspaces_filters_to_open_active_workspaces() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut needs_agent = make_workspace(conversation_id);
+    needs_agent.publication_pr_number = Some(82);
+    needs_agent.publication_pr_status = Some("failed".to_string());
+    needs_agent.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(needs_agent.clone()).await.unwrap();
+
+    let closed_id = ChatConversationId::from_string("88888888-8888-8888-8888-888888888888");
+    seed_conversation(&db, &closed_id);
+    let mut closed = make_workspace(closed_id);
+    closed.publication_pr_number = Some(83);
+    closed.publication_pr_status = Some("closed".to_string());
+    closed.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(closed).await.unwrap();
+
+    let archived_id = ChatConversationId::from_string("99999999-9999-9999-9999-999999999999");
+    seed_conversation(&db, &archived_id);
+    let mut archived = make_workspace(archived_id);
+    archived.status = AgentConversationWorkspaceStatus::Archived;
+    archived.publication_pr_number = Some(84);
+    archived.publication_pr_status = Some("failed".to_string());
+    archived.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(archived).await.unwrap();
+
+    let pushed_id = ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    seed_conversation(&db, &pushed_id);
+    let mut pushed = make_workspace(pushed_id);
+    pushed.publication_pr_number = Some(85);
+    pushed.publication_pr_status = Some("open".to_string());
+    pushed.publication_push_status = Some("pushed".to_string());
+    repo.create_or_update(pushed).await.unwrap();
+
+    let workspaces = repo.list_active_needs_agent_workspaces().await.unwrap();
+
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].conversation_id, needs_agent.conversation_id);
+    assert_eq!(
+        workspaces[0].publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
 }

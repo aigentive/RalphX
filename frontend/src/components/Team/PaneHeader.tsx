@@ -52,7 +52,7 @@ export const PaneHeader = React.memo(function PaneHeader({
         style={{ backgroundColor: color }}
       />
       <span
-        className="text-[13px] font-medium truncate"
+        className="text-[0.8125rem] font-medium truncate"
         style={{ color: "var(--text-primary)" }}
       >
         {name}
@@ -60,7 +60,7 @@ export const PaneHeader = React.memo(function PaneHeader({
 
       {/* Model badge */}
       <span
-        className="text-[10px] px-1.5 py-px rounded shrink-0"
+        className="text-[0.625rem] px-1.5 py-px rounded shrink-0"
         style={{
           backgroundColor: "var(--bg-elevated)",
           color: "var(--text-muted)",
@@ -75,7 +75,7 @@ export const PaneHeader = React.memo(function PaneHeader({
           className={`w-1.5 h-1.5 rounded-full${statusConfig.pulse ? " animate-pulse" : ""}`}
           style={{ backgroundColor: statusConfig.color }}
         />
-        <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
           {statusConfig.label}
         </span>
       </div>
@@ -83,7 +83,7 @@ export const PaneHeader = React.memo(function PaneHeader({
       {/* Role (truncated) */}
       {roleDescription && (
         <span
-          className="text-[11px] truncate ml-1"
+          className="text-[0.6875rem] truncate ml-1"
           style={{ color: "var(--text-muted)", maxWidth: 120 }}
         >
           {roleDescription}

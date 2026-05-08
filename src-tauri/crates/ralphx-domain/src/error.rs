@@ -39,6 +39,9 @@ pub enum AppError {
     #[error("Git operation error: {0}")]
     GitOperation(String),
 
+    #[error("Git authentication error: {0}")]
+    GitAuth(String),
+
     #[error("Execution blocked: {0}")]
     ExecutionBlocked(String),
 

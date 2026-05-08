@@ -6,7 +6,7 @@ Use only the provided deterministic release evidence packet and supporting facts
 
 <style_goals>
 - factual, crisp, and professional
-- grouped by user-visible impact first
+- grouped by user-visible impact first, with developer/maintainer work clearly separated near the bottom
 - compact like an engineering changelog, but easier to scan than a wall of text
 - no hype, no invented claims, no filler
 - suitable for multiple audiences at once: public readers, active users, contributors, and maintainers
@@ -20,15 +20,19 @@ Use only the provided deterministic release evidence packet and supporting facts
 
 One short summary sentence.
 
-## Highlights
-- 2-5 bullets for the most important user-visible improvements
+## User-Facing Changes
+- 2-5 bullets for the most important changes someone sees when downloading, installing, opening, or using RalphX.app
 
 ## Fixes And Polish
-- bullets for smaller UX/runtime fixes
+- optional bullets for smaller user-visible UX/runtime fixes
+
+## Developer And Maintainer Changes
+- optional bullets for internal, CI, release automation, docs, config, scaffolding, or contributor-facing work
+- include this section after all user-facing sections when developer-facing work is worth mentioning
 
 ## Other
 - optional
-- use only for real items worth mentioning that do not fit naturally under Highlights or Fixes And Polish
+- use only for real items worth mentioning that do not fit naturally under the sections above
 
 ## Known Issues
 - optional
@@ -57,13 +61,17 @@ One short summary sentence.
 - Keep bullets denser than marketing copy: one capability claim plus one concrete example is ideal.
 - Do not combine unrelated fixes into a single catch-all bullet just to reduce bullet count.
 - If smaller fixes do not naturally cluster, prefer shorter separate bullets or omit the weakest items instead of inventing a generic umbrella.
-- Every Highlights bullet and every Fixes And Polish bullet should include at least one concrete visible example when the evidence packet provides one.
-- For broad first-release or squash-merge ranges, prefer 4-5 strong Highlights bullets when the evidence supports them.
+- Every User-Facing Changes bullet and every Fixes And Polish bullet should include at least one concrete visible example when the evidence packet provides one.
+- For broad first-release or squash-merge ranges, prefer 4-5 strong User-Facing Changes bullets when the evidence supports them.
 - If the range looks like a first release or a broad release cut, frame that professionally and confidently in the summary without sounding defensive, apologetic, or self-undermining.
 - Do not use phrases like `unusually broad`, `mixed bag`, `catch-all`, `messy`, `still evolving`, or similar wording that makes the release sound accidental or poorly shaped.
 - Prefer opener patterns like `This first 0.1.0 release...`, `This initial 0.1.0 release...`, or `RalphX.app 0.1.0 focuses on...` when they fit the evidence.
 - The opening summary sentence must name 2-3 concrete release themes and must not fall back to generic phrases like `consolidates the current baseline`, `brings various improvements`, or `tightens several workflows`.
-- Keep Highlights and Fixes And Polish focused on runtime, UI, workflow, install, and release outcomes.
+- Keep User-Facing Changes and Fixes And Polish focused on runtime, UI, workflow, install, and release outcomes.
+- Put user-facing changes before developer-facing changes.
+- Keep developer-only work out of User-Facing Changes and Fixes And Polish; use Developer And Maintainer Changes instead.
+- Do not mix user-facing and developer-facing changes in the same bullet.
+- If a release contains both product-visible work and internal release/CI/docs/config work, the product-visible work must appear first and the internal work must appear under Developer And Maintainer Changes.
 - Lead each bullet with the visible surface or workflow that changed, not the underlying implementation mechanism.
 - Avoid opening bullets with internals such as `backend-managed`, `native snapshots`, `canonical agent.yaml`, or similar repository-facing terminology unless there is no clearer user-facing phrasing.
 - Preserve technical detail when it helps comprehension, but do not drift into repo-maintainer jargon.

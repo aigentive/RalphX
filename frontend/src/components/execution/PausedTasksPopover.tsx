@@ -148,7 +148,7 @@ export function PausedTasksPopover({
             Paused Tasks ({pausedTasks.length})
           </h3>
           <span
-            className="text-[11px] tabular-nums"
+            className="text-[0.6875rem] tabular-nums"
             style={{ color: "var(--text-muted)" }}
           >
             {providerErrors.length > 0 && userPaused.length > 0
@@ -179,7 +179,7 @@ export function PausedTasksPopover({
               {/* Provider Errors section */}
               {providerErrors.length > 0 && hasBothGroups && (
                 <div
-                  className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider"
+                  className="px-2 py-1 text-[0.625rem] font-semibold uppercase tracking-wider"
                   style={{ color: "var(--text-muted)" }}
                 >
                   Provider Errors
@@ -198,7 +198,7 @@ export function PausedTasksPopover({
               {/* User Paused section */}
               {userPaused.length > 0 && hasBothGroups && (
                 <div
-                  className="px-2 py-1 mt-1 text-[10px] font-semibold uppercase tracking-wider"
+                  className="px-2 py-1 mt-1 text-[0.625rem] font-semibold uppercase tracking-wider"
                   style={{ color: "var(--text-muted)" }}
                 >
                   User Paused
@@ -235,7 +235,7 @@ export function PausedTasksPopover({
 
         {/* Footer */}
         <div
-          className="px-3 py-2 text-[11px]"
+          className="px-3 py-2 text-[0.6875rem]"
           style={{
             borderTop: "1px solid var(--overlay-weak)",
             color: "var(--text-muted)",

@@ -288,6 +288,7 @@ export function TaskRerunDialog({
       <DialogContent
         data-testid="task-rerun-dialog"
         className="max-w-lg p-0"
+        aria-describedby={undefined}
         onEscapeKeyDown={(e) => {
           if (isProcessing) {
             e.preventDefault();

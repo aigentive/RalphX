@@ -10,7 +10,8 @@ import type { AgentConversation } from "./agentConversations";
 
 export const agentRuntimeFixture: AgentRuntimeSelection = {
   provider: "codex",
-  modelId: "gpt-5.4",
+  modelId: "gpt-5.5",
+  effort: "xhigh",
 };
 
 export const agentProjectFixture = {

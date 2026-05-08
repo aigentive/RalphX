@@ -100,14 +100,14 @@ export function StatusBanner({
       {/* Content */}
       <div className="flex-1 min-w-0">
         <span
-          className="text-[14px] font-semibold tracking-tight block"
+          className="text-[0.875rem] font-semibold tracking-tight block"
           style={{ color: config.titleColor }}
         >
           {title}
         </span>
         {subtitle && (
           <span
-            className="text-[12px] mt-0.5 block truncate"
+            className="text-[0.75rem] mt-0.5 block truncate"
             style={{ color: "var(--text-secondary)" }}
           >
             {subtitle}

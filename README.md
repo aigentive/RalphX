@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/public/ralphx-agents-start-2026-04-30.png" alt="RalphX Agents view showing project-scoped conversations and the start agent composer" width="100%">
+  <img src="assets/public/framed-agents-overview-2026-05-01.png" alt="RalphX Agents view showing the project sidebar, agent conversation, commit & publish panel, and embedded terminal" width="100%">
 </p>
 
 <p align="center">
@@ -15,6 +15,15 @@
   <a href="https://ralphx.app">Website</a> ·
   <a href="#getting-started">Get Started</a> ·
   <a href="#who-its-for">Who It's For</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/aigentive/ralphx.app/releases">
+    <img alt="Homebrew version" src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2Faigentive%2Fhomebrew-ralphx%2Fmain%2FCasks%2Fralphx.rb&search=version%20%22(%5B%5E%22%5D%2B)%22&replace=%241&label=brew&logo=homebrew&logoColor=white">
+  </a>
+  <a href="https://app.codecov.io/gh/aigentive/ralphx.app">
+    <img alt="Coverage" src="https://img.shields.io/codecov/c/github/aigentive/ralphx.app/main?token=DXF9O681JQ&label=coverage&logo=codecov&logoColor=white">
+  </a>
 </p>
 
 ---
@@ -111,10 +120,6 @@ RalphX can create task branches, run validation commands, apply your merge strat
 
 You still own your repo. RalphX manages the repetitive git and PR workflow around agent-produced code.
 
-<p align="center">
-  <img src="assets/public/ralphx-agent-workspace-publish-2026-04-30.png" alt="RalphX agent workspace showing review changes, branch state, pull request status, and merged work" width="100%">
-</p>
-
 ## First Workflow
 
 1. **Create a project** - Point RalphX at a git repository.
@@ -162,11 +167,7 @@ To run RalphX:
   - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code)
   - [Codex CLI](https://developers.openai.com/codex/cli)
 
-To build from source:
-
-- Node.js 18+ and npm
-- Rust via [rustup.rs](https://rustup.rs); this repo pins its toolchain in `rust-toolchain.toml`
-- Git
+To build from source, see the [build from source guide](docs/development/build-from-source.md).
 
 Harness controls are exposed in the desktop app:
 
@@ -186,28 +187,7 @@ brew tap aigentive/ralphx
 brew install --cask ralphx
 ```
 
-Upgrade an existing Homebrew install:
-
-```bash
-brew update
-brew upgrade --cask ralphx
-```
-
-If a new RalphX release exists but Homebrew still reports that `ralphx` is already up to date, refresh the tap metadata and retry:
-
-```bash
-brew update-reset aigentive/ralphx
-brew upgrade --cask ralphx
-```
-
-If `/Applications/RalphX.app` was deleted manually and `brew upgrade --cask ralphx` fails with `App source '/Applications/RalphX.app' is not there`, repair the Homebrew cask receipt and reinstall:
-
-```bash
-brew uninstall --cask --force ralphx
-brew install --cask ralphx
-```
-
-Do not use `--zap` unless you intentionally want to remove local RalphX app data.
+For upgrades, repairs, and uninstall notes, see the [Homebrew installation guide](docs/install/homebrew.md).
 
 #### GitHub Releases
 
@@ -215,22 +195,7 @@ Download signed builds from the [GitHub Releases page](https://github.com/aigent
 
 #### Build From Source
 
-```bash
-git clone https://github.com/aigentive/ralphx.app.git ralphx.app
-cd ralphx.app
-cd frontend
-npm install
-npm run tauri dev
-```
-
-First build compiles the Rust backend. Subsequent starts are faster.
-Source dev uses backend port `3857`, so it can run while the installed app keeps production port `3847`.
-
-For a fresh native dev start from the repo root:
-
-```bash
-./dev-fresh
-```
+For local development setup, see the [build from source guide](docs/development/build-from-source.md).
 
 ## Who It's For
 
@@ -264,7 +229,7 @@ For a fresh native dev start from the repo root:
 
 RalphX began as a shell script for orchestrating AI coding sessions and grew into a native macOS desktop app for planning, running, reviewing, and merging AI-assisted software work.
 
-Built independently by [Laza Bogdan](https://www.linkedin.com/in/laza-bogdan/) and a fleet of AI agents.
+Built independently by [Laza Bogdan](https://www.linkedin.com/in/laza-bogdan/), [Adrian Demian](https://www.linkedin.com/in/adrian-demian/), and a fleet of AI agents.
 
 The tool was built by the thing it builds.
 

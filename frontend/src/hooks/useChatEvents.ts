@@ -58,6 +58,193 @@ function buildStreamingToolCallId(toolName: string, args: unknown): string {
   return `streaming-agent:${canonicalizeToolName(toolName)}:${stableSerialize(args)}`;
 }
 
+const STREAMING_RESULT_PREVIEW_MAX_LINES = 10;
+const STREAMING_RESULT_PREVIEW_MAX_CHARS = 4_000;
+
+function stringifyToolResultForPreview(result: unknown): string {
+  if (typeof result === "string") {
+    return result;
+  }
+  if (Array.isArray(result)) {
+    const textItems = result
+      .map((item) => {
+        if (item != null && typeof item === "object") {
+          const text = (item as Record<string, unknown>).text;
+          return typeof text === "string" ? text : null;
+        }
+        return null;
+      })
+      .filter((text): text is string => text != null);
+    if (textItems.length > 0) {
+      return textItems.join("\n");
+    }
+  }
+  if (result != null && typeof result === "object") {
+    const record = result as Record<string, unknown>;
+    for (const key of ["text", "content", "output", "aggregated_output", "aggregatedOutput"]) {
+      const value = record[key];
+      if (typeof value === "string") {
+        return value;
+      }
+    }
+  }
+
+  try {
+    return JSON.stringify(result, null, 2);
+  } catch {
+    return String(result);
+  }
+}
+
+function buildStreamingResultPreview(result: unknown) {
+  const text = stringifyToolResultForPreview(result);
+  const lineCount = text.length === 0 ? 0 : text.split(/\r?\n/).length;
+  if (
+    lineCount <= STREAMING_RESULT_PREVIEW_MAX_LINES
+    && Array.from(text).length <= STREAMING_RESULT_PREVIEW_MAX_CHARS
+  ) {
+    return null;
+  }
+
+  let preview = "";
+  let previewLines = 0;
+  let charCount = 0;
+  const lines = text.split(/\r?\n/);
+  for (let lineIndex = 0; lineIndex < lines.length && lineIndex < STREAMING_RESULT_PREVIEW_MAX_LINES; lineIndex += 1) {
+    if (lineIndex > 0) preview += "\n";
+    previewLines += 1;
+    for (const ch of lines[lineIndex] ?? "") {
+      if (charCount >= STREAMING_RESULT_PREVIEW_MAX_CHARS) {
+        break;
+      }
+      preview += ch;
+      charCount += 1;
+    }
+    if (charCount >= STREAMING_RESULT_PREVIEW_MAX_CHARS) {
+      break;
+    }
+  }
+
+  return {
+    result: preview,
+    resultPreviewTruncated: true,
+    resultPreviewOriginalBytes: text.length,
+    resultPreviewLineCount: lineCount,
+    resultPreviewOmittedLines: Math.max(0, lineCount - previewLines),
+  } satisfies Partial<ToolCall>;
+}
+
+type ToolResultPreviewMetadata = {
+  result_preview_truncated?: unknown;
+  resultPreviewTruncated?: unknown;
+  result_preview_original_bytes?: unknown;
+  resultPreviewOriginalBytes?: unknown;
+  result_preview_line_count?: unknown;
+  resultPreviewLineCount?: unknown;
+  result_preview_omitted_lines?: unknown;
+  resultPreviewOmittedLines?: unknown;
+  detail_ref?: unknown;
+  detailRef?: unknown;
+};
+
+function getNumberMetadata(
+  metadata: ToolResultPreviewMetadata,
+  snakeKey: keyof ToolResultPreviewMetadata,
+  camelKey: keyof ToolResultPreviewMetadata,
+): number | undefined {
+  const value = metadata[snakeKey] ?? metadata[camelKey];
+  return typeof value === "number" ? value : undefined;
+}
+
+function normalizeStreamingToolDetailRef(raw: unknown): ToolCall["detailRef"] | undefined {
+  if (raw == null || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const conversationId = record.conversation_id ?? record.conversationId;
+  const messageId = record.message_id ?? record.messageId;
+  if (typeof conversationId !== "string" || typeof messageId !== "string") {
+    return undefined;
+  }
+
+  const detailRef: NonNullable<ToolCall["detailRef"]> = { conversationId, messageId };
+  const toolCallId = record.tool_call_id ?? record.toolCallId;
+  const contentBlockIndex = record.content_block_index ?? record.contentBlockIndex;
+  if (typeof toolCallId === "string") {
+    detailRef.toolCallId = toolCallId;
+  }
+  if (typeof contentBlockIndex === "number") {
+    detailRef.contentBlockIndex = contentBlockIndex;
+  }
+  return detailRef;
+}
+
+function applyBackendToolResultPreviewMetadata(
+  toolCall: ToolCall,
+  metadata: ToolResultPreviewMetadata,
+) {
+  toolCall.resultPreviewTruncated = true;
+
+  const originalBytes = getNumberMetadata(
+    metadata,
+    "result_preview_original_bytes",
+    "resultPreviewOriginalBytes",
+  );
+  const lineCount = getNumberMetadata(
+    metadata,
+    "result_preview_line_count",
+    "resultPreviewLineCount",
+  );
+  const omittedLines = getNumberMetadata(
+    metadata,
+    "result_preview_omitted_lines",
+    "resultPreviewOmittedLines",
+  );
+  if (originalBytes != null) toolCall.resultPreviewOriginalBytes = originalBytes;
+  if (lineCount != null) toolCall.resultPreviewLineCount = lineCount;
+  if (omittedLines != null) toolCall.resultPreviewOmittedLines = omittedLines;
+
+  const detailRef = normalizeStreamingToolDetailRef(metadata.detail_ref ?? metadata.detailRef);
+  if (detailRef) {
+    toolCall.detailRef = detailRef;
+  } else {
+    delete toolCall.detailRef;
+  }
+}
+
+function applyToolCallResultPreview(
+  toolCall: ToolCall,
+  result: unknown,
+  metadata?: ToolResultPreviewMetadata,
+) {
+  if (
+    metadata
+    && (metadata.result_preview_truncated === true || metadata.resultPreviewTruncated === true)
+  ) {
+    toolCall.result = result;
+    applyBackendToolResultPreviewMetadata(toolCall, metadata);
+    return;
+  }
+
+  const preview = buildStreamingResultPreview(result);
+  if (preview) {
+    toolCall.result = preview.result;
+    toolCall.resultPreviewTruncated = preview.resultPreviewTruncated;
+    toolCall.resultPreviewOriginalBytes = preview.resultPreviewOriginalBytes;
+    toolCall.resultPreviewLineCount = preview.resultPreviewLineCount;
+    toolCall.resultPreviewOmittedLines = preview.resultPreviewOmittedLines;
+    delete toolCall.detailRef;
+    return;
+  }
+
+  toolCall.result = result;
+  delete toolCall.resultPreviewTruncated;
+  delete toolCall.resultPreviewOriginalBytes;
+  delete toolCall.resultPreviewLineCount;
+  delete toolCall.resultPreviewOmittedLines;
+  delete toolCall.detailRef;
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -168,6 +355,16 @@ export function useChatEvents({
         tool_id?: string;
         arguments: unknown;
         result?: unknown;
+        result_preview_truncated?: boolean | null;
+        resultPreviewTruncated?: boolean | null;
+        result_preview_original_bytes?: number | null;
+        resultPreviewOriginalBytes?: number | null;
+        result_preview_line_count?: number | null;
+        resultPreviewLineCount?: number | null;
+        result_preview_omitted_lines?: number | null;
+        resultPreviewOmittedLines?: number | null;
+        detail_ref?: unknown;
+        detailRef?: unknown;
         conversation_id: string;
         context_id?: string;
         context_type?: string;
@@ -199,7 +396,7 @@ export function useChatEvents({
               if (tc.id !== toolUseId) return tc;
               const updated: ToolCall = { ...tc };
               if (result != null) {
-                updated.result = result;
+                applyToolCallResultPreview(updated, result, payload);
               }
               return updated;
             })
@@ -211,7 +408,7 @@ export function useChatEvents({
               if (block.type !== "tool_use" || block.toolCall.id !== toolUseId) return block;
               const updated: ToolCall = { ...block.toolCall };
               if (result != null) {
-                updated.result = result;
+                applyToolCallResultPreview(updated, result, payload);
               }
               return { type: "tool_use", toolCall: updated };
             })
@@ -276,7 +473,7 @@ export function useChatEvents({
                 const existing = updatedCalls[childIdx]!;
                 const updated: ToolCall = { ...existing };
                 if (result != null) {
-                  updated.result = result;
+                  applyToolCallResultPreview(updated, result, payload);
                 }
                 updatedCalls[childIdx] = updated;
                 next.set(taskId, { ...task, childToolCalls: updatedCalls });
@@ -305,7 +502,7 @@ export function useChatEvents({
 
         const entry: ToolCall = { id, name: tool_name, arguments: args };
         if (result != null) {
-          entry.result = result;
+          applyToolCallResultPreview(entry, result, payload);
         }
         if (diffContext) {
           entry.diffContext = diffContext;
@@ -398,7 +595,7 @@ export function useChatEvents({
                 arguments: args ?? existing.arguments,
               };
               if (result != null) {
-                updated.result = result;
+                applyToolCallResultPreview(updated, result, payload);
               } else if (existing.result != null) {
                 updated.result = existing.result;
               }
@@ -427,8 +624,12 @@ export function useChatEvents({
                   ...tc,
                   name: tool_name,
                   arguments: args ?? tc.arguments,
-                  result: result ?? tc.result,
                 };
+                if (result != null) {
+                  applyToolCallResultPreview(updated, result, payload);
+                } else if (tc.result != null) {
+                  updated.result = tc.result;
+                }
                 if (diffContext) {
                   updated.diffContext = diffContext;
                 }
@@ -460,8 +661,12 @@ export function useChatEvents({
                     ...block.toolCall,
                     name: tool_name,
                     arguments: args ?? block.toolCall.arguments,
-                    result: result ?? block.toolCall.result,
                   };
+                  if (result != null) {
+                    applyToolCallResultPreview(updated, result, payload);
+                  } else if (block.toolCall.result != null) {
+                    updated.result = block.toolCall.result;
+                  }
                   if (diffContext) {
                     updated.diffContext = diffContext;
                   }

@@ -1,15 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RepositorySettingsSection } from "./RepositorySettingsSection";
 
+const toastSuccess = vi.fn();
+const toastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    success: (...a: unknown[]) => toastSuccess(...a),
+    error: (...a: unknown[]) => toastError(...a),
+  },
+}));
+
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitRemoteUrl: vi.fn(),
+  useGitAuthDiagnostics: vi.fn(),
   useGhAuthStatus: vi.fn(),
+  useLoginGhWithBrowser: vi.fn(),
+  useSwitchGitOriginToSsh: vi.fn(),
+  useSetupGhGitAuth: vi.fn(),
+  useResumeDeferredGitStartup: vi.fn(),
   useUpdateGithubPrEnabled: vi.fn(),
 }));
 
+const mockUpdateProject = vi.fn();
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
   selectActiveProject: vi.fn(),
@@ -26,10 +41,16 @@ vi.mock("@/lib/tauri", () => ({
 
 import {
   useGitRemoteUrl,
+  useGitAuthDiagnostics,
   useGhAuthStatus,
+  useLoginGhWithBrowser,
+  useSwitchGitOriginToSsh,
+  useSetupGhGitAuth,
+  useResumeDeferredGitStartup,
   useUpdateGithubPrEnabled,
 } from "@/hooks/useGithubSettings";
 import { useProjectStore } from "@/stores/projectStore";
+import { api, getGitDefaultBranch } from "@/lib/tauri";
 
 const mockProject = {
   id: "proj-1",
@@ -45,6 +66,12 @@ const mockProject = {
 };
 
 const mockMutateAsync = vi.fn();
+const mockSwitchToSsh = vi.fn();
+const mockSetupGhGitAuth = vi.fn();
+const mockLoginGhWithBrowser = vi.fn();
+const mockResumeDeferredGitStartup = vi.fn();
+const mockRefetchGitAuth = vi.fn();
+const mockRefetchGhAuth = vi.fn();
 
 function createWrapper() {
   const queryClient = new QueryClient({
@@ -61,18 +88,71 @@ function createWrapper() {
 describe("RepositorySettingsSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockMutateAsync.mockReset();
+    mockSwitchToSsh.mockReset();
+    mockSetupGhGitAuth.mockReset();
+    mockLoginGhWithBrowser.mockReset();
+    mockResumeDeferredGitStartup.mockReset();
+    mockRefetchGitAuth.mockReset();
+    mockRefetchGhAuth.mockReset();
 
-    vi.mocked(useProjectStore).mockReturnValue(mockProject);
+    mockUpdateProject.mockReset();
+    vi.mocked(useProjectStore).mockImplementation(((selector: unknown) => {
+      const state = { updateProject: mockUpdateProject };
+      if (typeof selector === "function") {
+        // selectActiveProject is a vi.fn() returning undefined; treat as project-getter
+        const result = (selector as (s: unknown) => unknown)(state);
+        return result === undefined ? mockProject : result;
+      }
+      return mockProject;
+    }) as never);
 
     vi.mocked(useGitRemoteUrl).mockReturnValue({
       data: "https://github.com/user/repo.git",
       isLoading: false,
     } as ReturnType<typeof useGitRemoteUrl>);
 
+    vi.mocked(useGitAuthDiagnostics).mockReturnValue({
+      data: {
+        fetchUrl: "git@github.com:user/repo.git",
+        pushUrl: "git@github.com:user/repo.git",
+        fetchKind: "SSH",
+        pushKind: "SSH",
+        mixedAuthModes: false,
+        canSwitchToSsh: false,
+        suggestedSshUrl: null,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGitAuth,
+    } as unknown as ReturnType<typeof useGitAuthDiagnostics>);
+
     vi.mocked(useGhAuthStatus).mockReturnValue({
       data: true,
       isLoading: false,
+      isError: false,
+      refetch: mockRefetchGhAuth,
     } as ReturnType<typeof useGhAuthStatus>);
+
+    vi.mocked(useSwitchGitOriginToSsh).mockReturnValue({
+      mutateAsync: mockSwitchToSsh,
+      isPending: false,
+    } as unknown as ReturnType<typeof useSwitchGitOriginToSsh>);
+
+    vi.mocked(useSetupGhGitAuth).mockReturnValue({
+      mutateAsync: mockSetupGhGitAuth,
+      isPending: false,
+    } as unknown as ReturnType<typeof useSetupGhGitAuth>);
+
+    vi.mocked(useLoginGhWithBrowser).mockReturnValue({
+      mutateAsync: mockLoginGhWithBrowser,
+      isPending: false,
+    } as unknown as ReturnType<typeof useLoginGhWithBrowser>);
+
+    vi.mocked(useResumeDeferredGitStartup).mockReturnValue({
+      mutateAsync: mockResumeDeferredGitStartup,
+      isPending: false,
+    } as unknown as ReturnType<typeof useResumeDeferredGitStartup>);
 
     vi.mocked(useUpdateGithubPrEnabled).mockReturnValue({
       mutateAsync: mockMutateAsync,
@@ -122,11 +202,51 @@ describe("RepositorySettingsSection", () => {
     vi.mocked(useGhAuthStatus).mockReturnValue({
       data: false,
       isLoading: false,
+      isError: false,
+      refetch: mockRefetchGhAuth,
     } as ReturnType<typeof useGhAuthStatus>);
 
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
     expect(screen.getByText("Not authenticated")).toBeInTheDocument();
+  });
+
+  it("does not show a generic git repair warning for all-SSH remotes when PR mode is disabled", () => {
+    vi.mocked(useGhAuthStatus).mockReturnValue({
+      data: false,
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGhAuth,
+    } as ReturnType<typeof useGhAuthStatus>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.queryByTestId("git-auth-repair-panel")).not.toBeInTheDocument();
+    expect(screen.queryByText(/GitHub CLI is not authenticated/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an app-owned GitHub sign-in action when PR mode needs gh auth", () => {
+    vi.mocked(useProjectStore).mockReturnValue({
+      ...mockProject,
+      githubPrEnabled: true,
+    });
+    vi.mocked(useGitRemoteUrl).mockReturnValue({
+      data: "git@github.com:user/repo.git",
+      isLoading: false,
+    } as ReturnType<typeof useGitRemoteUrl>);
+    vi.mocked(useGhAuthStatus).mockReturnValue({
+      data: false,
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGhAuth,
+    } as ReturnType<typeof useGhAuthStatus>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
+    expect(screen.getByText("GitHub PR Access")).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-login-gh")).toBeInTheDocument();
+    expect(screen.queryByText(/Run gh auth login/i)).not.toBeInTheDocument();
   });
 
   it("disables PR mode toggle when remote is not GitHub", () => {
@@ -158,6 +278,102 @@ describe("RepositorySettingsSection", () => {
 
     const toggle = screen.getByTestId("github-pr-enabled");
     expect(toggle).not.toBeDisabled();
+  });
+
+  it("surfaces git auth repair actions in diagnostics", () => {
+    vi.mocked(useGitAuthDiagnostics).mockReturnValue({
+      data: {
+        fetchUrl: "https://github.com/user/repo.git",
+        pushUrl: "git@github.com:user/repo.git",
+        fetchKind: "HTTPS",
+        pushKind: "SSH",
+        mixedAuthModes: true,
+        canSwitchToSsh: true,
+        suggestedSshUrl: "git@github.com:user/repo.git",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGitAuth,
+    } as unknown as ReturnType<typeof useGitAuthDiagnostics>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
+    expect(screen.getByText(/Fetch and push use different auth modes/i)).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-switch-ssh")).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-setup-gh")).toBeInTheDocument();
+  });
+
+  it("shows an HTTPS setup path when GitHub CLI is not authenticated", () => {
+    vi.mocked(useGitAuthDiagnostics).mockReturnValue({
+      data: {
+        fetchUrl: "https://github.com/user/repo.git",
+        pushUrl: "https://github.com/user/repo.git",
+        fetchKind: "HTTPS",
+        pushKind: "HTTPS",
+        mixedAuthModes: false,
+        canSwitchToSsh: true,
+        suggestedSshUrl: "git@github.com:user/repo.git",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGitAuth,
+    } as unknown as ReturnType<typeof useGitAuthDiagnostics>);
+    vi.mocked(useGhAuthStatus).mockReturnValue({
+      data: false,
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGhAuth,
+    } as ReturnType<typeof useGhAuthStatus>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByTestId("git-auth-switch-ssh")).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-copy-gh-login")).toBeInTheDocument();
+    expect(screen.queryByTestId("git-auth-setup-gh")).not.toBeInTheDocument();
+  });
+
+  it("rechecks and resumes deferred startup recovery once auth is healthy", async () => {
+    const user = userEvent.setup();
+    mockRefetchGitAuth.mockResolvedValue({
+      data: {
+        fetchUrl: "git@github.com:user/repo.git",
+        pushUrl: "git@github.com:user/repo.git",
+        fetchKind: "SSH",
+        pushKind: "SSH",
+        mixedAuthModes: false,
+        canSwitchToSsh: false,
+        suggestedSshUrl: null,
+      },
+      isError: false,
+    });
+    mockRefetchGhAuth.mockResolvedValue({
+      data: true,
+      isError: false,
+    });
+    mockResumeDeferredGitStartup.mockResolvedValue(true);
+    vi.mocked(useGitAuthDiagnostics).mockReturnValue({
+      data: {
+        fetchUrl: "https://github.com/user/repo.git",
+        pushUrl: "git@github.com:user/repo.git",
+        fetchKind: "HTTPS",
+        pushKind: "SSH",
+        mixedAuthModes: true,
+        canSwitchToSsh: true,
+        suggestedSshUrl: "git@github.com:user/repo.git",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: mockRefetchGitAuth,
+    } as unknown as ReturnType<typeof useGitAuthDiagnostics>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    await user.click(screen.getByTestId("git-auth-recheck"));
+
+    await waitFor(() => {
+      expect(mockResumeDeferredGitStartup).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("disables PR mode toggle for URLs that only mention github.com in a query string", () => {
@@ -200,5 +416,206 @@ describe("RepositorySettingsSection", () => {
     render(<RepositorySettingsSection />, { wrapper: createWrapper() });
 
     expect(screen.getByTestId("merge-validation-mode")).toBeInTheDocument();
+  });
+
+  it("shows 'Not configured' when remote URL is null", () => {
+    vi.mocked(useGitRemoteUrl).mockReturnValue({
+      data: null,
+      isLoading: false,
+    } as unknown as ReturnType<typeof useGitRemoteUrl>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByText("Not configured")).toBeInTheDocument();
+  });
+
+  it("disables PR toggle for malformed URLs", () => {
+    vi.mocked(useGitRemoteUrl).mockReturnValue({
+      data: "::::not a url::::",
+      isLoading: false,
+    } as unknown as ReturnType<typeof useGitRemoteUrl>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const toggle = screen.getByTestId("github-pr-enabled");
+    expect(toggle).toBeDisabled();
+  });
+
+  it("commits base branch on blur and shows success toast", async () => {
+    vi.mocked(api.projects.update).mockResolvedValue(undefined as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "develop" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(api.projects.update).toHaveBeenCalledWith("proj-1", {
+        baseBranch: "develop",
+      });
+    });
+    expect(mockUpdateProject).toHaveBeenCalledWith("proj-1", {
+      baseBranch: "develop",
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Base branch updated");
+  });
+
+  it("does not commit base branch when value unchanged on blur", async () => {
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "main" } });
+    fireEvent.blur(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.projects.update).not.toHaveBeenCalled();
+  });
+
+  it("shows error toast when base branch update fails", async () => {
+    vi.mocked(api.projects.update).mockRejectedValueOnce(new Error("nope"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "feature" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("nope");
+    });
+  });
+
+  it("falls back to default toast message on non-Error throw", async () => {
+    vi.mocked(api.projects.update).mockRejectedValueOnce("oops");
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("base-branch") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "feature" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("Failed to update base branch");
+    });
+  });
+
+  it("detects default branch and updates project", async () => {
+    vi.mocked(getGitDefaultBranch).mockResolvedValueOnce("trunk");
+    vi.mocked(api.projects.update).mockResolvedValue(undefined as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTitle("Detect"));
+
+    await waitFor(() => {
+      expect(getGitDefaultBranch).toHaveBeenCalledWith("/home/user/project");
+    });
+    await waitFor(() => {
+      expect(api.projects.update).toHaveBeenCalledWith("proj-1", {
+        baseBranch: "trunk",
+      });
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Detected default branch: trunk");
+  });
+
+  it("shows error toast when no working directory configured for detect", async () => {
+    vi.mocked(useProjectStore).mockImplementation(((selector: unknown) => {
+      const proj = { ...mockProject, workingDirectory: null };
+      const state = { updateProject: mockUpdateProject };
+      if (typeof selector === "function") {
+        const res = (selector as (s: unknown) => unknown)(state);
+        return res === undefined ? proj : res;
+      }
+      return proj;
+    }) as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTitle("Detect"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        "No working directory set for this project"
+      );
+    });
+    expect(getGitDefaultBranch).not.toHaveBeenCalled();
+  });
+
+  it("shows error toast when default-branch detection fails", async () => {
+    vi.mocked(getGitDefaultBranch).mockRejectedValueOnce(new Error("git error"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTitle("Detect"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("git error");
+    });
+  });
+
+  it("commits worktree directory change on blur", async () => {
+    vi.mocked(api.projects.update).mockResolvedValue(undefined as never);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("worktree-location") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/tmp/wt" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(api.projects.update).toHaveBeenCalledWith("proj-1", {
+        worktreeParentDirectory: "/tmp/wt",
+      });
+    });
+    expect(toastSuccess).toHaveBeenCalledWith("Worktree location updated");
+  });
+
+  it("does not commit worktree change when value matches default", async () => {
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("worktree-location") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "~/ralphx-worktrees" } });
+    fireEvent.blur(input);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.projects.update).not.toHaveBeenCalled();
+  });
+
+  it("shows error toast when worktree update fails", async () => {
+    vi.mocked(api.projects.update).mockRejectedValueOnce(new Error("io fail"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    const input = screen.getByTestId("worktree-location") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "/tmp/wt" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("io fail");
+    });
+  });
+
+  it("shows error toast when PR toggle mutation fails", async () => {
+    mockMutateAsync.mockRejectedValueOnce(new Error("toggle fail"));
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    fireEvent.click(screen.getByTestId("github-pr-enabled"));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith("toggle fail");
+    });
+  });
+
+  it("shows Saving indicator while PR mutation pending", () => {
+    vi.mocked(useUpdateGithubPrEnabled).mockReturnValue({
+      mutateAsync: mockMutateAsync,
+      isPending: true,
+    } as unknown as ReturnType<typeof useUpdateGithubPrEnabled>);
+
+    render(<RepositorySettingsSection />, { wrapper: createWrapper() });
+
+    expect(screen.getByText("Saving...")).toBeInTheDocument();
   });
 });

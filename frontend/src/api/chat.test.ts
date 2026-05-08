@@ -7,6 +7,7 @@ import {
   listConversationsPage,
   getConversation,
   getConversationMessagesPage,
+  getAgentMessageToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,
@@ -57,6 +58,98 @@ describe("chat api", () => {
     });
   });
 
+  it("preserves preview metadata and detail refs on parsed tool calls", () => {
+    const parsed = parseToolCalls(JSON.stringify([
+      {
+        id: "t1",
+        name: "bash",
+        arguments: { command: "cat big.log" },
+        result: "line 1\nline 2",
+        result_preview_truncated: true,
+        result_preview_line_count: 40,
+        result_preview_omitted_lines: 30,
+        result_preview_original_bytes: 12000,
+        detail_ref: {
+          conversation_id: "conv-1",
+          message_id: "msg-1",
+          tool_call_id: "t1",
+        },
+      },
+    ]));
+
+    expect(parsed[0]).toMatchObject({
+      id: "t1",
+      resultPreviewTruncated: true,
+      resultPreviewLineCount: 40,
+      resultPreviewOmittedLines: 30,
+      resultPreviewOriginalBytes: 12000,
+      detailRef: {
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "t1",
+      },
+    });
+  });
+
+  it("preserves camelCase preview metadata and ignores invalid detail refs on parsed tool calls", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "t1",
+        name: "bash",
+        arguments: { command: "cat big.log" },
+        result: "line 1",
+        resultPreviewTruncated: true,
+        resultPreviewLineCount: 12,
+        resultPreviewOmittedLines: 2,
+        resultPreviewOriginalBytes: 1200,
+        detailRef: {
+          conversationId: "conv-1",
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      id: "t1",
+      resultPreviewTruncated: true,
+      resultPreviewLineCount: 12,
+      resultPreviewOmittedLines: 2,
+      resultPreviewOriginalBytes: 1200,
+    });
+    expect(parsed[0]?.detailRef).toBeUndefined();
+  });
+
+  it("preserves tool call errors and snake/camel diff context variants", () => {
+    const parsed = parseToolCalls([
+      {
+        id: "t1",
+        name: "edit",
+        arguments: {},
+        error: "edit failed",
+        diff_context: {
+          file_path: "src/main.rs",
+          old_content: "old",
+        },
+      },
+      {
+        id: "t2",
+        name: "write",
+        arguments: {},
+        diffContext: {
+          filePath: "src/lib.rs",
+          oldContent: "before",
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      error: "edit failed",
+      diffContext: { filePath: "src/main.rs", oldContent: "old" },
+    });
+    expect(parsed[1]).toMatchObject({
+      diffContext: { filePath: "src/lib.rs", oldContent: "before" },
+    });
+  });
+
   it("parses content blocks", () => {
     const parsed = parseContentBlocks('[{"type":"text","text":"hello"}]');
     expect(parsed).toHaveLength(1);
@@ -71,6 +164,61 @@ describe("chat api", () => {
       id: "tool-1",
       name: "bash",
       parentToolUseId: "delegate-1",
+    });
+  });
+
+  it("preserves preview metadata and detail refs on parsed content blocks", () => {
+    const parsed = parseContentBlocks(JSON.stringify([
+      {
+        type: "tool_use",
+        id: "tool-1",
+        name: "read",
+        input: { file_path: "big.txt" },
+        result: "first lines",
+        result_preview_truncated: true,
+        result_preview_line_count: 20,
+        detail_ref: {
+          conversation_id: "conv-1",
+          message_id: "msg-1",
+          tool_call_id: "tool-1",
+          content_block_index: 2,
+        },
+      },
+    ]));
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      id: "tool-1",
+      arguments: { file_path: "big.txt" },
+      resultPreviewTruncated: true,
+      resultPreviewLineCount: 20,
+      detailRef: {
+        conversationId: "conv-1",
+        messageId: "msg-1",
+        toolCallId: "tool-1",
+        contentBlockIndex: 2,
+      },
+    });
+  });
+
+  it("preserves diff context on parsed content block tool uses", () => {
+    const parsed = parseContentBlocks([
+      {
+        type: "tool_use",
+        id: "tool-1",
+        name: "edit",
+        input: { file_path: "src/main.rs" },
+        diff_context: {
+          file_path: "src/main.rs",
+          old_content: "old",
+        },
+      },
+    ]);
+
+    expect(parsed[0]).toMatchObject({
+      type: "tool_use",
+      arguments: { file_path: "src/main.rs" },
+      diffContext: { filePath: "src/main.rs", oldContent: "old" },
     });
   });
 
@@ -448,6 +596,53 @@ describe("chat api", () => {
     expect(result.messages[0]?.conversationId).toBe("c-legacy");
   });
 
+  it("loads a full tool call detail by preview detail ref", async () => {
+    mockInvoke.mockResolvedValue({
+      tool_call: {
+        id: "tool-1",
+        name: "bash",
+        arguments: { command: "cat big.log" },
+        result: "full output",
+      },
+    });
+
+    const result = await getAgentMessageToolCallDetail({
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      toolCallId: "tool-1",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_message_tool_call_detail", {
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      toolCallId: "tool-1",
+      contentBlockIndex: null,
+    });
+    expect(result?.toolCall).toMatchObject({
+      id: "tool-1",
+      name: "bash",
+      result: "full output",
+    });
+  });
+
+  it("returns null when a preview detail ref no longer has a full result", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await getAgentMessageToolCallDetail({
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      contentBlockIndex: 1,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_message_tool_call_detail", {
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      toolCallId: null,
+      contentBlockIndex: 1,
+    });
+    expect(result).toBeNull();
+  });
+
   it("gets conversation stats with camelCase totals and buckets", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
@@ -595,8 +790,10 @@ describe("chat api", () => {
     const result = await updateConversationTitle("c-title", " Review agent title ");
 
     expect(mockInvoke).toHaveBeenCalledWith("update_agent_conversation_title", {
-      conversationId: "c-title",
-      title: "Review agent title",
+      input: {
+        conversationId: "c-title",
+        title: "Review agent title",
+      },
     });
     expect(result.title).toBe("Review agent title");
   });
@@ -730,6 +927,10 @@ describe("chat api", () => {
       is_base_ahead: true,
       has_uncommitted_changes: true,
       unpublished_commit_count: 2,
+      base_status: "retargeted",
+      effective_base_ref: "main",
+      effective_base_display_name: "Project default (main)",
+      base_block_reason: null,
     });
 
     const result = await getAgentConversationWorkspaceFreshness("conversation-1");
@@ -742,6 +943,9 @@ describe("chat api", () => {
       conversationId: "conversation-1",
       baseRef: "feature/agent-screen",
       targetRef: "origin/feature/agent-screen",
+      baseStatus: "retargeted",
+      effectiveBaseRef: "main",
+      effectiveBaseDisplayName: "Project default (main)",
       isBaseAhead: true,
       hasUncommittedChanges: true,
       unpublishedCommitCount: 2,
@@ -930,6 +1134,9 @@ describe("chat api", () => {
     const result = await startAgentConversation({
       projectId: "project-1",
       content: "What changed?",
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
       mode: "chat",
       base: {
         kind: "current_branch",
@@ -942,6 +1149,9 @@ describe("chat api", () => {
       input: {
         projectId: "project-1",
         content: "What changed?",
+        providerHarness: "codex",
+        modelOverride: "gpt-5.5",
+        logicalEffort: "xhigh",
         mode: "chat",
         baseRefKind: "current_branch",
         baseRef: "feature/agent-screen",
@@ -1072,6 +1282,7 @@ describe("chat api", () => {
       conversationId: "c1",
       providerHarness: "codex",
       modelId: "gpt-5.4",
+      logicalEffort: "high",
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -1082,6 +1293,7 @@ describe("chat api", () => {
         conversationId: "c1",
         providerHarness: "codex",
         modelOverride: "gpt-5.4",
+        logicalEffort: "high",
       },
     });
   });

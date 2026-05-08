@@ -14,7 +14,7 @@ usage() {
 Run the guided RalphX local release-prep flow.
 
 Usage:
-  ./scripts/release.sh [--current-version <version>] [--from <ref>] [--to <ref>] [--model <model>] [--reasoning-effort <low|medium|high|xhigh>] [--proposal-output <file>] [--notes-output <file>]
+  ./scripts/release.sh [--current-version <version>] [--from <ref>] [--to <ref>] [--model <model>] [--reasoning-effort <low|medium|high|xhigh>] [--proposal-output <file>] [--notes-output <file>] [--allow-major]
 
 Options:
   --current-version <version>
@@ -27,6 +27,7 @@ Options:
   --proposal-output <file>
                         Proposal markdown path (default: .artifacts/release-notes/proposal-from-v<current-version>.md)
   --notes-output <file> Release notes markdown path (default: release-notes/v<proposed-version>.md)
+  --allow-major         Allow accepting a proposed major version after explicit manual approval
   -h, --help            Show this help
 
 Flow:
@@ -48,6 +49,7 @@ model=""
 reasoning_effort=""
 proposal_output=""
 notes_output=""
+allow_major="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +91,9 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || release_analysis_die "--notes-output requires a path"
       notes_output="$1"
+      ;;
+    --allow-major)
+      allow_major="true"
       ;;
     *)
       release_analysis_die "Unknown option: $1"
@@ -136,6 +141,9 @@ if [[ -n "${model}" ]]; then
 fi
 if [[ -n "${reasoning_effort}" ]]; then
   proposal_args+=(--reasoning-effort "${reasoning_effort}")
+fi
+if [[ "${allow_major}" == "true" ]]; then
+  proposal_args+=(--allow-major)
 fi
 
 echo "Step 1/3: Generating release proposal..."

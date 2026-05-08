@@ -47,13 +47,14 @@ fn test_logical_effort_parse_and_display() {
     assert_eq!(LogicalEffort::Medium.to_string(), "medium");
     assert_eq!(LogicalEffort::High.to_string(), "high");
     assert_eq!(LogicalEffort::XHigh.to_string(), "xhigh");
+    assert_eq!(LogicalEffort::Max.to_string(), "max");
 
     assert_eq!("low".parse::<LogicalEffort>().unwrap(), LogicalEffort::Low);
     assert_eq!(
         "xhigh".parse::<LogicalEffort>().unwrap(),
         LogicalEffort::XHigh
     );
-    assert!("max".parse::<LogicalEffort>().is_err());
+    assert_eq!("max".parse::<LogicalEffort>().unwrap(), LogicalEffort::Max);
 }
 
 #[test]
@@ -61,7 +62,8 @@ fn test_logical_effort_to_legacy_claude_effort() {
     assert_eq!(LogicalEffort::Low.to_legacy_claude_effort(), "low");
     assert_eq!(LogicalEffort::Medium.to_legacy_claude_effort(), "medium");
     assert_eq!(LogicalEffort::High.to_legacy_claude_effort(), "high");
-    assert_eq!(LogicalEffort::XHigh.to_legacy_claude_effort(), "max");
+    assert_eq!(LogicalEffort::XHigh.to_legacy_claude_effort(), "xhigh");
+    assert_eq!(LogicalEffort::Max.to_legacy_claude_effort(), "max");
 }
 
 #[test]
@@ -115,7 +117,7 @@ fn test_generic_harness_lane_defaults_for_codex_primary() {
         generic_harness_lane_defaults(AgentHarnessKind::Codex, AgentLane::IdeationPrimary);
 
     assert_eq!(settings.harness, AgentHarnessKind::Codex);
-    assert_eq!(settings.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(settings.model.as_deref(), Some("gpt-5.5"));
     assert_eq!(settings.effort, Some(LogicalEffort::XHigh));
     assert_eq!(settings.approval_policy.as_deref(), Some("never"));
     assert_eq!(settings.sandbox_mode.as_deref(), Some("danger-full-access"));

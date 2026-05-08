@@ -53,11 +53,11 @@ export const TierGroupHeader = memo(function TierGroupHeader({
       }}
     >
       <CollapseToggle isCollapsed={isCollapsed} onClick={onToggleCollapse} />
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--accent-primary)]">
+      <span className="text-[0.625rem] font-semibold uppercase tracking-wider text-[var(--accent-primary)]">
         Tier {tier}
       </span>
-      <span className="text-[11px] text-[var(--text-muted)] truncate">{label}</span>
-      <span className="ml-auto text-[11px] text-[var(--text-muted)]">
+      <span className="text-[0.6875rem] text-[var(--text-muted)] truncate">{label}</span>
+      <span className="ml-auto text-[0.6875rem] text-[var(--text-muted)]">
         {taskCount} tasks
       </span>
     </div>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { PauseCircle, Sparkles } from "lucide-react";
 
 import type {
   AgentConversationBaseSelection,
@@ -8,6 +8,7 @@ import type {
 import type { Project } from "@/types/project";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
+  AgentEffort,
   AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
@@ -17,16 +18,20 @@ import {
   loadBranchBaseOptions,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import {
   AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
+import type { AgentQueueHaltState } from "./agentExecutionPause";
 import {
-  AGENT_MODEL_OPTIONS,
   AGENT_PROVIDER_OPTIONS,
   DEFAULT_AGENT_RUNTIME,
+  agentEffortOptions,
+  agentModelOptions,
+  defaultEffortForModel,
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
@@ -43,6 +48,7 @@ interface AgentsStartComposerProps {
   projects: Project[];
   defaultProjectId: string | null;
   defaultRuntime: AgentRuntimeSelection | null;
+  executionHaltState?: AgentQueueHaltState;
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   onCreateProject: () => void;
@@ -90,6 +96,7 @@ export function AgentsStartComposer({
   projects,
   defaultProjectId,
   defaultRuntime,
+  executionHaltState = null,
   isLoadingProjects,
   isSubmitting,
   onCreateProject,
@@ -101,6 +108,9 @@ export function AgentsStartComposer({
     normalizeRuntimeSelection(defaultRuntime).provider
   );
   const [modelId, setModelId] = useState(normalizeRuntimeSelection(defaultRuntime).modelId);
+  const [effort, setEffort] = useState<AgentEffort>(
+    normalizeRuntimeSelection(defaultRuntime).effort
+  );
   const [mode, setMode] = useState<AgentConversationWorkspaceMode>("edit");
   const [startFromOptions, setStartFromOptions] = useState<BranchBaseOption[]>([]);
   const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
@@ -112,10 +122,11 @@ export function AgentsStartComposer({
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
   const animatedHeadingWord = useAnimatedStarterWord();
+  const { registry: modelRegistry } = useAgentModels();
 
   const normalizedRuntime = useMemo(
-    () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME),
-    [defaultRuntime]
+    () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME, modelRegistry),
+    [defaultRuntime, modelRegistry]
   );
 
   useEffect(() => {
@@ -125,9 +136,17 @@ export function AgentsStartComposer({
   useEffect(() => {
     setProvider(normalizedRuntime.provider);
     setModelId(normalizedRuntime.modelId);
+    setEffort(normalizedRuntime.effort);
   }, [normalizedRuntime]);
 
-  const modelOptions = AGENT_MODEL_OPTIONS[provider];
+  const modelOptions = useMemo(
+    () => agentModelOptions(provider, modelRegistry),
+    [modelRegistry, provider]
+  );
+  const effortOptions = useMemo(
+    () => agentEffortOptions(provider, modelId, modelRegistry),
+    [modelId, modelRegistry, provider]
+  );
   const activeProject = useMemo(
     () => projects.find((project) => project.id === projectId) ?? null,
     [projectId, projects]
@@ -137,6 +156,13 @@ export function AgentsStartComposer({
   const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
   const selectedStartFrom =
     startFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
+  const isExecutionHalted = executionHaltState !== null;
+  const executionHaltTitle =
+    executionHaltState === "stopped" ? "Execution is stopped" : "Execution is paused";
+  const executionHaltDescription =
+    executionHaltState === "stopped"
+      ? "New prompts will queue until execution starts."
+      : "New prompts will queue until execution resumes.";
   const fallbackStartFrom = useMemo<AgentConversationBaseSelection | null>(() => {
     if (!activeProject) {
       return null;
@@ -154,43 +180,73 @@ export function AgentsStartComposer({
       if (!nextProjectId) {
         return;
       }
-      onRuntimePreferenceChange?.(nextProjectId, normalizeRuntimeSelection(runtime));
+      onRuntimePreferenceChange?.(
+        nextProjectId,
+        normalizeRuntimeSelection(runtime, modelRegistry)
+      );
     },
-    [onRuntimePreferenceChange]
+    [modelRegistry, onRuntimePreferenceChange]
   );
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
       setProjectId(nextProjectId);
-      persistRuntimePreference(nextProjectId, { provider, modelId });
+      persistRuntimePreference(nextProjectId, { provider, modelId, effort });
     },
-    [modelId, persistRuntimePreference, provider]
+    [effort, modelId, persistRuntimePreference, provider]
   );
 
   const handleProviderChange = useCallback(
     (nextProvider: AgentProvider) => {
-      const nextRuntime = normalizeRuntimeSelection({
-        provider: nextProvider,
-        modelId: defaultModelForProvider(nextProvider),
-      });
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider: nextProvider,
+          modelId: defaultModelForProvider(nextProvider, modelRegistry),
+        },
+        modelRegistry
+      );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
+      setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [persistRuntimePreference, projectId]
+    [modelRegistry, persistRuntimePreference, projectId]
   );
 
   const handleModelChange = useCallback(
     (nextModelId: string) => {
-      const nextRuntime = normalizeRuntimeSelection({
-        provider,
-        modelId: nextModelId,
-      });
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId: nextModelId,
+          effort: defaultEffortForModel(provider, nextModelId, modelRegistry),
+        },
+        modelRegistry
+      );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
+      setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [persistRuntimePreference, projectId, provider]
+    [modelRegistry, persistRuntimePreference, projectId, provider]
+  );
+
+  const handleEffortChange = useCallback(
+    (nextEffort: AgentEffort) => {
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId,
+          effort: nextEffort,
+        },
+        modelRegistry
+      );
+      setProvider(nextRuntime.provider);
+      setModelId(nextRuntime.modelId);
+      setEffort(nextRuntime.effort);
+      persistRuntimePreference(projectId, nextRuntime);
+    },
+    [modelId, modelRegistry, persistRuntimePreference, projectId, provider]
   );
 
   const handleFilesSelected = (files: File[]) => {
@@ -303,7 +359,7 @@ export function AgentsStartComposer({
       await onSubmit({
         projectId,
         content: message.trim(),
-        runtime: { provider, modelId },
+        runtime: { provider, modelId, effort },
         mode,
         base: selectedStartFrom?.selection ?? fallbackStartFrom,
         files: attachments.map((attachment) => attachment.file),
@@ -341,7 +397,7 @@ export function AgentsStartComposer({
       <div className="relative z-10 flex w-full max-w-[980px] flex-col items-center">
         <div className="max-w-[620px] text-center">
           <div
-            className="mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[10px] font-medium uppercase tracking-[0.16em]"
+            className="mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[0.625rem] font-medium uppercase tracking-[0.16em]"
             style={{
               color: "var(--text-secondary)",
               background: "var(--bg-surface)",
@@ -374,7 +430,7 @@ export function AgentsStartComposer({
             </span>
           </h2>
           <p
-            className="mx-auto mt-3 max-w-[520px] text-[13px] leading-relaxed"
+            className="mx-auto mt-3 max-w-[520px] text-[0.8125rem] leading-relaxed"
             style={{ color: "var(--text-secondary)" }}
           >
             Choose the project and runtime, then ask your agent for something amazing.
@@ -382,6 +438,31 @@ export function AgentsStartComposer({
         </div>
 
         <div className="mt-6 w-full">
+          {isExecutionHalted && (
+            <div
+              data-testid="agents-start-paused-banner"
+              className="mx-auto mb-3 flex max-w-[620px] items-start gap-3 rounded-md border px-3 py-2.5 text-left"
+              style={{
+                color: "var(--status-warning)",
+                background: "var(--status-warning-muted)",
+                borderColor: "var(--status-warning-border)",
+              }}
+            >
+              <PauseCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium leading-snug">
+                  {executionHaltTitle}
+                </p>
+                <p
+                  className="mt-0.5 text-xs leading-relaxed"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {executionHaltDescription}
+                </p>
+              </div>
+            </div>
+          )}
+
           <AgentComposerSurface
             dataTestId="agents-start-composer"
             textareaTestId="agents-start-textarea"
@@ -397,8 +478,8 @@ export function AgentsStartComposer({
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}
             attachmentsUploading={isSubmitting && attachments.length > 0}
-            submitLabel="Start Agent"
-            submittingLabel="Starting..."
+            submitLabel={isExecutionHalted ? "Queue Prompt" : "Start Agent"}
+            submittingLabel={isExecutionHalted ? "Queuing..." : "Starting..."}
             mode={{
               value: mode,
               onValueChange: (value) => setMode(value as AgentConversationWorkspaceMode),
@@ -435,8 +516,17 @@ export function AgentsStartComposer({
               value: modelId,
               onValueChange: handleModelChange,
               options: modelOptions,
+              allowCustomValue: true,
+              customPlaceholder: "Custom model ID",
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
+            }}
+            effort={{
+              value: effort,
+              onValueChange: (value) => handleEffortChange(value as AgentEffort),
+              options: effortOptions,
+              testId: "agents-start-effort",
+              className: "max-w-[148px] flex-none",
             }}
           />
 
@@ -471,7 +561,7 @@ export function AgentsStartComposer({
 
           {error && (
             <div
-              className="mx-auto mt-4 inline-flex max-w-full items-center gap-2 rounded-full border px-4 py-2 text-[13px]"
+              className="mx-auto mt-4 inline-flex max-w-full items-center gap-2 rounded-full border px-4 py-2 text-[0.8125rem]"
               style={{
                 color: "var(--status-error)",
                 background: "var(--status-error-muted)",

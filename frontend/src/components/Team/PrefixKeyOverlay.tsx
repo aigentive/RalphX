@@ -26,7 +26,7 @@ export function PrefixKeyOverlay() {
     >
       <div className="flex items-center gap-2 text-xs text-text-secondary">
         <kbd
-          className="rounded px-1.5 py-0.5 font-mono text-[11px] text-text-primary"
+          className="rounded px-1.5 py-0.5 font-mono text-[0.6875rem] text-text-primary"
           style={{
             background: "var(--overlay-weak)",
             border: "1px solid var(--overlay-moderate)",

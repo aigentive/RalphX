@@ -31,6 +31,7 @@ import { usePlanArtifactEvents } from "@/hooks/useEvents.planArtifact";
 import { useVerificationEvents } from "@/hooks/useVerificationEvents";
 import { useVerificationBootstrap } from "@/hooks/useVerificationBootstrap";
 import { useFreshnessBlockedNotification } from "@/hooks/useFreshnessBlockedNotification";
+import { useGitAuthStartupNotification } from "@/hooks/useGitAuthStartupNotification";
 import { useGlobalAgentLifecycle } from "@/hooks/useGlobalAgentLifecycle";
 import { createEventBus, type EventBus } from "@/lib/event-bus";
 
@@ -88,6 +89,7 @@ function GlobalEventListeners({ children }: { children: ReactNode }) {
   useVerificationEvents(); // Listen to plan verification status changes globally
   useVerificationBootstrap(); // Hydrate pending verification confirmations on startup and project switch
   useFreshnessBlockedNotification(); // Show toast when task is freshness-blocked
+  useGitAuthStartupNotification(); // Warn before Git/GitHub-dependent startup work fails
   useGlobalAgentLifecycle(); // Global agent lifecycle → agentStatus for all sessions
 
   return <>{children}</>;

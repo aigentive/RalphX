@@ -1,8 +1,14 @@
-import { useMemo, useRef, type ComponentProps, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
+import {
+  useMemo,
+  useRef,
+  type ComponentProps,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { withAlpha } from "@/lib/theme-colors";
 
 import { AgentsSidebar } from "./AgentsSidebar";
 import { AgentsSidebarVisibilityProvider } from "./AgentsSidebarVisibilityProvider";
@@ -65,6 +71,7 @@ export function AgentsShellLayout({
       <AgentsSidebarVisibilityProvider value={visibilityValue}>
       <section
         className="h-full min-h-0 w-full flex overflow-hidden"
+        style={{ backgroundColor: "var(--app-content-bg)" }}
         data-testid="agents-view"
       >
         {isSidebarCollapsed && !isSidebarOverlayOpen && (
@@ -83,14 +90,16 @@ export function AgentsShellLayout({
             className="shrink-0 cursor-pointer transition-colors duration-150"
             style={{
               width: 16,
-              background: withAlpha("var(--bg-surface)", 30),
-              borderRight: "1px solid var(--overlay-faint)",
+              backgroundColor: "var(--app-sidebar-bg)",
+              borderRightColor: "var(--app-sidebar-border)",
+              borderRightStyle: "solid",
+              borderRightWidth: "1px",
             }}
             onMouseEnter={(event) => {
-              event.currentTarget.style.background = "var(--overlay-weak)";
+              event.currentTarget.style.backgroundColor = "var(--overlay-weak)";
             }}
             onMouseLeave={(event) => {
-              event.currentTarget.style.background = withAlpha("var(--bg-surface)", 30);
+              event.currentTarget.style.backgroundColor = "var(--app-sidebar-bg)";
             }}
           />
         )}
@@ -104,7 +113,7 @@ export function AgentsShellLayout({
               position: "fixed",
               inset: 0,
               top: 48,
-              background: "var(--overlay-scrim)",
+              backgroundColor: "var(--overlay-scrim)",
               zIndex: 34,
             }}
           />
@@ -156,6 +165,7 @@ export function AgentsShellLayout({
         <div
           ref={splitContainerRef}
           className="relative flex-1 min-w-0 h-full flex overflow-hidden"
+          style={{ backgroundColor: "var(--app-content-bg)" }}
           data-testid="agents-split-container"
         >
           {children}

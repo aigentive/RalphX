@@ -7,6 +7,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { EventBus } from "@/lib/event-bus";
 import type { MockStore } from "@/api-mock/store";
 import type { MockChatController } from "@/api-mock/chat";
+import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
 
 declare global {
   interface Window {
@@ -14,6 +15,8 @@ declare global {
     // Playwright testing utilities (web mode only)
     __mockStore?: MockStore;
     __mockChatApi?: MockChatController;
+    __mockGitAuthDiagnostics?: GitAuthDiagnostics;
+    __mockGhAuthStatus?: boolean;
     __queryClient?: QueryClient;
     __eventBus?: EventBus;
     __uiStore?: unknown;

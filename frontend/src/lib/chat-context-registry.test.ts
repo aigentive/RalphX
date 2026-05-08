@@ -4,7 +4,7 @@
  * Verifies:
  * - All 24 internal statuses map to correct context types
  * - Store keys are formatted correctly
- * - Registry has entries for all 6 context types
+ * - Registry has entries for every context type
  * - Feature flags are consistent
  */
 
@@ -68,6 +68,10 @@ describe("buildStoreKey", () => {
   it("formats merge keys as merge:{id}", () => {
     expect(buildStoreKey("merge", "task-456")).toBe("merge:task-456");
   });
+
+  it("formats delegation keys as delegation:{id}", () => {
+    expect(buildStoreKey("delegation", "child-123")).toBe("delegation:child-123");
+  });
 });
 
 // ============================================================================
@@ -97,6 +101,13 @@ describe("parseStoreKey", () => {
 
   it("parses merge key", () => {
     expect(parseStoreKey("merge:task-456")).toEqual({ contextType: "merge", contextId: "task-456" });
+  });
+
+  it("parses delegation key", () => {
+    expect(parseStoreKey("delegation:child-123")).toEqual({
+      contextType: "delegation",
+      contextId: "child-123",
+    });
   });
 
   it("is the reverse of buildStoreKey for all context types", () => {
@@ -215,6 +226,12 @@ describe("getContextConfig", () => {
     expect(getContextConfig("task_execution").agentType).toBe("worker");
     expect(getContextConfig("review").agentType).toBe("reviewer");
     expect(getContextConfig("merge").agentType).toBe("merger");
+    expect(getContextConfig("delegation").storeKeyPrefix).toBe("delegation");
+  });
+
+  it("keeps live streaming text enabled for chat contexts that can run agents", () => {
+    expect(getContextConfig("project").supportsStreamingText).toBe(true);
+    expect(getContextConfig("task").supportsStreamingText).toBe(true);
   });
 });
 

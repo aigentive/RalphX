@@ -20,8 +20,8 @@ const { getAgentConversationWorkspaceMock } = getAgentsViewTestMocks();
 describe("AgentsView artifact pane", () => {
   beforeEach(setupAgentsViewTest);
 
-  it("restores persisted artifact width, enforces 320px mins, and resets to default on double click", async () => {
-    window.localStorage.setItem("ralphx-agents-artifact-width", "480");
+  it("restores persisted artifact width, enforces pane and chat minimums, and resets to default on double click", async () => {
+    window.localStorage.setItem("ralphx-agents-artifact-width", "720");
     mockAgentViewData(
       conversation({
         contextType: "ideation",
@@ -45,9 +45,9 @@ describe("AgentsView artifact pane", () => {
 
     const pane = await screen.findByTestId("agents-artifact-resizable-pane");
     expect(pane).toHaveStyle({
-      width: "480px",
-      minWidth: "320px",
-      maxWidth: "calc(100% - 320px)",
+      width: "720px",
+      minWidth: "600px",
+      maxWidth: "calc(100% - 600px)",
     });
 
     fireEvent.doubleClick(screen.getByTestId("agents-artifact-resize-handle"));
@@ -105,10 +105,10 @@ describe("AgentsView artifact pane", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-artifact-resizable-pane")).toHaveStyle({
-        width: "400px",
+        width: "600px",
       })
     );
-    expect(window.localStorage.getItem("ralphx-agents-artifact-width")).toBe("400");
+    expect(window.localStorage.getItem("ralphx-agents-artifact-width")).toBe("600");
     expect(rectSpy).toHaveBeenCalledTimes(1);
   });
 

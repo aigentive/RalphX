@@ -4,6 +4,9 @@
 pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
 pub mod agent_conversation_workspace;
+pub mod agent_conversation_workspace_base;
+pub mod agent_workspace_pr_description;
+pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;
@@ -47,6 +50,7 @@ pub mod services;
 pub mod review_issue_service;
 pub mod review_service;
 pub mod session_export_service;
+pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
 pub mod setup_settings;
@@ -55,6 +59,7 @@ pub mod startup_jobs;
 pub mod startup_background;
 pub mod startup_bootstrap;
 pub mod startup_cleanup;
+pub mod startup_git_auth_preflight;
 pub mod startup_pipeline;
 pub mod startup_pipeline_launch;
 pub mod startup_runtime_builders;
@@ -141,15 +146,21 @@ pub use team_state_tracker::TeamStateTracker;
 pub use webhook_service::WebhookService;
 
 #[cfg(test)]
+mod agent_conversation_workspace_base_tests;
+#[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;
+#[cfg(test)]
+mod agent_terminal_tests;
 #[cfg(test)]
 mod chat_service_output_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
 mod recovery_queue_tests;
+#[cfg(test)]
+mod runtime_wiring_tests;
 #[cfg(test)]
 mod webhook_service_tests;
 #[cfg(test)]
@@ -158,6 +169,8 @@ mod prune_engine_tests;
 mod publish_resilience_tests;
 #[cfg(test)]
 mod session_export_service_tests;
+#[cfg(test)]
+mod session_namer_agent_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]

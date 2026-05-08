@@ -28,6 +28,12 @@ const {
   useConversationMock,
   useDependencyGraphMock,
   useVerificationStatusMock,
+  useGitAuthDiagnosticsMock,
+  useGhAuthStatusMock,
+  switchGitOriginToSshMock,
+  setupGhGitAuthMock,
+  loginGhWithBrowserMock,
+  resumeDeferredGitStartupMock,
   openUrlMock,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
@@ -45,6 +51,12 @@ const {
   useConversationMock: vi.fn(),
   useDependencyGraphMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
+  useGitAuthDiagnosticsMock: vi.fn(),
+  useGhAuthStatusMock: vi.fn(),
+  switchGitOriginToSshMock: vi.fn(),
+  setupGhGitAuthMock: vi.fn(),
+  loginGhWithBrowserMock: vi.fn(),
+  resumeDeferredGitStartupMock: vi.fn(),
   openUrlMock: vi.fn(),
 }));
 
@@ -159,6 +171,27 @@ vi.mock("@/hooks/useDependencyGraph", () => ({
 
 vi.mock("@/hooks/useVerificationStatus", () => ({
   useVerificationStatus: (...args: unknown[]) => useVerificationStatusMock(...args),
+}));
+
+vi.mock("@/hooks/useGithubSettings", () => ({
+  useGitAuthDiagnostics: (...args: unknown[]) => useGitAuthDiagnosticsMock(...args),
+  useGhAuthStatus: (...args: unknown[]) => useGhAuthStatusMock(...args),
+  useSwitchGitOriginToSsh: () => ({
+    mutateAsync: switchGitOriginToSshMock,
+    isPending: false,
+  }),
+  useSetupGhGitAuth: () => ({
+    mutateAsync: setupGhGitAuthMock,
+    isPending: false,
+  }),
+  useLoginGhWithBrowser: () => ({
+    mutateAsync: loginGhWithBrowserMock,
+    isPending: false,
+  }),
+  useResumeDeferredGitStartup: () => ({
+    mutateAsync: resumeDeferredGitStartupMock,
+    isPending: false,
+  }),
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -301,6 +334,26 @@ describe("AgentsArtifactPane", () => {
       data: null,
       isLoading: false,
     });
+    useGitAuthDiagnosticsMock.mockReturnValue({
+      data: {
+        fetchUrl: "git@github.com:mock/project.git",
+        pushUrl: "git@github.com:mock/project.git",
+        fetchKind: "SSH",
+        pushKind: "SSH",
+        mixedAuthModes: false,
+        canSwitchToSsh: false,
+        suggestedSshUrl: null,
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+    useGhAuthStatusMock.mockReturnValue({
+      data: true,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
     openUrlMock.mockResolvedValue(undefined);
   });
 
@@ -414,6 +467,45 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("surfaces git auth repair actions in the publish pane", () => {
+    useGitAuthDiagnosticsMock.mockReturnValue({
+      data: {
+        fetchUrl: "https://github.com/mock/project.git",
+        pushUrl: "git@github.com:mock/project.git",
+        fetchKind: "HTTPS",
+        pushKind: "SSH",
+        mixedAuthModes: true,
+        canSwitchToSsh: true,
+        suggestedSshUrl: "git@github.com:mock/project.git",
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
+    expect(screen.getByText(/Fetch and push use different auth modes/i)).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-switch-ssh")).toBeInTheDocument();
+  });
+
+  it("shows a GitHub PR sign-in action for all-SSH publish workspaces when gh is missing", () => {
+    useGhAuthStatusMock.mockReturnValue({
+      data: false,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    });
+
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    expect(screen.getByTestId("git-auth-repair-panel")).toBeInTheDocument();
+    expect(screen.getByText("GitHub PR Access")).toBeInTheDocument();
+    expect(screen.getByTestId("git-auth-login-gh")).toBeInTheDocument();
+    expect(screen.queryByText(/Run gh auth login/i)).not.toBeInTheDocument();
   });
 
   it("renders the publish tab for ideation workspaces linked to execution branches", () => {
@@ -910,7 +1002,24 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
-  it("disables publish once the workspace branch is pushed and current", async () => {
+  it("disables publish when no changed files are detected", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceChangesMock.mockResolvedValue([]);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    const publishButton = await screen.findByTestId("agents-publish-confirm");
+    await screen.findByText("No changed files detected yet.");
+    await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
+    expect(publishButton).toBeDisabled();
+
+    fireEvent.click(publishButton);
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("disables publish once the workspace branch is pushed and current with its PR", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -937,13 +1046,54 @@ describe("AgentsArtifactPane", () => {
     );
 
     const publishButton = await screen.findByTestId("agents-publish-confirm");
-    await waitFor(() => expect(publishButton).toHaveTextContent("Published"));
+    await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
     expect(screen.getByText("1 changed file published for review.")).toBeInTheDocument();
 
     fireEvent.click(publishButton);
 
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("keeps publish enabled for a pushed current branch until a PR exists", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "base-sha",
+      targetBaseCommit: "base-sha",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: 0,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        publicationPushStatus: "pushed",
+      }),
+      publish,
+    );
+
+    const publishButton = await screen.findByTestId("agents-publish-confirm");
+    await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
+    expect(publishButton).toBeEnabled();
+    expect(publishButton).not.toHaveTextContent("PR is up to date");
+
+    fireEvent.click(publishButton);
+    expect(publish).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Commit & Publish",
+      })
+    );
+
+    await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
   it("keeps publish enabled when a pushed workspace has new local commits", async () => {
@@ -1023,6 +1173,86 @@ describe("AgentsArtifactPane", () => {
     expect(openUrlMock).toHaveBeenCalledWith("https://github.com/mock/project/pull/78");
   });
 
+  it("renders the backend-provided retargeted base state in the publish pane", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "origin/main",
+      capturedBaseCommit: "base-sha",
+      targetBaseCommit: "base-sha",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "retargeted",
+      effectiveBaseRef: "main",
+      effectiveBaseDisplayName: "Project default (main)",
+      baseBlockReason: null,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      }),
+    );
+
+    expect(
+      await screen.findByTestId(
+        "agents-base-retargeted",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveTextContent("Base branch retargeted to Project default (main).");
+    expect(screen.getAllByText("Project default (main)").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled();
+  });
+
+  it("blocks publish actions when backend marks the saved base unsafe", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/deleted-base",
+      baseDisplayName: "Current branch (feature/deleted-base)",
+      targetRef: "",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "",
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "blocked",
+      effectiveBaseRef: null,
+      effectiveBaseDisplayName: null,
+      baseBlockReason: "Saved base commit is not contained in the default branch",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/deleted-base",
+        baseDisplayName: "Current branch (feature/deleted-base)",
+      }),
+      publish,
+    );
+
+    expect(
+      await screen.findByTestId(
+        "agents-base-blocked",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    ).toHaveTextContent("Saved base commit is not contained in the default branch");
+    expect(screen.getByTestId("agents-publish-confirm")).toBeDisabled();
+    expect(screen.getByTestId("agents-review-changes")).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("uses Update from base as the primary action when the base branch moved", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
@@ -1093,6 +1323,54 @@ describe("AgentsArtifactPane", () => {
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
     );
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("refreshes workspace facts when Update from base fails", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      baseStatus: "valid",
+      effectiveBaseRef: "feature/agent-screen",
+      effectiveBaseDisplayName: "Current branch (feature/agent-screen)",
+      baseBlockReason: null,
+    });
+    updateWorkspaceFromBaseMock.mockRejectedValue(new Error("base update failed"));
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+      "feature/agent-screen"
+    );
+    getWorkspaceFreshnessMock.mockClear();
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Update branch",
+      })
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
+    );
+    await waitFor(() =>
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1")
+    );
   });
 
   it("treats merged pull requests as terminal even if the old base moved", async () => {
@@ -1210,6 +1488,30 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-publish-step-refreshing")).toHaveTextContent(
       "Refresh branch"
     );
+  });
+
+  it("shows the PR description drafting step while publishing", () => {
+    renderPane(
+      "publish",
+      workspace({ mode: "edit", publicationPushStatus: "describing" }),
+      vi.fn(),
+      true,
+    );
+
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-step-describing")).toHaveTextContent(
+      "Draft PR description"
+    );
+  });
+
+  it("shows description failure without opening a pull request", () => {
+    renderPane(
+      "publish",
+      workspace({ mode: "edit", publicationPushStatus: "description_failed" }),
+    );
+
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+    expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
   });
 
   it("hides the publish pipeline after agent repair terminal state", () => {

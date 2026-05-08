@@ -60,27 +60,49 @@ export class TauriEventBus implements EventBus {
   subscribe<T = unknown>(event: string, handler: EventHandler<T>): Unsubscribe {
     // Generate unique ID for this subscription to track ready state
     const subscriptionId = `${event}-${Date.now()}-${Math.random()}`;
+    let isUnsubscribed = false;
 
     // Buffer to hold events received before listener is ready
     const buffer: T[] = [];
+    const deliver = (payload: T) => {
+      if (isUnsubscribed) {
+        return;
+      }
+      try {
+        handler(payload);
+      } catch (error) {
+        console.error(`[TauriEventBus] Error in handler for ${event}:`, error);
+      }
+    };
 
     // Create the listener - buffer events until ready
     const unlistenPromise = listen<T>(event, (e: Event<T>) => {
+      if (isUnsubscribed) {
+        return;
+      }
       if (this.readyListeners.has(subscriptionId)) {
         // Listener is ready, deliver directly
-        handler(e.payload);
+        deliver(e.payload);
       } else {
         // Listener not ready yet, buffer the event
         buffer.push(e.payload);
       }
     }).then((unlisten) => {
+      if (isUnsubscribed) {
+        return unlisten;
+      }
       // Mark as ready and flush buffered events
       this.readyListeners.add(subscriptionId);
       for (const payload of buffer) {
-        handler(payload);
+        deliver(payload);
       }
       buffer.length = 0;
       return unlisten;
+    }).catch((error) => {
+      buffer.length = 0;
+      this.readyListeners.delete(subscriptionId);
+      console.warn(`[TauriEventBus] Failed to listen for ${event}:`, error);
+      return () => {};
     });
 
     // Track for cleanup
@@ -91,12 +113,25 @@ export class TauriEventBus implements EventBus {
 
     // Return unsubscribe function
     return () => {
+      if (isUnsubscribed) {
+        return;
+      }
+      isUnsubscribed = true;
+      buffer.length = 0;
       // IMPORTANT: Don't delete from readyListeners until unlisten actually completes.
       // Otherwise, events arriving between cleanup start and actual unlisten completion
       // will be buffered to an orphaned buffer that never gets flushed.
       this.unlisteners.get(event)?.delete(unlistenPromise);
-      unlistenPromise.then((fn) => {
-        fn();
+      void unlistenPromise.then((fn) => {
+        try {
+          fn();
+        } catch (error) {
+          console.warn(`[TauriEventBus] Failed to unlisten for ${event}:`, error);
+        }
+      }).catch(() => {
+        // listen() already logged the failure above. Swallow here so cleanup
+        // never creates an unhandled rejection during component teardown.
+      }).finally(() => {
         this.readyListeners.delete(subscriptionId);
       });
     };

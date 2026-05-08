@@ -253,7 +253,7 @@ export const StepsManifestWidget = React.memo(function StepsManifestWidget({
           <line x1="3" y1="12" x2="3.01" y2="12" />
           <line x1="3" y1="18" x2="3.01" y2="18" />
         </svg>
-        <span style={{ fontSize: "10.5px", color: "var(--text-muted)" }}>
+        <span style={{ fontSize: "0.6562rem", color: "var(--text-muted)" }}>
           No steps defined
         </span>
       </div>
@@ -319,7 +319,7 @@ export const StepsManifestWidget = React.memo(function StepsManifestWidget({
         </span>
         <span
           style={{
-            fontSize: "9.5px",
+            fontSize: "0.5938rem",
             padding: "1px 6px",
             borderRadius: "6px",
             fontWeight: 500,
@@ -367,7 +367,7 @@ export const StepsManifestWidget = React.memo(function StepsManifestWidget({
               >
                 <span
                   style={{
-                    fontSize: "9px",
+                    fontSize: "0.5625rem",
                     color: "var(--text-muted)",
                     fontWeight: 600,
                     minWidth: "14px",

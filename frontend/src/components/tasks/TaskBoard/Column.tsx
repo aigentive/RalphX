@@ -1,11 +1,10 @@
 /**
  * Column - Droppable column for the kanban board
  *
- * Design: macOS Tahoe (2025)
- * - Clean, flat surfaces - no gradients or glows
- * - Subtle rounded rectangles for grouping
- * - Small, understated section headers
- * - Minimal visual noise
+ * Design: v29a Kanban
+ * - Stable full-height columns separated by 1px board dividers
+ * - Flat card and empty-state surfaces with no glows
+ * - Small uppercase section headers
  */
 
 import { useDroppable, useDndContext } from "@dnd-kit/core";
@@ -40,6 +39,7 @@ import {
 import { CollapsedQuickAdd } from "./CollapsedQuickAdd";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { formatMinutesHuman } from "@/lib/formatters";
+import { TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH } from "./TaskBoard.layout";
 import {
   Tooltip,
   TooltipContent,
@@ -72,6 +72,9 @@ interface ColumnProps {
   isCollapsed?: boolean;
   /** Callback to toggle collapse state */
   onToggleCollapse?: () => void;
+  /** Preserved for host layout intent; expanded columns still keep their
+   * readable minimum and let the board scroll horizontally when constrained. */
+  fillWidth?: boolean;
 }
 
 function InvalidDropIcon() {
@@ -85,11 +88,29 @@ function InvalidDropIcon() {
 function EmptyState({ compact = false }: { compact?: boolean }) {
   return (
     <div
-      className={`flex flex-col items-center justify-center ${compact ? "gap-1.5 py-4 px-1" : "gap-2 py-8 px-4"}`}
+      className={`flex flex-col items-center justify-center ${compact ? "gap-1.5 py-4 px-1" : "gap-2.5 px-3 pb-7 pt-9"}`}
       data-testid={compact ? "collapsed-empty-state" : undefined}
     >
-      <Inbox className={compact ? "w-6 h-6" : "w-8 h-8"} style={{ color: "var(--text-muted)" }} />
-      <p style={{ fontSize: compact ? "11px" : "12px", color: "var(--text-muted)" }}>
+      <div
+        className="grid place-items-center rounded-lg"
+        style={{
+          width: compact ? "32px" : "36px",
+          height: compact ? "32px" : "36px",
+          backgroundColor: "var(--kanban-tray-bg)",
+          color: "var(--kanban-empty-ink)",
+        }}
+        data-testid={compact ? "collapsed-empty-state-tray" : "empty-state-tray"}
+      >
+        <Inbox className={compact ? "w-4 h-4" : "w-[18px] h-[18px]"} />
+      </div>
+      <p
+        style={{
+          fontSize: compact ? "11px" : "12px",
+          fontWeight: 500,
+          color: "var(--kanban-empty-ink)",
+        }}
+        data-testid={compact ? "collapsed-empty-state-label" : "empty-state-label"}
+      >
         No tasks
       </p>
     </div>
@@ -100,10 +121,15 @@ function TaskSkeleton() {
   return (
     <div
       className="rounded-lg p-2.5 space-y-2"
-      style={{ background: "var(--bg-surface)" }}
+      style={{
+        backgroundColor: "var(--kanban-card-bg)",
+        borderColor: "var(--kanban-card-border)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
     >
-      <Skeleton className="h-3 w-3/4 rounded" style={{ background: "var(--bg-elevated)" }} />
-      <Skeleton className="h-2.5 w-1/2 rounded" style={{ background: "var(--overlay-weak)" }} />
+      <Skeleton className="h-3 w-3/4 rounded" style={{ backgroundColor: "var(--bg-hover)" }} />
+      <Skeleton className="h-2.5 w-1/2 rounded" style={{ backgroundColor: "var(--kanban-progress-track)" }} />
     </div>
   );
 }
@@ -132,6 +158,22 @@ function formatAvgCycleTime(avgMinutes: number): string {
   const remainingHours = Math.round((days - wholeDays) * 24);
   if (remainingHours > 0) return `${wholeDays}d ${remainingHours}h`;
   return `${wholeDays}d`;
+}
+
+function formatColumnHeaderCount(
+  taskCount: number,
+  matchCount: number | undefined,
+  avgCycleTime: number | null
+): string {
+  if (matchCount !== undefined) {
+    return `(${taskCount} / ${matchCount})`;
+  }
+
+  if (avgCycleTime !== null) {
+    return `(${taskCount} · ${formatAvgCycleTime(avgCycleTime)})`;
+  }
+
+  return `(${taskCount})`;
 }
 
 export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse }: ColumnProps) {
@@ -304,23 +346,23 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
     };
   }, [hasNextPage, isFetchingNextPage, fetchNextPage, isCollapsed]);
 
-  // Drop zone styles (macOS Tahoe - clean, flat)
+  // Drop zone styles (v29a - flat, no ambient glow)
   const getDropZoneStyles = (): React.CSSProperties => {
     if (isOver && isInvalid) {
       return {
-        background: "var(--status-error-muted)",
-        borderRadius: "10px",
+        backgroundColor: "var(--status-error-muted)",
+        borderRadius: "6px",
       };
     }
     if (isOver) {
       return {
-        background: "var(--status-info-muted)",
-        borderRadius: "10px",
+        backgroundColor: "var(--status-info-muted)",
+        borderRadius: "6px",
       };
     }
     return {
-      background: "transparent",
-      borderRadius: "10px",
+      backgroundColor: "transparent",
+      borderRadius: "0px",
     };
   };
 
@@ -368,6 +410,11 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
   const showInlineAdd =
     !isDragging &&
     (column.id === "draft" || column.id === "backlog");
+  const headerCountLabel = formatColumnHeaderCount(
+    tasks.length,
+    matchCount,
+    avgCycleTime
+  );
 
   // Keyboard handler for collapsed column (Enter/Space to expand)
   const handleCollapsedKeyDown = useCallback(
@@ -411,15 +458,19 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
           paddingTop: "8px",
           scrollSnapAlign: "start",
           transition: "width 200ms ease, min-width 200ms ease, max-width 200ms ease",
-          ...(!isLast && { borderRight: "1px solid var(--overlay-weak)" }),
+          ...(!isLast && {
+            borderRightColor: "var(--kanban-board-divider)",
+            borderRightStyle: "solid",
+            borderRightWidth: "1px",
+          }),
           // Drop zone highlight when dragging over collapsed column
           ...(isOver && !isInvalid && {
-            background: "var(--status-info-muted)",
-            borderRadius: "10px",
+            backgroundColor: "var(--status-info-muted)",
+            borderRadius: "6px",
           }),
           ...(isOver && isInvalid && {
-            background: "var(--status-error-muted)",
-            borderRadius: "10px",
+            backgroundColor: "var(--status-error-muted)",
+            borderRadius: "6px",
           }),
         }}
       >
@@ -427,7 +478,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
           <span
             className="select-none"
             style={{
-              fontSize: "11px",
+              fontSize: "0.6875rem",
               fontWeight: 600,
               color: "var(--text-secondary)",
               textTransform: "uppercase",
@@ -442,7 +493,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
           </span>
           <span
             style={{
-              fontSize: "10px",
+              fontSize: "0.625rem",
               fontWeight: 500,
               color: "var(--text-muted)",
               fontVariantNumeric: "tabular-nums",
@@ -473,27 +524,36 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
       data-testid={`column-${column.id}`}
       className="flex-shrink-0 flex flex-col h-full"
       style={{
-        width: "280px",
-        minWidth: "260px",
-        maxWidth: "300px",
+        width: "100%",
+        minWidth: `${TASK_BOARD_EXPANDED_COLUMN_MIN_WIDTH}px`,
+        maxWidth: "none",
         scrollSnapAlign: "start",
-        paddingLeft: "12px",
-        paddingRight: "12px",
+        paddingLeft: 0,
+        paddingRight: 0,
+        backgroundColor: "var(--app-content-bg)",
         transition: "width 200ms ease, min-width 200ms ease, max-width 200ms ease",
-        ...(!isLast && { borderRight: "1px solid var(--border-subtle)" }),
+        ...(!isLast && {
+          borderRightColor: "var(--kanban-board-divider)",
+          borderRightStyle: "solid",
+          borderRightWidth: "1px",
+        }),
       }}
     >
-      {/* Column header - macOS Tahoe: small, gray, understated like Finder section headers */}
-      <div data-testid="column-header" className="flex items-center gap-2 px-2 py-1.5 mb-1">
+      {/* Column header - compact v29a section label */}
+      <div
+        data-testid="column-header"
+        className="flex items-center gap-2"
+        style={{ padding: "14px 12px 10px" }}
+      >
         {/* Column title - small caps style like Finder */}
         <h3
           className="flex-1 m-0 truncate"
           style={{
-            fontSize: "11px",
+            fontSize: "0.6562rem",
             fontWeight: 600,
             color: "var(--text-secondary)",
             textTransform: "uppercase",
-            letterSpacing: "0.02em",
+            letterSpacing: "0.14em",
           }}
         >
           {column.name}
@@ -502,31 +562,16 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
         {/* Count - simple, muted */}
         <span
           style={{
-            fontSize: "11px",
+            fontSize: "0.6562rem",
             fontWeight: 500,
-            color: "var(--text-muted)",
+            color: "var(--text-subtle)",
             fontVariantNumeric: "tabular-nums",
+            fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
           }}
+          title={avgCycleTime !== null ? `Avg time in ${column.name}: ${formatAvgCycleTime(avgCycleTime)}` : undefined}
         >
-          {tasks.length}
-          {matchCount !== undefined && ` / ${matchCount}`}
+          {headerCountLabel}
         </span>
-
-        {/* Avg cycle time badge - shown when backend has enough data */}
-        {avgCycleTime !== null && (
-          <span
-            title={`Avg time in ${column.name}: ${formatAvgCycleTime(avgCycleTime)}`}
-            style={{
-              fontSize: "10px",
-              fontWeight: 500,
-              color: "var(--text-muted)",
-              fontVariantNumeric: "tabular-nums",
-              letterSpacing: "0.01em",
-            }}
-          >
-            {formatAvgCycleTime(avgCycleTime)}
-          </span>
-        )}
 
         {/* Invalid drop indicator */}
         {isOver && isInvalid && <InvalidDropIcon />}
@@ -560,8 +605,11 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
           <div
             ref={setNodeRef}
             data-testid={`drop-zone-${column.id}`}
-            className="flex-1 flex flex-col gap-1.5 p-1 overflow-y-auto transition-colors duration-150"
-            style={getDropZoneStyles()}
+            className="flex-1 flex flex-col gap-2 overflow-y-auto transition-colors duration-150"
+            style={{
+              ...getDropZoneStyles(),
+              padding: "4px 12px 16px",
+            }}
           >
             {/* Show skeleton cards during initial load */}
             {isLoading ? (

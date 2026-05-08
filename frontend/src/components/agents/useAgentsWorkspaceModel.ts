@@ -14,16 +14,19 @@ import {
   runtimeFromConversation,
 } from "./agentConversationRuntime";
 import {
+  getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceTerminalPublicationLabel,
   hasPublishedWorkspacePr,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
+import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
+  modelRegistry: AgentModelRegistry;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
 }
@@ -31,6 +34,7 @@ interface UseAgentsWorkspaceModelArgs {
 export function useAgentsWorkspaceModel({
   activeConversation,
   optimisticWorkspacesByConversationId,
+  modelRegistry,
   runtimeByConversationId,
   selectedConversationId,
 }: UseAgentsWorkspaceModelArgs) {
@@ -56,7 +60,7 @@ export function useAgentsWorkspaceModel({
       runtimeFromConversation(activeConversation) ??
       null
     : null;
-  const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime);
+  const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime, modelRegistry);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
   const activeWorkspaceHasPublishedPr = hasPublishedWorkspacePr(activeWorkspace);
@@ -83,13 +87,21 @@ export function useAgentsWorkspaceModel({
     activeWorkspace,
     activeWorkspaceFreshnessQuery.data,
   );
+  const activeWorkspaceFreshness = activeWorkspaceFreshnessQuery.data;
   const publishShortcutLabel = terminalPublicationLabel
     ? terminalPublicationLabel
-    : activeWorkspaceFreshnessQuery.data?.isBaseAhead
-    ? `Update from ${activeWorkspaceFreshnessQuery.data.baseRef}`
-    : isPublishShortcutCurrent
-      ? "Published"
-      : "Commit & Publish";
+    : activeWorkspaceFreshness?.baseStatus === "blocked"
+      ? "Base unavailable"
+      : activeWorkspaceFreshness?.isBaseAhead
+        ? `Update from ${
+            activeWorkspaceFreshness.effectiveBaseRef ??
+            activeWorkspaceFreshness.baseRef ??
+            activeWorkspace?.baseRef ??
+            getAgentWorkspaceEffectiveBaseLabel(activeWorkspace, activeWorkspaceFreshness)
+          }`
+        : isPublishShortcutCurrent
+          ? "Published"
+          : "Commit & Publish";
   const activeConversationModeLocked =
     activeConversationMode === "ideation" || isWorkspaceModeLocked(activeWorkspace);
   const terminalUnavailableReason = getAgentTerminalUnavailableReason(
@@ -100,6 +112,7 @@ export function useAgentsWorkspaceModel({
     activeConversationMode,
     activeConversationModeLocked,
     activeWorkspace,
+    activeWorkspaceFreshness,
     normalizedActiveRuntime,
     publishShortcutLabel,
     terminalUnavailableReason,

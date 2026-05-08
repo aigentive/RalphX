@@ -54,7 +54,7 @@ export function MethodologyConfig({ methodology }: MethodologyConfigProps) {
               style={{ backgroundColor: "var(--bg-base)" }}>
               <span data-testid="column-chip" className="w-2 h-2 rounded-full" style={{ backgroundColor: COLUMN_COLORS[idx % COLUMN_COLORS.length] }} />
               <span style={{ color: "var(--text-primary)" }}>{col.name}</span>
-              <span data-testid="mapped-status" className="text-[10px]" style={{ color: "var(--text-muted)" }}>({col.mapsTo})</span>
+              <span data-testid="mapped-status" className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>({col.mapsTo})</span>
             </div>
           ))}
         </div>
@@ -67,7 +67,7 @@ export function MethodologyConfig({ methodology }: MethodologyConfigProps) {
           {methodology.phases.map((phase, idx) => (
             <li key={phase.id} className="flex items-center">
               <div data-testid="phase-item" className="flex items-center gap-1.5 px-2 py-1 rounded text-xs" style={{ backgroundColor: "var(--bg-base)" }}>
-                <span data-testid="phase-order" className="w-4 h-4 flex items-center justify-center rounded-full text-[10px]"
+                <span data-testid="phase-order" className="w-4 h-4 flex items-center justify-center rounded-full text-[0.625rem]"
                   style={{ backgroundColor: "var(--accent-primary)", color: "var(--text-on-accent)" }}>{phase.order}</span>
                 <span data-testid="phase-name" style={{ color: "var(--text-primary)" }}>{phase.name}</span>
               </div>

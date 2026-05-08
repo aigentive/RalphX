@@ -216,6 +216,11 @@ impl InternalStatus {
         matches!(self, Self::Merged | Self::Cancelled)
     }
 
+    /// Whether this status still actively blocks dependent tasks.
+    pub fn is_active_dependency_blocker(&self) -> bool {
+        !self.is_dependency_satisfied()
+    }
+
     /// Returns the snake_case string representation (matches serde serialization)
     pub fn as_str(&self) -> &'static str {
         match self {

@@ -42,7 +42,9 @@ One short summary sentence.
 - Output Markdown only.
 - Recommend the smallest justified bump under the supplied versioning policy.
 - Do not invent a version number outside the provided candidates.
-- Do not recommend `major` unless the evidence clearly justifies the policy bar stated in the packet.
+- Treat `0.x.y` as an intentionally long-lived release line with unbounded numeric minor and patch segments; do not treat large numbers such as `0.100.0` as a reason to jump to `1.0.0`.
+- Do not recommend `major` unless the evidence clearly proves the manually approved 1.0-level milestone or compatibility-reset bar stated in the packet.
+- A `major` recommendation is a stop signal for automation, not a normal daily-release outcome.
 - Do not inflate the recommendation just because the repo has high internal change velocity.
 - Use `minor` when the evidence supports a meaningful new or expanded shipped surface.
 - Use `patch` when the evidence is primarily fixes, polish, internal maintenance, dependency churn, or limited incremental expansion.

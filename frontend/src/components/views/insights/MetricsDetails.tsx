@@ -32,10 +32,10 @@ function RateBar({ label, rate, passCount, totalCount, color }: RateBarProps) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[12px] text-text-secondary">
+        <span className="text-[0.75rem] text-text-secondary">
           {label}
         </span>
-        <span className="text-[12px] font-medium text-text-secondary">
+        <span className="text-[0.75rem] font-medium text-text-secondary">
           {pct}%
           <span className="ml-1 text-text-muted">
             ({passCount}/{totalCount})
@@ -93,7 +93,7 @@ function CycleTimeBar({ phase, maxMinutes }: { phase: CycleTimePhase; maxMinutes
   const displayName = formatPhaseName(phase.phase);
 
   return (
-    <div className="flex items-center gap-2 text-[12px]">
+    <div className="flex items-center gap-2 text-[0.75rem]">
       <span
         className="w-32 shrink-0 flex items-center gap-1 text-text-secondary"
       >
@@ -149,7 +149,7 @@ export function QualityBreakdown({ stats }: QualityBreakdownProps) {
         <div className="flex items-center gap-1.5">
           <GitMerge size={14} className="text-text-muted" />
           <span
-            className="text-[11px] font-semibold uppercase tracking-wider text-text-muted"
+            className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-muted"
             style={{ letterSpacing: "0.08em" }}
           >
             Quality Breakdown
@@ -205,7 +205,7 @@ export function CycleTimeBreakdown({ phases }: CycleTimeBreakdownProps) {
         <div className="flex items-center gap-1.5">
           <Clock size={14} className="text-text-muted" />
           <span
-            className="text-[11px] font-semibold uppercase tracking-wider text-text-muted"
+            className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-muted"
             style={{ letterSpacing: "0.08em" }}
           >
             Cycle Time Breakdown
@@ -229,7 +229,7 @@ function DwellTimeBar({ dwell, maxMinutes }: { dwell: ColumnDwellTime; maxMinute
   const pct = maxMinutes > 0 ? Math.round((dwell.avgMinutes / maxMinutes) * 100) : 0;
 
   return (
-    <div className="flex items-center gap-2 text-[12px]">
+    <div className="flex items-center gap-2 text-[0.75rem]">
       <span
         className="w-24 shrink-0 truncate text-text-secondary"
         title={dwell.columnName}
@@ -271,7 +271,7 @@ export function ColumnDwellTimeBreakdown({ dwellTimes }: ColumnDwellTimeBreakdow
         <div className="flex items-center gap-1.5">
           <Columns3 size={14} className="text-text-muted" />
           <span
-            className="text-[11px] font-semibold uppercase tracking-wider text-text-muted"
+            className="text-[0.6875rem] font-semibold uppercase tracking-wider text-text-muted"
             style={{ letterSpacing: "0.08em" }}
           >
             Kanban Column Time
@@ -349,7 +349,7 @@ export function CopyMarkdownButton({ stats }: CopyMarkdownButtonProps) {
   return (
     <button
       onClick={handleCopy}
-      className="flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium transition-colors"
+      className="flex items-center gap-2 rounded-lg px-3 py-2 text-[0.75rem] font-medium transition-colors"
       style={{
         backgroundColor: "var(--bg-surface)",
         color: "var(--text-secondary)",

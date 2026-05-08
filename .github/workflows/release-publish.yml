@@ -22,6 +22,16 @@ on:
         required: true
         type: boolean
         default: false
+      linux_runner:
+        description: "Runner to use for publish jobs"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - github-hosted
+          - self-hosted
   workflow_run:
     workflows:
       - Release Build
@@ -45,7 +55,7 @@ jobs:
   metadata:
     name: Resolve publish metadata
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     outputs:
       source_run_id: ${{ steps.run_id.outputs.source_run_id }}
       version: ${{ steps.meta.outputs.version }}
@@ -151,7 +161,7 @@ jobs:
   publish-release:
     name: Publish public release assets
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
@@ -316,7 +326,7 @@ jobs:
     needs:
       - metadata
       - publish-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     timeout-minutes: 15
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

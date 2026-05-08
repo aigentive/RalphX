@@ -1,10 +1,9 @@
 /**
  * useColumnCollapse — auto-collapse/expand logic for kanban columns
  *
- * Combines uiStore collapse state with automatic behaviors:
- * - Empty columns auto-collapse on initial render and plan changes
+ * Combines uiStore collapse state with stable v29a board behavior:
+ * - Empty columns collapse into rails by default
  * - Columns auto-expand when task count transitions from 0 to N
- * - User-initiated expand is tracked via ref and respected (won't re-collapse)
  * - Manual collapse is only allowed for empty columns
  */
 
@@ -38,18 +37,17 @@ export function useColumnCollapse(
   const storeExpandColumn = useUiStore((s) => s.expandColumn);
   const setCollapsedColumns = useUiStore((s) => s.setCollapsedColumns);
 
-  // Track columns the user has manually expanded (won't auto-re-collapse)
+  // Track columns the user has manually expanded
   const userExpandedRef = useRef<Set<string>>(new Set());
   // Track columns the user has manually collapsed (won't auto-expand)
   const userCollapsedRef = useRef<Set<string>>(new Set());
-  // Track previous counts for detecting 0→N transitions
-  const prevCountsRef = useRef<Map<string, number>>(new Map());
   // Track previous session ID for detecting plan changes
   const prevSessionRef = useRef<string | null | undefined>(undefined);
-  // Track whether initial auto-collapse has been performed
+  // Track whether initial v29a layout reset has been performed
   const initializedRef = useRef(false);
 
-  // Auto-collapse empty columns on mount and plan change
+  // Empty columns collapse into compact rails by default. Plan changes reset
+  // stale manual expand/collapse state so the new plan reflects its counts.
   useEffect(() => {
     const sessionChanged =
       prevSessionRef.current !== undefined &&
@@ -62,49 +60,41 @@ export function useColumnCollapse(
     }
 
     if (!initializedRef.current || sessionChanged) {
-      // Compute which columns should be collapsed (empty ones)
-      const toCollapse = new Set<string>();
-      for (const col of columns) {
-        const count = taskCounts.get(col.id) ?? 0;
-        if (count === 0) {
-          toCollapse.add(col.id);
-        }
-      }
-      // Preserve user-expanded columns (only relevant if not a plan change)
-      if (!sessionChanged) {
-        for (const id of userExpandedRef.current) {
-          toCollapse.delete(id);
-        }
-      }
-      setCollapsedColumns(toCollapse);
+      setCollapsedColumns(new Set());
       initializedRef.current = true;
     }
 
     prevSessionRef.current = ideationSessionId;
-  }, [ideationSessionId, columns, taskCounts, setCollapsedColumns]);
+  }, [ideationSessionId, setCollapsedColumns]);
 
-  // Auto-expand: detect 0→N count transitions
+  // Auto-collapse empty columns and auto-expand columns with tasks.
   useEffect(() => {
     if (!initializedRef.current) return;
 
-    const prevCounts = prevCountsRef.current;
+    const nextCollapsed = new Set(collapsedColumns);
 
     for (const col of columns) {
-      const prevCount = prevCounts.get(col.id) ?? 0;
       const currentCount = taskCounts.get(col.id) ?? 0;
 
-      if (currentCount > 0 && collapsedColumns.has(col.id)) {
+      if (currentCount > 0) {
         // Columns with tasks should never stay collapsed.
+        userExpandedRef.current.delete(col.id);
         userCollapsedRef.current.delete(col.id);
-        storeExpandColumn(col.id);
-      } else if (prevCount === 0 && currentCount > 0) {
-        storeExpandColumn(col.id);
+        nextCollapsed.delete(col.id);
+      } else if (!userExpandedRef.current.has(col.id)) {
+        nextCollapsed.add(col.id);
       }
     }
 
-    // Update previous counts
-    prevCountsRef.current = new Map(taskCounts);
-  }, [taskCounts, columns, collapsedColumns, storeExpandColumn]);
+    const changed =
+      nextCollapsed.size !== collapsedColumns.size ||
+      Array.from(nextCollapsed).some((columnId) => !collapsedColumns.has(columnId));
+
+    if (changed) {
+      setCollapsedColumns(nextCollapsed);
+    }
+
+  }, [taskCounts, columns, collapsedColumns, setCollapsedColumns]);
 
   const isCollapsed = useCallback(
     (columnId: string): boolean => collapsedColumns.has(columnId),

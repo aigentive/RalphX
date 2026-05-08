@@ -49,6 +49,10 @@ import {
 } from "./runtime-context.js";
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
+import {
+  callCompleteAgentWorkspaceRepairTool,
+  callSubmitAgentWorkspacePrDescriptionTool,
+} from "./agent-workspace-tools.js";
 
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
@@ -644,25 +648,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callTauri(`git/tasks/${task_id}/complete-merge`, { commit_sha });
     } else if (name === "complete_agent_workspace_repair") {
       // POST /api/agent-workspaces/:conversation_id/complete-repair
-      const {
-        conversation_id,
-        repair_commit_sha,
-        resolved_base_ref,
-        resolved_base_commit,
-        summary,
-      } = args as {
-        conversation_id: string;
-        repair_commit_sha: string;
-        resolved_base_ref: string;
-        resolved_base_commit: string;
-        summary: string;
-      };
-      result = await callTauri(`agent-workspaces/${conversation_id}/complete-repair`, {
-        repair_commit_sha,
-        resolved_base_ref,
-        resolved_base_commit,
-        summary,
-      });
+      result = await callCompleteAgentWorkspaceRepairTool(callTauri, args);
+    } else if (name === "submit_agent_workspace_pr_description") {
+      // POST /api/agent-workspaces/:conversation_id/pr-description
+      result = await callSubmitAgentWorkspacePrDescriptionTool(callTauri, args);
     } else if (name === "report_conflict") {
       // POST /api/git/tasks/:task_id/report-conflict
       const { task_id, conflict_files, reason } = args as {

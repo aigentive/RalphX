@@ -7,6 +7,11 @@ import type { ContextType } from "@/types/chat-conversation";
 // Mocks
 // ============================================================================
 
+const mockToastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args) },
+}));
+
 const mockInvalidateQueries = vi.fn();
 const mockSetQueryData = vi.fn();
 vi.mock("@tanstack/react-query", () => ({
@@ -280,6 +285,34 @@ describe("useChatActions", () => {
           lastEffectiveModel: null,
         },
       );
+    });
+
+    it("shows a toast when the backend rejects a send before agent spawn", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "project",
+        contextId: "project-1",
+        storeContextKey: "project:conv-1",
+      });
+      mutateAsync.mockRejectedValue(
+        new Error(
+          'Command /Users/example/.nvm/versions/node/v22.16.0/bin/codex ["--version"] exited with status 127: env: node: No such file or directory',
+        ),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("start agent");
+      });
+
+      expect(mockActions.setAgentRunning).toHaveBeenCalledWith(
+        "project:conv-1",
+        false,
+      );
+      expect(mockToastError).toHaveBeenCalledWith("Failed to send message", {
+        description: expect.stringContaining(
+          "env: node: No such file or directory",
+        ),
+        duration: 10000,
+      });
     });
   });
 

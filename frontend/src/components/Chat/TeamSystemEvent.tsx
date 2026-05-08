@@ -18,7 +18,7 @@ export const TeamSystemEvent = React.memo(function TeamSystemEvent({
   return (
     <div className="flex items-center justify-center gap-2 py-2">
       <div
-        className="text-[11px] px-3 py-1 rounded-full"
+        className="text-[0.6875rem] px-3 py-1 rounded-full"
         style={{
           color: "var(--text-muted)",
           backgroundColor: "var(--bg-surface)",

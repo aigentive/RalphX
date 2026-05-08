@@ -10,7 +10,6 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   ChevronLeft,
@@ -19,16 +18,19 @@ import {
   Search,
   X,
   Loader2,
-  Lightbulb,
   Pencil,
   Zap,
   CheckCircle,
   CircleCheck,
   Archive,
 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { IdeationSessionWithProgress } from "@/types/ideation";
 import { ideationApi } from "@/api/ideation";
-import { withAlpha } from "@/lib/theme-colors";
 import { PlanItem } from "./PlanItem";
 import type { SessionGroup } from "./planBrowserUtils";
 import { GroupSection } from "./GroupSection";
@@ -145,6 +147,7 @@ export function PlanBrowser({
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -275,130 +278,129 @@ export function PlanBrowser({
         flexShrink: 0,
       }}
     >
-      {/* Panel inner container — fills to layout edges. Phase 1 region
-         border on the outer plan-browser element separates the rail
-         from main content, so no card stroke/gap needed here. */}
+      {/* Panel inner container — matches AgentsSidebar chrome via the
+         shared --app-sidebar-* tokens so Light / Dark / HC stay in
+         lockstep. Longhand border props are required by the WKWebView
+         CSS-vars rule. */}
       <div
-        className="flex flex-col h-full"
+        className="flex flex-col h-full border-r"
         style={{
-          background: withAlpha("var(--bg-surface)", 92),
-          backdropFilter: "blur(20px) saturate(180%)",
-          WebkitBackdropFilter: "blur(20px) saturate(180%)",
+          backgroundColor: "var(--app-sidebar-bg)",
+          borderRightColor: "var(--app-sidebar-border)",
+          borderRightStyle: "solid",
+          borderRightWidth: "1px",
+          boxShadow: "none",
         }}
       >
-        {/* Header */}
-        <div
-          className="px-4 pt-4 pb-3"
-          style={{
-            borderBottom: "1px solid var(--overlay-faint)",
-          }}
-        >
-          {/* Title */}
-          <div className="flex items-center gap-2.5 mb-4">
-            <div
-              className="w-8 h-8 rounded-[10px] flex items-center justify-center"
-              style={{
-                background: withAlpha("var(--accent-primary)", 12),
-                border: "1px solid var(--accent-border)",
-              }}
-            >
-              <Lightbulb className="w-4 h-4" style={{ color: "var(--accent-primary)" }} />
-            </div>
-            <div>
-              <h2
-                className="text-[13px] font-semibold tracking-[-0.01em]"
-                style={{ color: "var(--text-primary)" }}
-              >
-                Plans
-              </h2>
-              <p
-                className="text-[11px] tracking-[-0.005em]"
-                style={{ color: "var(--text-muted)" }}
-              >
-                {totalCount} {totalCount === 1 ? "plan" : "plans"}
-              </p>
-            </div>
-            {onCollapse != null && (
-              <button
-                type="button"
-                aria-label="Close sidebar"
-                aria-expanded={true}
-                data-testid="sidebar-collapse-button"
-                onClick={onCollapse}
-                className="ml-auto w-7 h-7 flex items-center justify-center rounded-md transition-colors duration-150"
-                style={{ color: "var(--text-muted)" }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.color = "var(--text-primary)";
-                  e.currentTarget.style.background = "var(--overlay-weak)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.color = "var(--text-muted)";
-                  e.currentTarget.style.background = "transparent";
-                }}
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          {/* New Plan Button - flat Tahoe style */}
-          <Button
+        {/* Header — matches AgentsSidebar: small "+ New" + search-toggle + collapse */}
+        <div className="flex shrink-0 items-center gap-3 px-3 pb-2 pt-3">
+          <button
+            type="button"
+            className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2 pr-2.5 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
             onClick={onNewPlan}
-            className="w-full h-9 text-[13px] font-medium tracking-[-0.01em] border-0 transition-colors duration-150 mb-2"
+            aria-label="New plan"
+            data-testid="ideation-new-plan"
             style={{
-              background: "var(--accent-primary)",
-              color: "var(--text-on-accent)",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = withAlpha("var(--accent-primary)", 90);
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "var(--accent-primary)";
+              backgroundColor: "var(--bg-elevated)",
+              borderColor: "var(--border-subtle)",
+              color: "var(--text-primary)",
+              letterSpacing: "-0.005em",
+              boxShadow: "none",
             }}
           >
-            <Plus className="w-4 h-4 mr-1.5" strokeWidth={2.5} />
-            New Plan
-          </Button>
-
-          {/* Search Input - Tahoe glass style */}
-          <div
-            className="relative flex items-center"
-            style={{
-              background: "var(--overlay-faint)",
-              border: "1px solid var(--overlay-weak)",
-              borderRadius: "6px",
-            }}
-          >
-            <Search
-              className="absolute left-2.5 w-3.5 h-3.5 pointer-events-none"
-              style={{ color: "var(--text-muted)" }}
-            />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={searchTerm}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              placeholder="Search sessions..."
-              aria-label="Search sessions"
-              className="w-full h-8 pl-8 pr-8 text-[12px] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
-              style={{
-                color: "var(--text-primary)",
-                caretColor: "var(--accent-primary)",
-              }}
-            />
-            {/* Right side: spinner or clear button */}
-            <div className="absolute right-2 flex items-center">
-              {isSearchLoading ? (
-                <Loader2
-                  className="w-3.5 h-3.5 animate-spin"
-                  style={{ color: "var(--text-muted)" }}
-                />
-              ) : searchTerm !== "" ? (
+            <Plus className="h-[13px] w-[13px]" style={{ color: "var(--text-muted)" }} />
+            <span>New</span>
+          </button>
+          <div className="ml-auto flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
                 <button
                   type="button"
-                  aria-label="Clear search"
+                  className="grid h-7 w-7 place-items-center rounded-[6px] border-0 p-0 transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
                   onClick={() => {
-                    handleSearchClear();
+                    setIsSearchOpen((open) => {
+                      if (open) {
+                        handleSearchClear();
+                      }
+                      return !open;
+                    });
+                  }}
+                  aria-label={isSearchOpen ? "Close search" : "Search"}
+                  data-testid="ideation-search-toggle"
+                  style={{ color: "var(--text-muted)", boxShadow: "none" }}
+                >
+                  {isSearchOpen ? <X className="h-3.5 w-3.5" /> : <Search className="h-3.5 w-3.5" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                {isSearchOpen ? "Close search" : "Search"}
+              </TooltipContent>
+            </Tooltip>
+            {onCollapse != null && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="grid h-7 w-7 place-items-center rounded-[6px] border-0 p-0 transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                    onClick={onCollapse}
+                    aria-label="Collapse sidebar"
+                    data-testid="sidebar-collapse-button"
+                    style={{ color: "var(--text-muted)", boxShadow: "none" }}
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">
+                  Collapse sidebar
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+        </div>
+
+        {/* Search row — toggleable, matches AgentsSidebar inline search */}
+        {isSearchOpen && (
+          <div className="px-3.5 pb-2 shrink-0">
+            <div
+              className="relative flex items-center"
+              style={{
+                backgroundColor: "var(--overlay-faint)",
+                borderColor: "var(--overlay-weak)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                borderRadius: "6px",
+              }}
+            >
+              <Search
+                className="absolute left-2.5 w-3.5 h-3.5 pointer-events-none"
+                style={{ color: "var(--text-muted)" }}
+              />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchTerm}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Search sessions..."
+                aria-label="Search sessions"
+                className="w-full h-7 pl-8 pr-8 text-[0.75rem] bg-transparent outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none border-0"
+                style={{
+                  color: "var(--text-primary)",
+                  caretColor: "var(--accent-primary)",
+                }}
+                autoFocus
+              />
+              <div className="absolute right-2 flex items-center">
+                {isSearchLoading ? (
+                  <Loader2
+                    className="w-3.5 h-3.5 animate-spin"
+                    style={{ color: "var(--text-muted)" }}
+                  />
+                ) : searchTerm !== "" ? (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    onClick={() => {
+                      handleSearchClear();
                     searchInputRef.current?.focus();
                   }}
                   className="w-4 h-4 flex items-center justify-center rounded-sm transition-colors duration-100"
@@ -410,20 +412,21 @@ export function PlanBrowser({
                     e.currentTarget.style.color = "var(--text-muted)";
                   }}
                 >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              ) : null}
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
+        )}
 
-          {/* Accessible live region for result count */}
-          <div
-            aria-live="polite"
-            aria-atomic="true"
-            className="sr-only"
-          >
-            {resultCountText}
-          </div>
+        {/* Accessible live region for result count */}
+        <div
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          {resultCountText}
         </div>
 
         {/* Plan List */}
@@ -470,6 +473,7 @@ export function PlanBrowser({
                     label={label}
                     count={count}
                     search={debouncedSearch}
+                    activePlanId={currentPlanId}
                     {...(accentColor != null && { accentColor })}
                     renderItem={renderPlanItem}
                   />

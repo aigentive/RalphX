@@ -7,6 +7,9 @@ use serde::Serialize;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::chat_conversation::compatible_provider_session_fields_from_provider_ref;
 use crate::domain::entities::{ChatConversation, ChatMessage};
+use crate::infrastructure::agents::claude::ToolCall;
+
+use super::tool_result_preview::LiveToolResultPreview;
 
 // ============================================================================
 // Event Name Constants
@@ -189,6 +192,38 @@ pub struct AgentUsageUpdatedPayload {
     pub context_id: String,
 }
 
+/// Optional preview metadata for agent:tool_call result payloads.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AgentToolCallPreviewFields {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_original_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_line_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_omitted_lines: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail_ref: Option<serde_json::Value>,
+}
+
+impl AgentToolCallPreviewFields {
+    pub(crate) fn from_tool_result_preview(
+        preview: Option<&super::tool_result_preview::ToolResultPreviewPayload>,
+    ) -> Self {
+        let Some(preview) = preview else {
+            return Self::default();
+        };
+        Self {
+            result_preview_truncated: Some(true),
+            result_preview_original_bytes: Some(preview.original_bytes),
+            result_preview_line_count: Some(preview.line_count),
+            result_preview_omitted_lines: Some(preview.omitted_lines),
+            detail_ref: preview.detail_ref.clone(),
+        }
+    }
+}
+
 /// Payload for agent:tool_call event
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentToolCallPayload {
@@ -196,6 +231,8 @@ pub struct AgentToolCallPayload {
     pub tool_id: Option<String>,
     pub arguments: serde_json::Value,
     pub result: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub preview: AgentToolCallPreviewFields,
     pub conversation_id: String,
     pub context_type: String,
     pub context_id: String,
@@ -204,6 +241,65 @@ pub struct AgentToolCallPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_tool_use_id: Option<String>,
     pub seq: u64,
+}
+
+impl AgentToolCallPayload {
+    pub(crate) fn from_live_tool_result(
+        tool_use_id: &str,
+        result_preview: &LiveToolResultPreview,
+        conversation_id: &str,
+        context_type: &str,
+        context_id: &str,
+        parent_tool_use_id: Option<String>,
+        seq: u64,
+    ) -> Self {
+        Self {
+            tool_name: format!("result:{tool_use_id}"),
+            tool_id: Some(tool_use_id.to_string()),
+            arguments: serde_json::Value::Null,
+            result: Some(result_preview.result.clone()),
+            preview: AgentToolCallPreviewFields::from_tool_result_preview(
+                result_preview.preview.as_ref(),
+            ),
+            conversation_id: conversation_id.to_string(),
+            context_type: context_type.to_string(),
+            context_id: context_id.to_string(),
+            diff_context: None,
+            parent_tool_use_id,
+            seq,
+        }
+    }
+
+    pub(crate) fn from_completed_tool_call(
+        tool_call: &ToolCall,
+        result_preview: Option<&LiveToolResultPreview>,
+        conversation_id: &str,
+        context_type: &str,
+        context_id: &str,
+        diff_context: Option<serde_json::Value>,
+        parent_tool_use_id: Option<String>,
+        seq: u64,
+    ) -> Self {
+        let result = result_preview
+            .map(|preview| Some(preview.result.clone()))
+            .unwrap_or_else(|| tool_call.result.clone());
+
+        Self {
+            tool_name: tool_call.name.clone(),
+            tool_id: tool_call.id.clone(),
+            arguments: tool_call.arguments.clone(),
+            result,
+            preview: AgentToolCallPreviewFields::from_tool_result_preview(
+                result_preview.and_then(|preview| preview.preview.as_ref()),
+            ),
+            conversation_id: conversation_id.to_string(),
+            context_type: context_type.to_string(),
+            context_id: context_id.to_string(),
+            diff_context,
+            parent_tool_use_id,
+            seq,
+        }
+    }
 }
 
 /// Payload for agent:message_created event

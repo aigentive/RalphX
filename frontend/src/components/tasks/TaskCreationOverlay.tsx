@@ -81,7 +81,7 @@ export function TaskCreationOverlay({ projectId }: TaskCreationOverlayProps) {
             <h2
               data-testid="task-creation-overlay-title"
               style={{
-                fontSize: "15px",
+                fontSize: "0.9375rem",
                 fontWeight: 600,
                 color: "var(--text-primary)",
                 letterSpacing: "-0.02em",

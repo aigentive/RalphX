@@ -322,4 +322,16 @@ describe("TaskEditForm", () => {
       });
     });
   });
+
+  it("shows the 'Cannot edit while executing' label when task is in an active status", () => {
+    renderWithProvider(
+      <TaskEditForm
+        task={{ ...mockTask, internalStatus: "executing" }}
+        onSave={mockOnSave}
+        onCancel={mockOnCancel}
+        isSaving={false}
+      />,
+    );
+    expect(screen.getByText("Cannot edit while executing")).toBeInTheDocument();
+  });
 });

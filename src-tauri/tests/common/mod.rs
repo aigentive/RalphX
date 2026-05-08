@@ -36,6 +36,7 @@ pub struct MockGithubService {
     pub create_draft_pr_calls: Arc<Mutex<u32>>,
     pub mark_pr_ready_calls: Arc<Mutex<u32>>,
     pub update_pr_details_calls: Arc<Mutex<u32>>,
+    pub update_pr_base_calls: Arc<Mutex<u32>>,
     pub close_pr_calls: Arc<Mutex<u32>>,
     pub delete_remote_branch_calls: Arc<Mutex<u32>>,
     pub find_pr_by_head_branch_calls: Arc<Mutex<u32>>,
@@ -44,6 +45,7 @@ pub struct MockGithubService {
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
     mark_pr_ready_result: Arc<Mutex<Option<AppResult<()>>>>,
     update_pr_details_result: Arc<Mutex<Option<AppResult<()>>>>,
+    update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
 }
@@ -62,6 +64,7 @@ impl MockGithubService {
             create_draft_pr_calls: Arc::new(Mutex::new(0)),
             mark_pr_ready_calls: Arc::new(Mutex::new(0)),
             update_pr_details_calls: Arc::new(Mutex::new(0)),
+            update_pr_base_calls: Arc::new(Mutex::new(0)),
             close_pr_calls: Arc::new(Mutex::new(0)),
             delete_remote_branch_calls: Arc::new(Mutex::new(0)),
             find_pr_by_head_branch_calls: Arc::new(Mutex::new(0)),
@@ -69,6 +72,7 @@ impl MockGithubService {
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
             update_pr_details_result: Arc::new(Mutex::new(None)),
+            update_pr_base_result: Arc::new(Mutex::new(None)),
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
         }
     }
@@ -115,6 +119,12 @@ impl MockGithubService {
             Some(Err(AppError::Infrastructure(msg.into())));
     }
 
+    /// Make the next `update_pr_base` call fail with the given message.
+    pub fn will_fail_update_pr_base(&self, msg: impl Into<String>) {
+        *self.update_pr_base_result.lock().unwrap() =
+            Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
     /// Make the next `find_pr_by_head_branch` call return an existing PR.
     pub fn will_return_existing_pr(&self, pr_number: i64, pr_url: impl Into<String>) {
         *self.find_pr_by_head_branch_result.lock().unwrap() =
@@ -143,6 +153,9 @@ impl MockGithubService {
     }
     pub fn update_pr_details_calls(&self) -> u32 {
         *self.update_pr_details_calls.lock().unwrap()
+    }
+    pub fn update_pr_base_calls(&self) -> u32 {
+        *self.update_pr_base_calls.lock().unwrap()
     }
     pub fn delete_branch_calls(&self) -> u32 {
         *self.delete_remote_branch_calls.lock().unwrap()
@@ -192,6 +205,14 @@ impl GithubServiceTrait for MockGithubService {
     ) -> AppResult<()> {
         *self.update_pr_details_calls.lock().unwrap() += 1;
         if let Some(result) = self.update_pr_details_result.lock().unwrap().take() {
+            return result;
+        }
+        Ok(())
+    }
+
+    async fn update_pr_base(&self, _wd: &Path, _pr_number: i64, _base: &str) -> AppResult<()> {
+        *self.update_pr_base_calls.lock().unwrap() += 1;
+        if let Some(result) = self.update_pr_base_result.lock().unwrap().take() {
             return result;
         }
         Ok(())

@@ -8,6 +8,7 @@
 //! BEFORE `StartupJobRunner::run()` to ensure pollers exist before the reconciler
 //! can re-enter PR-mode entry actions for waiting-on-PR tasks.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
@@ -19,7 +20,7 @@ use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     AgentConversationWorkspace, ExecutionPlanId, ExecutionPlanStatus, InternalStatus, PlanBranch,
-    PlanBranchStatus, Project, Task, TaskCategory, TaskId,
+    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, ExecutionPlanRepository,
@@ -60,6 +61,7 @@ pub async fn recover_missing_draft_prs(
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     github_service: Arc<dyn GithubServiceTrait>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let pr_creation_guard = Arc::new(dashmap::DashMap::new());
     let mut metadata_refresh_jobs = Vec::new();
@@ -73,6 +75,14 @@ pub async fn recover_missing_draft_prs(
     };
 
     for project in projects {
+        if blocked_git_project_ids.contains(&project.id) {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                "PR startup recovery: skipping missing-draft-PR recovery due to Git auth preflight"
+            );
+            continue;
+        }
+
         let plan_branches = match plan_branch_repo.get_by_project_id(&project.id).await {
             Ok(branches) => branches,
             Err(e) => {
@@ -490,6 +500,7 @@ pub async fn recover_pr_pollers(
     pr_poller_registry: Arc<PrPollerRegistry>,
     project_repo: Arc<dyn ProjectRepository>,
     transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let task_ids = match plan_branch_repo.find_pr_polling_task_ids().await {
         Ok(ids) => ids,
@@ -517,6 +528,7 @@ pub async fn recover_pr_pollers(
             let pr_poller_registry = Arc::clone(&pr_poller_registry);
             let project_repo = Arc::clone(&project_repo);
             let transition_service = Arc::clone(&transition_service);
+            let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
             async move {
                 recover_one_pr_poller(
                     task_id,
@@ -525,6 +537,7 @@ pub async fn recover_pr_pollers(
                     pr_poller_registry,
                     project_repo,
                     transition_service,
+                    blocked_git_project_ids,
                 )
                 .await;
             }
@@ -537,6 +550,7 @@ pub async fn recover_agent_workspace_pr_pollers(
     project_repo: Arc<dyn ProjectRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     chat_service: Arc<dyn ChatService>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let workspaces = match workspace_repo
         .list_active_direct_published_workspaces()
@@ -571,6 +585,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                 let project_repo = Arc::clone(&project_repo);
                 let pr_poller_registry = Arc::clone(&pr_poller_registry);
                 let chat_service = Arc::clone(&chat_service);
+                let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
                 async move {
                     recover_one_agent_workspace_pr_poller(
                         workspace,
@@ -578,6 +593,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                         project_repo,
                         pr_poller_registry,
                         chat_service,
+                        blocked_git_project_ids,
                     )
                     .await;
                 }
@@ -592,6 +608,7 @@ async fn recover_one_agent_workspace_pr_poller(
     project_repo: Arc<dyn ProjectRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     chat_service: Arc<dyn ChatService>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let Some(pr_number) = workspace.publication_pr_number else {
         return;
@@ -617,6 +634,16 @@ async fn recover_one_agent_workspace_pr_poller(
             return;
         }
     };
+
+    if blocked_git_project_ids.contains(&project.id) {
+        tracing::warn!(
+            conversation_id = workspace.conversation_id.as_str(),
+            project_id = project.id.as_str(),
+            pr_number,
+            "Agent workspace PR startup recovery: skipping poller recovery due to Git auth preflight"
+        );
+        return;
+    }
 
     let worktree_path =
         match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
@@ -683,6 +710,7 @@ async fn recover_one_pr_poller(
     pr_poller_registry: Arc<PrPollerRegistry>,
     project_repo: Arc<dyn ProjectRepository>,
     transition_service: Arc<TaskTransitionService<tauri::Wry>>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let mut task = match task_repo.get_by_id(&task_id).await {
         Ok(Some(t)) => t,
@@ -833,6 +861,15 @@ async fn recover_one_pr_poller(
             return;
         }
     };
+
+    if blocked_git_project_ids.contains(&project.id) {
+        tracing::warn!(
+            task_id = task_id.as_str(),
+            project_id = project.id.as_str(),
+            "PR startup recovery: skipping poller recovery due to Git auth preflight"
+        );
+        return;
+    }
 
     let working_dir = std::path::PathBuf::from(&project.working_directory);
     // source_branch = the base branch the plan was branched from (e.g. "main")
@@ -1070,6 +1107,7 @@ mod tests {
             Arc::clone(&registry),
             Arc::clone(&app_state.project_repo),
             transition_service,
+            Arc::new(HashSet::new()),
         )
         .await;
 
@@ -1130,6 +1168,7 @@ mod tests {
             Arc::clone(&registry),
             Arc::clone(&app_state.project_repo),
             transition_service,
+            Arc::new(HashSet::new()),
         )
         .await;
 

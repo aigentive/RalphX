@@ -66,13 +66,13 @@ export function TeamFindingsSection({
               style={{ color: "var(--accent-primary)" }}
             />
             <span
-              className="text-[12px] font-medium flex-1"
+              className="text-[0.75rem] font-medium flex-1"
               style={{ color: "var(--text-primary)" }}
             >
               {title}
             </span>
             <span
-              className="text-[10px] font-medium w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+              className="text-[0.625rem] font-medium w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
               style={{
                 background: "var(--accent-muted)",
                 color: "var(--accent-primary)",
@@ -96,17 +96,17 @@ export function TeamFindingsSection({
               className="overflow-hidden rounded-md"
               style={{ border: "1px solid var(--overlay-faint)" }}
             >
-              <table className="w-full text-[12px]">
+              <table className="w-full text-[0.75rem]">
                 <thead>
                   <tr style={{ background: "var(--overlay-faint)" }}>
                     <th
-                      className="px-3 py-2 text-left text-[10px] font-medium uppercase tracking-wider"
+                      className="px-3 py-2 text-left text-[0.625rem] font-medium uppercase tracking-wider"
                       style={{ color: "var(--text-muted)" }}
                     >
                       Specialist
                     </th>
                     <th
-                      className="px-3 py-2 text-left text-[10px] font-medium uppercase tracking-wider"
+                      className="px-3 py-2 text-left text-[0.625rem] font-medium uppercase tracking-wider"
                       style={{ color: "var(--text-muted)" }}
                     >
                       Key Finding

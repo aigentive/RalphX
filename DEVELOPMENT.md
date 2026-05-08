@@ -6,11 +6,20 @@ Read with:
 - `CLAUDE.md`
 - `frontend/src/CLAUDE.md`
 - `src-tauri/CLAUDE.md`
+- `docs/development/build-from-source.md`
+- `docs/development/coverage.md`
 - `.claude/rules/code-quality-standards.md`
 - `.claude/rules/api-layer.md`
 - `.claude/rules/task-state-machine.md`
 - `.claude/rules/task-git-branching.md`
 - `docs/architecture/agent-chat-system.md`
+
+## Development Guides
+
+| Guide | Use |
+|---|---|
+| [Build from source](docs/development/build-from-source.md) | Local checkout setup, native dev start, ports, and runtime prerequisites |
+| [Code coverage](docs/development/coverage.md) | Coverage workflow behavior, Codecov flags, suite badges, and covered folders |
 
 ## Product Flows We Optimize For
 

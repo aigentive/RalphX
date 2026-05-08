@@ -13,6 +13,30 @@ vi.mock("@/hooks/useIdeationHarnessSettings", () => ({
   useAgentHarnessSettings: vi.fn(),
 }));
 
+vi.mock("@/hooks/useAgentModels", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/agent-models")>(
+    "@/lib/agent-models",
+  );
+  return {
+    useAgentModels: () => ({
+      models: [],
+      registry: actual.AGENT_MODEL_CATALOG,
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      upsertModel: vi.fn(),
+      upsertModelAsync: vi.fn(),
+      isUpserting: false,
+      upsertError: null,
+      deleteModel: vi.fn(),
+      deleteModelAsync: vi.fn(),
+      isDeleting: false,
+      deleteError: null,
+    }),
+  };
+});
+
 vi.mock("@/stores/projectStore", () => ({
   useProjectStore: vi.fn(),
   selectActiveProject: (state: { activeProject: unknown }) => state.activeProject,
@@ -25,7 +49,7 @@ const globalLanes: AgentHarnessLaneView[] = [
       projectId: null,
       lane: "ideation_primary",
       harness: "codex",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       effort: "xhigh",
       approvalPolicy: "never",
       sandboxMode: "danger-full-access",
@@ -139,11 +163,32 @@ describe("IdeationHarnessSection", () => {
     expect(screen.queryByText("Execution Worker")).not.toBeInTheDocument();
   });
 
+  it("renders settings notices with explicit token-backed paint styles", () => {
+    render(<IdeationHarnessSection />);
+
+    const lockedNotice = screen
+      .getByText(
+        "Temporarily locked for Codex: RalphX MCP tools currently require Never approval and Danger Full Access.",
+      )
+      .closest(".settings-inline-notice");
+
+    expect(lockedNotice).not.toBeNull();
+    expect(lockedNotice?.getAttribute("style")).toContain(
+      "background-color: var(--notice-info-bg)",
+    );
+    expect(lockedNotice?.getAttribute("style")).toContain(
+      "border-color: var(--notice-info-border)",
+    );
+    expect(lockedNotice?.getAttribute("style")).toContain(
+      "color: var(--notice-info-text)",
+    );
+  });
+
   it("allows switching model presets without clearing the current value first", async () => {
     render(<IdeationHarnessSection />);
 
     openSelect("model-ideation_primary");
-    fireEvent.click(screen.getByRole("option", { name: "gpt-5.4-mini" }));
+    fireEvent.click(screen.getByRole("option", { name: /gpt-5\.4-mini/ }));
 
     await waitFor(() => {
       expect(updateLane).toHaveBeenCalledWith(
@@ -151,7 +196,7 @@ describe("IdeationHarnessSection", () => {
           lane: "ideation_primary",
           harness: "codex",
           model: "gpt-5.4-mini",
-          effort: "xhigh",
+          effort: null,
           approvalPolicy: "never",
           sandboxMode: "danger-full-access",
         },
@@ -165,10 +210,24 @@ describe("IdeationHarnessSection", () => {
 
     openSelect("model-ideation_primary");
 
-    expect(screen.getByRole("option", { name: "gpt-5.4 (Current)" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "gpt-5.4-mini" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "gpt-5.3-codex" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "gpt-5.3-codex-spark" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /gpt-5\.5 \(Current\)/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Frontier model for complex coding, research, and real-world work\./ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /gpt-5\.4.*Strong model for everyday coding\./ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: /gpt-5\.4-mini.*Small, fast, and cost-efficient model for simpler coding tasks\./,
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /gpt-5\.3-codex.*Coding-optimized model\./ })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /gpt-5\.3-codex-spark.*Ultra-fast coding model\./ })
+    ).toBeInTheDocument();
   });
 
   it("shows Claude model presets for Claude harness lanes", async () => {
@@ -176,9 +235,9 @@ describe("IdeationHarnessSection", () => {
 
     openSelect("model-ideation_verifier");
 
-    expect(screen.getByRole("option", { name: "sonnet" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "opus" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "haiku" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /sonnet/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /opus/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /haiku/ })).toBeInTheDocument();
   });
 
   it("exposes explicit accessible labels for provider and model controls", () => {
@@ -188,10 +247,10 @@ describe("IdeationHarnessSection", () => {
     expect(screen.getByLabelText("Primary Ideation model")).toBeInTheDocument();
   });
 
-  it("shows effort options with clearer labels including Default and Maximum", () => {
+  it("shows effort options with clearer labels including Default and Extra High", () => {
     render(<IdeationHarnessSection />);
 
-    // The effort select for ideation_primary shows "Maximum" for xhigh
+    // The effort select for ideation_primary shows "Extra High" for xhigh
     // Check that the effort dropdowns render with the updated labels in the DOM
     const effortTriggers = document.querySelectorAll('[placeholder="Select effort"]');
     expect(effortTriggers.length).toBe(0); // triggers don't have placeholders; SelectValue shows selected
@@ -200,6 +259,36 @@ describe("IdeationHarnessSection", () => {
     // The "Default" label replaces "Inherit"
     expect(screen.queryByText("Inherit")).not.toBeInTheDocument();
     expect(screen.queryByText("XHigh")).not.toBeInTheDocument();
+  });
+
+  it("renders the warn-tone notice when a lane has missing core exec features", () => {
+    const warnLanes: AgentHarnessLaneView[] = [
+      {
+        ...globalLanes[0]!,
+        missingCoreExecFeatures: ["streaming"],
+        error: "binary missing",
+      },
+      globalLanes[1]!,
+    ];
+    vi.mocked(useAgentHarnessSettings).mockImplementation((projectId) => ({
+      lanes: projectId === null ? warnLanes : [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateLane,
+      isUpdating: false,
+      saveError: null,
+      resetError: vi.fn(),
+    }));
+    render(<IdeationHarnessSection />);
+
+    // The warn notice paints with --notice-warn-bg.
+    const warnSurfaces = document.querySelectorAll(".settings-inline-notice");
+    const hasWarn = Array.from(warnSurfaces).some((el) =>
+      (el.getAttribute("style") ?? "").includes("var(--notice-warn-bg)"),
+    );
+    expect(hasWarn).toBe(true);
   });
 });
 
@@ -221,7 +310,7 @@ describe("ExecutionHarnessSection", () => {
                   projectId: null,
                   lane: "execution_worker",
                   harness: "codex",
-                  model: "gpt-5.4",
+                  model: "gpt-5.5",
                   effort: "xhigh",
                   approvalPolicy: "never",
                   sandboxMode: "danger-full-access",

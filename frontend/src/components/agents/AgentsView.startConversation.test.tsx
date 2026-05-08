@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
+import { useUiStore } from "@/stores/uiStore";
 import {
   agentProjectFixture as project,
   conversationFixture as conversation,
@@ -86,10 +88,7 @@ describe("AgentsView start conversation", () => {
     }));
     resetAgentSessionState({
       selectedProjectId: null,
-      selectedConversationId: null,
-      lastSelectedConversationByProjectId: {
-        "project-1": "conversation-restored",
-      },
+      selectedConversationId: "conversation-restored",
     });
 
     renderAgentsView();
@@ -117,7 +116,8 @@ describe("AgentsView start conversation", () => {
           projectId: "project-1",
           content: "fix agent landing flow",
           providerHarness: "codex",
-          modelId: "gpt-5.4",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
           mode: "edit",
           base: expect.objectContaining({
             kind: "project_default",
@@ -155,6 +155,70 @@ describe("AgentsView start conversation", () => {
     invalidateSpy.mockRestore();
   });
 
+  it("renders a queued starter prompt and paused explanation when global execution is paused", async () => {
+    mockAgentViewData();
+    useUiStore.getState().setExecutionPaused(true);
+    const pausedConversation = conversation({
+      id: "conversation-paused",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(pausedConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: pausedConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-paused",
+      }),
+      sendResult: {
+        conversationId: "conversation-paused",
+        agentRunId: "",
+        isNewConversation: false,
+        wasQueued: true,
+        queuedAsPending: false,
+        queuedMessageId: "queued-paused-start",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-paused-banner")).toHaveTextContent(
+        "Execution is paused"
+      )
+    );
+    expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Queue Prompt");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "build the queued feature" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-paused",
+          content: "build the queued feature",
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(useChatStore.getState().queuedMessages["project:conversation-paused"]).toEqual([
+        expect.objectContaining({
+          id: "queued-paused-start",
+          content: "build the queued feature",
+          isEditing: false,
+        }),
+      ])
+    );
+
+    const queuedEmptyState = await screen.findByTestId("agents-paused-queued-empty-state");
+    expect(queuedEmptyState).toHaveTextContent("Execution is paused");
+    expect(queuedEmptyState).toHaveTextContent(
+      "This prompt will start when execution resumes."
+    );
+    expect(queuedEmptyState).toHaveTextContent("build the queued feature");
+  });
+
   it("starts with the remembered runtime when the project has a valid runtime preference", async () => {
     mockAgentViewData();
     resetAgentSessionState({
@@ -162,6 +226,7 @@ describe("AgentsView start conversation", () => {
         "project-1": {
           provider: "claude",
           modelId: "opus",
+          effort: "high",
         },
       },
     });
@@ -178,6 +243,7 @@ describe("AgentsView start conversation", () => {
         expect.objectContaining({
           providerHarness: "claude",
           modelId: "opus",
+          logicalEffort: "high",
         })
       )
     );
@@ -190,6 +256,7 @@ describe("AgentsView start conversation", () => {
         "project-1": {
           provider: "removed-provider" as never,
           modelId: "retired-model",
+          effort: "high",
         },
       },
     });
@@ -205,7 +272,8 @@ describe("AgentsView start conversation", () => {
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           providerHarness: "codex",
-          modelId: "gpt-5.4",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
         })
       )
     );
@@ -219,11 +287,14 @@ describe("AgentsView start conversation", () => {
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     await userEvent.click(screen.getByTestId("agents-start-provider-claude"));
     await userEvent.click(screen.getByTestId("agents-start-model-opus"));
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(screen.getByTestId("agents-start-effort-max"));
 
     await waitFor(() =>
       expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
         provider: "claude",
         modelId: "opus",
+        effort: "max",
       })
     );
 
@@ -237,6 +308,35 @@ describe("AgentsView start conversation", () => {
         expect.objectContaining({
           providerHarness: "claude",
           modelId: "opus",
+          logicalEffort: "max",
+        })
+      )
+    );
+  });
+
+  it("uses a typed custom model from the existing runtime selector popover", async () => {
+    mockAgentViewData();
+
+    renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    const customModelInput = screen.getByTestId("agents-start-model-custom-input");
+    await userEvent.clear(customModelInput);
+    await userEvent.type(customModelInput, "gpt-5.6{Enter}");
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(screen.getByTestId("agents-start-effort-high"));
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "use a future model" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerHarness: "codex",
+          modelId: "gpt-5.6",
+          logicalEffort: "high",
         })
       )
     );
@@ -502,7 +602,8 @@ describe("AgentsView start conversation", () => {
           content: "review this note",
           conversationId: "conversation-seeded",
           providerHarness: "codex",
-          modelId: "gpt-5.4",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
           mode: "edit",
         })
       )

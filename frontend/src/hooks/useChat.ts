@@ -56,6 +56,8 @@ type ConversationQueryData = {
   messages: ChatMessageResponse[];
 };
 
+const DEFAULT_HISTORY_MAX_PAGES = 3;
+
 export type ConversationHistoryWindowData = ConversationQueryData & {
   totalMessageCount: number;
   loadedStartIndex: number;
@@ -195,9 +197,10 @@ export function useConversation(
 
 export function useConversationHistoryWindow(
   conversationId: string | null,
-  options?: { enabled?: boolean; pageSize?: number }
+  options?: { enabled?: boolean; pageSize?: number; maxPages?: number }
 ) {
   const pageSize = options?.pageSize ?? 40;
+  const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
   const query = useInfiniteQuery<
     ConversationMessagesPageResponse,
     Error,
@@ -218,8 +221,11 @@ export function useConversationHistoryWindow(
     },
     enabled: (options?.enabled ?? true) && !!conversationId,
     initialPageParam: 0,
-    getNextPageParam: (lastPage) => {
+    getNextPageParam: (lastPage, allPages) => {
       if (!lastPage.hasOlder) {
+        return undefined;
+      }
+      if (allPages.length >= maxPages) {
         return undefined;
       }
       return lastPage.offset + lastPage.messages.length;
@@ -308,6 +314,7 @@ export function useChat(
       conversationId?: string | null;
       providerHarness?: string | null;
       modelId?: string | null;
+      logicalEffort?: string | null;
     };
   }
 ) {

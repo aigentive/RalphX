@@ -68,7 +68,11 @@ function seedMockData(): void {
 
   statuses.forEach(({ status, title }, idx) => {
     const planArtifactId =
-      idx < 4 ? (idx % 2 === 0 ? "plan-mock-1" : "plan-mock-2") : null;
+      status === "approved"
+        ? "plan-mock-2"
+        : idx < 4
+        ? (idx % 2 === 0 ? "plan-mock-1" : "plan-mock-2")
+        : null;
     const task = createMockTask({
       id: `task-mock-${idx + 1}`,
       projectId: project.id,
@@ -81,8 +85,10 @@ function seedMockData(): void {
     });
     store.tasks.set(task.id, task);
 
-    // Add some steps for tasks in active states
-    if (["executing", "pending_review"].includes(status)) {
+    // Add steps for active/completed cards so v29a progress chrome is visible.
+    if (["executing", "pending_review", "approved"].includes(status)) {
+      const allStepsComplete = status === "approved";
+      const secondStepComplete = allStepsComplete || status === "pending_review";
       const steps: TaskStep[] = [
         {
           id: generateTestUuid(),
@@ -104,7 +110,7 @@ function seedMockData(): void {
           taskId: task.id,
           title: "Implement feature",
           description: "Write the main feature code",
-          status: status === "pending_review" ? "completed" : "in_progress",
+          status: secondStepComplete ? "completed" : "in_progress",
           sortOrder: 1,
           dependsOn: null,
           createdBy: AGENT_WORKER,
@@ -112,22 +118,22 @@ function seedMockData(): void {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           startedAt: new Date().toISOString(),
-          completedAt: status === "pending_review" ? new Date().toISOString() : null,
+          completedAt: secondStepComplete ? new Date().toISOString() : null,
         },
         {
           id: generateTestUuid(),
           taskId: task.id,
           title: "Write tests",
           description: "Add unit and integration tests",
-          status: "pending",
+          status: allStepsComplete ? "completed" : "pending",
           sortOrder: 2,
           dependsOn: null,
           createdBy: AGENT_WORKER,
           completionNote: null,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          startedAt: null,
-          completedAt: null,
+          startedAt: allStepsComplete ? new Date().toISOString() : null,
+          completedAt: allStepsComplete ? new Date().toISOString() : null,
         },
       ];
       store.taskSteps.set(task.id, steps);
@@ -155,8 +161,10 @@ function seedMockData(): void {
     projectId: project.id,
     title: "Merge Incomplete Task",
     description: "A task whose merge failed with a git error",
+    category: "plan_merge",
     internalStatus: "merge_incomplete",
     priority: 20,
+    planArtifactId: "plan-mock-2",
     taskBranch: "ralphx/demo/task-abc123",
     metadata: JSON.stringify({
       error: "fatal: Not possible to fast-forward, aborting.\nerror: could not apply fa1afe1... feat: implement task filtering",

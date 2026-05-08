@@ -5,6 +5,7 @@
 
 use super::git_cmd;
 use super::*;
+use crate::infrastructure::git_auth::{git_auth_error_from_failure, GitNetworkOperation};
 use std::sync::LazyLock;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
@@ -39,12 +40,9 @@ impl GitService {
     pub async fn fetch_origin(repo: &Path) -> AppResult<()> {
         debug!("Fetching from origin in {:?}", repo);
 
-        // Check if origin exists first
-        if let Ok(output) = git_cmd::run(&["remote", "get-url", "origin"], repo).await {
-            if !output.status.success() {
-                debug!("No origin remote configured, skipping fetch");
-                return Ok(());
-            }
+        if !Self::has_origin_remote(repo).await {
+            debug!("No origin remote configured, skipping fetch");
+            return Ok(());
         }
 
         // Acquire the global fetch serialization lock with a timeout.
@@ -68,14 +66,26 @@ impl GitService {
 
         debug!("fetch_origin: acquired FETCH_LOCK, fetching {:?}", repo);
 
-        let output = git_cmd::run(&["fetch", "origin"], repo).await?;
+        let output = git_cmd::run(&["fetch", "--prune", "origin"], repo).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if let Some(error) =
+                git_auth_error_from_failure(GitNetworkOperation::Fetch, repo, &stderr).await
+            {
+                return Err(error);
+            }
             warn!("Git fetch failed (non-fatal): {}", stderr);
         }
 
         Ok(())
+    }
+
+    /// Check whether the repository has an `origin` remote configured.
+    pub async fn has_origin_remote(repo: &Path) -> bool {
+        git_cmd::run(&["remote", "get-url", "origin"], repo)
+            .await
+            .is_ok_and(|output| output.status.success())
     }
 
     /// Rebase current branch onto a base branch

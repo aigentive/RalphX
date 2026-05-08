@@ -68,6 +68,16 @@ fn classifies_github_availability_as_operational() {
 }
 
 #[test]
+fn classifies_git_authentication_failures_as_operational() {
+    let error = "Git authentication error: Git could not authenticate while trying to fetch from `origin`. The fetch remote uses HTTPS.";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::Operational
+    );
+}
+
+#[test]
 fn classifies_commit_hook_environment_failures_as_operational() {
     let error = "Failed to commit changes: pre-commit failed: Cannot find package 'vitest'";
 

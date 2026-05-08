@@ -7,6 +7,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 
 import type { AgentConversation } from "./agentConversations";
+import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error) {
@@ -49,21 +50,7 @@ export function useAgentWorkspacePublisher({
         const prLabel = result.prNumber ? `#${result.prNumber}` : result.prUrl;
         toast.success(prLabel ? `Published ${prLabel}` : "Published branch");
         await Promise.all([
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace", conversationId],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace-freshness", conversationId],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "workspace-diff", conversationId],
-          }),
-          queryClient.invalidateQueries({
-            queryKey: ["agents", "workspace-commits", conversationId],
-          }),
+          invalidateWorkspaceQueries(queryClient, conversationId),
           conversation?.projectId
             ? invalidateProjectConversations(conversation.projectId)
             : Promise.resolve(),
@@ -73,12 +60,7 @@ export function useAgentWorkspacePublisher({
         let refreshedWorkspace: AgentConversationWorkspace | null = null;
         try {
           refreshedWorkspace = await chatApi.getAgentConversationWorkspace(conversationId);
-          void queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
-          });
-          void queryClient.invalidateQueries({
-            queryKey: ["agents", "conversation-workspace-freshness", conversationId],
-          });
+          void invalidateWorkspaceQueries(queryClient, conversationId);
           if (refreshedWorkspace) {
             queryClient.setQueryData(
               ["agents", "conversation-workspace", conversationId],

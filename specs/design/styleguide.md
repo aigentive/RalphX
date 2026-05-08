@@ -13,7 +13,7 @@
 - `specs/design/macos-tahoe-style-guide.md` — aesthetic reference
 - `frontend/src/CLAUDE.md` — frontend implementation rules
 
-**Design philosophy:** macOS Tahoe — flat surfaces, blue-gray tinted neutrals, warm orange accent used sparingly. No gradients, glassmorphism, or purple.
+**Design philosophy:** v27 productivity chrome — flat Linear-style surfaces, neutral grays, 48px topbar, icon-only left rail, warm orange accent used sparingly. No purple.
 
 ---
 
@@ -55,10 +55,16 @@ Values below describe the **Dark theme** (the `:root` defaults). Light + High-Co
 
 | Token | HSL | Hex | Use |
 |---|---|---|---|
-| `--bg-base` | hsl(220 10% 8%) | `#121416` | App root background |
-| `--bg-surface` | hsl(220 10% 12%) | `#1C1E22` | Side rails, popover surfaces, dialog body |
-| `--bg-elevated` | hsl(220 10% 16%) | `#25272D` | Cards, dropdowns, modals on top of surface |
-| `--bg-hover` | hsl(220 10% 20%) | `#2E3138` | Row hover, subtle interactive feedback |
+| `--bg-base` | — | `#18181D` | App root / canvas |
+| `--bg-surface` | — | `#1E1E23` | Side panels, topbar |
+| `--bg-elevated` | — | `#232329` | Cards, dropdowns, controls |
+| `--bg-hover` | — | `#2A2A31` | Row hover, subtle interactive feedback |
+| `--bg-sunken` | — | `#15151A` | Recessed toolbars |
+| `--nav-rail-bg` | — | `#1B1B20` | Primary icon rail |
+| `--brand-tile` | — | `#232329` | Theme-aware v27 logo tile |
+| `--brand-pill-from` | — | `#2E2F35` | v27 logo bar gradient start |
+| `--brand-pill-to` | — | `#2E2E34` | v27 logo bar gradient end |
+| `--brand-x` | — | `#FA4F19` | v27 logo X mark |
 
 **Rule:** Never hardcode `rgba(45,45,45,0.3)` / `rgba(255,255,255,0.04)` for hover — use `var(--bg-hover)`. The deprecated `--bg-surface-hover` alias found in a few files must be migrated to `--bg-hover`.
 
@@ -66,18 +72,21 @@ Values below describe the **Dark theme** (the `:root` defaults). Light + High-Co
 
 | Token | HSL | Hex | Use |
 |---|---|---|---|
-| `--text-primary` | hsl(220 10% 90%) | `#E3E5E8` | Body, labels, active states |
-| `--text-secondary` | hsl(220 10% 60%) | `#8F96A3` | Subtitles, field names, inactive tab text |
-| `--text-muted` | hsl(220 10% 45%) | `#676F7E` | Helper text, descriptions, placeholders |
+| `--text-primary` | — | `#F2F2F4` | Body, labels, active states |
+| `--text-secondary` | — | `#C7C7CC` | Subtitles, field names, inactive tab text |
+| `--text-muted` | — | `#8E8E96` | Helper text, descriptions, placeholders |
+| `--text-subtle` | — | `#6A6A72` | Separators, secondary glyphs |
 
 ### Accent (warm orange)
 
 | Token | HSL | Hex | Use |
 |---|---|---|---|
-| `--accent-primary` | hsl(14 100% 60%) | `#FF6B35` | Primary actions, icons, focused borders |
-| `--accent-secondary` | hsl(32 100% 65%) | `#FFAB4D` | Hover on primary buttons |
-| `--accent-hover` | hsl(14 100% 55%) | `#FF5419` | Hover on flat accent text |
-| `--accent-muted` | hsla(14 100% 60% / 0.15) | `rgba(255,107,53,0.15)` | Tinted backgrounds on section icons, selection states |
+| `--accent-primary` | — | `#FF6A35` | Primary actions, badges, focused borders |
+| `--accent-secondary` | — | `#FF8050` | Hover on primary buttons |
+| `--accent-hover` | — | `#E0521E` | Pressed/strong accent edge |
+| `--accent-muted` | — | `rgba(255,106,53,.10)` | Tinted backgrounds on selected rows |
+| `--accent-muted-strong` | — | `rgba(255,106,53,.16)` | v27 active row gradient top stop |
+| `--accent-border` | — | `rgba(255,106,53,.28)` | Accent-tinted borders |
 
 **Rule:** Orange is **the only** accent. ❌ No purple. ❌ No blue call-to-action. Use accent sparingly — primary buttons, focused borders, active-section dots, status badges.
 
@@ -94,9 +103,10 @@ Values below describe the **Dark theme** (the `:root` defaults). Light + High-Co
 
 | Token | HSL | Hex | Use |
 |---|---|---|---|
-| `--border-subtle` | hsl(220 10% 18%) | `#292C32` | Dividers inside cards, secondary separators |
-| `--border-default` | hsl(220 10% 22%) | `#32363E` | Input borders, strong section dividers |
-| `--border-focus` | hsl(220 80% 60%) | `#477EEB` | Keyboard-focus ring on inputs |
+| `--border-subtle` | — | `#2E2E36` | Dividers inside cards, secondary separators |
+| `--border-default` | — | `#393940` | Input borders, control chrome |
+| `--border-strong` | — | `#44444D` | Hover/strong edges |
+| `--border-focus` | — | `#6FB3FF` | Keyboard-focus ring on inputs |
 
 **Rule:** Only use hardcoded `rgba(255,255,255,0.08)` as a temporary card edge glow where the design calls for a glass effect — otherwise prefer `border-subtle` / `border-default`.
 
@@ -181,6 +191,52 @@ Values below describe the **Dark theme** (the `:root` defaults). Light + High-Co
 
 ## 7. Layout primitives
 
+### App topbar (`AppTopBar`)
+
+```
+- Height:       48px fixed topbar
+- Bg:           --topbar-bg
+- Border:       border-bottom 1px --border-subtle
+- Padding:      left 88px, right 16px
+- Left:         static traffic lights + breadcrumbs
+- Right:        380px command search, reviews icon badge, theme dropdown, font-size dropdown
+- Controls:     32px high, 6px radius, bg --bg-elevated, border --border-default
+```
+
+### Primary icon rail (`LeftNavRail`)
+
+```
+- Width:        72px
+- Bg:           --nav-rail-bg
+- Brand:        inline v27 BrandMark SVG, 44px square, no wordmark, literal fills mirror --brand-* tokens for WKWebView
+- Divider:      28px x 1px, --border-default
+- Item:         44px square, radius 10px, icon 22px, stroke 1.8, tooltip required
+- Item active:  bg --bg-hover, text --nav-rail-active-color, 2px orange left marker
+- Item focus:   2px --border-focus outline only; no ring, halo, or glow shadow
+- HC active:    inset 2px accent ring via --nav-rail-active-shadow
+```
+
+### Agents project sidebar (`AgentsSidebar`)
+
+```
+- Width:        272px fixed v27 panel width
+- Bg:           --bg-surface
+- Border:       border-right 1px --border-subtle
+- Effects:      no backdrop blur, no edge shadow, no resize gutter
+- Header:       12px padding, 28px icon buttons, v27 flat hover treatment
+- Tree:         no legacy filter/sort pill row; project rows use 12/14/1fr/auto tracks, 6px radius, active accent-muted-strong→accent-muted fill
+- Recent:       static v27 Recent block pinned above Add project until live recent-run data exists
+```
+
+### Right reviews sidebar
+
+```
+- Width:        400px
+- Bg:           --bg-surface
+- Border:       border-left 1px --border-subtle
+- Effects:      no floating margin, radius, or shadow; aligns with v27 side-panel chrome
+```
+
 ### Dialog shell (`Dialog` / `DialogContent`)
 
 ```
@@ -191,7 +247,7 @@ Values below describe the **Dark theme** (the `:root` defaults). Light + High-Co
 - Header:  bg-[var(--bg-surface)], border-b border-[var(--border-subtle)], px-4 py-3
 ```
 
-### Left rail / sidebar nav
+### Dialog/sidebar nav
 
 ```
 - Width:          280px

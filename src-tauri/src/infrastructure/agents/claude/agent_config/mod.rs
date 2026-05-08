@@ -19,7 +19,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tool_sets::canonical_claude_tool_sets;
 
 #[allow(unused_imports)]
@@ -330,6 +330,10 @@ struct ExternalMcpConfigOverlay {
 
 const EMBEDDED_CONFIG: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/ralphx.yaml"));
+const EMBEDDED_EXTERNAL_MCP_CONFIG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../config/external-mcp.yaml"
+));
 
 fn default_defer_merge_enabled() -> bool {
     true
@@ -353,6 +357,35 @@ struct LoadedConfig {
 
 static LOADED_CONFIG_CELL: OnceLock<LoadedConfig> = OnceLock::new();
 
+fn runtime_config_dir_override() -> &'static Mutex<Option<PathBuf>> {
+    static OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn configure_runtime_config_dir(config_dir: PathBuf) {
+    if let Ok(mut guard) = runtime_config_dir_override().lock() {
+        *guard = Some(config_dir);
+    }
+}
+
+fn configured_runtime_config_dir() -> Option<PathBuf> {
+    runtime_config_dir_override()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+fn config_path_for_runtime_config_dir(config_dir: Option<&Path>) -> PathBuf {
+    if let Some(config_dir) = config_dir {
+        return config_dir.join("ralphx.yaml");
+    }
+
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("config")
+        .join("ralphx.yaml")
+}
+
 fn normalize_mcp_tool_name(raw: &str, server_name: &str) -> String {
     if raw.starts_with("mcp__") {
         raw.to_string()
@@ -362,10 +395,8 @@ fn normalize_mcp_tool_name(raw: &str, server_name: &str) -> String {
 }
 
 pub fn config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("config")
-        .join("ralphx.yaml")
+    let configured = configured_runtime_config_dir();
+    config_path_for_runtime_config_dir(configured.as_deref())
 }
 
 fn config_dir_path() -> PathBuf {
@@ -574,13 +605,38 @@ fn parse_external_mcp_config_overlay(yaml: &str) -> Option<ExternalMcpConfigOver
     }).ok()
 }
 
-fn load_external_mcp_config_overlay() -> Option<(PathBuf, ExternalMcpConfigOverlay)> {
-    let path = external_mcp_config_path();
+fn load_external_mcp_config_overlay_from_path(
+    path: &Path,
+) -> Option<(PathBuf, ExternalMcpConfigOverlay)> {
     // External MCP config paths are RalphX-owned runtime config paths.
     // codeql[rust/path-injection]
-    let raw = std::fs::read_to_string(&path).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
     let overlay = parse_external_mcp_config_overlay(&raw)?;
-    Some((path, overlay))
+    Some((path.to_path_buf(), overlay))
+}
+
+fn load_embedded_external_mcp_config_overlay() -> Option<ExternalMcpConfigOverlay> {
+    parse_external_mcp_config_overlay(EMBEDDED_EXTERNAL_MCP_CONFIG)
+}
+
+fn apply_external_mcp_overlay_or_embedded(parsed: &mut RalphxConfig) {
+    apply_external_mcp_overlay_or_embedded_from_path(parsed, &external_mcp_config_path());
+}
+
+fn apply_external_mcp_overlay_or_embedded_from_path(
+    parsed: &mut RalphxConfig,
+    external_mcp_path: &Path,
+) {
+    if let Some((_external_mcp_path, overlay)) =
+        load_external_mcp_config_overlay_from_path(external_mcp_path)
+    {
+        apply_external_mcp_config_overlay(parsed, overlay);
+        return;
+    }
+
+    if let Some(overlay) = load_embedded_external_mcp_config_overlay() {
+        apply_external_mcp_config_overlay(parsed, overlay);
+    }
 }
 
 /// Resolve file_logging setting for early use (before tracing subscriber init).
@@ -673,12 +729,31 @@ fn resolve_tool_spec(project_root: &Path, raw: &AgentConfigRaw) -> AgentToolsSpe
 }
 
 fn canonical_agent_project_root() -> PathBuf {
-    let config_dir = config_path()
+    let fallback_plugin_dir = super::find_base_plugin_dir();
+    canonical_agent_project_root_from_config_path(&config_path(), fallback_plugin_dir.as_deref())
+}
+
+fn canonical_agent_project_root_from_config_path(
+    config_path: &Path,
+    fallback_runtime_plugin_dir: Option<&Path>,
+) -> PathBuf {
+    let config_dir = config_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
-    resolve_project_root_from_catalog_path(&config_dir)
-        .unwrap_or_else(|| resolve_project_root_from_plugin_dir(&config_dir))
+
+    if let Some(project_root) = resolve_project_root_from_catalog_path(&config_dir) {
+        return project_root;
+    }
+
+    if let Some(runtime_plugin_dir) = fallback_runtime_plugin_dir {
+        let runtime_project_root = resolve_project_root_from_plugin_dir(runtime_plugin_dir);
+        if let Some(project_root) = resolve_project_root_from_catalog_path(&runtime_project_root) {
+            return project_root;
+        }
+    }
+
+    resolve_project_root_from_plugin_dir(&config_dir)
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
@@ -1459,13 +1534,7 @@ fn load_config() -> LoadedConfig {
                     "Loaded Codex harness config overlay from config/harnesses/codex.yaml"
                 );
             }
-            if let Some((external_mcp_path, overlay)) = load_external_mcp_config_overlay() {
-                apply_external_mcp_config_overlay(&mut parsed, overlay);
-                tracing::info!(
-                    path = %external_mcp_path.display(),
-                    "Loaded external MCP config overlay from config/external-mcp.yaml"
-                );
-            }
+            apply_external_mcp_overlay_or_embedded(&mut parsed);
             if let Some(mut cfg) =
                 resolve_loaded_config_with_lookup(parsed, &|name| std::env::var(name).ok())
             {
@@ -1508,13 +1577,7 @@ fn load_config() -> LoadedConfig {
                     "Loaded Codex harness config overlay from config/harnesses/codex.yaml"
                 );
             }
-            if let Some((external_mcp_path, overlay)) = load_external_mcp_config_overlay() {
-                apply_external_mcp_config_overlay(&mut parsed, overlay);
-                tracing::info!(
-                    path = %external_mcp_path.display(),
-                    "Loaded external MCP config overlay from config/external-mcp.yaml"
-                );
-            }
+            apply_external_mcp_overlay_or_embedded(&mut parsed);
             resolve_loaded_config_with_lookup(parsed, &|name| std::env::var(name).ok())
         })
         .unwrap_or_else(|| {

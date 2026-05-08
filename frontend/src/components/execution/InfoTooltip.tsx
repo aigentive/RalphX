@@ -43,7 +43,7 @@ export function InfoTooltip({ content, testId }: InfoTooltipProps) {
       <TooltipContent
         side="top"
         align="center"
-        className="max-w-[320px] p-3 text-[13px] leading-relaxed"
+        className="max-w-[320px] p-3 text-[0.8125rem] leading-relaxed"
         style={{
           backgroundColor: "var(--bg-surface)",
           border: "1px solid var(--overlay-weak)",

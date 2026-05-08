@@ -306,6 +306,10 @@ pub async fn start_http_server(
             "/api/agent-workspaces/:conversation_id/complete-repair",
             post(complete_agent_workspace_repair),
         )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-description",
+            post(submit_agent_workspace_pr_description),
+        )
         .route("/api/git/tasks/:id/report-conflict", post(report_conflict))
         .route(
             "/api/git/tasks/:id/report-incomplete",

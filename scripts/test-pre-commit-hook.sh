@@ -10,7 +10,7 @@ PASS=0
 FAIL=0
 FAKE_BIN=""
 FAKE_NPM_LOG=""
-FAKE_NPX_LOG=""
+FAKE_ESLINT_LOG=""
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -30,8 +30,14 @@ fail() { echo "  FAIL: $1"; ((FAIL++)); }
 setup_fake_node_tools() {
   FAKE_BIN=$(mktemp -d)
   FAKE_NPM_LOG=$(mktemp)
-  FAKE_NPX_LOG=$(mktemp)
-  export FAKE_NPM_LOG FAKE_NPX_LOG
+  FAKE_ESLINT_LOG=$(mktemp)
+  export FAKE_NPM_LOG FAKE_ESLINT_LOG
+
+  cat > "$FAKE_BIN/node" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$FAKE_BIN/node"
 
   cat > "$FAKE_BIN/npm" <<'EOF'
 #!/usr/bin/env bash
@@ -39,24 +45,58 @@ echo "npm $*" >> "$FAKE_NPM_LOG"
 case "$1" in
   ci|install)
     mkdir -p node_modules/.bin
+    cat > node_modules/.bin/eslint <<'EOF_ESLINT'
+#!/usr/bin/env bash
+echo "eslint $*" >> "$FAKE_ESLINT_LOG"
+exit 0
+EOF_ESLINT
+    chmod +x node_modules/.bin/eslint
     ;;
 esac
 exit 0
 EOF
   chmod +x "$FAKE_BIN/npm"
+}
 
-  cat > "$FAKE_BIN/npx" <<'EOF'
+setup_fake_nvm_home() {
+  local version="$1"
+  local home dir
+
+  home=$(mktemp -d)
+  dir="$home/.nvm/versions/node/v$version/bin"
+  mkdir -p "$dir"
+
+  cat > "$dir/node" <<'EOF'
 #!/usr/bin/env bash
-echo "npx $*" >> "$FAKE_NPX_LOG"
 exit 0
 EOF
-  chmod +x "$FAKE_BIN/npx"
+  chmod +x "$dir/node"
+
+  cat > "$dir/npm" <<'EOF'
+#!/usr/bin/env bash
+echo "npm $*" >> "$FAKE_NPM_LOG"
+case "$1" in
+  ci|install)
+    mkdir -p node_modules/.bin
+    cat > node_modules/.bin/eslint <<'EOF_ESLINT'
+#!/usr/bin/env bash
+echo "eslint $*" >> "$FAKE_ESLINT_LOG"
+exit 0
+EOF_ESLINT
+    chmod +x node_modules/.bin/eslint
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$dir/npm"
+
+  echo "$home"
 }
 
 write_frontend_validation_fixture() {
   local dir="$1"
 
-  mkdir -p "$dir/frontend/src" "$dir/frontend/scripts" "$dir/src-tauri"
+  mkdir -p "$dir/frontend/src" "$dir/frontend/scripts" "$dir/frontend/node_modules/.bin" "$dir/src-tauri"
   echo "frontend/node_modules" > "$dir/.gitignore"
 
   cat > "$dir/frontend/src/index.ts" <<'EOF'
@@ -68,6 +108,15 @@ EOF
 echo "token guard ok"
 EOF
   chmod +x "$dir/frontend/scripts/check-design-tokens.sh"
+
+  cat > "$dir/frontend/node_modules/.bin/eslint" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${FAKE_ESLINT_LOG:-}" ]; then
+  echo "eslint $*" >> "$FAKE_ESLINT_LOG"
+fi
+exit 0
+EOF
+  chmod +x "$dir/frontend/node_modules/.bin/eslint"
 
   cat > "$dir/frontend/package.json" <<'EOF'
 {
@@ -314,7 +363,8 @@ git -C "$WT7" add frontend/src/index.ts
 if PATH="$FAKE_BIN:$PATH" git -C "$WT7" commit -m "test" >/tmp/ralphx-hook-t7.out 2>&1; then
   if [ -L "$WT7/frontend/node_modules" ] &&
     [ "$(cd "$WT7/frontend/node_modules" && pwd -P)" = "$(cd "$PRIMARY7/frontend/node_modules" && pwd -P)" ] &&
-    ! grep -Eq 'npm (ci|install)( |$)' "$FAKE_NPM_LOG"; then
+    ! grep -Eq 'npm (ci|install)( |$)' "$FAKE_NPM_LOG" &&
+    grep -Eq 'eslint --max-warnings=0 src/index.ts$' "$FAKE_ESLINT_LOG"; then
     pass "Test 7: frontend worktree symlinks primary node_modules without install"
   else
     fail "Test 7: expected primary node_modules symlink and no install"
@@ -349,7 +399,8 @@ git -C "$WT8" add frontend/package.json frontend/package-lock.json frontend/src/
 if PATH="$FAKE_BIN:$PATH" git -C "$WT8" commit -m "test" >/tmp/ralphx-hook-t8.out 2>&1; then
   if [ -d "$WT8/frontend/node_modules" ] &&
     [ ! -L "$WT8/frontend/node_modules" ] &&
-    grep -Eq 'npm ci --prefer-offline --no-audit --no-fund$' "$FAKE_NPM_LOG"; then
+    grep -Eq 'npm ci --prefer-offline --no-audit --no-fund$' "$FAKE_NPM_LOG" &&
+    grep -Eq 'eslint --max-warnings=0 src/index.ts$' "$FAKE_ESLINT_LOG"; then
     pass "Test 8: dependency manifest changes install worktree-local node_modules"
   else
     fail "Test 8: expected npm ci and worktree-local node_modules"
@@ -376,6 +427,32 @@ else
   fi
 fi
 rm -rf "$T9"
+
+# ─── Test 10: ALLOW — stripped PATH resolves .nvmrc-managed Node tools ──────
+
+setup_fake_node_tools
+T10=$(setup_repo)
+write_frontend_validation_fixture "$T10"
+echo "22.16.0" > "$T10/.nvmrc"
+FAKE_HOME10=$(setup_fake_nvm_home "22.16.0")
+FAKE_SYSTEM_BIN10=$(mktemp -d)
+for tool in git dirname grep sed head tr tail; do
+  ln -s "/usr/bin/$tool" "$FAKE_SYSTEM_BIN10/$tool"
+done
+echo "export const stripped = 10;" >> "$T10/frontend/src/index.ts"
+git -C "$T10" add frontend/package.json frontend/package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock frontend/src/index.ts
+if HOME="$FAKE_HOME10" NVM_BIN="$FAKE_HOME10/.nvm/versions/node/v22.16.0/bin" PATH="$FAKE_SYSTEM_BIN10:/bin" git -C "$T10" commit -m "test" >/tmp/ralphx-hook-t10.out 2>&1; then
+  if grep -Eq 'npm ci --prefer-offline --no-audit --no-fund$' "$FAKE_NPM_LOG" &&
+    grep -Eq 'npm run -s typecheck$' "$FAKE_NPM_LOG" &&
+    grep -Eq 'eslint --max-warnings=0 src/index.ts$' "$FAKE_ESLINT_LOG"; then
+    pass "Test 10: stripped PATH uses .nvmrc-backed Node tooling"
+  else
+    fail "Test 10: expected .nvmrc-resolved npm/typecheck/eslint invocations"
+  fi
+else
+  fail "Test 10: commit should have succeeded with .nvmrc-backed Node tooling"
+fi
+rm -rf "$T10" "$FAKE_HOME10" "$FAKE_SYSTEM_BIN10"
 
 # ─── Results ─────────────────────────────────────────────────────────────────
 

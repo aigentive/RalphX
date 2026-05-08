@@ -40,7 +40,7 @@ export function CommitSummaryCard({ taskId }: CommitSummaryCardProps) {
 
   if (commits.length === 0) {
     return (
-      <p className="text-[13px] text-text-primary/50 italic">
+      <p className="text-[0.8125rem] text-text-primary/50 italic">
         No commit history available
       </p>
     );
@@ -58,10 +58,10 @@ export function CommitSummaryCard({ taskId }: CommitSummaryCardProps) {
               : undefined
           }
         >
-          <span className="text-[11px] font-mono text-text-primary/50 shrink-0 pt-0.5">
+          <span className="text-[0.6875rem] font-mono text-text-primary/50 shrink-0 pt-0.5">
             {commit.shortSha}
           </span>
-          <span className="text-[13px] text-text-primary/70 line-clamp-2">
+          <span className="text-[0.8125rem] text-text-primary/70 line-clamp-2">
             {commit.message}
           </span>
         </div>
@@ -144,7 +144,7 @@ export function ChangeReviewSection({
             data-testid="review-code-button"
             onClick={() => setShowReviewModal(true)}
             variant="ghost"
-            className="h-8 px-3 gap-2 rounded-lg font-medium text-[12px]"
+            className="h-8 px-3 gap-2 rounded-lg font-medium text-[0.75rem]"
             style={{ color: "var(--status-info)" }}
           >
             <Code className="w-4 h-4" />
@@ -156,7 +156,7 @@ export function ChangeReviewSection({
             <Loader2 className="w-5 h-5 animate-spin text-text-primary/30" />
           </div>
         ) : isPlanMerge && !hasReviewHistory ? (
-          <p className="text-[13px] text-text-primary/50 italic">
+          <p className="text-[0.8125rem] text-text-primary/50 italic">
             No internal plan review records available
           </p>
         ) : (

@@ -9,9 +9,9 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_IDEATION_TEAM_MEMBER, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
     SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
-    SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER,
-    SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY, SHORT_SESSION_NAMER, SHORT_WORKER,
-    SHORT_WORKER_TEAM,
+    SHORT_PLAN_VERIFIER, SHORT_PR_DESCRIBER, SHORT_PROJECT_ANALYZER, SHORT_QA_EXECUTOR,
+    SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
+    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents,
@@ -47,6 +47,42 @@ fn test_canonical_agent_project_root_resolves_live_claude_agents() {
     assert!(
         live_agents.contains(&SHORT_PLAN_VERIFIER.to_string()),
         "canonical project root should expose verifier agents for runtime config synthesis"
+    );
+}
+
+#[test]
+fn test_canonical_agent_project_root_falls_back_to_runtime_plugin_dir() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let runtime_root = temp_dir.path().join("runtime-root");
+    let agent_root = runtime_root.join("agents").join("ralphx-test-agent");
+    let plugin_dir = runtime_root.join("plugins").join("app");
+    std::fs::create_dir_all(&agent_root).expect("agent root");
+    std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: ralphx-test-agent\nrole: test\n",
+    )
+    .expect("agent definition");
+
+    let missing_config_path = temp_dir.path().join("missing").join("config").join("ralphx.yaml");
+
+    assert_eq!(
+        canonical_agent_project_root_from_config_path(&missing_config_path, Some(&plugin_dir)),
+        runtime_root.canonicalize().expect("canonical runtime root")
+    );
+}
+
+#[test]
+fn test_canonical_agent_project_root_ignores_runtime_plugin_dir_without_agents() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let plugin_dir = temp_dir.path().join("runtime-root").join("plugins").join("app");
+    std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
+
+    let missing_config_path = temp_dir.path().join("missing").join("config").join("ralphx.yaml");
+
+    assert_eq!(
+        canonical_agent_project_root_from_config_path(&missing_config_path, Some(&plugin_dir)),
+        temp_dir.path().join("missing")
     );
 }
 
@@ -98,6 +134,7 @@ fn test_all_agent_names_are_known() {
         SHORT_ORCHESTRATOR_IDEATION,
         SHORT_ORCHESTRATOR_IDEATION_READONLY,
         SHORT_SESSION_NAMER,
+        SHORT_PR_DESCRIBER,
         SHORT_CHAT_TASK,
         SHORT_CHAT_PROJECT,
         SHORT_REVIEW_CHAT,
@@ -192,6 +229,22 @@ fn test_default_config_paths_use_config_directory_layout() {
     assert_eq!(claude_config_path(), expected_claude);
     assert_eq!(codex_config_path(), expected_codex);
     assert_eq!(external_mcp_config_path(), expected_external_mcp);
+}
+
+#[test]
+fn test_runtime_config_dir_path_resolution_uses_bundled_config_dir() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let config_dir = temp_dir.path().join("Resources").join("config");
+
+    assert_eq!(
+        config_path_for_runtime_config_dir(Some(&config_dir)),
+        config_dir.join("ralphx.yaml")
+    );
+
+    assert_eq!(
+        config_path_for_runtime_config_dir(None),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/ralphx.yaml")
+    );
 }
 
 #[test]
@@ -2130,6 +2183,58 @@ fn test_embedded_config_omits_external_mcp_and_overlay_restores_expected_default
     assert_eq!(parsed.runtime.external_mcp.human_wait_timeout_secs, 285);
 }
 
+#[test]
+fn test_embedded_external_mcp_overlay_restores_expected_defaults() {
+    let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let overlay = load_embedded_external_mcp_config_overlay()
+        .expect("embedded external MCP overlay should parse");
+
+    apply_external_mcp_config_overlay(&mut parsed, overlay);
+    let parsed = resolve_loaded_config_with_lookup(parsed, &|_| None).expect("config should load");
+
+    assert!(parsed.runtime.external_mcp.enabled);
+    assert_eq!(parsed.runtime.external_mcp.port, 3848);
+    assert_eq!(parsed.runtime.external_mcp.host, "127.0.0.1");
+}
+
+#[test]
+fn test_external_mcp_overlay_file_takes_precedence_over_embedded_defaults() {
+    let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let overlay_path = temp_dir.path().join("external-mcp.yaml");
+    std::fs::write(
+        &overlay_path,
+        r#"
+external_mcp:
+  enabled: false
+  port: 4999
+  host: "0.0.0.0"
+"#,
+    )
+    .expect("write external MCP overlay");
+
+    apply_external_mcp_overlay_or_embedded_from_path(&mut parsed, &overlay_path);
+    let parsed = resolve_loaded_config_with_lookup(parsed, &|_| None).expect("config should load");
+
+    assert!(!parsed.runtime.external_mcp.enabled);
+    assert_eq!(parsed.runtime.external_mcp.port, 4999);
+    assert_eq!(parsed.runtime.external_mcp.host, "0.0.0.0");
+}
+
+#[test]
+fn test_external_mcp_overlay_falls_back_to_embedded_defaults_when_file_missing() {
+    let mut parsed = parse_raw_config(EMBEDDED_CONFIG).expect("embedded config should parse");
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let missing_overlay_path = temp_dir.path().join("missing-external-mcp.yaml");
+
+    apply_external_mcp_overlay_or_embedded_from_path(&mut parsed, &missing_overlay_path);
+    let parsed = resolve_loaded_config_with_lookup(parsed, &|_| None).expect("config should load");
+
+    assert!(parsed.runtime.external_mcp.enabled);
+    assert_eq!(parsed.runtime.external_mcp.port, 3848);
+    assert_eq!(parsed.runtime.external_mcp.host, "127.0.0.1");
+}
+
 // ── Agent extends inheritance tests ─────────────────────────────
 
 #[test]
@@ -2905,6 +3010,7 @@ fn test_get_agent_config_accepts_legacy_agent_aliases() {
         ("plan-verifier", "ralphx-plan-verifier"),
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
+        ("pr-describer", "ralphx-utility-pr-describer"),
     ];
 
     for (legacy_name, canonical_name) in cases {
@@ -2922,6 +3028,7 @@ fn test_preapproved_tools_always_contains_permission_request() {
         "ralphx-execution-coder",
         "ralphx-execution-merger",
         "ralphx-utility-session-namer",
+        "ralphx-utility-pr-describer",
         "ralphx-chat-task",
     ] {
         let tools = get_preapproved_tools(agent_name).unwrap_or_default();

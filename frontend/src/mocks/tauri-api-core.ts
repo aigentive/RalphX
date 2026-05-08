@@ -35,6 +35,7 @@ import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
 import type { ChatMessageResponse } from "@/api/chat";
+import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
 
 const mockReviewSettings = {
   require_human_review: false,
@@ -147,6 +148,18 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
   };
 }
 
+function mockGitAuthDiagnostics(): GitAuthDiagnostics {
+  return window.__mockGitAuthDiagnostics ?? {
+    fetchUrl: "git@github.com:mock/project.git",
+    pushUrl: "git@github.com:mock/project.git",
+    fetchKind: "SSH",
+    pushKind: "SSH",
+    mixedAuthModes: false,
+    canSwitchToSsh: false,
+    suggestedSshUrl: null,
+  };
+}
+
 async function getMockConversationPayload(conversationId: string) {
   const controller =
     typeof window !== "undefined" ? window.__mockChatApi : undefined;
@@ -254,6 +267,31 @@ const commandHandlers: Record<
   get_git_branches: async (args) => mockGetGitBranches(args.workingDirectory as string),
   get_git_current_branch: async (args) => mockGetGitCurrentBranch(args.workingDirectory as string),
   get_git_default_branch: async (args) => mockGetGitDefaultBranch(args.workingDirectory as string),
+  get_git_remote_url: async () => mockGitAuthDiagnostics().fetchUrl,
+  get_git_auth_diagnostics: async () => mockGitAuthDiagnostics(),
+  switch_git_origin_to_ssh: async () => {
+    const current = mockGitAuthDiagnostics();
+    const sshUrl = current.suggestedSshUrl ?? "git@github.com:mock/project.git";
+    const updated: GitAuthDiagnostics = {
+      fetchUrl: sshUrl,
+      pushUrl: sshUrl,
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    };
+    window.__mockGitAuthDiagnostics = updated;
+    return updated;
+  },
+  check_gh_auth: async () => window.__mockGhAuthStatus ?? true,
+  login_gh_with_browser: async () => {
+    window.__mockGhAuthStatus = true;
+    return true;
+  },
+  setup_gh_git_auth: async () => true,
+  resume_deferred_git_startup: async () => true,
+  update_github_pr_enabled: async () => null,
 
   // Plan commands
   get_active_plan: async (args) => mockPlanApi.getActivePlan(args.projectId as string),

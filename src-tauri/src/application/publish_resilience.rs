@@ -401,6 +401,7 @@ fn is_agent_fixable_failure(normalized: &str) -> bool {
 fn is_operational_failure(normalized: &str) -> bool {
     const PATTERNS: &[&str] = &[
         "github integration is not available",
+        "git authentication",
         "workspace not found",
         "conversation not found",
         "project not found",

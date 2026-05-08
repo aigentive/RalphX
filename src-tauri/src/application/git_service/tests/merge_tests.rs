@@ -1035,3 +1035,94 @@ async fn test_fetch_origin_serializes_on_same_repo() {
         "Second concurrent fetch_origin should succeed"
     );
 }
+
+#[tokio::test]
+async fn test_fetch_origin_prunes_deleted_remote_tracking_refs() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let remote = temp_dir.path().join("origin.git");
+    let repo = temp_dir.path().join("repo");
+
+    Command::new("git")
+        .args(["init", "--bare", remote.to_str().unwrap()])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["clone", remote.to_str().unwrap(), repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    std::fs::write(repo.join("README.md"), "base\n").unwrap();
+    Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "base"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["push", "-u", "origin", "main"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["checkout", "-b", "feature/deleted-base"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("feature.txt"), "feature\n").unwrap();
+    Command::new("git")
+        .args(["add", "feature.txt"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "feature"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["push", "-u", "origin", "feature/deleted-base"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["checkout", "main"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    assert!(
+        GitService::ref_exists(&repo, "origin/feature/deleted-base")
+            .await
+            .unwrap(),
+        "remote-tracking ref should exist before remote deletion"
+    );
+
+    Command::new("git")
+        .args(["push", "origin", "--delete", "feature/deleted-base"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    GitService::fetch_origin(&repo).await.unwrap();
+
+    assert!(
+        !GitService::ref_exists(&repo, "origin/feature/deleted-base")
+            .await
+            .unwrap(),
+        "fetch_origin must prune deleted remote-tracking refs"
+    );
+}

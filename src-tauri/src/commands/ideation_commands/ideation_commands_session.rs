@@ -11,13 +11,12 @@ use crate::application::git_service::GitService;
 use crate::application::ideation_workspace::{
     prepare_ideation_analysis_state, IdeationAnalysisBaseSelection,
 };
-use crate::application::session_namer_prompt::build_session_namer_prompt;
+use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::AppState;
 use crate::application::{StopMode, TaskCleanupService};
 use crate::domain::entities::plan_branch::PlanBranchStatus;
 use crate::domain::entities::{
-    ChatContextType, ChatConversationId, IdeationSession, IdeationSessionId, IdeationSessionStatus,
-    ProjectId, SessionPurpose, TaskId,
+    IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId, SessionPurpose, TaskId,
 };
 
 use super::ideation_commands_types::{
@@ -572,106 +571,15 @@ pub async fn spawn_session_namer(
     first_message: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    use crate::application::harness_runtime_registry::{
-        default_repo_root_working_directory, resolve_harness_agent_bootstrap,
-    };
-    use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
-    use crate::infrastructure::agents::claude::agent_names;
-
-    let (prompt, project_id, target_label) = match (session_id.clone(), conversation_id.clone()) {
-        (Some(session_id), None) => {
-            let prompt = build_session_namer_prompt(&format!(
-                "<session_id>{}</session_id>\n<user_message>{}</user_message>",
-                session_id, first_message
-            ));
-            let project_id = state
-                .ideation_session_repo
-                .get_by_id(&IdeationSessionId::from_string(session_id.clone()))
-                .await
-                .map_err(|e| e.to_string())?
-                .map(|session| session.project_id.as_str().to_string());
-            (prompt, project_id, format!("session:{session_id}"))
-        }
-        (None, Some(conversation_id)) => {
-            let prompt = build_session_namer_prompt(&format!(
-                "<conversation_id>{}</conversation_id>\n<user_message>{}</user_message>",
-                conversation_id, first_message
-            ));
-            let project_id = state
-                .chat_conversation_repo
-                .get_by_id(&ChatConversationId::from_string(conversation_id.clone()))
-                .await
-                .map_err(|e| e.to_string())?
-                .and_then(|conversation| {
-                    (conversation.context_type == ChatContextType::Project)
-                        .then_some(conversation.context_id)
-                });
-            (
-                prompt,
-                project_id,
-                format!("conversation:{conversation_id}"),
-            )
-        }
-        (Some(_), Some(_)) | (None, None) => {
-            return Err(
-                "spawn_session_namer requires exactly one of sessionId or conversationId"
-                    .to_string(),
-            )
-        }
-    };
-    let runtime = state.resolve_session_namer_runtime().await;
-    let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
-
-    // Get the working directory (project root)
-    let working_directory = default_repo_root_working_directory();
-    let bootstrap = resolve_harness_agent_bootstrap(
-        helper_harness,
-        agent_names::AGENT_SESSION_NAMER,
-        working_directory,
-    );
-
-    let harness_for_log = runtime.harness;
-    let config = AgentConfig {
-        role: AgentRole::Custom(bootstrap.agent_role.clone()),
-        prompt,
-        working_directory: bootstrap.working_directory,
-        plugin_dir: Some(bootstrap.plugin_dir),
-        agent: Some(bootstrap.agent_name),
-        model: runtime.model,
-        harness: runtime.harness,
-        logical_effort: runtime.logical_effort,
-        approval_policy: runtime.approval_policy,
-        sandbox_mode: runtime.sandbox_mode,
-        max_tokens: None,
-        timeout_secs: Some(60), // 60 second timeout for title generation
-        env: bootstrap.env,
-    };
-
-    // Clone the agent client for the background task
-    let agent_client = Arc::clone(&runtime.client);
-
-    // Spawn in background (fire-and-forget)
-    tokio::spawn(async move {
-        tracing::info!(
-            target = %target_label,
-            project_id = project_id.as_deref().unwrap_or(""),
-            harness = ?harness_for_log,
-            "Spawning session namer agent"
-        );
-        match agent_client.spawn_agent(config).await {
-            Ok(handle) => {
-                // Wait for completion in the background
-                if let Err(e) = agent_client.wait_for_completion(&handle).await {
-                    tracing::warn!("Session namer agent failed: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to spawn session namer agent: {}", e);
-            }
-        }
-    });
-
-    Ok(())
+    let target = SessionNamerTarget::from_initial_request(
+        session_id,
+        conversation_id,
+        first_message,
+    )
+    .map_err(str::to_string)?;
+    spawn_session_namer_agent(&state, target)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Get child sessions for a parent session, with optional purpose filter.

@@ -62,9 +62,7 @@ fn hidden_resume_in_place_marker_metadata(metadata_override: Option<&str>) -> Op
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return None;
     };
-    let Some(obj) = value.as_object_mut() else {
-        return None;
-    };
+    let obj = value.as_object_mut()?;
     if obj
         .get("persist_hidden_marker")
         .and_then(|value| value.as_bool())

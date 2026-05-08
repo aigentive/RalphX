@@ -2,15 +2,16 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
-export type AgentProvider = "claude" | "codex";
+import {
+  normalizeAgentRuntimeSelection,
+  type AgentRuntimeSelection,
+} from "@/lib/agent-models";
+
+export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
+
 export type AgentArtifactTab = "plan" | "verification" | "proposal" | "tasks" | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
-
-export interface AgentRuntimeSelection {
-  provider: AgentProvider;
-  modelId: string;
-}
 
 export interface AgentArtifactState {
   isOpen: boolean;
@@ -57,7 +58,20 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   taskMode: "graph",
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
-const AGENT_SESSION_STORE_VERSION = 1;
+const AGENT_SESSION_STORE_VERSION = 2;
+
+function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([key, runtime]) => [
+      key,
+      normalizeAgentRuntimeSelection(runtime),
+    ])
+  );
+}
 
 export function migrateAgentSessionStore(
   persistedState: unknown,
@@ -71,10 +85,22 @@ export function migrateAgentSessionStore(
     return persistedState;
   }
 
-  return {
-    ...persistedState,
-    showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
-  };
+  const nextState: Record<string, unknown> = { ...persistedState };
+
+  if (version < 1) {
+    nextState.showAllProjects = DEFAULT_SHOW_ALL_PROJECTS;
+  }
+
+  if (version < 2) {
+    nextState.runtimeByConversationId = normalizeRuntimeRecord(
+      nextState.runtimeByConversationId
+    );
+    nextState.lastRuntimeByProjectId = normalizeRuntimeRecord(
+      nextState.lastRuntimeByProjectId
+    );
+  }
+
+  return nextState;
 }
 
 function ensureArtifactState(state: AgentSessionState, conversationId: string): AgentArtifactState {
@@ -82,6 +108,13 @@ function ensureArtifactState(state: AgentSessionState, conversationId: string): 
     state.artifactByConversationId[conversationId] = { ...DEFAULT_ARTIFACT_STATE };
   }
   return state.artifactByConversationId[conversationId];
+}
+
+function expandOnlyProject(state: AgentSessionState, projectId: string) {
+  for (const expandedProjectId of Object.keys(state.expandedProjectIds)) {
+    state.expandedProjectIds[expandedProjectId] = expandedProjectId === projectId;
+  }
+  state.expandedProjectIds[projectId] = true;
 }
 
 export const useAgentSessionStore = create<AgentSessionState & AgentSessionActions>()(
@@ -101,15 +134,8 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setFocusedProject: (projectId) =>
         set((state) => {
           state.focusedProjectId = projectId;
-          const lastConversationId = projectId
-            ? (state.lastSelectedConversationByProjectId ?? {})[projectId]
-            : null;
-          if (projectId && lastConversationId) {
-            state.selectedProjectId = projectId;
-            state.selectedConversationId = lastConversationId;
-          }
           if (projectId) {
-            state.expandedProjectIds[projectId] = true;
+            expandOnlyProject(state, projectId);
           }
         }),
 
@@ -120,7 +146,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.selectedConversationId = conversationId;
           state.lastSelectedConversationByProjectId ??= {};
           state.lastSelectedConversationByProjectId[projectId] = conversationId;
-          state.expandedProjectIds[projectId] = true;
+          expandOnlyProject(state, projectId);
         }),
 
       clearSelection: () =>
@@ -131,12 +157,21 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {
-          state.expandedProjectIds[projectId] = expanded;
+          if (expanded) {
+            expandOnlyProject(state, projectId);
+          } else {
+            state.expandedProjectIds[projectId] = false;
+          }
         }),
 
       toggleProjectExpanded: (projectId) =>
         set((state) => {
-          state.expandedProjectIds[projectId] = !(state.expandedProjectIds[projectId] ?? true);
+          const nextExpanded = !(state.expandedProjectIds[projectId] ?? false);
+          if (nextExpanded) {
+            expandOnlyProject(state, projectId);
+          } else {
+            state.expandedProjectIds[projectId] = false;
+          }
         }),
 
       setShowAllProjects: (showAllProjects) =>
@@ -173,13 +208,15 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
 
       setRuntimeForConversation: (conversationId, projectId, runtime) =>
         set((state) => {
-          state.runtimeByConversationId[conversationId] = runtime;
-          state.lastRuntimeByProjectId[projectId] = runtime;
+          const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
+          state.runtimeByConversationId[conversationId] = normalizedRuntime;
+          state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
         }),
 
       setLastRuntimeForProject: (projectId, runtime) =>
         set((state) => {
-          state.lastRuntimeByProjectId[projectId] = runtime;
+          state.lastRuntimeByProjectId[projectId] =
+            normalizeAgentRuntimeSelection(runtime);
         }),
     })),
     {

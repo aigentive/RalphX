@@ -54,6 +54,9 @@ describe("KanbanSplitLayout", () => {
     );
 
     expect(screen.getByTestId("kanban-board")).toBeInTheDocument();
+    expect(screen.getByTestId("kanban-split-layout").getAttribute("style")).toContain(
+      "background-color: var(--app-content-bg)"
+    );
     expect(screen.queryByTestId("kanban-task-chat-panel")).not.toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
   });
@@ -86,6 +89,9 @@ describe("KanbanSplitLayout", () => {
     expect(screen.getByTestId("task-detail-overlay")).toBeInTheDocument();
     expect(screen.getByTestId("task-detail-overlay")).toHaveAttribute("data-constrained", "false");
     expect(screen.getByTestId("kanban-task-chat-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("kanban-task-chat-panel").getAttribute("style")).toContain(
+      "border-color: var(--app-content-border)"
+    );
     expect(screen.getByTestId("integrated-chat-panel")).toHaveTextContent("Task chat for project-1");
   });
 });

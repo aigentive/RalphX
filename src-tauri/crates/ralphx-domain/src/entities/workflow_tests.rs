@@ -338,17 +338,23 @@ fn workflow_column_with_groups_serializes() {
 fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
     let workflow = WorkflowSchema::default_ralphx();
 
-    // Ready column should have 2 groups: Fresh Tasks, Needs Revision
+    // Ready column should include all idle/return-to-work groups.
     let ready_col = workflow.columns.iter().find(|c| c.id == "ready").unwrap();
     assert!(ready_col.groups.is_some());
     let ready_groups = ready_col.groups.as_ref().unwrap();
-    assert_eq!(ready_groups.len(), 2);
+    assert_eq!(ready_groups.len(), 4);
     assert!(ready_groups
         .iter()
         .any(|g| g.id == "fresh" && g.statuses.contains(&InternalStatus::Ready)));
     assert!(ready_groups
         .iter()
         .any(|g| g.id == "needs_revision" && g.statuses.contains(&InternalStatus::RevisionNeeded)));
+    assert!(ready_groups
+        .iter()
+        .any(|g| g.id == "blocked" && g.statuses.contains(&InternalStatus::Blocked)));
+    assert!(ready_groups
+        .iter()
+        .any(|g| g.id == "paused" && g.statuses.contains(&InternalStatus::Paused)));
 
     // In Progress column should have 2 groups: First Attempt, Revising
     let progress_col = workflow
@@ -366,7 +372,7 @@ fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
         .iter()
         .any(|g| g.id == "revising" && g.statuses.contains(&InternalStatus::ReExecuting)));
 
-    // In Review column should have 3 groups
+    // In Review column should include waiting/reviewing/approval/escalated groups.
     let review_col = workflow
         .columns
         .iter()
@@ -374,7 +380,7 @@ fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
         .unwrap();
     assert!(review_col.groups.is_some());
     let review_groups = review_col.groups.as_ref().unwrap();
-    assert_eq!(review_groups.len(), 3);
+    assert_eq!(review_groups.len(), 4);
     assert!(review_groups
         .iter()
         .any(|g| g.id == "waiting_ai" && g.statuses.contains(&InternalStatus::PendingReview)));
@@ -384,13 +390,37 @@ fn default_ralphx_workflow_has_groups_for_multi_state_columns() {
     assert!(review_groups
         .iter()
         .any(|g| g.id == "ready_approval" && g.statuses.contains(&InternalStatus::ReviewPassed)));
+    assert!(review_groups
+        .iter()
+        .any(|g| g.id == "escalated" && g.statuses.contains(&InternalStatus::Escalated)));
+
+    // Done column should include merge, attention, completed, and terminal groups.
+    let done_col = workflow.columns.iter().find(|c| c.id == "done").unwrap();
+    let done_groups = done_col.groups.as_ref().unwrap();
+    assert_eq!(done_groups.len(), 6);
+    assert!(done_groups.iter().any(|g| {
+        g.id == "merging"
+            && g.statuses.contains(&InternalStatus::PendingMerge)
+            && g.statuses.contains(&InternalStatus::Merging)
+            && g.statuses.contains(&InternalStatus::WaitingOnPr)
+    }));
+    assert!(done_groups.iter().any(|g| {
+        g.id == "needs_attention"
+            && g.statuses.contains(&InternalStatus::MergeIncomplete)
+            && g.statuses.contains(&InternalStatus::MergeConflict)
+    }));
+    assert!(done_groups.iter().any(|g| {
+        g.id == "completed"
+            && g.statuses.contains(&InternalStatus::Merged)
+            && g.statuses.contains(&InternalStatus::Approved)
+    }));
 }
 
 #[test]
 fn default_ralphx_workflow_groups_have_correct_drag_drop_settings() {
     let workflow = WorkflowSchema::default_ralphx();
 
-    // Ready column: fresh can drag/drop, needs_revision can drag but not drop
+    // Ready column: fresh/blocked can drag/drop, needs_revision can drag but not drop.
     let ready_col = workflow.columns.iter().find(|c| c.id == "ready").unwrap();
     let ready_groups = ready_col.groups.as_ref().unwrap();
     let fresh = ready_groups.iter().find(|g| g.id == "fresh").unwrap();
@@ -402,6 +432,12 @@ fn default_ralphx_workflow_groups_have_correct_drag_drop_settings() {
         .unwrap();
     assert_eq!(revision.can_drag_from, Some(true));
     assert_eq!(revision.can_drop_to, Some(false));
+    let blocked = ready_groups.iter().find(|g| g.id == "blocked").unwrap();
+    assert_eq!(blocked.can_drag_from, Some(true));
+    assert_eq!(blocked.can_drop_to, Some(true));
+    let paused = ready_groups.iter().find(|g| g.id == "paused").unwrap();
+    assert_eq!(paused.can_drag_from, Some(false));
+    assert_eq!(paused.can_drop_to, Some(false));
 
     // In Progress: all groups locked (system-managed)
     let progress_col = workflow
@@ -423,6 +459,13 @@ fn default_ralphx_workflow_groups_have_correct_drag_drop_settings() {
         .unwrap();
     let review_groups = review_col.groups.as_ref().unwrap();
     for group in review_groups {
+        assert_eq!(group.can_drag_from, Some(false));
+        assert_eq!(group.can_drop_to, Some(false));
+    }
+
+    let done_col = workflow.columns.iter().find(|c| c.id == "done").unwrap();
+    let done_groups = done_col.groups.as_ref().unwrap();
+    for group in done_groups {
         assert_eq!(group.can_drag_from, Some(false));
         assert_eq!(group.can_drop_to, Some(false));
     }

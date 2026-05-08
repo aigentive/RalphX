@@ -236,7 +236,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
 
         {/* Outcome badge */}
         <span
-          className={`${compact ? "text-[9px]" : "text-[10px]"} px-1.5 py-0.5 rounded font-medium flex-shrink-0`}
+          className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded font-medium flex-shrink-0`}
           style={{ backgroundColor: style.bg, color: style.text, border: `1px solid ${style.border}` }}
         >
           {style.label}
@@ -244,7 +244,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
 
         {/* Issue count or summary */}
         <span
-          className={`${compact ? "text-[11px]" : "text-xs"} truncate flex-1 min-w-[80px]`}
+          className={`${compact ? "text-[0.6875rem]" : "text-xs"} truncate flex-1 min-w-[80px]`}
           style={{ color: hasError ? "var(--status-error)" : "var(--text-secondary)" }}
         >
           {issues.length > 0
@@ -255,7 +255,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
         {/* Error indicator */}
         {hasError && (
           <span
-            className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium px-1.5 py-0.5 rounded`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium px-1.5 py-0.5 rounded`}
             style={{ backgroundColor: "var(--status-error-muted)", color: "var(--status-error)" }}
           >
             Failed
@@ -269,7 +269,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
               event.stopPropagation();
               navigateToIdeationSession(followupSessionId);
             }}
-            className={`${compact ? "text-[9px]" : "text-[10px]"} flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80 flex-shrink-0`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} flex items-center gap-1 px-1.5 py-0.5 rounded transition-opacity hover:opacity-80 flex-shrink-0`}
             style={{
               backgroundColor: "var(--accent-muted)",
               color: "var(--accent-primary)",
@@ -291,7 +291,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
           {/* Feedback text */}
           {args.feedback && (
             <div
-              className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded`}
+              className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded`}
               style={{
                 backgroundColor: "var(--bg-surface)",
                 color: "var(--text-secondary)",
@@ -307,7 +307,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
           {issues.length > 0 && (
             <div className="space-y-1">
               <div
-                className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium uppercase tracking-wide`}
+                className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium uppercase tracking-wide`}
                 style={{ color: "var(--text-muted)" }}
               >
                 Issues
@@ -315,12 +315,12 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
               {issues.map((issue, idx) => (
                 <div
                   key={idx}
-                  className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded flex items-start gap-2`}
+                  className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded flex items-start gap-2`}
                   style={{ backgroundColor: "var(--bg-surface)" }}
                 >
                   {/* Severity badge */}
                   <span
-                    className="text-[9px] px-1 py-0.5 rounded flex-shrink-0 font-medium mt-0.5"
+                    className="text-[0.5625rem] px-1 py-0.5 rounded flex-shrink-0 font-medium mt-0.5"
                     style={{ backgroundColor: getSeverityBg(issue.severity), color: getSeverityColor(issue.severity) }}
                   >
                     {issue.severity}
@@ -328,7 +328,7 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
                   <div className="flex-1 min-w-0">
                     <div style={{ color: "var(--text-primary)" }}>{issue.description}</div>
                     {issue.file && (
-                      <div className="mt-0.5 font-mono text-[9px]" style={{ color: "var(--text-muted)" }}>
+                      <div className="mt-0.5 font-mono text-[0.5625rem]" style={{ color: "var(--text-muted)" }}>
                         {issue.file}{issue.line != null ? `:${issue.line}` : ""}
                       </div>
                     )}
@@ -341,13 +341,13 @@ function CompleteReviewCard({ toolCall, className = "", compact = false }: ToolC
           {followupSessionId && (
             <div className="space-y-1">
               <div
-                className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium uppercase tracking-wide`}
+                className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium uppercase tracking-wide`}
                 style={{ color: "var(--text-muted)" }}
               >
                 Follow-up Session
               </div>
               <div
-                className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded flex items-center justify-between gap-2`}
+                className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded flex items-center justify-between gap-2`}
                 style={{ backgroundColor: "var(--bg-surface)" }}
               >
                 <span style={{ color: "var(--text-secondary)" }}>{followupSessionId}</span>
@@ -414,7 +414,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
       >
         <div className={`flex items-center gap-2 ${compact ? "px-2 py-1.5" : "px-3 py-2"}`}>
           <FileText size={iconSize} className="flex-shrink-0" style={{ color: "var(--text-muted)" }} />
-          <span className={`${compact ? "text-[11px]" : "text-xs"}`} style={{ color: "var(--text-muted)" }}>
+          <span className={`${compact ? "text-[0.6875rem]" : "text-xs"}`} style={{ color: "var(--text-muted)" }}>
             No review notes
           </span>
         </div>
@@ -450,7 +450,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
         {/* Approval status badge from latest review */}
         {latestStyle && (
           <span
-            className={`${compact ? "text-[9px]" : "text-[10px]"} px-1.5 py-0.5 rounded font-medium flex-shrink-0`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded font-medium flex-shrink-0`}
             style={{ backgroundColor: latestStyle.bg, color: latestStyle.text, border: `1px solid ${latestStyle.border}` }}
           >
             {latestStyle.label}
@@ -458,7 +458,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
         )}
 
         <span
-          className={`${compact ? "text-[11px]" : "text-xs"} flex-1 min-w-[80px] break-words`}
+          className={`${compact ? "text-[0.6875rem]" : "text-xs"} flex-1 min-w-[80px] break-words`}
           style={{ color: "var(--text-secondary)" }}
         >
           {reviews.length} review note{reviews.length !== 1 ? "s" : ""}
@@ -467,7 +467,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
         {/* Revision counter badge */}
         {revisionCount > 0 && (
           <span
-            className={`${compact ? "text-[9px]" : "text-[10px]"} px-1.5 py-0.5 rounded flex-shrink-0`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} px-1.5 py-0.5 rounded flex-shrink-0`}
             style={{
               backgroundColor: "var(--accent-muted)",
               color: "var(--accent-primary)",
@@ -479,7 +479,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
 
         {hasError && (
           <span
-            className={`${compact ? "text-[9px]" : "text-[10px]"} font-medium px-1.5 py-0.5 rounded`}
+            className={`${compact ? "text-[0.5625rem]" : "text-[0.625rem]"} font-medium px-1.5 py-0.5 rounded`}
             style={{ backgroundColor: "var(--status-error-muted)", color: "var(--status-error)" }}
           >
             Failed
@@ -491,7 +491,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
           count > 0 ? (
             <span
               key={severity}
-              className="text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0"
+              className="text-[0.5625rem] px-1 py-0.5 rounded font-medium flex-shrink-0"
               style={{ backgroundColor: getSeverityBg(severity), color: getSeverityColor(severity) }}
             >
               {severity}: {count}
@@ -512,7 +512,7 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
             return (
               <div
                 key={note.id}
-                className={`${compact ? "text-[10px]" : "text-[11px]"} px-2 py-1.5 rounded`}
+                className={`${compact ? "text-[0.625rem]" : "text-[0.6875rem]"} px-2 py-1.5 rounded`}
                 style={{ backgroundColor: "var(--bg-surface)" }}
               >
                 <div className="flex items-center gap-1.5 mb-1">
@@ -520,11 +520,11 @@ function GetReviewNotesCard({ toolCall, className = "", compact = false }: ToolC
                   <span className="font-medium" style={{ color: noteStyle.text }}>
                     {noteStyle.label}
                   </span>
-                  <span className="text-[9px]" style={{ color: "var(--text-muted)" }}>
+                  <span className="text-[0.5625rem]" style={{ color: "var(--text-muted)" }}>
                     {note.reviewer}
                   </span>
                   {note.created_at && (
-                    <span className="flex items-center gap-0.5 text-[9px] ml-auto" style={{ color: "var(--text-muted)" }}>
+                    <span className="flex items-center gap-0.5 text-[0.5625rem] ml-auto" style={{ color: "var(--text-muted)" }}>
                       <Clock size={8} />
                       {formatTimestamp(note.created_at)}
                     </span>

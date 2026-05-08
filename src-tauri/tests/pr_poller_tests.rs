@@ -5,6 +5,7 @@
 
 mod common;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -34,6 +35,10 @@ use common::MockGithubService;
 // ============================================================================
 // Shared helpers
 // ============================================================================
+
+fn empty_startup_blocked_projects() -> Arc<HashSet<ProjectId>> {
+    Arc::new(HashSet::new())
+}
 
 fn build_transition_service(
     app_state: &AppState,
@@ -313,6 +318,7 @@ async fn recover_agent_workspace_pr_pollers_restarts_active_direct_workspaces() 
         Arc::clone(&app_state.project_repo),
         Arc::clone(&registry),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        empty_startup_blocked_projects(),
     )
     .await;
 
@@ -351,6 +357,7 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
         Arc::clone(&app_state.project_repo),
         Arc::clone(&registry),
         Arc::clone(&chat_service) as Arc<dyn ChatService>,
+        empty_startup_blocked_projects(),
     )
     .await;
 

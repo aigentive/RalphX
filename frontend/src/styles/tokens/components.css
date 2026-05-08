@@ -25,6 +25,27 @@
   --card-icon-color:   var(--accent-primary);
 
   /* ============================================================================
+   * Kanban board — v29a task-page component chrome
+   * ============================================================================ */
+  --kanban-toolbar-bg:             #1E1E23;
+  --kanban-toolbar-border:         #2E2E36;
+  --kanban-board-divider:          #2E2E36;
+  --kanban-column-bg:              rgba(255,255,255,.012);
+  --kanban-card-bg:                #232329;
+  --kanban-card-border:            #34343C;
+  --kanban-card-selected-bg:       rgba(111,179,255,.14);
+  --kanban-card-selected-border:   rgba(111,179,255,.34);
+  --kanban-card-warning-bg:        rgba(224,179,65,.10);
+  --kanban-card-warning-border:    rgba(224,179,65,.30);
+  --kanban-card-success-bg:        rgba(63,191,127,.08);
+  --kanban-card-success-border:    rgba(63,191,127,.22);
+  --kanban-tray-bg:                #2A2A31;
+  --kanban-tray-ink:               #6A6A72;
+  --kanban-empty-ink:              #6A6A72;
+  --kanban-group-divider:          rgba(255,255,255,.05);
+  --kanban-progress-track:         rgba(255,255,255,.08);
+
+  /* ============================================================================
    * Dialog / modal (shadcn consumers also wire through --background/--card)
    *
    * --dialog-bg        — main content pane (brighter / primary surface)
@@ -36,6 +57,20 @@
   --dialog-overlay-bg:   var(--overlay-scrim-deep);
   --dialog-bg:           var(--bg-elevated); /* main content surface */
   --dialog-rail-bg:      var(--bg-surface);  /* subtle tonal shift for rail */
+  --dialog-pane-bg:      var(--bg-base);
+  --dialog-pane-head-bg: var(--bg-elevated);
+  --dialog-pane-head-icon-bg: var(--bg-hover);
+  --dialog-divider-color: var(--border-subtle);
+  --dialog-control-bg:   var(--bg-elevated);
+  --dialog-control-border: var(--border-default);
+  --dialog-control-border-hover: var(--border-strong);
+  --dialog-nav-active-bg: var(--bg-hover);
+  --dialog-nav-active-border: var(--border-default);
+  --dialog-toggle-off-bg: var(--border-default);
+  --dialog-warn:         var(--status-warning);
+  --dialog-warn-bg:      var(--status-warning-muted);
+  --dialog-warn-card-bg: color-mix(in srgb, var(--status-warning) 6%, transparent);
+  --dialog-warn-border:  var(--status-warning-border);
   --dialog-border-color: var(--border-subtle);
   --dialog-shadow:       var(--shadow-lg);
 
@@ -55,6 +90,14 @@
   --button-primary-bg-hover: var(--accent-hover);
   --button-primary-text:     var(--primary-foreground);
   --button-ghost-bg-hover:   var(--bg-hover);
+
+  /* ============================================================================
+   * Tooltip — app hover labels via TooltipContent.
+   * ============================================================================ */
+  --tooltip-bg: #232329;
+  --tooltip-border: #393940;
+  --tooltip-text: #F2F2F4;
+  --tooltip-shadow: 0 10px 24px rgba(0,0,0,.36), 0 2px 6px rgba(0,0,0,.28);
 
   /* ============================================================================
    * Notice / alert — InlineNotice component tones.

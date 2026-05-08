@@ -28,6 +28,84 @@ release_analysis_normalize_version() {
   printf '%s\n' "${version}"
 }
 
+release_analysis_compare_versions() {
+  local left
+  local right
+  local left_major
+  local left_minor
+  local left_patch
+  local right_major
+  local right_minor
+  local right_patch
+
+  left="$(release_analysis_normalize_version "$1")"
+  right="$(release_analysis_normalize_version "$2")"
+  IFS='.' read -r left_major left_minor left_patch <<< "${left}"
+  IFS='.' read -r right_major right_minor right_patch <<< "${right}"
+
+  left_major=$((10#${left_major}))
+  left_minor=$((10#${left_minor}))
+  left_patch=$((10#${left_patch}))
+  right_major=$((10#${right_major}))
+  right_minor=$((10#${right_minor}))
+  right_patch=$((10#${right_patch}))
+
+  if (( left_major < right_major )); then
+    printf -- '-1\n'
+  elif (( left_major > right_major )); then
+    printf '1\n'
+  elif (( left_minor < right_minor )); then
+    printf -- '-1\n'
+  elif (( left_minor > right_minor )); then
+    printf '1\n'
+  elif (( left_patch < right_patch )); then
+    printf -- '-1\n'
+  elif (( left_patch > right_patch )); then
+    printf '1\n'
+  else
+    printf '0\n'
+  fi
+}
+
+release_analysis_assert_version_greater() {
+  local current
+  local selected
+  local comparison
+
+  current="$(release_analysis_normalize_version "$1")"
+  selected="$(release_analysis_normalize_version "$2")"
+  comparison="$(release_analysis_compare_versions "${current}" "${selected}")"
+
+  [[ "${comparison}" == "-1" ]] || release_analysis_die "Selected release version ${selected} must be greater than current version ${current}."
+}
+
+release_analysis_is_major_bump() {
+  local current
+  local selected
+  local current_major
+  local selected_major
+
+  current="$(release_analysis_normalize_version "$1")"
+  selected="$(release_analysis_normalize_version "$2")"
+  IFS='.' read -r current_major _ <<< "${current}"
+  IFS='.' read -r selected_major _ <<< "${selected}"
+
+  (( 10#${selected_major} > 10#${current_major} ))
+}
+
+release_analysis_assert_major_bump_allowed() {
+  local current
+  local selected
+  local approval_mode="${3:-automatic}"
+
+  current="$(release_analysis_normalize_version "$1")"
+  selected="$(release_analysis_normalize_version "$2")"
+
+  if release_analysis_is_major_bump "${current}" "${selected}" && [[ "${approval_mode}" != "manual" ]]; then
+    release_analysis_die "Major release bump ${current} -> ${selected} requires explicit manual approval. Re-run Daily Release with release_bump=major or release_version=${selected}, or use a manually approved local release path."
+  fi
+}
+
 release_analysis_try_read_selected_version() {
   [[ -f "${RELEASE_ANALYSIS_VERSION_FILE}" ]] || return 1
 
@@ -237,6 +315,9 @@ release_analysis_compute_candidate_versions() {
 
   current_version="$(release_analysis_normalize_version "$1")"
   IFS='.' read -r major minor patch <<< "${current_version}"
+  major=$((10#${major}))
+  minor=$((10#${minor}))
+  patch=$((10#${patch}))
 
   RELEASE_ANALYSIS_CURRENT_VERSION="${current_version}"
   RELEASE_ANALYSIS_NEXT_PATCH="${major}.${minor}.$((patch + 1))"

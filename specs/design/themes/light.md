@@ -16,11 +16,11 @@
 
 | Intent | How |
 |---|---|
-| Neutral bright feel | `hsl(220 10% 99%)` base — near-white with a faint blue-gray tint (matches Dark-theme hue family) |
-| Same brand identity | Warm orange accent preserved but darkened (`hsl(14 90% 50%)` vs Dark's `hsl(14 100% 60%)`) so it meets 4.5:1 on white |
-| Soft surface separation | Elevation by slight off-white and 1-pixel subtle borders rather than shadows |
+| Neutral bright feel | v27 white canvas with `#F8F8FA` panels and `#F4F4F6` rail |
+| Same brand identity | Warm orange accent preserved as `#FF6A35` across dark/light/high-contrast |
+| Soft surface separation | Elevation by slight off-white and 1-pixel subtle borders rather than sidebar/rail shadows |
 | Status palette stays Okabe-Ito | CVD-safe colours reused, each re-tuned to AA-dark variants that read on white |
-| Shadow strategy | Lighter alpha drop shadows (0.05–0.10) replacing the dark theme's 0.2–0.3 scale |
+| Shadow strategy | Dialog/card shadows only; primary rail and Agents sidebar stay flat with `--sidebar-edge-shadow: none` |
 
 **Philosophy:** Light is Dark's reflection, not a redesign. Same components, same roles, same hierarchy — inverted luminance.
 
@@ -32,54 +32,61 @@
 
 | Token | Value | Primitive source | Contrast vs. `--text-primary` |
 |---|---|---|---|
-| `--bg-base` | `hsl(220 10% 99%)` | `--gray-50` | 15.6:1 |
-| `--bg-surface` | `hsl(220 10% 97%)` | `--gray-100` | 15.4:1 |
-| `--bg-elevated` | `hsl(0 0% 100%)` | `--color-white` | 15.7:1 |
-| `--bg-hover` | `hsl(220 10% 92%)` | `--gray-200` | 14.0:1 |
+| `--bg-base` | `#FFFFFF` | v27 canvas | 15.7:1 |
+| `--bg-surface` | `#F8F8FA` | v27 panel/topbar | 15.4:1 |
+| `--bg-elevated` | `#FFFFFF` | v27 control/card | 15.7:1 |
+| `--bg-hover` | `#F1F1F4` | v27 hover/elev-2 | 14.0:1 |
+| `--nav-rail-bg` | `#F4F4F6` | v27 rail | 14.5:1 |
+| `--brand-tile` | `#DEDEE2` | v27 light logo tile | logo-only |
+| `--brand-pill-from` | `#F0F0F2` | v27 light logo bars | logo-only |
+| `--brand-pill-to` | `#EDEDEF` | v27 light logo bars | logo-only |
 | `--bg-surface-hover` | same as `--bg-hover` | — | (deprecated alias) |
 
 ### Foreground
 
 | Token | Value | Primitive | Contrast |
 |---|---|---|---|
-| `--text-primary` | `hsl(220 15% 10%)` | `--gray-990` | 15.7:1 on white |
-| `--text-secondary` | `hsl(220 10% 35%)` | `--gray-700` | 7.8:1 on white |
-| `--text-muted` | `hsl(220 10% 45%)` | `--gray-600` | 5.3:1 on white |
-| `--text-inverse` | `hsl(0 0% 100%)` | `--color-white` | (on accent/dark surfaces) |
+| `--text-primary` | `#18181D` | v27 ink | 15.7:1 on white |
+| `--text-secondary` | `#404048` | v27 ink-2 | 10.1:1 on white |
+| `--text-muted` | `#6A6A72` | v27 ink-3 | 5.2:1 on white |
+| `--text-subtle` | `#93939B` | v27 ink-4 | secondary glyphs |
+| `--text-inverse` | `#1A0E07` | v27 on-accent | on orange surfaces |
 
-### Accent (brand — warm orange, darker variant)
+### Accent (brand — warm orange)
 
 | Token | Value | Contrast vs. white |
 |---|---|---|
-| `--accent-primary` | `hsl(14 90% 50%)` ≈ `#EA5A26` | 4.5:1 (AA large) |
-| `--accent-secondary` | `hsl(32 90% 50%)` | ~4.5:1 |
-| `--accent-hover` | `hsl(14 90% 45%)` | 5.4:1 |
-| `--accent-muted` | `hsla(14 100% 60% / 0.12)` | (bg tint) |
-| `--accent-border` | `hsla(14 100% 60% / 0.30)` | (border tint) |
+| `--accent-primary` | `#FF6A35` | brand/action fill |
+| `--accent-secondary` | `#FF8050` | hover fill |
+| `--accent-hover` | `#E0521E` | strong edge |
+| `--accent-muted` | `rgba(255,106,53,.10)` | bg tint |
+| `--accent-muted-strong` | `rgba(255,106,53,.18)` | v27 active row gradient top stop |
+| `--accent-border` | `rgba(255,106,53,.36)` | border tint |
 | `--accent-strong` | `hsla(14 90% 50% / 0.50)` | (emphasis bg) |
 
 ### Status — Okabe-Ito tuned for AA on white
 
 | Role | Light value | Rationale |
 |---|---|---|
-| `--status-success` | `#007a58` (darker bluish-green) | AA 5.0:1 on white |
+| `--status-success` | `#2B9F65` | AA on white |
 | `--status-success-muted` | `hsla(164 100% 24% / 0.12)` | faint success tint |
 | `--status-success-border` | `hsla(164 100% 24% / 0.30)` | outline |
 | `--status-success-strong` | `hsla(164 100% 24% / 0.50)` | emphasis |
-| `--status-warning` | `#A87800` (darker amber) | AA 4.5:1 |
+| `--status-warning` | `#C9962E` | AA on white |
 | `--status-warning-muted/-border/-strong` | alpha variants of same | |
 | `--status-error` | `#B24800` (darker vermillion) | AA 4.5:1 |
 | `--status-error-muted/-border/-strong` | alpha variants | |
-| `--status-info` | `#005A8A` (darker Okabe blue) | AA 7.1:1 |
+| `--status-info` | `#2B70D6` | AA on white |
 | `--status-info-muted/-border/-strong` | alpha variants | |
 
 ### Borders
 
 | Token | Value | Width |
 |---|---|---|
-| `--border-subtle` | `hsl(220 10% 88%)` | 1px |
-| `--border-default` | `hsl(220 10% 78%)` | 1px |
-| `--border-focus` | `hsl(220 80% 50%)` | 2px (via `--border-width-focus`) |
+| `--border-subtle` | `#E5E5E8` | 1px |
+| `--border-default` | `#D9D9DD` | 1px |
+| `--border-strong` | `#C8C8CD` | 1px hover/strong |
+| `--border-focus` | `#2B70D6` | 2px (via `--border-width-focus`) |
 
 ### Overlays
 
@@ -100,10 +107,10 @@ Dark-theme shadows are too heavy against white. Light retunes:
 
 | Token | Value |
 |---|---|
-| `--shadow-xs` | `0 1px 2px hsla(0 0% 0% / 0.05), 0 1px 3px hsla(0 0% 0% / 0.03)` |
-| `--shadow-sm` | `0 1px 2px hsla(0 0% 0% / 0.08), 0 2px 4px hsla(0 0% 0% / 0.05)` |
-| `--shadow-md` | `0 4px 6px hsla(0 0% 0% / 0.08), 0 8px 16px hsla(0 0% 0% / 0.06)` |
-| `--shadow-lg` | `0 10px 15px hsla(0 0% 0% / 0.10), 0 20px 40px hsla(0 0% 0% / 0.08)` |
+| `--shadow-xs` | `0 1px 1px hsla(220 15% 25% / 0.10)` |
+| `--shadow-sm` | `0 1px 2px hsla(220 15% 25% / 0.10), 0 1px 2px hsla(220 15% 25% / 0.06)` |
+| `--shadow-md` | `0 2px 4px hsla(220 15% 25% / 0.09), 0 4px 8px hsla(220 15% 25% / 0.05)` |
+| `--shadow-lg` | `0 4px 8px hsla(220 15% 25% / 0.10), 0 12px 20px hsla(220 15% 25% / 0.06)` |
 
 Pulse-shadow tokens (`--shadow-pulse-accent-*`, `-info-*`, `-status-*`, `--shadow-glow-accent-*`, `--shadow-drop-zone-*`) are re-tuned with lower alpha values so animations stay visible but not aggressive on white.
 

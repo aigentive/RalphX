@@ -15,11 +15,24 @@ use std::sync::{Arc, Mutex};
 // Mock repositories for testing
 struct MockTaskRepository {
     task: Option<Task>,
+    tasks: Vec<Task>,
 }
 
 impl MockTaskRepository {
     fn with_task(task: Task) -> Self {
-        Self { task: Some(task) }
+        Self {
+            task: Some(task.clone()),
+            tasks: vec![task],
+        }
+    }
+
+    fn with_tasks(task: Task, mut related: Vec<Task>) -> Self {
+        let mut tasks = vec![task.clone()];
+        tasks.append(&mut related);
+        Self {
+            task: Some(task),
+            tasks,
+        }
     }
 }
 
@@ -29,8 +42,13 @@ impl TaskRepository for MockTaskRepository {
         Ok(task)
     }
 
-    async fn get_by_id(&self, _id: &TaskId) -> AppResult<Option<Task>> {
-        Ok(self.task.clone())
+    async fn get_by_id(&self, id: &TaskId) -> AppResult<Option<Task>> {
+        Ok(self
+            .tasks
+            .iter()
+            .find(|task| &task.id == id)
+            .cloned()
+            .or_else(|| self.task.clone()))
     }
 
     async fn get_by_project(&self, _project_id: &ProjectId) -> AppResult<Vec<Task>> {
@@ -216,11 +234,23 @@ impl TaskRepository for MockTaskRepository {
     }
 }
 
-struct MockTaskDependencyRepository;
+struct MockTaskDependencyRepository {
+    blockers: HashMap<String, Vec<TaskId>>,
+    blocked_by: HashMap<String, Vec<TaskId>>,
+}
 
 impl MockTaskDependencyRepository {
     fn empty() -> Self {
-        Self
+        Self {
+            blockers: HashMap::new(),
+            blocked_by: HashMap::new(),
+        }
+    }
+
+    fn with_blockers(task_id: &TaskId, blockers: Vec<TaskId>) -> Self {
+        let mut repo = Self::empty();
+        repo.blockers.insert(task_id.as_str().to_string(), blockers);
+        repo
     }
 }
 
@@ -232,11 +262,19 @@ impl TaskDependencyRepository for MockTaskDependencyRepository {
     async fn remove_dependency(&self, _task_id: &TaskId, _depends_on: &TaskId) -> AppResult<()> {
         Ok(())
     }
-    async fn get_blockers(&self, _task_id: &TaskId) -> AppResult<Vec<TaskId>> {
-        Ok(vec![])
+    async fn get_blockers(&self, task_id: &TaskId) -> AppResult<Vec<TaskId>> {
+        Ok(self
+            .blockers
+            .get(task_id.as_str())
+            .cloned()
+            .unwrap_or_default())
     }
-    async fn get_blocked_by(&self, _task_id: &TaskId) -> AppResult<Vec<TaskId>> {
-        Ok(vec![])
+    async fn get_blocked_by(&self, task_id: &TaskId) -> AppResult<Vec<TaskId>> {
+        Ok(self
+            .blocked_by
+            .get(task_id.as_str())
+            .cloned()
+            .unwrap_or_default())
     }
     async fn has_circular_dependency(
         &self,
@@ -763,7 +801,10 @@ async fn test_content_preview_truncation() {
 #[tokio::test]
 async fn test_task_not_found() {
     let service = TaskContextService::new(
-        Arc::new(MockTaskRepository { task: None }),
+        Arc::new(MockTaskRepository {
+            task: None,
+            tasks: Vec::new(),
+        }),
         Arc::new(MockTaskDependencyRepository::empty()),
         Arc::new(MockTaskProposalRepository::empty()),
         Arc::new(MockArtifactRepository::empty()),
@@ -796,4 +837,74 @@ async fn test_get_task_context_dependency_fields() {
     assert!(context.blocks.is_empty());
     // Tier should be 1 when no blockers exist
     assert_eq!(context.tier, Some(1));
+}
+
+#[tokio::test]
+async fn test_get_task_context_omits_merged_dependency_from_blocked_by() {
+    let task = Task::new(ProjectId::new(), "Dependent Task".to_string());
+    let task_id = task.id.clone();
+
+    let mut blocker = Task::new(task.project_id.clone(), "Merged Blocker".to_string());
+    blocker.internal_status = InternalStatus::Merged;
+    let blocker_id = blocker.id.clone();
+
+    let service = TaskContextService::new(
+        Arc::new(MockTaskRepository::with_tasks(task.clone(), vec![blocker])),
+        Arc::new(MockTaskDependencyRepository::with_blockers(
+            &task_id,
+            vec![blocker_id],
+        )),
+        Arc::new(MockTaskProposalRepository::empty()),
+        Arc::new(MockArtifactRepository::empty()),
+        Arc::new(MockTaskStepRepository::empty()),
+    );
+
+    let context = service.get_task_context(&task_id).await.unwrap();
+
+    assert!(
+        context.blocked_by.is_empty(),
+        "merged dependencies are resolved and must not appear as active blockers"
+    );
+    assert_eq!(context.tier, Some(1));
+    assert!(
+        !context
+            .context_hints
+            .iter()
+            .any(|hint| hint.starts_with("BLOCKED:")),
+        "resolved blockers must not produce a worker stop hint"
+    );
+}
+
+#[tokio::test]
+async fn test_get_task_context_keeps_active_dependency_in_blocked_by() {
+    let task = Task::new(ProjectId::new(), "Dependent Task".to_string());
+    let task_id = task.id.clone();
+
+    let mut blocker = Task::new(task.project_id.clone(), "Executing Blocker".to_string());
+    blocker.internal_status = InternalStatus::Executing;
+    let blocker_id = blocker.id.clone();
+
+    let service = TaskContextService::new(
+        Arc::new(MockTaskRepository::with_tasks(task.clone(), vec![blocker])),
+        Arc::new(MockTaskDependencyRepository::with_blockers(
+            &task_id,
+            vec![blocker_id],
+        )),
+        Arc::new(MockTaskProposalRepository::empty()),
+        Arc::new(MockArtifactRepository::empty()),
+        Arc::new(MockTaskStepRepository::empty()),
+    );
+
+    let context = service.get_task_context(&task_id).await.unwrap();
+
+    assert_eq!(context.blocked_by.len(), 1);
+    assert_eq!(context.blocked_by[0].title, "Executing Blocker");
+    assert_eq!(context.tier, Some(2));
+    assert!(
+        context
+            .context_hints
+            .iter()
+            .any(|hint| hint.contains("Executing Blocker")),
+        "active blockers should still produce worker dependency hints"
+    );
 }

@@ -56,7 +56,7 @@ export function CollapsibleEstimates({ eme, projectId }: CollapsibleEstimatesPro
         <span className="uppercase tracking-wide">Estimates</span>
         {!isDefault && (
           <span
-            className="ml-auto text-[10px] px-1 rounded"
+            className="ml-auto text-[0.625rem] px-1 rounded"
             style={{ backgroundColor: "var(--accent-muted)", color: "var(--accent-primary)" }}
           >
             calibrated
@@ -108,7 +108,7 @@ export function CollapsibleEstimates({ eme, projectId }: CollapsibleEstimatesPro
                 style={{ borderTop: "1px solid var(--overlay-weak)" }}
                 data-testid="calibration-section"
               >
-                <div className="text-[10px] uppercase tracking-wide opacity-60">Calibrate</div>
+                <div className="text-[0.625rem] uppercase tracking-wide opacity-60">Calibrate</div>
                 {(
                   [
                     { field: "simpleBaseHours" as const, label: "Simple base hours" },

@@ -17,6 +17,8 @@ Incident: HC theme `--bg-base: var(--color-black)` failed to cascade to `body` i
 | 3 | **Token-chain depth ≤ 1 for role tokens consumed by `background-color`.** `--card-bg: var(--bg-elevated)` is fine (one hop). `--card-bg: var(--bg-elevated)` where `--bg-elevated: var(--color-black)` (two hops into a primitive) is not — flatten to literal on the final hop. |
 | 4 | **Verify in Tauri, not just `dev:web`.** Any theme or canvas token change MUST be verified inside `npm run tauri dev`. ❌ Shipping purely on Playwright/web screenshots. |
 | 5 | **Light/Dark use literals too.** Uniform rule — Light uses `hsl(35 12% 97%)`, Dark uses `hsl(220 10% 8%)` — both literals. Don't reintroduce primitives for canvas tokens just because they "work" in Light/Dark today; the next WKWebView build might drop those too. |
+| 6 | **Themed surfaces use paint/border longhands.** Cards, sidebars, nav bars, and Kanban/task surfaces MUST set explicit `background-color` / `border-color` / `border-width` / `border-style` (or React `backgroundColor` / `borderColor` / `borderWidth` / `borderStyle`) with fallbacks. ❌ Relying on `background` / `border` shorthand after theme-token changes; WKWebView can render transparent or default-border surfaces while Chromium looks correct. |
+| 7 | **No `var()` inside inline-style gradients.** `linear-gradient(...)` / `radial-gradient(...)` / `conic-gradient(...)` delivered via React inline `style` (or any `style="..."` attribute) MUST use literal color values — ❌ `style={{ backgroundImage: "linear-gradient(180deg, var(--x), var(--y))" }}`. WKWebView's CSSOM does not always substitute custom properties inside the `<image>`-typed gradient function when parsed from the inline-style attribute, even though the same vars resolve in stylesheet rules and in plain `backgroundColor: "var(--x)"`. Fix: use literal `rgba(...)` / `hsl(...)` / `#rrggbb` inline, or move the gradient into a stylesheet rule and toggle via `data-*` / `aria-current` selectors. Root-caused 2026-05-05 (agents sidebar active-project highlight). |
 
 ## Quick reference
 
@@ -62,3 +64,4 @@ const cs = getComputedStyle(document.body);
 | `bodyBg: "rgba(0, 0, 0, 0)"` + `bodyBgBase: ""` | Chained `var()` dropped by WKWebView | Flatten per Rule 1 + add defensive canvas paint per Rule 2 |
 | `bodyBg: "rgb(...)"` matches theme intent | Working correctly | — |
 | `theme` mismatches active selector | `themeStore` desync | Fix store; out of scope for this rule |
+| Element renders transparent in Tauri but `getPropertyValue('--x')` returns the right value, AND the failing prop is a gradient set via inline `style` | WKWebView dropped `var()` substitution inside inline-style gradient | Apply Rule 7: literal colors inline, or move gradient to a stylesheet rule |

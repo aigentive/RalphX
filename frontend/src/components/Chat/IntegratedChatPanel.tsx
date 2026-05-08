@@ -53,7 +53,6 @@ import {
   PreviousRunBanner,
   animationStyles,
   HistoryEmptyState,
-  ConversationTranscriptPlaceholders,
 } from "./IntegratedChatPanel.components";
 import { useChatActions } from "@/hooks/useChatActions";
 import { useChatEvents } from "@/hooks/useChatEvents";
@@ -91,7 +90,6 @@ import { cn } from "@/lib/utils";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
-const EMPTY_SORTED_MESSAGES: never[] = [];
 
 // ============================================================================
 // Main Component
@@ -143,6 +141,7 @@ interface IntegratedChatPanelProps {
     conversationId?: string | null;
     providerHarness?: string | null;
     modelId?: string | null;
+    logicalEffort?: string | null;
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
@@ -206,9 +205,6 @@ export function IntegratedChatPanel({
   const bus = useEventBus();
   const queryClient = useQueryClient();
   const pollStartRef = useRef<number | null>(null);
-  const transcriptHydrationJobRef = useRef<{ frame: number | null; timer: number | null } | null>(null);
-  const [hydratedTranscriptConversationId, setHydratedTranscriptConversationId] =
-    useState<string | null>(null);
   const [transcriptPaintCoverConversationId, setTranscriptPaintCoverConversationId] =
     useState<string | null>(null);
   const [childSessionModalId, setChildSessionModalId] = useState<string | null>(null);
@@ -752,70 +748,10 @@ export function IntegratedChatPanel({
     : false;
   const isLoading = isConversationsLoading || isActiveConversationLoading;
   const transcriptConversationId = effectiveConversationId ?? activeConversationId ?? null;
-  const hasTranscriptMessages = messagesData.length > 0;
-  const shouldDeferTranscriptHydration =
-    Boolean(transcriptConversationId) &&
-    !isLoading &&
-    hasTranscriptMessages &&
-    hydratedTranscriptConversationId !== transcriptConversationId;
 
-  useEffect(() => {
-    const clearHydrationJob = () => {
-      const job = transcriptHydrationJobRef.current;
-      if (!job) {
-        return;
-      }
-      if (job.frame !== null) {
-        window.cancelAnimationFrame(job.frame);
-      }
-      if (job.timer !== null) {
-        window.clearTimeout(job.timer);
-      }
-      transcriptHydrationJobRef.current = null;
-    };
-
-    clearHydrationJob();
-
-    if (!transcriptConversationId || isLoading) {
-      return clearHydrationJob;
-    }
-
-    if (!hasTranscriptMessages) {
-      if (hydratedTranscriptConversationId !== transcriptConversationId) {
-        setHydratedTranscriptConversationId(transcriptConversationId);
-      }
-      return clearHydrationJob;
-    }
-
-    if (hydratedTranscriptConversationId === transcriptConversationId) {
-      return clearHydrationJob;
-    }
-
-    const job = { frame: null as number | null, timer: null as number | null };
-    const hydrate = () => {
-      job.timer = null;
-      transcriptHydrationJobRef.current = null;
-      setTranscriptPaintCoverConversationId(transcriptConversationId);
-      setHydratedTranscriptConversationId(transcriptConversationId);
-    };
-
-    if (typeof window.requestAnimationFrame === "function") {
-      job.frame = window.requestAnimationFrame(() => {
-        job.frame = null;
-        job.timer = window.setTimeout(hydrate, 0);
-      });
-    } else {
-      job.timer = window.setTimeout(hydrate, 0);
-    }
-
-    transcriptHydrationJobRef.current = job;
-    return clearHydrationJob;
-  }, [
-    hasTranscriptMessages,
-    hydratedTranscriptConversationId,
-    isLoading,
-    transcriptConversationId,
-  ]);
+  useLayoutEffect(() => {
+    setTranscriptPaintCoverConversationId(transcriptConversationId);
+  }, [transcriptConversationId]);
 
   const handleTranscriptInitialPaintReady = useCallback((conversationId: string) => {
     setTranscriptPaintCoverConversationId((current) =>
@@ -1014,10 +950,6 @@ export function IntegratedChatPanel({
   // Sort messages by createdAt always. Secondary sort by id provides stable
   // tiebreaking when timestamps are equal (e.g. optimistic + DB messages share ms).
   const sortedMessages = useMemo(() => {
-    if (shouldDeferTranscriptHydration) {
-      return EMPTY_SORTED_MESSAGES;
-    }
-
     return [...messagesData]
       // Hide session recovery rehydration prompts from UI.
       // Primary: metadata flag set by backend. Fallback: content prefix for pre-existing rows.
@@ -1036,7 +968,7 @@ export function IntegratedChatPanel({
         if (timeDiff !== 0) return timeDiff;
         return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
       });
-  }, [messagesData, shouldDeferTranscriptHydration]);
+  }, [messagesData]);
 
   // Status badge helpers - disabled in history mode (no live agent)
   // isAgentActive: only true when actively generating (not waiting_for_input)
@@ -1215,10 +1147,6 @@ export function IntegratedChatPanel({
             <div className="flex-1 flex items-center justify-center" data-testid="integrated-chat-messages">
               <LoadingState />
             </div>
-          ) : shouldDeferTranscriptHydration ? (
-            <ConversationTranscriptPlaceholders
-              contentWidthClassName={contentWidthClassName}
-            />
           ) : isEmpty ? (
             <div className="flex-1 flex items-center justify-center" data-testid="integrated-chat-messages">
               {emptyState ??

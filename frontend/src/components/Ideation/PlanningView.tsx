@@ -120,7 +120,7 @@ export function AnalysisBanner() {
         className="w-3.5 h-3.5 animate-spin shrink-0"
         style={{ color: "var(--accent-primary)" }}
       />
-      <span className="text-[12px]" style={{ color: "var(--accent-primary)" }}>
+      <span className="text-[0.75rem]" style={{ color: "var(--accent-primary)" }}>
         Analyzing dependencies — accept will be available when complete
       </span>
     </div>
@@ -913,7 +913,7 @@ export function PlanningView({
                         }}
                       >
                         <ArrowLeft className="w-3 h-3" style={{ color: "var(--text-secondary)" }} />
-                        <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                        <span className="text-[0.6875rem]" style={{ color: "var(--text-secondary)" }}>
                           {parentSession.title || "Untitled"}
                         </span>
                       </button>
@@ -923,20 +923,20 @@ export function PlanningView({
                 })()}
                 <div>
                   <h1
-                    className="text-[14px] font-semibold tracking-tight leading-tight"
+                    className="text-[0.875rem] font-semibold tracking-tight leading-tight"
                     style={{ color: "var(--text-primary)" }}
                   >
                     {session.title || "New Session"}
                   </h1>
                   <p
-                    className="text-[12px]"
+                    className="text-[0.75rem]"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {proposals.length} {proposals.length === 1 ? "proposal" : "proposals"}
                   </p>
                   {(session.sourceTaskId || session.spawnReason || session.sourceProjectId || session.sourceSessionId) && (
                     <div
-                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[10px]"
+                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[0.625rem]"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {session.sourceTaskId && (
@@ -1064,7 +1064,7 @@ export function PlanningView({
                     >
                       <button
                         onClick={() => handleTabChange('plan')}
-                        className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150"
+                        className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150"
                         style={{
                           color: activeTab === "plan"
                             ? "var(--text-primary)"
@@ -1083,7 +1083,7 @@ export function PlanningView({
                       {showVerificationTab && (
                         <button
                           onClick={handleVerificationTabClick}
-                          className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150 flex items-center gap-1.5"
+                          className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150 flex items-center gap-1.5"
                           style={{
                             color: activeTab === "verification"
                               ? "var(--text-primary)"
@@ -1123,7 +1123,7 @@ export function PlanningView({
                       )}
                       <button
                         onClick={() => handleTabChange('proposals')}
-                        className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150 flex items-center gap-1.5"
+                        className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150 flex items-center gap-1.5"
                         style={{
                           color: activeTab === "proposals"
                             ? "var(--text-primary)"
@@ -1134,7 +1134,7 @@ export function PlanningView({
                         Proposals
                         {proposals.length > 0 && (
                           <span
-                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                            className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
                             style={{
                               background: activeTab === "proposals"
                                 ? withAlpha("var(--accent-primary)", 15)
@@ -1157,7 +1157,7 @@ export function PlanningView({
                       {teamArtifacts.length > 0 && (
                         <button
                           onClick={() => handleTabChange('research')}
-                          className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150 flex items-center gap-1.5"
+                          className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150 flex items-center gap-1.5"
                           style={{
                             color: activeTab === "research"
                               ? "var(--text-primary)"
@@ -1167,7 +1167,7 @@ export function PlanningView({
                         >
                           Team Research
                           <span
-                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                            className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
                             style={{
                               background: activeTab === "research"
                                 ? withAlpha("var(--accent-primary)", 15)
@@ -1291,7 +1291,7 @@ export function PlanningView({
                   headerContent={
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <MessageSquare className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--text-muted)" }} />
-                      <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>Conversation</span>
+                      <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-primary)" }}>Conversation</span>
                     </div>
                   }
                 />
@@ -1317,10 +1317,10 @@ export function PlanningView({
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <ShieldCheck className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--status-warning)" }} />
                         <div className="flex flex-col min-w-0 flex-1">
-                          <span className="text-[11px] font-semibold leading-tight truncate" style={{ color: "var(--status-warning)" }}>
+                          <span className="text-[0.6875rem] font-semibold leading-tight truncate" style={{ color: "var(--status-warning)" }}>
                             Verification
                           </span>
-                          <span className="text-[10px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
+                          <span className="text-[0.625rem] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
                             {session.title || "Untitled"}
                           </span>
                         </div>

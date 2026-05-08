@@ -6,6 +6,7 @@ Naming convention:
 
 - `release-notes/v0.2.0.md`
 - `release-notes/v0.2.1.md`
+- `release-notes/v0.100.42.md`
 
 Typical flow:
 
@@ -20,12 +21,18 @@ Daily scheduled releases:
 - The scheduled workflow uses Codex CLI for both the version proposal and release-note generation, so the repository needs a `CODEX_API_KEY` secret.
 - Protected-main setups may also need `RELEASE_AUTOMATION_TOKEN` with `contents:write` and `actions:write` so the workflow can push the release-prep commit/tag and dispatch `Release Build`.
 - Manual `Daily Release` dispatch supports `dry_run=true` to verify generation without committing, tagging, pushing, or dispatching `Release Build`.
+- Manual `Daily Release` dispatch supports `release_bump` to force `patch`, `minor`, or `major`; selecting `major` is explicit release-owner approval.
+- Manual `Daily Release` dispatch also supports `release_version` to force an exact version; do not combine it with `release_bump`.
+- Manual `Daily Release` dispatch supports `linux_runner`, `arm_runner`, `intel_runner`, and `macos_runner_size` to choose the Release Build runner path; Blacksmith is the default for Linux prep/metadata/publish and both macOS builds, while `macos_runner_size=larger` intentionally uses paid GitHub-hosted macOS larger runners for GitHub-hosted macOS builds.
+- `arm_runner` and `intel_runner` each support `blacksmith`, `depot`, `github-hosted`, and `self-hosted`. Blacksmith and Depot Intel builds use Apple Silicon runners with Tauri's `x86_64-apple-darwin` target.
 - Maintenance-only commits can avoid scheduled release prep when every commit after the latest tag includes `[skip daily-release]`, `[skip release]`, `[no daily-release]`, or `[no release]`.
 
 Notes:
 
 - Release proposals default to `.artifacts/release-notes/proposal-from-v<current-version>.md`
 - Accepted release versions are stored in `.artifacts/release-notes/.version` (local/gitignored)
+- RalphX.app expects a long-lived `0.x.y` line; multi-digit pre-1.0 versions such as `0.42.0` and `0.100.42` are valid.
+- Generated notes should put user-facing changes first and developer/maintainer work in a separate `Developer And Maintainer Changes` section near the bottom.
 - `./scripts/propose-release.sh`, `./scripts/bump-version.sh`, and `./scripts/generate-release-notes.sh` still work as standalone lower-level steps
 - Generated drafts should keep commit traceability as clickable Markdown links
 - Codex generation logs are written to `.artifacts/release-notes/logs/`

@@ -1,10 +1,344 @@
-use super::{build_codex_mcp_overrides, compose_codex_prompt, CodexMcpRuntimeContext};
-use std::path::PathBuf;
+use super::{
+    build_codex_exec_args, build_codex_mcp_overrides, build_spawnable_codex_exec_command,
+    compose_codex_prompt, configure_spawn, probe_codex_cli, resolve_codex_cli_from_candidates,
+    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
+};
+use crate::domain::agents::LogicalEffort;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    std::fs::write(path, contents).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark executable");
+    }
+}
+
+fn full_codex_capabilities() -> CodexCliCapabilities {
+    CodexCliCapabilities {
+        version: Some("codex-cli 1.0.0".to_string()),
+        supports_exec_subcommand: true,
+        supports_json_output: true,
+        supports_model_flag: true,
+        supports_config_override: true,
+        supports_sandbox_flag: true,
+        supports_add_dir: true,
+        supports_search_flag: true,
+        supports_resume_subcommand: true,
+        supports_mcp_subcommand: true,
+    }
+}
 
 fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
     let plugin_dir = root.join("plugins/app");
     std::fs::create_dir_all(plugin_dir.join("agents")).expect("create plugin agents dir");
     plugin_dir
+}
+
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .canonicalize()
+        .expect("canonical repo root")
+}
+
+#[test]
+fn build_codex_exec_command_sets_agent_tool_path() {
+    let spawnable = build_spawnable_codex_exec_command(
+        std::path::Path::new("/fake/codex"),
+        "Prompt",
+        &full_codex_capabilities(),
+        &CodexExecCliConfig::default(),
+    )
+    .expect("build codex exec command");
+
+    let path = spawnable
+        .get_envs_for_test()
+        .into_iter()
+        .find_map(|(key, value)| (key == "PATH").then(|| value.to_string_lossy().into_owned()))
+        .expect("PATH should be explicitly set for Codex agent subprocesses");
+
+    assert!(path.contains("/opt/homebrew/bin"));
+    assert!(path.contains("/usr/local/bin"));
+}
+
+#[test]
+fn probe_codex_cli_prepends_resolved_node_for_env_shim() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let empty_path = temp_dir.path().join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("create empty path");
+    let nvm_bin = temp_dir
+        .path()
+        .join(".nvm")
+        .join("versions")
+        .join("node")
+        .join("v22.16.0")
+        .join("bin");
+    std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+    let node_path = nvm_bin.join("node");
+    let codex_path = nvm_bin.join("codex");
+    write_executable(
+        &node_path,
+        r#"#!/bin/sh
+shift
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.124.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    write_executable(&codex_path, "#!/usr/bin/env node\n");
+
+    let _home = EnvGuard::set_os("HOME", temp_dir.path());
+    let _path = EnvGuard::set_os("PATH", &empty_path);
+    let _nvm_bin = EnvGuard::unset("NVM_BIN");
+    let _volta_home = EnvGuard::unset("VOLTA_HOME");
+    let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+    let capabilities =
+        probe_codex_cli(&codex_path).expect("Codex probe should run npm shim with resolved node");
+
+    assert_eq!(capabilities.version.as_deref(), Some("0.124.0"));
+    assert!(capabilities.supports_exec_subcommand);
+    assert!(capabilities.supports_json_output);
+    assert!(capabilities.supports_model_flag);
+    assert!(capabilities.supports_config_override);
+    assert!(capabilities.supports_sandbox_flag);
+    assert!(capabilities.supports_add_dir);
+    assert!(capabilities.supports_search_flag);
+    assert!(capabilities.supports_resume_subcommand);
+    assert!(capabilities.supports_mcp_subcommand);
+}
+
+#[test]
+fn probe_codex_cli_reports_legacy_cli_without_exec_as_incompatible() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_path = temp_dir.path().join("codex");
+    write_executable(
+        &codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' '  $ codex completion <bash|zsh|fish>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+  exit 2
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+
+    let capabilities =
+        probe_codex_cli(&codex_path).expect("legacy Codex should probe as incompatible");
+
+    assert!(!capabilities.supports_exec_subcommand);
+    assert!(!capabilities.has_core_exec_support());
+    assert_eq!(
+        capabilities.missing_core_exec_features(),
+        vec![
+            "exec_subcommand",
+            "json_output",
+            "model_flag",
+            "config_override",
+            "sandbox_flag",
+            "add_dir",
+        ]
+    );
+}
+
+#[test]
+fn resolve_codex_cli_skips_legacy_candidate_without_exec_support() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let legacy_path = temp_dir.path().join("legacy").join("codex");
+    let modern_path = temp_dir.path().join("modern").join("codex");
+    std::fs::create_dir_all(legacy_path.parent().expect("legacy parent")).expect("legacy dir");
+    std::fs::create_dir_all(modern_path.parent().expect("modern parent")).expect("modern dir");
+    write_executable(
+        &legacy_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>'
+  exit 2
+else
+  exit 64
+fi
+"#,
+    );
+    write_executable(
+        &modern_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.124.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  exit 64
+fi
+"#,
+    );
+
+    let resolved = resolve_codex_cli_from_candidates(vec![legacy_path, modern_path.clone()])
+        .expect("resolver should select the compatible candidate");
+
+    assert_eq!(resolved.path, modern_path);
+    assert!(resolved.capabilities.has_core_exec_support());
+}
+
+#[test]
+fn resolve_codex_cli_returns_first_incompatible_candidate_when_none_support_exec() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let legacy_path = temp_dir.path().join("codex");
+    write_executable(
+        &legacy_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '0.1.2505172129\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Usage' '  $ codex [options] <prompt>' 'Options:' '  --version'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  exit 2
+else
+  exit 64
+fi
+"#,
+    );
+
+    let resolved = resolve_codex_cli_from_candidates(vec![legacy_path.clone()])
+        .expect("incompatible candidate should still resolve for availability reporting");
+
+    assert_eq!(resolved.path, legacy_path);
+    assert!(!resolved.capabilities.has_core_exec_support());
+    assert!(resolved
+        .capabilities
+        .missing_core_exec_features()
+        .contains(&"exec_subcommand"));
+}
+
+#[test]
+fn resolve_codex_cli_reports_probe_errors_when_candidates_cannot_be_probed() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let broken_path = temp_dir.path().join("codex");
+    write_executable(
+        &broken_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'broken codex\n' >&2
+  exit 70
+fi
+exit 64
+"#,
+    );
+
+    let error = resolve_codex_cli_from_candidates(vec![broken_path.clone()])
+        .expect_err("broken candidate should fail probing");
+
+    assert!(error.contains("No launchable Codex CLI could be probed"));
+    assert!(error.contains(&broken_path.to_string_lossy().to_string()));
+}
+
+#[test]
+fn resolve_codex_cli_reports_not_found_when_candidate_list_is_empty() {
+    let error = resolve_codex_cli_from_candidates(Vec::new())
+        .expect_err("empty candidate list should be not found");
+
+    assert_eq!(error, "Codex CLI not found");
+}
+
+#[test]
+fn build_codex_exec_args_preserves_gpt55_xhigh_selection() {
+    let args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            model: Some("gpt-5.5".to_string()),
+            reasoning_effort: Some(LogicalEffort::XHigh),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex exec args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-m" && pair[1] == "gpt-5.5"));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "model_reasoning_effort=\"xhigh\""));
+}
+
+#[test]
+fn build_codex_exec_args_passes_each_supported_reasoning_effort() {
+    for (effort, expected) in [
+        (LogicalEffort::Low, "low"),
+        (LogicalEffort::Medium, "medium"),
+        (LogicalEffort::High, "high"),
+        (LogicalEffort::XHigh, "xhigh"),
+    ] {
+        let args = build_codex_exec_args(
+            &full_codex_capabilities(),
+            &CodexExecCliConfig {
+                model: Some("gpt-5.5".to_string()),
+                reasoning_effort: Some(effort),
+                ..CodexExecCliConfig::default()
+            },
+        )
+        .expect("build codex exec args");
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c"
+                && pair[1] == format!("model_reasoning_effort=\"{expected}\"")));
+    }
 }
 
 #[test]
@@ -242,6 +576,39 @@ fn build_codex_mcp_overrides_includes_runtime_feature_flags_from_agent_metadata(
 }
 
 #[test]
+fn build_codex_mcp_overrides_pr_describer_enables_submit_tool_without_shell() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins").join("app");
+
+    let overrides = build_codex_mcp_overrides(
+        &plugin_dir,
+        "ralphx:ralphx-utility-pr-describer",
+        false,
+        None,
+    )
+    .expect("PR describer Codex MCP overrides");
+
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry == "features.shell_tool=false"),
+        "PR describer should disable Codex shell tool: {overrides:?}"
+    );
+    assert!(
+        overrides.iter().any(|entry| entry
+            == "mcp_servers.ralphx.enabled_tools=[\"submit_agent_workspace_pr_description\"]"),
+        "PR describer enabled tools should be limited to its submit tool: {overrides:?}"
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry.starts_with("mcp_servers.ralphx.args=")
+                && entry.contains("--allowed-tools=submit_agent_workspace_pr_description")),
+        "PR describer stdio MCP args should pass the submit-tool allowlist: {overrides:?}"
+    );
+}
+
+#[test]
 fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let root = temp_dir.path();
@@ -317,6 +684,31 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         args_override.contains("--lead-session-id"),
         "expected lead-session-id CLI arg in overrides: {args_override}"
     );
+}
+
+#[test]
+fn configure_spawn_prepends_resolved_node_bin_to_path() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
+        .parent()
+        .map(PathBuf::from)
+        .expect("resolved node bin");
+
+    let mut cmd = tokio::process::Command::new("/usr/bin/env");
+    cmd.env("PATH", "/usr/bin:/bin");
+    configure_spawn(&mut cmd, None);
+
+    let path_value = cmd
+        .as_std()
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == OsStr::new("PATH")).then(|| value.map(|v| v.to_os_string()))?
+        })
+        .expect("PATH env");
+    let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
+    assert_eq!(path_entries.first(), Some(&expected_node_bin));
 }
 
 #[test]

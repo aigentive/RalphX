@@ -55,7 +55,7 @@ function EditableField({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-medium">
+        <label className="text-[0.625rem] uppercase tracking-wider text-[var(--text-muted)] font-medium">
           {label}
         </label>
         {showReset && (
@@ -120,7 +120,7 @@ function ArrayField({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <label className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-medium">
+        <label className="text-[0.625rem] uppercase tracking-wider text-[var(--text-muted)] font-medium">
           {label}
         </label>
         {showReset && (

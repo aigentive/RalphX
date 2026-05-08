@@ -1713,7 +1713,7 @@ function TaskGraphViewInner({
           >
             {/* SVG marker definitions for edge arrows */}
             <EdgeMarkerDefinitions />
-            <Background color="var(--text-muted)" gap={20} />
+            <Background color="var(--border-subtle)" gap={24} />
             <Controls
               showInteractive={false}
               style={{

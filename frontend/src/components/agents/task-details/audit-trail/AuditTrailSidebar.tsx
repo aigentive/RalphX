@@ -70,7 +70,7 @@ function formatDuration(startMs: number, endMs: number | null): string {
 function SectionTitle({ children }: { children: ReactNode }) {
   return (
     <h4
-      className="text-[11px] font-semibold uppercase tracking-wider mb-2"
+      className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-2"
       style={{ color: "var(--text-muted)" }}
     >
       {children}
@@ -143,21 +143,21 @@ function PhaseItem({ phase, isSelected, isLast, onToggle }: PhaseItemProps) {
       >
         <div className="flex items-center justify-between gap-2">
           <span
-            className="text-[12px] font-medium truncate"
+            className="text-[0.75rem] font-medium truncate"
             style={{ color: isSelected ? colorRef : "var(--text-primary)" }}
           >
             {phase.label}
           </span>
           <span
             data-testid={`phase-duration-${phase.id}`}
-            className="text-[11px] shrink-0 tabular-nums"
+            className="text-[0.6875rem] shrink-0 tabular-nums"
             style={{ color: "var(--text-muted)" }}
           >
             {formatDuration(phase.startTime, phase.endTime)}
           </span>
         </div>
 
-        <div className="text-[11px] mt-0.5" style={{ color: "var(--text-secondary)" }}>
+        <div className="text-[0.6875rem] mt-0.5" style={{ color: "var(--text-secondary)" }}>
           {phase.reviewOutcome && (
             <>
               {REVIEW_OUTCOME_ICONS[phase.reviewOutcome] ?? ""}{" "}
@@ -249,7 +249,7 @@ export function AuditTrailSidebar({
               border: "1px solid var(--overlay-weak)",
             }}
           >
-            <div className="text-[12px]">
+            <div className="text-[0.75rem]">
               <span
                 data-testid="total-events"
                 className="font-medium"
@@ -264,7 +264,7 @@ export function AuditTrailSidebar({
             {dateRange && (
               <div
                 data-testid="date-range"
-                className="text-[11px] ml-auto"
+                className="text-[0.6875rem] ml-auto"
                 style={{ color: "var(--text-muted)" }}
               >
                 {dateRange}
@@ -299,7 +299,7 @@ export function AuditTrailSidebar({
             data-testid="view-all-button"
             type="button"
             onClick={() => onPhaseSelect(null)}
-            className="w-full py-2 rounded text-[12px] font-medium transition-colors duration-200"
+            className="w-full py-2 rounded text-[0.75rem] font-medium transition-colors duration-200"
             style={{
               backgroundColor:
                 selectedPhaseId === null

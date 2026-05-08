@@ -31,7 +31,7 @@ export function TeammateProgressBar({ completed, total }: TeammateProgressBarPro
       </div>
       {/* Percentage */}
       <span
-        className="text-[9px] font-medium tabular-nums shrink-0 w-7 text-right"
+        className="text-[0.5625rem] font-medium tabular-nums shrink-0 w-7 text-right"
         style={{ color: "var(--text-muted)" }}
       >
         {percent}%

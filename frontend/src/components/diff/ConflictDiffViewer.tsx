@@ -34,7 +34,7 @@ export function ConflictDiffViewer({ conflictDiff }: ConflictDiffViewerProps) {
   return (
     <div className="h-full flex flex-col">
       <div
-        className="font-mono text-[13px] leading-[20px]"
+        className="font-mono text-[0.8125rem] leading-[20px]"
         style={{ backgroundColor: "var(--bg-base)" }}
       >
         {/* Header with file path and language badge */}
@@ -50,7 +50,7 @@ export function ConflictDiffViewer({ conflictDiff }: ConflictDiffViewerProps) {
           </span>
           {displayLanguage && (
             <span
-              className="text-[11px] px-2 py-0.5 rounded ml-2 shrink-0"
+              className="text-[0.6875rem] px-2 py-0.5 rounded ml-2 shrink-0"
               style={{
                 backgroundColor: "var(--overlay-weak)",
                 color: "var(--text-muted)",
@@ -63,7 +63,7 @@ export function ConflictDiffViewer({ conflictDiff }: ConflictDiffViewerProps) {
 
         {/* Conflict legend */}
         <div
-          className="flex items-center gap-4 px-3 py-1.5 text-[11px]"
+          className="flex items-center gap-4 px-3 py-1.5 text-[0.6875rem]"
           style={{
             backgroundColor: "var(--overlay-faint)",
             borderBottom: "1px solid var(--overlay-faint)",

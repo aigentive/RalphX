@@ -2,11 +2,12 @@
 // Thin layer that delegates to ProjectRepository
 
 use serde::{Deserialize, Deserializer, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
 use tauri::{Emitter, State};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::time::Duration;
 
 use crate::application::{AppState, GitService, TaskTransitionService};
@@ -17,7 +18,21 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
+use crate::infrastructure::git_auth::{
+    apply_git_subprocess_env, check_gh_auth_status, git_remote_url_kind_label, git_subprocess_env,
+    inspect_origin_auth_config, suggested_github_ssh_origin,
+};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use crate::utils::path_safety::validate_absolute_non_root_path;
+
+pub(crate) const GH_AUTH_LOGIN_PROMPT_EVENT: &str = "gh-auth:login_prompt";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GhAuthLoginPrompt {
+    code: Option<String>,
+    url: Option<String>,
+}
 
 /// Deserializes a JSON field as `None` when absent, `Some(None)` when `null`, and `Some(Some(v))` when present.
 /// Used for nullable patch fields where absent means "don't change" and null means "clear".
@@ -128,12 +143,10 @@ pub async fn get_project(
 
 /// Check if git is initialized in the given directory
 fn is_git_initialized(path: &str) -> bool {
-    Command::new(resolve_git_cli_path())
-        .args(["rev-parse", "--git-dir"])
-        .current_dir(path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let mut cmd = Command::new(resolve_git_cli_path());
+    cmd.args(["rev-parse", "--git-dir"]).current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut cmd);
+    cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Initialize git in the given directory if not already initialized
@@ -148,9 +161,10 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
     }
 
     // Initialize git
-    let output = Command::new(resolve_git_cli_path())
-        .args(["init"])
-        .current_dir(path)
+    let mut init_cmd = Command::new(resolve_git_cli_path());
+    init_cmd.args(["init"]).current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut init_cmd);
+    let output = init_cmd
         .output()
         .map_err(|e| format!("Failed to run git init: {}", e))?;
 
@@ -160,17 +174,24 @@ fn ensure_git_initialized(path: &str) -> Result<(), String> {
     }
 
     // Create initial commit so HEAD exists (needed for diff operations)
-    let _ = Command::new(resolve_git_cli_path())
+    let mut commit_cmd = Command::new(resolve_git_cli_path());
+    commit_cmd
         .args([
             "commit",
             "--allow-empty",
             "-m",
             "Initial commit (auto-created by RalphX)",
         ])
-        .current_dir(path)
-        .output();
+        .current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut commit_cmd);
+    let _ = commit_cmd.output();
 
     Ok(())
+}
+
+#[doc(hidden)]
+pub fn ensure_git_initialized_for_test(path: &str) -> Result<(), String> {
+    ensure_git_initialized(path)
 }
 
 /// Async, idempotent version of ensure_git_initialized for use in HTTP handlers.
@@ -192,9 +213,12 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
     let git_dir = std::path::Path::new(path).join(".git");
     if !git_dir.exists() {
         // Run git init
-        let output = TokioCommand::new(resolve_git_cli_path())
-            .args(["init"])
-            .current_dir(path)
+        let mut init_cmd = TokioCommand::new(resolve_git_cli_path());
+        init_cmd.args(["init"]).current_dir(path);
+        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
+            init_cmd.as_std_mut(),
+        );
+        let output = init_cmd
             .output()
             .await
             .map_err(|e| format!("Failed to run git init: {}", e))?;
@@ -206,9 +230,10 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
     }
 
     // Check if HEAD has any commits (git log returns success only if commits exist)
-    let has_commits = TokioCommand::new(resolve_git_cli_path())
-        .args(["log", "--oneline", "-1"])
-        .current_dir(path)
+    let mut log_cmd = TokioCommand::new(resolve_git_cli_path());
+    log_cmd.args(["log", "--oneline", "-1"]).current_dir(path);
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(log_cmd.as_std_mut());
+    let has_commits = log_cmd
         .output()
         .await
         .map(|o| o.status.success())
@@ -216,16 +241,19 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
 
     if !has_commits {
         // Create empty initial commit so HEAD is valid for worktree operations
-        let commit_result = TokioCommand::new(resolve_git_cli_path())
+        let mut commit_cmd = TokioCommand::new(resolve_git_cli_path());
+        commit_cmd
             .args([
                 "commit",
                 "--allow-empty",
                 "-m",
                 "Initial commit (auto-created by RalphX)",
             ])
-            .current_dir(path)
-            .output()
-            .await;
+            .current_dir(path);
+        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
+            commit_cmd.as_std_mut(),
+        );
+        let commit_result = commit_cmd.output().await;
         if let Ok(output) = &commit_result {
             if !output.status.success() {
                 tracing::warn!(
@@ -652,6 +680,231 @@ pub fn is_github_url(url: &str) -> bool {
     url.starts_with("https://github.com/") || url.starts_with("git@github.com:")
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitAuthDiagnosticsResponse {
+    pub fetch_url: Option<String>,
+    pub push_url: Option<String>,
+    pub fetch_kind: Option<String>,
+    pub push_kind: Option<String>,
+    pub mixed_auth_modes: bool,
+    pub can_switch_to_ssh: bool,
+    pub suggested_ssh_url: Option<String>,
+}
+
+impl From<crate::infrastructure::git_auth::GitRemoteAuthConfig> for GitAuthDiagnosticsResponse {
+    fn from(config: crate::infrastructure::git_auth::GitRemoteAuthConfig) -> Self {
+        let fetch_kind = config
+            .fetch_kind()
+            .map(|kind| git_remote_url_kind_label(Some(kind)).to_string());
+        let push_kind = config
+            .push_kind()
+            .map(|kind| git_remote_url_kind_label(Some(kind)).to_string());
+        let suggested_ssh_url = suggested_github_ssh_origin(&config);
+        let can_switch_to_ssh = suggested_ssh_url.is_some();
+        let mixed_auth_modes = config.has_mixed_auth_modes();
+
+        Self {
+            fetch_url: config.fetch_url,
+            push_url: config.push_url,
+            fetch_kind,
+            push_kind,
+            mixed_auth_modes,
+            can_switch_to_ssh,
+            suggested_ssh_url,
+        }
+    }
+}
+
+async fn get_project_working_directory(
+    project_id: &str,
+    state: &AppState,
+) -> Result<PathBuf, String> {
+    let pid = ProjectId::from_string(project_id.to_string());
+    let project = state
+        .project_repo
+        .get_by_id(&pid)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", pid.as_str()))?;
+
+    let working_dir = validate_absolute_non_root_path(
+        Path::new(&project.working_directory),
+        "project working directory",
+    )
+    .map_err(|e| e.to_string())?;
+    if !working_dir.is_dir() {
+        return Err(format!(
+            "Project working directory does not exist: {}",
+            working_dir.display()
+        ));
+    }
+
+    Ok(working_dir)
+}
+
+async fn run_git_config_command(working_dir: &Path, args: &[&str]) -> Result<(), String> {
+    let working_dir = validate_absolute_non_root_path(working_dir, "project working directory")
+        .map_err(|e| e.to_string())?;
+    let mut command = tokio::process::Command::new(resolve_git_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = command
+        .args(args)
+        .current_dir(&working_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn git: {}", e))?;
+
+    let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+        .await
+        .map_err(|_| "git config command timed out".to_string())?
+        .map_err(|e| format!("Failed to wait for git: {}", e))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        format!("git {:?} failed", args)
+    } else {
+        stderr
+    })
+}
+
+async fn run_gh_command(args: &[&str]) -> Result<(), String> {
+    run_gh_command_with_timeout(args, Duration::from_secs(10)).await
+}
+
+async fn run_gh_command_with_timeout(args: &[&str], deadline: Duration) -> Result<(), String> {
+    let child =
+        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
+            .args(args)
+            .envs(git_subprocess_env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn gh: {}", e))?;
+
+    let output = tokio::time::timeout(deadline, child.wait_with_output())
+        .await
+        .map_err(|_| "gh command timed out".to_string())?
+        .map_err(|e| format!("Failed to wait for gh: {}", e))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        format!("gh {:?} failed", args)
+    } else {
+        stderr
+    })
+}
+
+fn gh_web_login_args() -> [&'static str; 8] {
+    [
+        "auth",
+        "login",
+        "--hostname",
+        "github.com",
+        "--git-protocol",
+        "ssh",
+        "--web",
+        "--skip-ssh-key",
+    ]
+}
+
+async fn run_gh_web_login_command(
+    app_handle: tauri::AppHandle,
+    deadline: Duration,
+) -> Result<(), String> {
+    let mut child =
+        tokio::process::Command::new(crate::infrastructure::tool_paths::resolve_gh_cli_path())
+            .args(gh_web_login_args())
+            .envs(git_subprocess_env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn gh: {}", e))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_task = tokio::spawn(collect_gh_auth_login_output(stdout, app_handle.clone()));
+    let stderr_task = tokio::spawn(collect_gh_auth_login_output(stderr, app_handle));
+
+    let status = match tokio::time::timeout(deadline, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => return Err(format!("Failed to wait for gh: {}", error)),
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err("gh auth login timed out".to_string());
+        }
+    };
+
+    let stdout_lines = stdout_task.await.unwrap_or_default();
+    let stderr_lines = stderr_task.await.unwrap_or_default();
+
+    if status.success() {
+        return Ok(());
+    }
+
+    let output = stderr_lines
+        .iter()
+        .chain(stdout_lines.iter())
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(if output.trim().is_empty() {
+        format!("gh auth login failed with status {}", status)
+    } else {
+        output
+    })
+}
+
+async fn collect_gh_auth_login_output<R>(
+    stream: Option<R>,
+    app_handle: tauri::AppHandle,
+) -> Vec<String>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(stream) = stream else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    let mut reader = BufReader::new(stream).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        if let Some(prompt) = parse_gh_auth_login_prompt(&line) {
+            let _ = app_handle.emit(GH_AUTH_LOGIN_PROMPT_EVENT, prompt);
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+fn parse_gh_auth_login_prompt(line: &str) -> Option<GhAuthLoginPrompt> {
+    let code = line
+        .split_once("one-time code:")
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let url = line
+        .split_once("web browser:")
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    (code.is_some() || url.is_some()).then_some(GhAuthLoginPrompt { code, url })
+}
+
 /// Get the git remote URL for a project and validate it is a GitHub URL.
 ///
 /// Runs `git remote get-url origin` in the project working directory.
@@ -664,17 +917,15 @@ pub async fn get_git_remote_url(
     project_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
-    let pid = ProjectId::from_string(project_id);
-    let project = state
-        .project_repo
-        .get_by_id(&pid)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Project not found: {}", pid.as_str()))?;
+    let working_dir = get_project_working_directory(&project_id, &state).await?;
+    let working_dir = validate_absolute_non_root_path(&working_dir, "project working directory")
+        .map_err(|e| e.to_string())?;
 
-    let child = tokio::process::Command::new(resolve_git_cli_path())
+    let mut command = tokio::process::Command::new(resolve_git_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = command
         .args(["remote", "get-url", "origin"])
-        .current_dir(&project.working_directory)
+        .current_dir(&working_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -698,6 +949,88 @@ pub async fn get_git_remote_url(
     }
 }
 
+/// Inspect the project's `origin` fetch and push remotes for auth-mode diagnostics.
+#[tauri::command]
+pub async fn get_git_auth_diagnostics(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<GitAuthDiagnosticsResponse, String> {
+    let working_dir = get_project_working_directory(&project_id, &state).await?;
+    inspect_origin_auth_config(&working_dir)
+        .await
+        .map(GitAuthDiagnosticsResponse::from)
+        .map_err(|e| e.to_string())
+}
+
+/// Explicitly switch a GitHub HTTPS `origin` remote to SSH for fetch and push.
+#[tauri::command]
+pub async fn switch_git_origin_to_ssh(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<GitAuthDiagnosticsResponse, String> {
+    let working_dir = get_project_working_directory(&project_id, &state).await?;
+    let diagnostics = inspect_origin_auth_config(&working_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let ssh_url = suggested_github_ssh_origin(&diagnostics)
+        .ok_or_else(|| "Origin is not a convertible GitHub HTTPS remote".to_string())?;
+
+    run_git_config_command(&working_dir, &["remote", "set-url", "origin", &ssh_url]).await?;
+    run_git_config_command(&working_dir, &["config", "remote.origin.pushurl", &ssh_url]).await?;
+
+    inspect_origin_auth_config(&working_dir)
+        .await
+        .map(GitAuthDiagnosticsResponse::from)
+        .map_err(|e| e.to_string())
+}
+
+/// Configure Git to use the already-authenticated GitHub CLI for HTTPS credentials.
+#[tauri::command]
+pub async fn setup_gh_git_auth() -> Result<bool, String> {
+    if !check_gh_auth_status().await {
+        return Err(
+            "GitHub CLI is not signed in for RalphX. Use the GitHub sign-in action first."
+                .to_string(),
+        );
+    }
+    run_gh_command(&["auth", "setup-git"]).await?;
+    Ok(true)
+}
+
+/// Start GitHub CLI's browser login flow from RalphX's app environment.
+#[tauri::command]
+pub async fn login_gh_with_browser(app: tauri::AppHandle) -> Result<bool, String> {
+    if check_gh_auth_status().await {
+        return Ok(true);
+    }
+
+    run_gh_web_login_command(app, Duration::from_secs(300)).await?;
+
+    if check_gh_auth_status().await {
+        Ok(true)
+    } else {
+        Err(
+            "GitHub CLI sign-in completed, but RalphX still cannot see authenticated gh credentials."
+                .to_string(),
+        )
+    }
+}
+
+/// Resume Git/GitHub-dependent startup work that was deferred by startup preflight.
+#[tauri::command]
+pub async fn resume_deferred_git_startup(
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    active_project_state: State<'_, Arc<ActiveProjectState>>,
+) -> Result<bool, String> {
+    crate::application::startup_pipeline_launch::resume_deferred_git_startup_pipeline(
+        &state,
+        Arc::clone(&execution_state),
+        Arc::clone(&active_project_state),
+    )
+    .await
+}
+
 /// Check whether the `gh` CLI is authenticated.
 ///
 /// Runs `gh auth status` and returns `true` if exit code is 0 (authenticated).
@@ -707,23 +1040,7 @@ pub async fn get_git_remote_url(
 /// This command never returns `Err` — failures become `false`.
 #[tauri::command]
 pub async fn check_gh_auth() -> Result<bool, String> {
-    let mut child = match tokio::process::Command::new(
-        crate::infrastructure::tool_paths::resolve_gh_cli_path(),
-    )
-        .args(["auth", "status"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return Ok(false),
-    };
-
-    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(Ok(status)) => Ok(status.success()),
-        _ => Ok(false),
-    }
+    Ok(check_gh_auth_status().await)
 }
 
 /// Update the `github_pr_enabled` setting for a project.
@@ -979,4 +1296,73 @@ fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
     }
 
     svc.into_arc()
+}
+
+#[cfg(test)]
+mod git_auth_command_tests {
+    use super::*;
+    use crate::infrastructure::git_auth::GitRemoteAuthConfig;
+
+    #[test]
+    fn diagnostics_response_marks_mixed_https_fetch_and_ssh_push() {
+        let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
+            fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+            push_url: Some("git@github.com:owner/repo.git".to_string()),
+        });
+
+        assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
+        assert_eq!(response.push_kind.as_deref(), Some("SSH"));
+        assert!(response.mixed_auth_modes);
+        assert!(response.can_switch_to_ssh);
+        assert_eq!(
+            response.suggested_ssh_url.as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn diagnostics_response_has_no_repair_for_non_github_remote() {
+        let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
+            fetch_url: Some("https://gitlab.com/owner/repo.git".to_string()),
+            push_url: None,
+        });
+
+        assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
+        assert_eq!(response.push_kind.as_deref(), Some("HTTPS"));
+        assert!(!response.mixed_auth_modes);
+        assert!(!response.can_switch_to_ssh);
+        assert!(response.suggested_ssh_url.is_none());
+    }
+
+    #[test]
+    fn gh_web_login_args_use_browser_flow_and_ssh_protocol() {
+        assert_eq!(
+            gh_web_login_args(),
+            [
+                "auth",
+                "login",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "ssh",
+                "--web",
+                "--skip-ssh-key"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_gh_web_login_code_and_url_lines() {
+        let code = parse_gh_auth_login_prompt("! First copy your one-time code: F308-C82B")
+            .expect("code line should parse");
+        assert_eq!(code.code.as_deref(), Some("F308-C82B"));
+        assert!(code.url.is_none());
+
+        let url = parse_gh_auth_login_prompt(
+            "Open this URL to continue in your web browser: https://github.com/login/device",
+        )
+        .expect("url line should parse");
+        assert!(url.code.is_none());
+        assert_eq!(url.url.as_deref(), Some("https://github.com/login/device"));
+    }
 }

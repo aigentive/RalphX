@@ -5,30 +5,93 @@
  * and collapse state across app restarts.
  */
 
-import type { SettingsSectionId } from "./settings-registry";
+import {
+  DEFAULT_SETTINGS_SECTION,
+  isSettingsSectionId,
+  type SettingsSectionId,
+} from "./settings-registry";
 
 const ACTIVE_SECTION_KEY = "ralphx-settings-active-section";
+const ACTIVE_SECTION_VERSION_KEY = "ralphx-settings-active-section-version";
 const HARNESS_TAB_KEY = "ralphx-settings-harness-tab";
 const HARNESS_EXPANDED_KEY = "ralphx-settings-harness-expanded";
+const SETTINGS_ACTIVE_SECTION_VERSION = 1;
+const LEGACY_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "execution";
 
 export type HarnessTabScope = "ideation" | "execution";
 export type HarnessTabValue = "global" | "project";
 
-export function loadActiveSection(): SettingsSectionId | null {
+function safeGet(key: string): string | null {
   try {
-    const saved = localStorage.getItem(ACTIVE_SECTION_KEY);
-    return saved ? (saved as SettingsSectionId) : null;
+    return localStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-export function saveActiveSection(section: SettingsSectionId): void {
+function safeSet(key: string, value: string): void {
   try {
-    localStorage.setItem(ACTIVE_SECTION_KEY, section);
+    localStorage.setItem(key, value);
   } catch {
     /* ignore write errors */
   }
+}
+
+function safeRemove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* ignore write errors */
+  }
+}
+
+function loadActiveSectionVersion(): number {
+  const raw = safeGet(ACTIVE_SECTION_VERSION_KEY);
+  const parsed = raw ? Number.parseInt(raw, 10) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function migrateActiveSectionPreference(
+  raw: string | null,
+  version: number,
+): SettingsSectionId | null {
+  const saved = isSettingsSectionId(raw) ? raw : null;
+  if (version >= SETTINGS_ACTIVE_SECTION_VERSION) {
+    return saved;
+  }
+  if (saved === null || saved === LEGACY_DEFAULT_ACTIVE_SECTION) {
+    return DEFAULT_SETTINGS_SECTION;
+  }
+  return saved;
+}
+
+export function migrateSettingsUiState(): void {
+  const version = loadActiveSectionVersion();
+  if (version >= SETTINGS_ACTIVE_SECTION_VERSION) {
+    return;
+  }
+
+  const migrated = migrateActiveSectionPreference(
+    safeGet(ACTIVE_SECTION_KEY),
+    version,
+  );
+  if (migrated) {
+    safeSet(ACTIVE_SECTION_KEY, migrated);
+  } else {
+    safeRemove(ACTIVE_SECTION_KEY);
+  }
+  safeSet(ACTIVE_SECTION_VERSION_KEY, String(SETTINGS_ACTIVE_SECTION_VERSION));
+}
+
+export function loadActiveSection(): SettingsSectionId | null {
+  migrateSettingsUiState();
+  const saved = safeGet(ACTIVE_SECTION_KEY);
+  return isSettingsSectionId(saved) ? saved : null;
+}
+
+export function saveActiveSection(section: SettingsSectionId): void {
+  safeSet(ACTIVE_SECTION_KEY, section);
+  safeSet(ACTIVE_SECTION_VERSION_KEY, String(SETTINGS_ACTIVE_SECTION_VERSION));
 }
 
 function loadHarnessTabMap(): Record<string, HarnessTabValue> {

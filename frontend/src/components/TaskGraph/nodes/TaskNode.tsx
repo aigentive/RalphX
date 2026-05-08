@@ -13,12 +13,12 @@
 
 import { memo, useCallback } from "react";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
-import { GLASS_SURFACE, NODE_WIDTH, NODE_HEIGHT } from "./nodeStyles";
+import { useScaledNodeDimensions } from "./nodeStyles";
 import { TaskNodeContextMenu } from "./TaskNodeContextMenu";
 import { useStepProgress } from "@/hooks/useTaskSteps";
 import type { InternalStatus } from "@/types/status";
 import { TaskStatusBadge } from "@/components/tasks/TaskBoard/TaskStatusBadge";
-import { getStatusBorderColor } from "@/types/status-icons";
+import { getBaseCardStyles } from "@/components/tasks/TaskBoard/TaskCard.utils";
 import { getTaskCategoryLabel } from "@/lib/task-category";
 import type { Task } from "@/types/task";
 import type { GroupInfo } from "@/lib/task-actions";
@@ -161,7 +161,8 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
       : prState === "closed"
       ? `PR #${prNumber} was closed`
       : `PR #${prNumber} is waiting for GitHub review or merge`;
-  const statusColor = getStatusBorderColor(internalStatus);
+  const cardSurface = getBaseCardStyles(internalStatus as InternalStatus, false, false);
+  const { nodeWidth, nodeHeight } = useScaledNodeDimensions();
   const { data: stepProgress } = useStepProgress(taskId);
   const isTerminalComplete = internalStatus === "merged" || internalStatus === "approved";
 
@@ -225,7 +226,7 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
   const nodeContent = (
     <div
       className="relative"
-      style={{ width: NODE_WIDTH }}
+      style={{ width: nodeWidth }}
       data-testid="task-node"
       data-status={internalStatus}
       data-critical-path={isCriticalPath}
@@ -249,27 +250,15 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
           ${isCriticalPath && !selected && !isHighlighted && !isFocused ? "ring-1 ring-[var(--accent-border)]" : ""}
         `}
         style={{
-          // Fixed height for consistent graph layout (minus handle space)
-          height: NODE_HEIGHT - 6,
-          // Glass morphism surface - no background change on selection
-          background: GLASS_SURFACE.background,
-          backdropFilter: GLASS_SURFACE.backdropFilter,
-          WebkitBackdropFilter: GLASS_SURFACE.WebkitBackdropFilter,
-          // Border: solid orange for all selection methods (click, keyboard, timeline)
-          // Use explicit borderTop/Right/Bottom instead of shorthand to prevent conflicts with borderLeft
-          borderTop: (selected || isHighlighted || isFocused)
-            ? "2px solid var(--accent-primary)"
-            : "1px solid var(--overlay-weak)",
-          borderRight: (selected || isHighlighted || isFocused)
-            ? "2px solid var(--accent-primary)"
-            : "1px solid var(--overlay-weak)",
-          borderBottom: (selected || isHighlighted || isFocused)
-            ? "2px solid var(--accent-primary)"
-            : "1px solid var(--overlay-weak)",
-          // Keep status-colored left stripe visible in all states
-          borderLeft: `3px solid ${statusColor}`,
-          boxShadow: GLASS_SURFACE.boxShadow,
-          transition: "background 150ms ease, transform 150ms ease, box-shadow 150ms ease, border-top 150ms ease, border-right 150ms ease, border-bottom 150ms ease",
+          height: nodeHeight - 6,
+          backgroundColor: cardSurface.backgroundColor,
+          borderStyle: "solid",
+          borderWidth: (selected || isHighlighted || isFocused) ? "2px" : "1px",
+          borderColor: (selected || isHighlighted || isFocused)
+            ? "var(--accent-primary)"
+            : (cardSurface.borderColor as string),
+          boxShadow: "none",
+          transition: "background-color 150ms ease, transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
         }}
       >
         {/* Status badge - top-right corner (shared with Kanban) */}
@@ -281,7 +270,7 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
         <div
           className="leading-tight pr-7 line-clamp-2"
           style={{
-            fontSize: "12px",
+            fontSize: "0.75rem",
             fontWeight: 500,
             color: "var(--text-primary)",
             lineHeight: 1.35,
@@ -305,7 +294,7 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
             <div
               className="line-clamp-2"
               style={{
-                fontSize: "11px",
+                fontSize: "0.6875rem",
                 color: "var(--text-muted)",
                 lineHeight: 1.4,
               }}
@@ -324,7 +313,7 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
           {category && (
             <span
               style={{
-                fontSize: "10px",
+                fontSize: "0.625rem",
                 fontWeight: 500,
                 color: "var(--text-muted)",
                 textTransform: "capitalize",
@@ -342,7 +331,7 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
             <span
               data-testid="graph-pr-indicator"
               style={{
-                fontSize: "10px",
+                fontSize: "0.625rem",
                 fontWeight: 500,
                 color: prColor,
                 whiteSpace: "nowrap",
@@ -389,7 +378,7 @@ function TaskNodeComponent({ data, selected }: NodeProps<TaskNodeType>) {
               />
             </div>
             <span
-              className="text-[10px] tabular-nums shrink-0"
+              className="text-[0.625rem] tabular-nums shrink-0"
               style={{ color: "var(--text-muted)" }}
             >
               {Math.round(((stepProgress.completed + stepProgress.skipped) / stepProgress.total) * 100)}%

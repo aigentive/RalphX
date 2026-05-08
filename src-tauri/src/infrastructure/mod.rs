@@ -2,6 +2,7 @@
 // SQLite, file system, and harness-specific external integrations
 
 pub mod agents;
+pub(crate) mod git_auth;
 pub mod memory;
 pub mod services;
 pub mod sqlite;

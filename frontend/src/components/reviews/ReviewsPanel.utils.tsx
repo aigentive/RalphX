@@ -132,7 +132,7 @@ export function PanelHeader({ totalCount, onClose }: PanelHeaderProps) {
         <CheckCircle2 className="w-4 h-4" style={{ color: "var(--text-muted)" }} />
         <h2
           data-testid="reviews-panel-title"
-          className="text-[13px] font-semibold"
+          className="text-[0.8125rem] font-semibold"
           style={{ color: "var(--text-primary)", letterSpacing: "-0.01em" }}
         >
           Reviews

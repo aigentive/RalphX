@@ -92,7 +92,7 @@ pub(crate) struct MergeAutoCompleteContext<'a, R: Runtime> {
     pub interactive_process_registry: &'a Option<Arc<InteractiveProcessRegistry>>,
 }
 
-impl<'a, R: Runtime> MergeAutoCompleteContext<'a, R> {
+impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
     fn build_runtime_factory_deps(&self) -> RuntimeFactoryDeps {
         RuntimeFactoryDeps::from_core(
             Arc::clone(self.task_repo),
@@ -121,13 +121,14 @@ impl<'a, R: Runtime> MergeAutoCompleteContext<'a, R> {
         )
     }
 
-    fn build_transition_service(&self) -> TaskTransitionService<R> {
+    fn build_transition_service(&self) -> Arc<TaskTransitionService<R>> {
         let deps = self.build_runtime_factory_deps();
         build_transition_service_with_fallback(
             &self.app_handle.cloned(),
             Arc::clone(self.execution_state),
             &deps,
         )
+        .into_arc()
     }
 
     fn build_scheduler_service(&self) -> TaskSchedulerService<R> {
@@ -176,6 +177,33 @@ impl<'a, R: Runtime> MergeAutoCompleteContext<'a, R> {
             );
         }
     }
+
+    async fn retry_pending_merge(&self, reason: &str) {
+        let transition_service = self.build_transition_service();
+        match transition_service
+            .transition_task_corrective_with_exit(
+                &self.task_id,
+                InternalStatus::PendingMerge,
+                None,
+                "merge_auto_complete",
+            )
+            .await
+        {
+            Ok(updated) => {
+                transition_service
+                    .execute_entry_actions(&self.task_id, &updated, InternalStatus::PendingMerge)
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!(
+                    task_id = self.task_id_str,
+                    reason = reason,
+                    error = %e,
+                    "attempt_merge_auto_complete: failed to retry task merge via PendingMerge"
+                );
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +212,7 @@ impl<'a, R: Runtime> MergeAutoCompleteContext<'a, R> {
 
 /// Get task and verify it is in Merging state.
 /// Returns `None` if the task is missing, already transitioned, or on error.
-async fn get_task_in_merging_state<R: Runtime>(
+async fn get_task_in_merging_state<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
 ) -> Option<Task> {
     let task = match ctx.task_repo.get_by_id(&ctx.task_id).await {
@@ -235,7 +263,7 @@ async fn get_task_in_merging_state<R: Runtime>(
 
 /// Resolve the project and worktree path for a merging task.
 /// Returns `None` if the project is missing or the worktree path is invalid.
-async fn resolve_environment<R: Runtime>(
+async fn resolve_environment<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &Task,
 ) -> Option<(Project, PathBuf)> {
@@ -295,7 +323,7 @@ async fn resolve_environment<R: Runtime>(
 
 /// Check git state for in-progress rebase/merge and conflict markers.
 /// Returns `Break` if the task was transitioned and the caller should return early.
-async fn check_git_state<R: Runtime>(
+async fn check_git_state<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     worktree: &Path,
 ) -> ControlFlow<()> {
@@ -383,7 +411,7 @@ async fn check_git_state<R: Runtime>(
 
 /// Resolve merge branches, parse task metadata, and apply TOCTOU guard for target branch.
 /// Returns `None` if the source branch cannot be determined.
-async fn resolve_branches_and_metadata<R: Runtime>(
+async fn resolve_branches_and_metadata<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &Task,
     project: &Project,
@@ -431,7 +459,7 @@ async fn resolve_branches_and_metadata<R: Runtime>(
 /// Handle plan_update_conflict resolution: verify plan branch is up-to-date, clear flag, retry.
 /// Returns `Break` if the conflict was present (handled or failed) — caller should return.
 /// Returns `Continue` if no plan_update_conflict flag was set.
-async fn handle_plan_update_resolution<R: Runtime>(
+async fn handle_plan_update_resolution<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &mut Task,
     meta: &Option<serde_json::Value>,
@@ -543,17 +571,8 @@ async fn handle_plan_update_resolution<R: Runtime>(
                 );
             }
         }
-        if let Err(e) = ctx
-            .build_transition_service()
-            .transition_task(&ctx.task_id, InternalStatus::PendingMerge)
-            .await
-        {
-            tracing::error!(
-                task_id = ctx.task_id_str,
-                error = %e,
-                "attempt_merge_auto_complete: failed to retry task merge via PendingMerge"
-            );
-        }
+        ctx.retry_pending_merge("plan_update_conflict resolved")
+            .await;
     } else {
         tracing::warn!(
             task_id = ctx.task_id_str,
@@ -573,7 +592,7 @@ async fn handle_plan_update_resolution<R: Runtime>(
 /// Handle source_update_conflict resolution: verify source is up-to-date with target, retry.
 /// Returns `Break` if the conflict was present — caller should return.
 /// Returns `Continue` if no source_update_conflict flag was set.
-async fn handle_source_update_resolution<R: Runtime>(
+async fn handle_source_update_resolution<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &mut Task,
     meta: &Option<serde_json::Value>,
@@ -663,17 +682,8 @@ async fn handle_source_update_resolution<R: Runtime>(
                 );
             }
         }
-        if let Err(e) = ctx
-            .build_transition_service()
-            .transition_task(&ctx.task_id, InternalStatus::PendingMerge)
-            .await
-        {
-            tracing::error!(
-                task_id = ctx.task_id_str,
-                error = %e,
-                "attempt_merge_auto_complete: failed to retry task merge via PendingMerge (source_update_conflict)"
-            );
-        }
+        ctx.retry_pending_merge("source_update_conflict resolved")
+            .await;
     } else {
         tracing::warn!(
             task_id = ctx.task_id_str,
@@ -693,7 +703,7 @@ async fn handle_source_update_resolution<R: Runtime>(
 /// Handle validation recovery mode: re-run validation commands after agent fix attempt.
 /// Returns `Break` if validation failed and the caller should return early.
 /// Returns `Continue` if not in recovery mode or validation passed.
-async fn handle_validation_recovery<R: Runtime>(
+async fn handle_validation_recovery<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &mut Task,
     worktree_path: &Path,
@@ -866,7 +876,7 @@ async fn handle_validation_recovery<R: Runtime>(
 /// For validation recovery, uses target branch HEAD directly (ancestry check would fail for squash merges).
 /// For normal merges, fast-forwards target from merge-resolve branch if present, then verifies.
 /// Returns `None` if the merge could not be verified (task was transitioned to MergeIncomplete).
-async fn resolve_merge_commit<R: Runtime>(
+async fn resolve_merge_commit<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &Task,
     main_repo_path: &Path,
@@ -1012,7 +1022,7 @@ async fn resolve_merge_commit<R: Runtime>(
 }
 
 /// Complete the merge via complete_merge_internal, unblock dependents, and schedule ready tasks.
-async fn complete_merge_and_schedule<R: Runtime>(
+async fn complete_merge_and_schedule<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
     task: &mut Task,
     project: &Project,
@@ -1158,7 +1168,9 @@ async fn complete_merge_and_schedule<R: Runtime>(
 /// - Rebase in progress or conflict markers → transition to MergeConflict
 ///
 /// This enables "fire and forget" merge agents that don't need to call complete_merge.
-pub(crate) async fn attempt_merge_auto_complete<R: Runtime>(ctx: &MergeAutoCompleteContext<'_, R>) {
+pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
+    ctx: &MergeAutoCompleteContext<'_, R>,
+) {
     // Dedup guard: prevent concurrent auto-complete calls for the same task.
     if !ctx.execution_state.try_start_auto_complete(ctx.task_id_str) {
         tracing::info!(
@@ -1216,7 +1228,7 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime>(ctx: &MergeAutoCompl
     match freshness_routing::freshness_return_route(
         &task,
         Arc::clone(ctx.task_repo),
-        &ts,
+        ts.as_ref(),
         &project,
         ctx.interactive_process_registry
             .as_ref()
@@ -1317,7 +1329,7 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime>(ctx: &MergeAutoCompl
 }
 
 /// Reconcile merge state when agent run finished but status is still Merging.
-pub(crate) async fn reconcile_merge_auto_complete<R: Runtime>(
+pub(crate) async fn reconcile_merge_auto_complete<R: Runtime + 'static>(
     ctx: &MergeAutoCompleteContext<'_, R>,
 ) {
     attempt_merge_auto_complete(ctx).await;
@@ -1527,4 +1539,164 @@ pub async fn resolve_watcher_context(
     let (source, target) = resolve_merge_branches(&task, &project, plan_branch_repo).await;
 
     Some((source, target, PathBuf::from(&project.working_directory)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::entities::{MergeStrategy, MergeValidationMode, ReviewScopeMetadata};
+    use std::process::Command;
+    use tokio::time::Duration;
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("run git command");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn setup_source_update_scope_drift_repo() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().expect("create temp repo");
+        let repo = dir.path();
+
+        run_git(repo, &["init", "-b", "main"]);
+        run_git(repo, &["config", "user.email", "test@test.com"]);
+        run_git(repo, &["config", "user.name", "Test"]);
+
+        std::fs::write(repo.join("README.md"), "# test repo\n").expect("write readme");
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "initial commit"]);
+
+        run_git(repo, &["checkout", "-b", "task/scope-drift"]);
+        std::fs::create_dir_all(repo.join("backend/app/services")).expect("create services dir");
+        std::fs::write(
+            repo.join("backend/app/services/applicability_evaluator.rb"),
+            "class ApplicabilityEvaluator\nend\n",
+        )
+        .expect("write drift file");
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "feat: out of scope drift"]);
+        run_git(repo, &["checkout", "main"]);
+
+        dir
+    }
+
+    async fn wait_for_status(
+        task_repo: &Arc<dyn TaskRepository>,
+        task_id: &TaskId,
+        expected: InternalStatus,
+    ) -> Task {
+        let mut last = None;
+        for _ in 0..50 {
+            let task = task_repo
+                .get_by_id(task_id)
+                .await
+                .expect("get task")
+                .expect("task exists");
+            if task.internal_status == expected {
+                return task;
+            }
+            last = Some(task.internal_status);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        panic!(
+            "task did not reach expected status {:?}; last state was {:?}",
+            expected, last
+        );
+    }
+
+    #[tokio::test]
+    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+        let repo = setup_source_update_scope_drift_repo();
+        let repo_path = repo.path();
+        let app_state = AppState::new_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.set_max_concurrent(10);
+
+        let mut project = Project::new(
+            "Auto-complete scope drift project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.merge_strategy = MergeStrategy::Merge;
+        project.merge_validation_mode = MergeValidationMode::Off;
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("create project");
+
+        let mut task = Task::new(
+            project.id.clone(),
+            "Source update auto-complete should revise".to_string(),
+        );
+        task.internal_status = InternalStatus::Merging;
+        task.task_branch = Some("task/scope-drift".to_string());
+        task.worktree_path = Some(repo_path.to_string_lossy().to_string());
+        let base_metadata = serde_json::json!({
+            "source_update_conflict": true,
+            "target_branch": "main",
+            "source_branch": "task/scope-drift"
+        })
+        .to_string();
+        task.metadata = Some(
+            ReviewScopeMetadata::new(
+                vec!["frontend/src".to_string()],
+                Vec::new(),
+                Some("unrelated_drift".to_string()),
+                Some("backend service file was never classified during review".to_string()),
+            )
+            .update_task_metadata(Some(&base_metadata))
+            .expect("scope metadata"),
+        );
+        let task_id = task.id.clone();
+        app_state.task_repo.create(task).await.expect("create task");
+
+        let plan_branch_repo = Some(Arc::clone(&app_state.plan_branch_repo));
+        let interactive_process_registry = None;
+        let merge_ctx = MergeAutoCompleteContext {
+            task_id_str: task_id.as_str(),
+            task_id: task_id.clone(),
+            task_repo: &app_state.task_repo,
+            task_dependency_repo: &app_state.task_dependency_repo,
+            project_repo: &app_state.project_repo,
+            artifact_repo: &app_state.artifact_repo,
+            chat_message_repo: &app_state.chat_message_repo,
+            chat_attachment_repo: &app_state.chat_attachment_repo,
+            conversation_repo: &app_state.chat_conversation_repo,
+            agent_run_repo: &app_state.agent_run_repo,
+            ideation_session_repo: &app_state.ideation_session_repo,
+            activity_event_repo: &app_state.activity_event_repo,
+            message_queue: &app_state.message_queue,
+            running_agent_registry: &app_state.running_agent_registry,
+            memory_event_repo: &app_state.memory_event_repo,
+            execution_state: &execution_state,
+            execution_settings_repo: Some(&app_state.execution_settings_repo),
+            plan_branch_repo: &plan_branch_repo,
+            app_handle: None::<&AppHandle<tauri::Wry>>,
+            interactive_process_registry: &interactive_process_registry,
+        };
+
+        attempt_merge_auto_complete(&merge_ctx).await;
+
+        let updated = wait_for_status(&app_state.task_repo, &task_id, InternalStatus::ReExecuting)
+            .await;
+        let metadata: serde_json::Value =
+            serde_json::from_str(updated.metadata.as_deref().unwrap_or("{}"))
+                .expect("task metadata is JSON");
+        assert_eq!(metadata["error_code"], "merge_scope_drift_guard");
+        assert_ne!(
+            metadata["error_code"], "merge_scope_drift_guard_fallback",
+            "auto-complete retry path must have TaskServices.transition_service available"
+        );
+    }
 }

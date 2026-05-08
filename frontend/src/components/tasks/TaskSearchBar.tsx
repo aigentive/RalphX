@@ -29,9 +29,18 @@ export function TaskSearchBar({
       : `${resultCount} task${resultCount === 1 ? '' : 's'} found`;
 
   return (
-    <div className="flex items-center gap-2 bg-background border rounded-lg shadow-md p-2">
+    <div
+      className="flex h-[30px] items-center gap-2 rounded-md px-2.5"
+      style={{
+        backgroundColor: "var(--bg-elevated)",
+        borderColor: "var(--border-default)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+        boxShadow: "none",
+      }}
+    >
       {/* Search icon */}
-      <Search className="w-5 h-5 text-muted-foreground flex-shrink-0" />
+      <Search className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
 
       {/* Input field */}
       <input
@@ -40,18 +49,18 @@ export function TaskSearchBar({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search tasks..."
-        className="flex-1 bg-transparent border-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 [&:focus]:outline-none [&:focus-visible]:outline-none text-foreground placeholder:text-muted-foreground"
-        style={{ outline: 'none' }}
+        className="min-w-0 flex-1 bg-transparent border-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 [&:focus]:outline-none [&:focus-visible]:outline-none text-foreground placeholder:text-muted-foreground"
+        style={{ outline: 'none', fontSize: '0.7812rem', lineHeight: 1.2 }}
       />
 
       {/* Loading spinner */}
       {isSearching && (
-        <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+        <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />
       )}
 
       {/* Result count */}
       {!isSearching && value && (
-        <span className="text-sm text-muted-foreground whitespace-nowrap">
+        <span className="text-[0.6875rem] text-muted-foreground whitespace-nowrap">
           {resultText}
         </span>
       )}
@@ -59,10 +68,10 @@ export function TaskSearchBar({
       {/* Close button */}
       <button
         onClick={onClose}
-        className="flex-shrink-0 p-1 rounded hover:bg-muted transition-colors"
+        className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded hover:bg-[var(--bg-hover)] transition-colors"
         aria-label="Close search"
       >
-        <X className="w-4 h-4" />
+        <X className="h-3.5 w-3.5" />
       </button>
     </div>
   );

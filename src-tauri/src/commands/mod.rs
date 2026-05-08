@@ -2,6 +2,7 @@
 // Commands should be minimal - delegate to domain/infrastructure
 
 pub mod activity_commands;
+pub mod agent_model_commands;
 pub mod agent_terminal_commands;
 pub mod branch_helpers;
 pub mod api_key_commands;
@@ -49,6 +50,10 @@ pub use activity_commands::{
     count_session_activity_events, count_task_activity_events, list_session_activity_events,
     list_task_activity_events, ActivityEventFilterInput, ActivityEventPageResponse,
     ActivityEventResponse,
+};
+pub use agent_model_commands::{
+    delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
+    UpsertCustomAgentModelInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -184,7 +189,8 @@ pub use unified_chat_commands::{
     archive_agent_conversation, create_agent_conversation,
     delete_queued_agent_message, get_agent_conversation, get_agent_conversation_messages_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
-    get_agent_run_status_unified, get_queued_agent_messages, is_agent_running,
+    get_agent_message_tool_call_detail, get_agent_run_status_unified, get_queued_agent_messages,
+    is_agent_running,
     is_chat_service_available, list_agent_conversations,
     list_agent_conversation_workspace_publication_events,
     list_agent_conversation_workspaces_by_project, list_agent_conversations_page,
@@ -197,7 +203,7 @@ pub use unified_chat_commands::{
     AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
     AgentConversationResponse,
     AgentConversationWithMessagesResponse, AgentMessageResponse, AgentRunStatusResponse,
-    CreateAgentConversationInput, QueueAgentMessageInput,
+    AgentToolCallDetailResponse, CreateAgentConversationInput, QueueAgentMessageInput,
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,
