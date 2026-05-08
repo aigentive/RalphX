@@ -1181,7 +1181,9 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+    use crate::application::agent_conversation_workspace::{
+        agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
+    };
     use crate::application::git_service::GitService;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
@@ -1264,6 +1266,11 @@ mod tests {
         workspace.publication_push_status = Some("pushed".to_string());
         workspace.status = AgentConversationWorkspaceStatus::Active;
         workspace
+    }
+
+    fn startup_workspace_branch(project: &Project) -> String {
+        let conversation_id = ChatConversationId::from_string("startup-cleanup-conversation");
+        agent_conversation_branch_name(project, &conversation_id)
     }
 
     fn open_pr_sync_state(head_ref_name: &str) -> PrSyncState {
@@ -1376,11 +1383,11 @@ mod tests {
             .create(cleanup_project(repo.path(), worktrees.path()))
             .await
             .unwrap();
-        let branch = "ralphx/startup-cleanup/agent-merged";
-        let workspace = startup_workspace(&project, branch);
+        let branch = startup_workspace_branch(&project);
+        let workspace = startup_workspace(&project, &branch);
         let worktree_path = Path::new(&workspace.worktree_path);
 
-        GitService::create_worktree(repo.path(), worktree_path, branch, "main")
+        GitService::create_worktree(repo.path(), worktree_path, &branch, "main")
             .await
             .expect("create worktree");
         std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
@@ -1388,7 +1395,7 @@ mod tests {
         run_git(worktree_path, &["commit", "-m", "agent work"]);
         run_git(
             repo.path(),
-            &["merge", "--no-ff", branch, "-m", "merge agent"],
+            &["merge", "--no-ff", &branch, "-m", "merge agent"],
         );
         app_state
             .agent_conversation_workspace_repo
@@ -1406,7 +1413,7 @@ mod tests {
         .await;
 
         assert!(!worktree_path.exists());
-        assert!(!branch_exists(repo.path(), branch));
+        assert!(!branch_exists(repo.path(), &branch));
         let state = github.state();
         assert_eq!(state.fetch_remote_calls, 1);
         assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
@@ -1422,11 +1429,11 @@ mod tests {
             .create(cleanup_project(repo.path(), worktrees.path()))
             .await
             .unwrap();
-        let branch = "ralphx/startup-cleanup/agent-fetch-failure";
-        let workspace = startup_workspace(&project, branch);
+        let branch = startup_workspace_branch(&project);
+        let workspace = startup_workspace(&project, &branch);
         let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
 
-        GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+        GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
             .await
             .expect("create worktree");
         std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
@@ -1434,7 +1441,7 @@ mod tests {
         run_git(&worktree_path, &["commit", "-m", "agent work"]);
         run_git(
             repo.path(),
-            &["merge", "--no-ff", branch, "-m", "merge agent"],
+            &["merge", "--no-ff", &branch, "-m", "merge agent"],
         );
         app_state
             .agent_conversation_workspace_repo
@@ -1455,7 +1462,7 @@ mod tests {
         .await;
 
         assert!(!worktree_path.exists());
-        assert!(!branch_exists(repo.path(), branch));
+        assert!(!branch_exists(repo.path(), &branch));
         assert_eq!(github.state().fetch_remote_calls, 1);
     }
 
@@ -1534,7 +1541,7 @@ mod tests {
             .create(cleanup_project(repo.path(), worktrees.path()))
             .await
             .unwrap();
-        let branch = "ralphx/startup-cleanup/fetch-failure-plan";
+        let branch = "ralphx/startup-cleanup/plan-fetch-failure";
         run_git(repo.path(), &["checkout", "-b", branch]);
         std::fs::write(repo.path().join("plan-fetch.txt"), "plan\n").expect("write plan");
         run_git(repo.path(), &["add", "."]);
@@ -1549,7 +1556,7 @@ mod tests {
             ArtifactId::from_string("startup-active-artifact"),
             IdeationSessionId::from_string("startup-fetch-session"),
             project.id.clone(),
-            "ralphx/startup-cleanup/active-plan".to_string(),
+            "ralphx/startup-cleanup/plan-active".to_string(),
             "main".to_string(),
         );
         active_plan_branch.status = PlanBranchStatus::Active;
