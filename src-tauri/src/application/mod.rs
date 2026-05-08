@@ -25,6 +25,7 @@ pub mod ideation_effort_bootstrap;
 pub mod ideation_model_bootstrap;
 pub mod diff_service;
 pub mod git_service;
+pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;

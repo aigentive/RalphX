@@ -22,7 +22,7 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, ChatContextType,
     ChatConversationId,
 };
-use crate::domain::entities::{InternalStatus, PlanBranchId, TaskId};
+use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, PlanBranchRepository};
 use crate::domain::services::github_service::{PrReviewCommentFeedback, PrReviewFeedback};
 use crate::domain::services::{GithubServiceTrait, PrStatus};
@@ -121,6 +121,7 @@ impl PrPollerRegistry {
         &self,
         conversation_id: ChatConversationId,
         pr_number: i64,
+        project: Project,
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         chat_service: Arc<dyn ChatService>,
@@ -157,6 +158,7 @@ impl PrPollerRegistry {
             agent_workspace_poll_loop(
                 conversation_id_for_spawn,
                 pr_number,
+                project,
                 working_dir,
                 github,
                 active,
@@ -770,6 +772,7 @@ async fn poll_loop(
 async fn agent_workspace_poll_loop(
     conversation_id: ChatConversationId,
     pr_number: i64,
+    project: Project,
     working_dir: PathBuf,
     github: Arc<dyn GithubServiceTrait>,
     active: Arc<DashMap<ChatConversationId, JoinHandle<()>>>,
@@ -831,6 +834,14 @@ async fn agent_workspace_poll_loop(
                     "Pull request merged",
                 )
                 .await;
+                cleanup_terminal_agent_workspace_after_pr(
+                    Arc::clone(&workspace_repo),
+                    &conversation_id,
+                    &project,
+                    Some(Arc::clone(&github)),
+                    true,
+                )
+                .await;
                 active.remove(&conversation_id);
                 stopping.remove(&conversation_id);
                 return;
@@ -842,6 +853,14 @@ async fn agent_workspace_poll_loop(
                     &conversation_id,
                     "closed",
                     "Pull request closed without merging",
+                )
+                .await;
+                cleanup_terminal_agent_workspace_after_pr(
+                    Arc::clone(&workspace_repo),
+                    &conversation_id,
+                    &project,
+                    None,
+                    false,
                 )
                 .await;
                 active.remove(&conversation_id);
@@ -1026,6 +1045,68 @@ async fn mark_agent_workspace_pr_terminal(
             None,
         ))
         .await
+}
+
+async fn cleanup_terminal_agent_workspace_after_pr(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    project: &Project,
+    github: Option<Arc<dyn GithubServiceTrait>>,
+    delete_branch_if_merged: bool,
+) {
+    let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace PR cleanup: failed to load workspace"
+            );
+            return;
+        }
+    };
+
+    if delete_branch_if_merged {
+        if let Some(github) = github {
+            if let Err(error) = github
+                .fetch_remote(Path::new(&project.working_directory), &workspace.base_ref)
+                .await
+            {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    base_ref = workspace.base_ref.as_str(),
+                    error = %error,
+                    "Agent workspace PR cleanup: failed to fetch base before local branch cleanup"
+                );
+            }
+        }
+    }
+
+    match crate::application::git_artifact_cleanup::cleanup_terminal_agent_workspace_local_artifacts(
+        project,
+        &workspace,
+        delete_branch_if_merged,
+    )
+    .await
+    {
+        Ok(report) => {
+            tracing::info!(
+                conversation_id = conversation_id.as_str(),
+                worktree_removed = report.worktree_removed,
+                branch_deleted = report.branch_deleted,
+                skipped_reason = report.skipped_reason.as_deref(),
+                "Agent workspace PR cleanup: local artifact cleanup completed"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace PR cleanup: local artifact cleanup failed (non-fatal)"
+            );
+        }
+    }
 }
 
 async fn route_review_feedback_if_present(

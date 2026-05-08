@@ -19,8 +19,9 @@ use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, ExecutionPlanId, ExecutionPlanStatus, InternalStatus, PlanBranch,
-    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    plan_branch::PrStatus as PlanPrStatus, AgentConversationWorkspace, ExecutionPlanId,
+    ExecutionPlanStatus, InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task,
+    TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, ExecutionPlanRepository,
@@ -697,10 +698,194 @@ async fn recover_one_agent_workspace_pr_poller(
     pr_poller_registry.start_agent_workspace_polling(
         workspace.conversation_id,
         pr_number,
+        project,
         worktree_path,
         workspace_repo,
         chat_service,
     );
+}
+
+pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+) {
+    let projects = match project_repo.get_all().await {
+        Ok(projects) => projects,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Terminal PR local cleanup: failed to list projects"
+            );
+            return;
+        }
+    };
+
+    for project in projects {
+        if blocked_git_project_ids.contains(&project.id) {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                "Terminal PR local cleanup: skipping plan branches due to Git auth preflight"
+            );
+            continue;
+        }
+
+        let plan_branches = match plan_branch_repo.get_by_project_id(&project.id).await {
+            Ok(plan_branches) => plan_branches,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project.id.as_str(),
+                    error = %error,
+                    "Terminal PR local cleanup: failed to load plan branches"
+                );
+                continue;
+            }
+        };
+
+        for plan_branch in plan_branches {
+            if plan_branch.status != PlanBranchStatus::Merged
+                && !matches!(plan_branch.pr_status, Some(PlanPrStatus::Merged))
+            {
+                continue;
+            }
+
+            if let Some(github) = github_service.as_ref() {
+                let base_ref =
+                    crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(
+                        &project,
+                        &plan_branch,
+                    );
+                if let Err(error) = github
+                    .fetch_remote(std::path::Path::new(&project.working_directory), &base_ref)
+                    .await
+                {
+                    tracing::warn!(
+                        project_id = project.id.as_str(),
+                        branch = %plan_branch.branch_name,
+                        base_ref = base_ref.as_str(),
+                        error = %error,
+                        "Terminal PR local cleanup: failed to fetch plan base before cleanup"
+                    );
+                }
+            }
+
+            match crate::application::git_artifact_cleanup::cleanup_merged_plan_branch_local_artifacts(
+                &project,
+                &plan_branch,
+            )
+            .await
+            {
+                Ok(report) if report.branch_deleted => tracing::info!(
+                    project_id = project.id.as_str(),
+                    branch = %plan_branch.branch_name,
+                    "Terminal PR local cleanup: deleted local plan branch"
+                ),
+                Ok(report) => tracing::debug!(
+                    project_id = project.id.as_str(),
+                    branch = %plan_branch.branch_name,
+                    skipped_reason = report.skipped_reason.as_deref(),
+                    "Terminal PR local cleanup: skipped local plan branch"
+                ),
+                Err(error) => tracing::warn!(
+                    project_id = project.id.as_str(),
+                    branch = %plan_branch.branch_name,
+                    error = %error,
+                    "Terminal PR local cleanup: failed to clean local plan branch"
+                ),
+            }
+        }
+    }
+}
+
+pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+) {
+    let projects = match project_repo.get_all().await {
+        Ok(projects) => projects,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Terminal agent workspace cleanup: failed to list projects"
+            );
+            return;
+        }
+    };
+
+    for project in projects {
+        if blocked_git_project_ids.contains(&project.id) {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                "Terminal agent workspace cleanup: skipping project due to Git auth preflight"
+            );
+            continue;
+        }
+
+        let workspaces = match workspace_repo.get_by_project_id(&project.id).await {
+            Ok(workspaces) => workspaces,
+            Err(error) => {
+                tracing::warn!(
+                    project_id = project.id.as_str(),
+                    error = %error,
+                    "Terminal agent workspace cleanup: failed to load workspaces"
+                );
+                continue;
+            }
+        };
+
+        for workspace in workspaces {
+            let Some(pr_status) = workspace.publication_pr_status.as_deref() else {
+                continue;
+            };
+            if !matches!(pr_status, "merged" | "closed") {
+                continue;
+            }
+            let delete_branch_if_merged = pr_status == "merged";
+
+            if delete_branch_if_merged {
+                if let Some(github) = github_service.as_ref() {
+                    if let Err(error) = github
+                        .fetch_remote(
+                            std::path::Path::new(&project.working_directory),
+                            &workspace.base_ref,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            conversation_id = workspace.conversation_id.as_str(),
+                            base_ref = workspace.base_ref.as_str(),
+                            error = %error,
+                            "Terminal agent workspace cleanup: failed to fetch base before cleanup"
+                        );
+                    }
+                }
+            }
+
+            match crate::application::git_artifact_cleanup::cleanup_terminal_agent_workspace_local_artifacts(
+                &project,
+                &workspace,
+                delete_branch_if_merged,
+            )
+            .await
+            {
+                Ok(report) => tracing::info!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    worktree_removed = report.worktree_removed,
+                    branch_deleted = report.branch_deleted,
+                    skipped_reason = report.skipped_reason.as_deref(),
+                    "Terminal agent workspace cleanup: local artifact cleanup completed"
+                ),
+                Err(error) => tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    error = %error,
+                    "Terminal agent workspace cleanup: local artifact cleanup failed"
+                ),
+            }
+        }
+    }
 }
 
 async fn recover_one_pr_poller(
