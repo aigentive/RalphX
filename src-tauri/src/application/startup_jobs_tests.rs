@@ -8,7 +8,8 @@ use crate::commands::execution_commands::{ActiveProjectState, ExecutionState};
 use crate::domain::entities::app_state::ExecutionHaltMode;
 use crate::domain::entities::ideation::IdeationSessionStatus;
 use crate::domain::entities::{
-    IdeationSession, InternalStatus, Project, ProjectId, SessionOrigin, Task,
+    AgentRun, AgentRunStatus, ChatConversationId, IdeationSession, InternalStatus, Project,
+    ProjectId, SessionOrigin, Task,
 };
 use crate::domain::services::RunningAgentKey;
 
@@ -176,6 +177,84 @@ fn build_runner_for_tests(app_state: &AppState) -> StartupJobRunner<tauri::Wry> 
         Arc::clone(&app_state.execution_settings_repo),
         None,
     )
+}
+
+#[tokio::test]
+async fn test_previous_session_cutoff_cleanup_preserves_current_boot_agents_and_runs() {
+    let app_state = AppState::new_test();
+    let old_key = RunningAgentKey::new("project", "old-conversation");
+    let current_key = RunningAgentKey::new("project", "current-conversation");
+    let old_token = tokio_util::sync::CancellationToken::new();
+    let current_token = tokio_util::sync::CancellationToken::new();
+
+    let old_run = AgentRun::new(ChatConversationId::new());
+    let old_run_id = old_run.id;
+    app_state.agent_run_repo.create(old_run).await.unwrap();
+    app_state
+        .running_agent_registry
+        .register(
+            old_key.clone(),
+            1,
+            "conv-old".to_string(),
+            old_run_id.as_str().to_string(),
+            None,
+            Some(old_token.clone()),
+        )
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let boot_cutoff = chrono::Utc::now();
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+
+    let current_run = AgentRun::new(ChatConversationId::new());
+    let current_run_id = current_run.id;
+    app_state.agent_run_repo.create(current_run).await.unwrap();
+    app_state
+        .running_agent_registry
+        .register(
+            current_key.clone(),
+            1,
+            "conv-current".to_string(),
+            current_run_id.as_str().to_string(),
+            None,
+            Some(current_token.clone()),
+        )
+        .await;
+
+    let runner = build_runner_for_tests(&app_state).with_previous_session_cutoff(boot_cutoff);
+
+    runner.run().await;
+
+    assert!(!app_state.running_agent_registry.is_running(&old_key).await);
+    assert!(
+        app_state
+            .running_agent_registry
+            .is_running(&current_key)
+            .await
+    );
+    assert!(old_token.is_cancelled());
+    assert!(!current_token.is_cancelled());
+
+    let old = app_state
+        .agent_run_repo
+        .get_by_id(&old_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        old.error_message,
+        Some(ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string())
+    );
+
+    let current = app_state
+        .agent_run_repo
+        .get_by_id(&current_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.status, AgentRunStatus::Running);
+    assert_eq!(current.error_message, None);
 }
 
 fn make_escalated_task(project_id: &ProjectId, metadata: serde_json::Value) -> Task {

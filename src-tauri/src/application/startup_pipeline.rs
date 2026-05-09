@@ -28,7 +28,9 @@ use crate::domain::repositories::{
     ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
     TaskStepRepository,
 };
-use crate::domain::services::{MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{
+    running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
+};
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::error::AppResult;
 
@@ -79,8 +81,20 @@ pub(crate) struct StartupPipelineDeps {
     pub mode: StartupPipelineMode,
 }
 
+fn startup_previous_session_cutoff() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+}
+
+fn run_startup_orphan_mcp_cleanup(kill_orphans: impl FnOnce() -> u32) -> u32 {
+    let mcp_killed = kill_orphans();
+    if mcp_killed > 0 {
+        info!(count = mcp_killed, "Killed orphaned MCP server processes");
+    }
+    mcp_killed
+}
+
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let previous_session_cutoff = startup_previous_session_cutoff();
 
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
@@ -89,6 +103,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         );
         return Ok(());
     }
+
+    // Pattern-based MCP cleanup cannot reliably distinguish current-boot agent
+    // servers after user actions begin, so run it before delayed PR/workspace recovery.
+    run_startup_orphan_mcp_cleanup(kill_orphaned_mcp_servers);
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     info!("Starting startup job runner...");
 
@@ -332,6 +352,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_app_handle(app_handle.clone())
     .with_review_repo(Arc::clone(&review_repo))
     .with_chat_service(recovery_chat_service)
+    .with_previous_session_cutoff(previous_session_cutoff)
     .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids));
 
     let startup_ideation_recovery_claims = runner.run().await;
@@ -507,4 +528,33 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_previous_session_cutoff_uses_current_time() {
+        let before = chrono::Utc::now();
+        let cutoff = startup_previous_session_cutoff();
+        let after = chrono::Utc::now();
+
+        assert!(cutoff >= before);
+        assert!(cutoff <= after);
+    }
+
+    #[test]
+    fn startup_orphan_mcp_cleanup_reports_killed_count() {
+        let killed = run_startup_orphan_mcp_cleanup(|| 2);
+
+        assert_eq!(killed, 2);
+    }
+
+    #[test]
+    fn startup_orphan_mcp_cleanup_allows_noop_cleanup() {
+        let killed = run_startup_orphan_mcp_cleanup(|| 0);
+
+        assert_eq!(killed, 0);
+    }
 }

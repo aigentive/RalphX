@@ -142,8 +142,8 @@ pub trait RunningAgentRegistry: Send + Sync {
     /// Unlike `list_all()`, this method propagates row-parse errors rather than
     /// silently dropping them, so callers can detect corrupted registry state.
     ///
-    /// Used by `StartupJobRunner::run()` to snapshot ideation agents BEFORE
-    /// `stop_all()` clears the table on app restart.
+    /// Used by `StartupJobRunner::run()` to snapshot ideation agents before
+    /// previous-session cleanup clears persisted old rows on app restart.
     async fn list_by_context_type(
         &self,
         context_type: &str,
@@ -151,6 +151,15 @@ pub trait RunningAgentRegistry: Send + Sync {
 
     /// Stop all running agents (for cleanup on shutdown/restart)
     async fn stop_all(&self) -> Vec<RunningAgentKey>;
+
+    /// Stop running agents that started before the current app boot cutoff.
+    ///
+    /// Used by startup previous-session cleanup so delayed recovery cannot stop
+    /// agents that were spawned by the current app process after launch.
+    async fn stop_all_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<RunningAgentKey>;
 
     /// Update the last_active_at timestamp for a running agent (throttled heartbeat).
     /// Called from the streaming loop every ~5 seconds on any parsed event.
@@ -868,6 +877,34 @@ impl RunningAgentRegistry for MemoryRunningAgentRegistry {
             if self.stop(&key).await.is_ok() {
                 stopped.push(key);
             }
+        }
+        stopped
+    }
+
+    async fn stop_all_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<RunningAgentKey> {
+        let entries: Vec<(RunningAgentKey, RunningAgentInfo)> = {
+            let mut agents = self.agents.lock().await;
+            let keys: Vec<RunningAgentKey> = agents
+                .iter()
+                .filter(|(_, info)| info.started_at < cutoff)
+                .map(|(key, _)| key.clone())
+                .collect();
+
+            keys.into_iter()
+                .filter_map(|key| agents.remove(&key).map(|info| (key, info)))
+                .collect()
+        };
+
+        let mut stopped = Vec::new();
+        for (key, info) in entries {
+            if let Some(token) = info.cancellation_token {
+                token.cancel();
+            }
+            self.process_ops.kill(info.pid);
+            stopped.push(key);
         }
         stopped
     }

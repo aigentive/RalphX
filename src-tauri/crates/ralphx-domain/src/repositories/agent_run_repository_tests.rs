@@ -116,6 +116,14 @@ impl AgentRunRepository for MockAgentRunRepository {
         Ok(0)
     }
 
+    async fn cancel_running_started_before(
+        &self,
+        _cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u32> {
+        // Mock just returns 0 - not needed for mock tests
+        Ok(0)
+    }
+
     async fn get_interrupted_conversations(&self) -> AppResult<Vec<InterruptedConversation>> {
         // Mock returns empty - actual filtering would need conversation data
         Ok(vec![])

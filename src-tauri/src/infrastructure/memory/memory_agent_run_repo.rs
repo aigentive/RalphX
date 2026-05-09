@@ -172,6 +172,22 @@ impl AgentRunRepository for MemoryAgentRunRepository {
         Ok(count)
     }
 
+    async fn cancel_running_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u32> {
+        let mut runs = self.runs.write().await;
+        let mut count = 0u32;
+        for run in runs.values_mut() {
+            if run.status == AgentRunStatus::Running && run.started_at < cutoff {
+                run.cancel();
+                run.error_message = Some(ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string());
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     async fn get_interrupted_conversations(&self) -> AppResult<Vec<InterruptedConversation>> {
         // Memory repo cannot implement this properly since it doesn't have access to conversations
         // This is only used in production with SQLite

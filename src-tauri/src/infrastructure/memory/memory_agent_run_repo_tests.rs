@@ -143,3 +143,33 @@ async fn test_fail() {
     assert_eq!(retrieved.status, AgentRunStatus::Failed);
     assert_eq!(retrieved.error_message, Some("Test error".to_string()));
 }
+
+#[tokio::test]
+async fn test_cancel_running_started_before_preserves_current_boot_run() {
+    let repo = MemoryAgentRunRepository::new();
+    let cutoff = chrono::Utc::now();
+    let old_conversation_id = ChatConversationId::new();
+    let current_conversation_id = ChatConversationId::new();
+    let mut old_run = AgentRun::new(old_conversation_id);
+    let mut current_run = AgentRun::new(current_conversation_id);
+    old_run.started_at = cutoff - chrono::Duration::seconds(5);
+    current_run.started_at = cutoff + chrono::Duration::seconds(5);
+    let old_run_id = old_run.id;
+    let current_run_id = current_run.id;
+
+    repo.create(old_run).await.unwrap();
+    repo.create(current_run).await.unwrap();
+
+    let cancelled = repo.cancel_running_started_before(cutoff).await.unwrap();
+
+    assert_eq!(cancelled, 1);
+    let old = repo.get_by_id(&old_run_id).await.unwrap().unwrap();
+    assert_eq!(old.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        old.error_message,
+        Some(ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string())
+    );
+    let current = repo.get_by_id(&current_run_id).await.unwrap().unwrap();
+    assert_eq!(current.status, AgentRunStatus::Running);
+    assert_eq!(current.error_message, None);
+}
