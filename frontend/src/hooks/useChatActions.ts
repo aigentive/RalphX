@@ -14,7 +14,12 @@ import { toast } from "sonner";
 import { useChatStore } from "@/stores/chatStore";
 import { chatApi, stopAgent } from "@/api/chat";
 import { recoverTaskExecution } from "@/api/recovery";
-import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
+import {
+  addOptimisticUserMessageToConversationCache,
+  chatKeys,
+  invalidateConversationDataQueries,
+  removeOptimisticMessageFromConversationCache,
+} from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
@@ -43,6 +48,8 @@ interface UseChatActionsProps {
     isPending: boolean;
     mutateAsync: (params: { content: string; attachmentIds?: string[]; target?: string }) => Promise<SendAgentMessageResult>;
   };
+  /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
+  activeConversationId?: string | null | undefined;
   /** Current message count (for first-message detection in ideation) */
   messageCount?: number;
   /** Explicit send options used by externally-owned session lists. */
@@ -71,6 +78,7 @@ export function useChatActions({
   selectedTaskId,
   ideationSessionId,
   sendMessage,
+  activeConversationId,
   messageCount = 0,
   sendOptions,
   onUserMessageSent,
@@ -99,6 +107,9 @@ export function useChatActions({
       // Capture first message state before sending (for auto-naming trigger)
       const isFirstIdeationMessage = ideationSessionId && messageCount === 0;
       let sentResult: SendAgentMessageResult | null = null;
+      let optimisticMessage:
+        | { conversationId: string; messageId: string }
+        | null = null;
 
       try {
         // Agent side-panels use context-specific conversations. Review and merge must
@@ -108,6 +119,17 @@ export function useChatActions({
           const agentContextId = selectedTaskId ?? contextId;
           setSending(storeContextKey, true);
           try {
+            if (activeConversationId && !target) {
+              const message = addOptimisticUserMessageToConversationCache(
+                queryClient,
+                activeConversationId,
+                content
+              );
+              optimisticMessage = {
+                conversationId: activeConversationId,
+                messageId: message.id,
+              };
+            }
             const result = await chatApi.sendAgentMessage(contextType, agentContextId, content, attachmentIds, target);
             sentResult = result;
 
@@ -120,7 +142,9 @@ export function useChatActions({
             }
 
             if (result.conversationId) {
-              invalidateConversationDataQueries(queryClient, result.conversationId);
+              if (!optimisticMessage) {
+                invalidateConversationDataQueries(queryClient, result.conversationId);
+              }
               if (result.isNewConversation) {
                 setActiveConversation(storeContextKey, result.conversationId);
               }
@@ -180,6 +204,13 @@ export function useChatActions({
           void onUserMessageSent?.({ content, result: sentResult });
         }
       } catch (err) {
+        if (optimisticMessage) {
+          removeOptimisticMessageFromConversationCache(
+            queryClient,
+            optimisticMessage.conversationId,
+            optimisticMessage.messageId
+          );
+        }
         reportSendFailure(err);
         // Reset agent running state on error for the correct store context key.
         // Covers review, task_execution, merge, and ideation (idempotent for ideation
@@ -187,7 +218,7 @@ export function useChatActions({
         setAgentRunning(storeContextKey, false);
       }
     },
-    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueMessage, onUserMessageSent, reportSendFailure]
+    [sendMessage, contextType, contextId, selectedTaskId, storeContextKey, setAgentRunning, setSending, setActiveConversation, queryClient, ideationSessionId, messageCount, queueMessage, onUserMessageSent, reportSendFailure, activeConversationId]
   );
 
   // ── Stop Agent ───────────────────────────────────────────────────

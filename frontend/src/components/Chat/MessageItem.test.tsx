@@ -9,7 +9,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { MessageItem } from "./MessageItem";
+import { MessageItem, MessageMeta } from "./MessageItem";
 import {
   makeContentText,
   makeContentToolUse,
@@ -219,6 +219,50 @@ describe("MessageItem - copy affordance", () => {
     await user.hover(screen.getByTestId("message-copy-button"));
 
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Copy message");
+  });
+
+  it("copies MessageMeta text and reflects the copied state", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageItem(
+      <MessageMeta
+        createdAt="2026-04-18T10:00:00Z"
+        copyableText="Copy this streamed block"
+      />
+    );
+
+    const copyButton = screen.getByTestId("message-copy-button");
+    await user.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith("Copy this streamed block");
+    expect(copyButton).toHaveAttribute("aria-label", "Copied");
+  });
+
+  it("keeps MessageMeta copy failures silent", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageItem(
+      <MessageMeta
+        createdAt="2026-04-18T10:00:00Z"
+        copyableText="Cannot copy this"
+      />
+    );
+
+    const copyButton = screen.getByTestId("message-copy-button");
+    await user.click(copyButton);
+
+    expect(writeText).toHaveBeenCalledWith("Cannot copy this");
+    expect(copyButton).toHaveAttribute("aria-label", "Copy message");
   });
 });
 

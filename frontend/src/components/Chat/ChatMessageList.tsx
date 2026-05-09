@@ -10,7 +10,7 @@
 
 import React, { forwardRef, useCallback, useEffect, useMemo, useRef, useState, useImperativeHandle } from "react";
 import { Virtuoso, type ListRange, type VirtuosoHandle } from "react-virtuoso";
-import { MessageItem } from "./MessageItem";
+import { MessageItem, MessageMeta } from "./MessageItem";
 import { HookEventMessage } from "./HookEventMessage";
 import { AutoVerificationCard } from "./AutoVerificationCard";
 import { VerificationResultCard } from "./VerificationResultCard";
@@ -653,10 +653,38 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }),
       [normalizedStreamingContentBlocks, streamingTasks],
     );
+    const hasRenderableStreamingWidgets = useMemo(
+      () =>
+        normalizedStreamingContentBlocks.some((block) => {
+          if (block.type === "text") {
+            return false;
+          }
+          if (block.type === "task") {
+            return Boolean(streamingTasks?.get(block.toolUseId));
+          }
+          return !shouldHideCompletedProjectOrchestrationToolCall(block.toolCall);
+        }),
+      [normalizedStreamingContentBlocks, streamingTasks],
+    );
 
     const shouldShowActiveTypingIndicator = isSending || isAgentRunning;
     const shouldShowFooterFallback = (isSending || isAgentRunning) && !hasRenderableStreamingBlocks;
     const hasFooterStreamingContent = hasRenderableStreamingBlocks || shouldShowFooterFallback;
+    const hasVisiblePendingToolFallback =
+      shouldShowFooterFallback &&
+      streamingToolCalls.some((tc) => !shouldHideCompletedProjectOrchestrationToolCall(tc));
+    const shouldShowStreamingAssistantIcon =
+      hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
+    const hasRenderableStreamingText =
+      normalizedStreamingContentBlocks.some(
+        (block) => block.type === "text" && block.text.trim().length > 0
+      );
+    const shouldRenderStreamingContentGroup =
+      hasRenderableStreamingText || hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
+    const streamingMessageCreatedAt = useMemo(
+      () => hasFooterStreamingContent ? new Date().toISOString() : "",
+      [hasFooterStreamingContent],
+    );
 
     useEffect(() => {
       hasFooterStreamingContentRef.current = hasFooterStreamingContent;
@@ -1287,101 +1315,107 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (!hasFooterStreamingContent) {
         return null;
       }
-      const streamingCopyContent = normalizedStreamingContentBlocks
-        .filter((block) => block.type === "text" && block.text.trim().length > 0)
-        .map((block) => block.type === "text" ? block.text.trim() : "")
-        .join("\n\n");
-
+      if (!shouldRenderStreamingContentGroup && !shouldShowActiveTypingIndicator) {
+        return null;
+      }
       return (
-        <MessageItem
-          role="assistant"
-          content={streamingCopyContent}
-          createdAt={new Date().toISOString()}
-          isLastInList
-          toolCalls={null}
-          contentBlocks={null}
-          providerHarness={providerHarness}
-          providerSessionId={providerSessionId}
-        >
-          {normalizedStreamingContentBlocks.map((block, idx) => {
-            if (block.type === "text") {
-              // Skip empty/whitespace-only text blocks (e.g. pre-stream flush artifacts)
-              if (!block.text.trim()) return null;
-              return (
-                <TextBubble
-                  key={`streaming-text-${idx}`}
-                  text={block.text}
-                  isUser={false}
-                />
-              );
-            }
-            // task position marker — renders TaskSubagentCard at its chronological position.
-            // Task metadata may not be available yet (agent:task_started fires after agent:tool_call),
-            // so render nothing gracefully when the map entry is missing.
-            if (block.type === "task") {
-              const task = streamingTasks?.get(block.toolUseId);
-              if (!task) return null;
-              return <TaskSubagentCard key={`streaming-task-${block.toolUseId}`} task={task} />;
-            }
-            // tool_use block — diff calls render as DiffToolCallView, all others render as ToolCallIndicator
-            if (isDiffToolCall(block.toolCall.name) && block.toolCall.arguments != null) {
-              return (
-                <DiffToolCallView
-                  key={`streaming-tool-${idx}`}
-                  toolCall={block.toolCall}
-                  isStreaming={block.toolCall.result == null && !block.toolCall.error}
-                  className="mb-2"
-                />
-              );
-            }
-            // Non-diff tool call — render inline to preserve visual ordering with text blocks
-            if (shouldHideCompletedProjectOrchestrationToolCall(block.toolCall)) {
-              return null;
-            }
-            return (
-              <ToolCallIndicator
-                key={`streaming-tool-${idx}`}
-                toolCall={block.toolCall}
-                isStreaming={block.toolCall.result == null && !block.toolCall.error}
-                className="mb-2"
-              />
-            );
-          })}
-
-          {shouldShowActiveTypingIndicator && hasRenderableStreamingBlocks && (
-            <TypingIndicator />
-          )}
-
-          {/* Fallback when agent is running but no content blocks yet:
-              - Tool calls pending → show ToolCallIndicator for each (immediate visibility into what agent is doing)
-              - No tool calls either → show TypingIndicator (agent thinking) */}
-          {shouldShowFooterFallback && (
-            <>
-              {streamingToolCalls.length > 0 && streamingToolCalls.map((tc, idx) => (
-                shouldHideCompletedProjectOrchestrationToolCall(tc)
-                  ? null
-                  : (
-                    <ToolCallIndicator
-                      key={`pending-tool-${idx}`}
-                      toolCall={tc}
-                      isStreaming={tc.result == null && !tc.error}
+        <>
+          {shouldRenderStreamingContentGroup && (
+            <MessageItem
+              role="assistant"
+              content=""
+              createdAt={streamingMessageCreatedAt}
+              isLastInList={!shouldShowActiveTypingIndicator}
+              toolCalls={null}
+              contentBlocks={null}
+              providerHarness={providerHarness}
+              providerSessionId={providerSessionId}
+              showAssistantIcon={shouldShowStreamingAssistantIcon}
+              hideMeta
+            >
+              {normalizedStreamingContentBlocks.map((block, idx) => {
+                if (block.type === "text") {
+                  // Skip empty/whitespace-only text blocks (e.g. pre-stream flush artifacts)
+                  if (!block.text.trim()) return null;
+                  return (
+                    <React.Fragment key={`streaming-text-${idx}`}>
+                      <TextBubble
+                        text={block.text}
+                        isUser={false}
+                      />
+                      <MessageMeta
+                        createdAt={streamingMessageCreatedAt}
+                        copyableText={block.text.trim()}
+                      />
+                    </React.Fragment>
+                  );
+                }
+                // task position marker — renders TaskSubagentCard at its chronological position.
+                // Task metadata may not be available yet (agent:task_started fires after agent:tool_call),
+                // so render nothing gracefully when the map entry is missing.
+                if (block.type === "task") {
+                  const task = streamingTasks?.get(block.toolUseId);
+                  if (!task) return null;
+                  return <TaskSubagentCard key={`streaming-task-${block.toolUseId}`} task={task} />;
+                }
+                // tool_use block — diff calls render as DiffToolCallView, all others render as ToolCallIndicator
+                if (isDiffToolCall(block.toolCall.name) && block.toolCall.arguments != null) {
+                  return (
+                    <DiffToolCallView
+                      key={`streaming-tool-${idx}`}
+                      toolCall={block.toolCall}
+                      isStreaming={block.toolCall.result == null && !block.toolCall.error}
                       className="mb-2"
                     />
-                  )
-              ))}
-              <TypingIndicator />
-            </>
+                  );
+                }
+                // Non-diff tool call — render inline to preserve visual ordering with text blocks
+                if (shouldHideCompletedProjectOrchestrationToolCall(block.toolCall)) {
+                  return null;
+                }
+                return (
+                  <ToolCallIndicator
+                    key={`streaming-tool-${idx}`}
+                    toolCall={block.toolCall}
+                    isStreaming={block.toolCall.result == null && !block.toolCall.error}
+                    className="mb-2"
+                  />
+                );
+              })}
+
+              {/* Fallback when agent is running but no content blocks yet:
+                  Tool calls pending show immediate visibility into what agent is doing. */}
+              {shouldShowFooterFallback && streamingToolCalls.length > 0 && streamingToolCalls.map(
+                (tc, idx) => (
+                  shouldHideCompletedProjectOrchestrationToolCall(tc)
+                    ? null
+                    : (
+                      <ToolCallIndicator
+                        key={`pending-tool-${idx}`}
+                        toolCall={tc}
+                        isStreaming={tc.result == null && !tc.error}
+                        className="mb-2"
+                      />
+                    )
+                )
+              )}
+            </MessageItem>
           )}
-        </MessageItem>
+          {shouldShowActiveTypingIndicator && (
+            <TypingIndicator />
+          )}
+        </>
       );
     }, [
       hasFooterStreamingContent,
-      hasRenderableStreamingBlocks,
+      shouldRenderStreamingContentGroup,
+      shouldShowStreamingAssistantIcon,
       normalizedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
+      streamingMessageCreatedAt,
       streamingTasks,
       streamingToolCalls,
     ]);

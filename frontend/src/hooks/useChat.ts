@@ -20,6 +20,13 @@ import {
   type ConversationMessagesPageResponse,
   type SendAgentMessageResult,
 } from "@/api/chat";
+import {
+  appendMessageToConversationHistory,
+  appendMessageIfMissing,
+  createOptimisticUserMessage,
+  removeMessageFromConversationHistory,
+  type ConversationHistoryCacheData,
+} from "./chat-cache";
 import type { ChatContext } from "@/types/chat";
 import type { ChatConversation, AgentRun, ContextType } from "@/types/chat-conversation";
 import { useChatStore } from "@/stores/chatStore";
@@ -51,9 +58,20 @@ export const chatKeys = {
     [...chatKeys.messages(), "task", taskId] as const,
 };
 
-type ConversationQueryData = {
+export type ConversationQueryData = {
   conversation: ChatConversation;
   messages: ChatMessageResponse[];
+};
+
+type SendMessageVariables = {
+  content: string;
+  attachmentIds?: string[];
+  target?: string;
+};
+
+type SendMessageMutationContext = {
+  optimisticConversationId?: string;
+  optimisticMessageId?: string;
 };
 
 const DEFAULT_HISTORY_MAX_PAGES = 3;
@@ -122,6 +140,50 @@ export function invalidateConversationDataQueries(
   queryClient.invalidateQueries({
     queryKey: chatKeys.conversationHistory(conversationId),
   });
+}
+
+export function addOptimisticUserMessageToConversationCache(
+  queryClient: QueryClient,
+  conversationId: string,
+  content: string
+) {
+  const message = createOptimisticUserMessage({ conversationId, content });
+  queryClient.setQueryData<ConversationQueryData>(
+    chatKeys.conversation(conversationId),
+    (oldData) => {
+      if (!oldData) return oldData;
+      return {
+        ...oldData,
+        messages: appendMessageIfMissing(oldData.messages ?? [], message),
+      };
+    }
+  );
+  queryClient.setQueryData<ConversationHistoryCacheData>(
+    chatKeys.conversationHistory(conversationId),
+    (oldData) => appendMessageToConversationHistory(oldData, message, { replaceOptimistic: false })
+  );
+  return message;
+}
+
+export function removeOptimisticMessageFromConversationCache(
+  queryClient: QueryClient,
+  conversationId: string,
+  messageId: string
+) {
+  queryClient.setQueryData<ConversationQueryData>(
+    chatKeys.conversation(conversationId),
+    (oldData) => {
+      if (!oldData) return oldData;
+      return {
+        ...oldData,
+        messages: oldData.messages.filter((message) => message.id !== messageId),
+      };
+    }
+  );
+  queryClient.setQueryData<ConversationHistoryCacheData>(
+    chatKeys.conversationHistory(conversationId),
+    (oldData) => removeMessageFromConversationHistory(oldData, messageId)
+  );
 }
 
 /**
@@ -395,7 +457,12 @@ export function useChat(
   }, [isFailed, errorMessage, agentRunStatus.data?.id, options?.isVisible]);
 
   // Send message mutation
-  const sendMessage = useMutation<SendAgentMessageResult, Error, { content: string; attachmentIds?: string[]; target?: string }>({
+  const sendMessage = useMutation<
+    SendAgentMessageResult,
+    Error,
+    SendMessageVariables,
+    SendMessageMutationContext
+  >({
     mutationFn: async ({ content, attachmentIds, target }) => {
       if (options?.sendOptions) {
         return chatApi.sendAgentMessage(
@@ -416,15 +483,27 @@ export function useChat(
         target
       );
     },
-    onMutate: () => {
+    onMutate: (variables) => {
       setSending(effectiveStoreKey, true);
+      if (!activeConversationId || variables.target) {
+        return {};
+      }
+      const optimisticMessage = addOptimisticUserMessageToConversationCache(
+        queryClient,
+        activeConversationId,
+        variables.content
+      );
+      return {
+        optimisticConversationId: activeConversationId,
+        optimisticMessageId: optimisticMessage.id,
+      };
     },
     onSettled: () => {
       setSending(effectiveStoreKey, false);
     },
-    onSuccess: () => {
+    onSuccess: (_data, _variables, mutationContext) => {
       // Invalidate active conversation to refetch messages
-      if (activeConversationId) {
+      if (activeConversationId && !mutationContext?.optimisticMessageId) {
         invalidateConversationDataQueries(queryClient, activeConversationId);
       }
 
@@ -440,7 +519,14 @@ export function useChat(
         });
       }
     },
-    onError: () => {
+    onError: (_error, _variables, context) => {
+      if (context?.optimisticConversationId && context.optimisticMessageId) {
+        removeOptimisticMessageFromConversationCache(
+          queryClient,
+          context.optimisticConversationId,
+          context.optimisticMessageId
+        );
+      }
       // Reset agent running state on error
       setAgentRunning(effectiveStoreKey, false);
     },

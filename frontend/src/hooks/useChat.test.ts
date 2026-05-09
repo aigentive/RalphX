@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { InfiniteData } from "@tanstack/react-query";
 import { createElement } from "react";
 import {
   useChat,
@@ -17,7 +18,11 @@ import {
   useAgentRunStatus,
   chatKeys,
 } from "./useChat";
-import { chatApi } from "@/api/chat";
+import {
+  chatApi,
+  type ConversationMessagesPageResponse,
+  type SendAgentMessageResult,
+} from "@/api/chat";
 import type { ChatMessageResponse } from "@/api/chat";
 import type { ChatContext } from "@/types/chat";
 import type { ChatConversation, AgentRun } from "@/types/chat-conversation";
@@ -97,6 +102,8 @@ const mockMessage1: ChatMessageResponse = {
   parentMessageId: null,
   conversationId: "conv-1",
   toolCalls: null,
+  contentBlocks: null,
+  sender: null,
   createdAt: "2026-01-24T10:00:00Z",
 };
 
@@ -111,6 +118,8 @@ const mockMessage2: ChatMessageResponse = {
   parentMessageId: "message-1",
   conversationId: "conv-1",
   toolCalls: null,
+  contentBlocks: null,
+  sender: null,
   createdAt: "2026-01-24T10:00:05Z",
 };
 
@@ -137,7 +146,7 @@ const taskDetailContext: ChatContext = {
 };
 
 // Test wrapper with QueryClientProvider
-function createWrapper() {
+function createWrapperWithClient() {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -147,9 +156,15 @@ function createWrapper() {
     },
   });
 
-  return function Wrapper({ children }: { children: React.ReactNode }) {
+  const wrapper = function Wrapper({ children }: { children: React.ReactNode }) {
     return createElement(QueryClientProvider, { client: queryClient }, children);
   };
+
+  return { queryClient, wrapper };
+}
+
+function createWrapper() {
+  return createWrapperWithClient().wrapper;
 }
 
 // Mock chat store state
@@ -458,6 +473,7 @@ describe("useChat", () => {
       hasOlder: false,
     });
     vi.mocked(chatApi.getAgentRunStatus).mockResolvedValue(null);
+    mockStoreState.activeConversationIds = {};
     // Mock store state
     vi.mocked(useChatStore).mockImplementation(<T = StoreMock>(selector?: StoreSelector<T>) => {
       if (typeof selector === "function") {
@@ -498,6 +514,228 @@ describe("useChat", () => {
       undefined,
       undefined
     );
+  });
+
+  it("optimistically adds a sent user message to an existing conversation before backend hydration", async () => {
+    let resolveSend!: (value: {
+      conversationId: string;
+      agentRunId: string;
+      isNewConversation: boolean;
+      wasQueued: boolean;
+      queuedAsPending: boolean;
+    }) => void;
+    vi.mocked(chatApi.sendAgentMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = resolve;
+        })
+    );
+    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
+    const { queryClient, wrapper } = createWrapperWithClient();
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1, mockMessage2],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 2,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      }
+    );
+
+    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
+    let sendPromise!: Promise<unknown>;
+
+    act(() => {
+      sendPromise = result.current.sendMessage.mutateAsync({
+        content: "Visible immediately",
+      });
+    });
+
+    await waitFor(() => {
+      const optimisticHistory = queryClient.getQueryData<
+        InfiniteData<ConversationMessagesPageResponse>
+      >(chatKeys.conversationHistory("conv-1"));
+      const newestPageMessages = optimisticHistory?.pages[0]?.messages ?? [];
+      expect(newestPageMessages.map((message) => message.content)).toEqual([
+        "Hello",
+        "Hi there! How can I help?",
+        "Visible immediately",
+      ]);
+      expect(newestPageMessages.at(-1)?.id).toMatch(/^optimistic:conv-1:/);
+      expect(optimisticHistory?.pages[0]?.totalMessageCount).toBe(3);
+    });
+    await waitFor(() => expect(chatApi.sendAgentMessage).toHaveBeenCalled());
+
+    await act(async () => {
+      resolveSend({
+        conversationId: "conv-1",
+        agentRunId: "run-1",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+      });
+      await sendPromise;
+    });
+  });
+
+  it("keeps duplicate pending user messages with the same text distinct", async () => {
+    const sendResolvers: Array<(value: SendAgentMessageResult) => void> = [];
+    vi.mocked(chatApi.sendAgentMessage).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          sendResolvers.push(resolve);
+        })
+    );
+    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
+    const { queryClient, wrapper } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1, mockMessage2],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1, mockMessage2],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 2,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      }
+    );
+
+    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
+    const sendPromises: Array<Promise<unknown>> = [];
+
+    act(() => {
+      sendPromises.push(result.current.sendMessage.mutateAsync({ content: "Repeat" }));
+      sendPromises.push(result.current.sendMessage.mutateAsync({ content: "Repeat" }));
+    });
+
+    await waitFor(() => {
+      const conversationData = queryClient.getQueryData<{
+        messages: ChatMessageResponse[];
+      }>(chatKeys.conversation("conv-1"));
+      const duplicateOptimisticMessages = (conversationData?.messages ?? []).filter(
+        (message) => message.content === "Repeat"
+      );
+      expect(duplicateOptimisticMessages).toHaveLength(2);
+      expect(new Set(duplicateOptimisticMessages.map((message) => message.id)).size).toBe(2);
+
+      const optimisticHistory = queryClient.getQueryData<
+        InfiniteData<ConversationMessagesPageResponse>
+      >(chatKeys.conversationHistory("conv-1"));
+      expect(
+        (optimisticHistory?.pages[0]?.messages ?? []).filter(
+          (message) => message.content === "Repeat"
+        )
+      ).toHaveLength(2);
+      expect(optimisticHistory?.pages[0]?.totalMessageCount).toBe(4);
+    });
+
+    await act(async () => {
+      sendResolvers.forEach((resolve) =>
+        resolve({
+          conversationId: "conv-1",
+          agentRunId: "run-1",
+          isNewConversation: false,
+          wasQueued: false,
+          queuedAsPending: false,
+        })
+      );
+      await Promise.all(sendPromises);
+    });
+  });
+
+  it("rolls back an optimistic user message when sending fails", async () => {
+    vi.mocked(chatApi.sendAgentMessage).mockRejectedValueOnce(new Error("send failed"));
+    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
+    const { queryClient, wrapper } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1, mockMessage2],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1, mockMessage2],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 2,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      }
+    );
+
+    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
+
+    await expect(
+      result.current.sendMessage.mutateAsync({ content: "Rollback me" })
+    ).rejects.toThrow("send failed");
+
+    const conversationData = queryClient.getQueryData<{
+      messages: ChatMessageResponse[];
+    }>(chatKeys.conversation("conv-1"));
+    const historyData = queryClient.getQueryData<
+      InfiniteData<ConversationMessagesPageResponse>
+    >(chatKeys.conversationHistory("conv-1"));
+
+    expect(conversationData?.messages.map((message) => message.content)).toEqual([
+      "Hello",
+      "Hi there! How can I help?",
+    ]);
+    expect(historyData?.pages[0]?.messages.map((message) => message.content)).toEqual([
+      "Hello",
+      "Hi there! How can I help?",
+    ]);
+    expect(historyData?.pages[0]?.totalMessageCount).toBe(2);
+    expect(mockStoreState.setAgentRunning).toHaveBeenCalledWith("session:session-1", false);
+  });
+
+  it("invalidates the active conversation when target sends skip the optimistic echo", async () => {
+    vi.mocked(chatApi.sendAgentMessage).mockResolvedValueOnce({
+      responseText: "AI response",
+      toolCalls: [],
+      claudeSessionId: "claude-session-123",
+      conversationId: "conv-1",
+    });
+    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
+    const { queryClient, wrapper } = createWrapperWithClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage.mutateAsync({
+        content: "Send to one agent",
+        target: "reviewer",
+      });
+    });
+
+    expect(
+      invalidateSpy.mock.calls.some(
+        ([filters]) =>
+          Array.isArray(filters?.queryKey) &&
+          filters.queryKey.join("|") === chatKeys.conversation("conv-1").join("|")
+      )
+    ).toBe(true);
   });
 
   it("should send message in task context", async () => {

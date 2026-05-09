@@ -59,6 +59,11 @@ vi.mock("@/api/ideation", () => ({
   },
 }));
 
+const mockAddOptimisticUserMessageToConversationCache = vi.fn(() => ({
+  id: "optimistic:conv-1:test",
+}));
+const mockRemoveOptimisticMessageFromConversationCache = vi.fn();
+
 vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     all: ["chat"] as const,
@@ -72,6 +77,12 @@ vi.mock("@/hooks/useChat", () => ({
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId] });
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "history"] });
   },
+  addOptimisticUserMessageToConversationCache: (
+    ...args: unknown[]
+  ) => mockAddOptimisticUserMessageToConversationCache(...args),
+  removeOptimisticMessageFromConversationCache: (
+    ...args: unknown[]
+  ) => mockRemoveOptimisticMessageFromConversationCache(...args),
 }));
 
 // ============================================================================
@@ -86,6 +97,7 @@ interface SetupOptions {
   ideationSessionId?: string | undefined;
   isPending?: boolean;
   messageCount?: number;
+  activeConversationId?: string | null | undefined;
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -97,6 +109,7 @@ function setup(opts: SetupOptions = {}) {
     ideationSessionId = undefined,
     isPending = false,
     messageCount = 5,
+    activeConversationId = undefined,
   } = opts;
 
   const mutateAsync = vi.fn().mockResolvedValue({
@@ -115,6 +128,7 @@ function setup(opts: SetupOptions = {}) {
       selectedTaskId,
       ideationSessionId,
       sendMessage: { isPending, mutateAsync },
+      activeConversationId,
       messageCount,
     })
   );
@@ -216,6 +230,47 @@ describe("useChatActions", () => {
       });
 
       expect(mockActions.setActiveConversation).toHaveBeenCalledWith("review:task-42", "new-conv");
+    });
+
+    it("review mode optimistically adds the user message to the active conversation", async () => {
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this");
+      });
+
+      expect(mockAddOptimisticUserMessageToConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        "conv-review",
+        "review this"
+      );
+    });
+
+    it("review mode rolls back the optimistic user message when send fails", async () => {
+      mockSendAgentMessage.mockRejectedValue(new Error("review send failed"));
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this");
+      });
+
+      expect(mockRemoveOptimisticMessageFromConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        "conv-review",
+        "optimistic:conv-1:test"
+      );
     });
 
     it("ideation first message triggers auto-naming", async () => {
