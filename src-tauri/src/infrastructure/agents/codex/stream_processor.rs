@@ -541,6 +541,27 @@ mod tests {
     }
 
     #[test]
+    fn extract_codex_error_uses_runtime_text_fallback() {
+        let mut item = codex_item("error");
+        item.id = Some("runtime-text-error".to_string());
+        item.text = Some("runtime failed before structured error".to_string());
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(item),
+            usage: None,
+        };
+
+        let error = extract_codex_error(&event).expect("runtime text error");
+        assert_eq!(error.source, CodexErrorSource::Runtime);
+        assert_eq!(error.message, "runtime failed before structured error");
+        assert_eq!(
+            extract_codex_error_message(&event).as_deref(),
+            Some("runtime failed before structured error")
+        );
+    }
+
+    #[test]
     fn extract_codex_error_marks_mcp_tool_errors_as_local_tool_errors() {
         let mut item = codex_item("mcp_tool_call");
         item.id = Some("tool-error".to_string());
@@ -562,5 +583,24 @@ mod tests {
             error.message,
             "delegate_start saw local rate_limit metadata"
         );
+    }
+
+    #[test]
+    fn extract_codex_error_ignores_items_without_errors() {
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(codex_item("command_execution")),
+            usage: None,
+        };
+        assert_eq!(extract_codex_error(&event), None);
+
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(codex_item("mcp_tool_call")),
+            usage: None,
+        };
+        assert_eq!(extract_codex_error(&event), None);
     }
 }

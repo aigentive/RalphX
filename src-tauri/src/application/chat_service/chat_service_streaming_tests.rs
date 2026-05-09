@@ -1,10 +1,12 @@
 use super::{
     codex_tool_call_content_block, flush_content_before_error, format_agent_exit_stderr,
-    persist_assistant_message_snapshot, process_exit_details, provider_session_ref_for_harness,
-    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
-    upsert_codex_tool_call_snapshot, ProcessExitDetails,
+    persist_assistant_message_snapshot, process_codex_stream_background, process_exit_details,
+    provider_session_ref_for_harness, resolve_codex_file_change_tool_call_snapshots,
+    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
+    StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
+use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
@@ -15,6 +17,64 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::{CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase};
 use std::os::unix::process::ExitStatusExt;
+use std::process::Stdio;
+use tauri::test::MockRuntime;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
+
+async fn spawn_codex_jsonl_process(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut child = Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex jsonl fixture");
+
+    let mut stdin = child.stdin.take().expect("capture fixture stdin");
+    stdin
+        .write_all(payload.as_bytes())
+        .await
+        .expect("write codex jsonl fixture");
+    drop(stdin);
+
+    child
+}
+
+async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
+    let child = spawn_codex_jsonl_process(lines).await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+}
 
 #[test]
 fn process_exit_details_reports_non_zero_code() {
@@ -77,6 +137,73 @@ fn provider_session_ref_for_harness_keeps_harness_and_id() {
 
     assert_eq!(session_ref.harness, AgentHarnessKind::Codex);
     assert_eq!(session_ref.provider_session_id, "thread-123");
+}
+
+#[tokio::test]
+async fn codex_stream_local_command_failures_are_agent_exit_not_provider_pause() {
+    let result = run_codex_stream_lines(
+        &[
+            r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-1","command":"rg rate_limit missing.rs","status":"failed","aggregated_output":"rg: missing.rs: No such file or directory\nlocal enum rate_limit","exit_code":2}}"#,
+            r#"{"type":"item.completed","item":{"type":"command_execution","id":"cmd-2","status":"failed","exit_code":7}}"#,
+        ],
+    )
+    .await
+    .expect_err("local command failures should surface as an agent error");
+
+    match result {
+        StreamError::AgentExit { stderr, .. } => {
+            assert!(stderr.contains("No such file or directory"));
+            assert!(stderr.contains("rate_limit"));
+            assert!(stderr.contains("Codex command_execution failed with exit code 7"));
+        }
+        other => panic!("expected local command failures to remain AgentExit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+    let result = run_codex_stream_lines(
+        &[r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"delegate_start","error":{"message":"delegate_start failed after reading local rate_limit metadata"}}}"#],
+    )
+    .await
+    .expect_err("local MCP failure should surface as an agent error");
+
+    match result {
+        StreamError::AgentExit { stderr, .. } => {
+            assert!(stderr.contains("delegate_start failed"));
+            assert!(stderr.contains("rate_limit"));
+        }
+        other => panic!("expected local MCP failure to remain AgentExit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_runtime_rate_limit_error_is_provider_error() {
+    let result = run_codex_stream_lines(
+        &[r#"{"type":"item.completed","item":{"type":"error","id":"err-1","error":{"message":"Error: rate_limit_exceeded"}}}"#],
+    )
+    .await
+    .expect_err("runtime provider failure should classify");
+
+    match result {
+        StreamError::ProviderError { category, .. } => {
+            assert_eq!(category, ProviderErrorCategory::RateLimit);
+        }
+        other => panic!("expected provider rate limit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn codex_stream_ignores_non_fatal_mcp_resource_probe_error() {
+    let outcome = run_codex_stream_lines(
+        &[r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"list_mcp_resources","error":{"message":"resources/list failed for 'ralphx': Mcp error: -32601: Method not found"}}}"#],
+    )
+    .await
+    .expect("resource probe errors should not fail the stream");
+
+    assert_eq!(outcome.response_text, "");
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(outcome.tool_calls[0].name, "ralphx::list_mcp_resources");
 }
 
 #[test]
