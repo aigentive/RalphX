@@ -173,6 +173,8 @@ pub fn run() {
                 .build()
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .menu(application::native_menu::build_app_menu)
+        .on_menu_event(application::native_menu::handle_menu_event)
         .setup(move |app| {
             run_app_setup(
                 app,
