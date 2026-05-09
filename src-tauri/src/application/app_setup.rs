@@ -155,9 +155,15 @@ pub(crate) fn run_app_setup(
 mod tests {
     use super::{
         configure_bundled_runtime_paths, generated_plugin_dir_for_app_data,
-        resolve_bundled_runtime_paths, BundledRuntimePaths,
+        generated_plugin_runtime_profile_component, resolve_bundled_runtime_paths,
+        BundledRuntimePaths,
     };
     use tempfile::tempdir;
+
+    #[test]
+    fn bundled_runtime_profile_uses_debug_for_test_builds() {
+        assert_eq!(generated_plugin_runtime_profile_component(), "debug");
+    }
 
     #[test]
     fn bundled_runtime_paths_require_plugin_and_agents_directories() {

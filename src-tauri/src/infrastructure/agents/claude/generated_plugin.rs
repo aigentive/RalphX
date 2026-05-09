@@ -758,9 +758,10 @@ mod tests {
     use super::{
         ensure_symlink, expected_runtime_entry_source, generated_plugin_dir_for_base_with_override,
         generated_plugin_dir_has_only_managed_entries, generated_plugin_dir_is_current,
-        prune_unmanaged_generated_plugin_entries, trusted_existing_generated_plugin_top_level_path,
-        trusted_generated_plugin_child_path, EXTERNAL_MCP_SERVER_DIR, GENERATED_AGENTS_DIR,
-        GENERATED_PLUGIN_ENTRY_NAMES, INTERNAL_MCP_SERVER_DIR,
+        generated_plugin_runtime_profile_component, prune_unmanaged_generated_plugin_entries,
+        trusted_existing_generated_plugin_top_level_path, trusted_generated_plugin_child_path,
+        EXTERNAL_MCP_SERVER_DIR, GENERATED_AGENTS_DIR, GENERATED_PLUGIN_ENTRY_NAMES,
+        INTERNAL_MCP_SERVER_DIR,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -786,6 +787,11 @@ mod tests {
         let resolved = generated_plugin_dir_for_base_with_override(&base_plugin_dir, None);
 
         assert_eq!(resolved, root.join(".artifacts/generated/claude-plugin"));
+    }
+
+    #[test]
+    fn generated_plugin_runtime_profile_uses_debug_for_test_builds() {
+        assert_eq!(generated_plugin_runtime_profile_component(), "debug");
     }
 
     #[test]
