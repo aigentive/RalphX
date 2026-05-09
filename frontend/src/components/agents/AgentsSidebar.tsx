@@ -11,6 +11,8 @@ import {
 import {
   Archive,
   ArrowDownUp,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Folder,
@@ -29,7 +31,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -581,7 +587,7 @@ function AgentsSidebarToolbar({
         </PopoverTrigger>
         <PopoverContent
           align="start"
-          className="w-64 p-3"
+          className="w-60 px-1.5 py-2.5"
           data-testid="agents-filter-popover"
           style={{
             backgroundColor: "var(--bg-elevated)",
@@ -592,71 +598,40 @@ function AgentsSidebarToolbar({
           }}
         >
           <div className="space-y-3 text-xs">
-            <FilterSectionLabel>Visibility</FilterSectionLabel>
-            <label
-              className="flex items-center justify-between gap-3"
-              data-testid="agents-filter-archived"
-            >
-              <span className="inline-flex items-center gap-2">
-                <Checkbox
-                  checked={showArchived}
-                  onCheckedChange={(checked) => onShowArchivedChange(checked === true)}
-                  aria-label="Show archived conversations"
-                />
-                <span>Archived</span>
-              </span>
-              <span
-                className="rounded-full px-1.5 text-[0.625rem] font-semibold leading-[1.6]"
-                style={{
-                  backgroundColor: "var(--overlay-weak)",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {totalArchivedCount}
-              </span>
-            </label>
-
-            <div className="space-y-1.5">
-              <FilterSectionLabel>Projects</FilterSectionLabel>
-              <label
-                className="flex items-center gap-2"
-                data-testid="agents-filter-all-projects"
-              >
-                <Checkbox
-                  checked={showAllProjects}
-                  onCheckedChange={handleAllProjectsChange}
-                  aria-label="All projects"
-                />
-                <span>All projects</span>
-              </label>
-              <div className="max-h-28 space-y-1 overflow-y-auto pl-1">
-                {projects.map((project) => (
-                  <label
-                    key={project.id}
-                    className="flex min-w-0 items-center gap-2"
-                    data-testid={`agents-filter-project-${project.id}`}
+            <div className="space-y-1">
+              <FilterSectionLabel>Visibility</FilterSectionLabel>
+              <FilterToggleRow
+                selected={showArchived}
+                onToggle={() => onShowArchivedChange(!showArchived)}
+                label="Archived"
+                ariaLabel="Show archived conversations"
+                testId="agents-filter-archived"
+                rightSlot={
+                  <span
+                    className="rounded-full px-1.5 text-[0.625rem] font-semibold leading-[1.6]"
+                    style={{
+                      backgroundColor: "var(--overlay-weak)",
+                      color: "var(--text-secondary)",
+                    }}
                   >
-                    <Checkbox
-                      checked={showAllProjects || selectedProjectFilterSet.has(project.id)}
-                      onCheckedChange={(checked) =>
-                        handleProjectFilterChange(project.id, checked)
-                      }
-                      aria-label={`Show ${project.name}`}
-                    />
-                    <span className="truncate">{project.name}</span>
-                  </label>
-                ))}
-              </div>
+                    {totalArchivedCount}
+                  </span>
+                }
+              />
             </div>
 
             <div className="space-y-1.5" data-testid="agents-filter-group-by">
               <FilterSectionLabel>Group by</FilterSectionLabel>
-              <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label="Group by">
+              <div
+                className="grid grid-cols-2 gap-1"
+                role="radiogroup"
+                aria-label="Group by"
+              >
                 <button
                   type="button"
                   role="radio"
                   aria-checked={sidebarGroupBy === "project"}
-                  className="rounded-[4px] px-2 py-1 text-left outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
+                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
                   onClick={() => setSidebarGroupBy("project")}
                   style={{
                     backgroundColor:
@@ -675,7 +650,7 @@ function AgentsSidebarToolbar({
                   type="button"
                   role="radio"
                   aria-checked={sidebarGroupBy === "publication"}
-                  className="rounded-[4px] px-2 py-1 text-left outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
+                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
                   onClick={() => setSidebarGroupBy("publication")}
                   style={{
                     backgroundColor:
@@ -693,25 +668,62 @@ function AgentsSidebarToolbar({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <FilterSectionLabel>Publication state</FilterSectionLabel>
-              {PUBLICATION_STATE_OPTIONS.map((option) => (
-                <label
-                  key={option.value}
-                  className="flex items-center gap-2"
-                  data-testid={`agents-filter-publication-state-${option.value}`}
-                >
-                  <Checkbox
-                    checked={selectedPublicationStates.includes(option.value)}
-                    onCheckedChange={() =>
+            <FilterCollapsibleSection
+              label="Projects"
+              testId="agents-filter-projects-section"
+              summary={
+                showAllProjects
+                  ? "All"
+                  : `${selectedProjectFilterSet.size}/${projects.length}`
+              }
+            >
+              <div className="max-h-44 space-y-0.5 overflow-y-auto">
+                <FilterToggleRow
+                  selected={showAllProjects}
+                  onToggle={() => handleAllProjectsChange(!showAllProjects)}
+                  label="All projects"
+                  ariaLabel="All projects"
+                  testId="agents-filter-all-projects"
+                />
+                {projects.map((project) => {
+                  const projectSelected =
+                    showAllProjects || selectedProjectFilterSet.has(project.id);
+                  return (
+                    <FilterToggleRow
+                      key={project.id}
+                      selected={projectSelected}
+                      onToggle={() =>
+                        handleProjectFilterChange(project.id, !projectSelected)
+                      }
+                      label={project.name}
+                      ariaLabel={`Show ${project.name}`}
+                      testId={`agents-filter-project-${project.id}`}
+                    />
+                  );
+                })}
+              </div>
+            </FilterCollapsibleSection>
+
+            <FilterCollapsibleSection
+              label="Publication state"
+              testId="agents-filter-publication-section"
+              summary={`${selectedPublicationStates.length}/${PUBLICATION_STATE_OPTIONS.length}`}
+            >
+              <div className="space-y-0.5">
+                {PUBLICATION_STATE_OPTIONS.map((option) => (
+                  <FilterToggleRow
+                    key={option.value}
+                    selected={selectedPublicationStates.includes(option.value)}
+                    onToggle={() =>
                       toggleSidebarPublicationStateFilter(option.value)
                     }
-                    aria-label={option.label}
+                    label={option.label}
+                    ariaLabel={option.label}
+                    testId={`agents-filter-publication-state-${option.value}`}
                   />
-                  <span>{option.label}</span>
-                </label>
-              ))}
-            </div>
+                ))}
+              </div>
+            </FilterCollapsibleSection>
           </div>
         </PopoverContent>
       </Popover>
@@ -751,14 +763,112 @@ function AgentsSidebarToolbar({
   );
 }
 
-function FilterSectionLabel({ children }: { children: string }) {
+function FilterSectionLabel({
+  children,
+  inline = false,
+}: {
+  children: string;
+  inline?: boolean;
+}) {
   return (
     <div
-      className="text-[0.625rem] font-semibold uppercase leading-none tracking-[0.12em]"
+      className={`text-[0.625rem] font-semibold uppercase leading-none tracking-[0.12em] ${
+        inline ? "" : "px-1.5"
+      }`}
       style={{ color: "var(--text-muted)" }}
     >
       {children}
     </div>
+  );
+}
+
+interface FilterToggleRowProps {
+  selected: boolean;
+  onToggle: () => void;
+  label: string;
+  ariaLabel: string;
+  testId: string;
+  rightSlot?: React.ReactNode;
+}
+
+function FilterToggleRow({
+  selected,
+  onToggle,
+  label,
+  ariaLabel,
+  testId,
+  rightSlot,
+}: FilterToggleRowProps) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={selected}
+      aria-label={ariaLabel}
+      data-testid={testId}
+      onClick={onToggle}
+      className="flex w-full min-w-0 items-center justify-between gap-2 rounded-[4px] px-1.5 py-1 text-left text-xs transition-colors duration-[120ms] outline-none hover:bg-[var(--overlay-weak)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+      style={{
+        backgroundColor: "transparent",
+        color: selected ? "var(--text-primary)" : "var(--text-muted)",
+      }}
+    >
+      <span className="truncate">{label}</span>
+      <span className="inline-flex shrink-0 items-center gap-2">
+        {rightSlot}
+        <Check
+          className="h-3.5 w-3.5"
+          aria-hidden="true"
+          style={{
+            color: selected ? "var(--accent-primary)" : "var(--text-muted)",
+            opacity: selected ? 1 : 0.35,
+          }}
+        />
+      </span>
+    </button>
+  );
+}
+
+interface FilterCollapsibleSectionProps {
+  label: string;
+  summary: string;
+  testId: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}
+
+function FilterCollapsibleSection({
+  label,
+  summary,
+  testId,
+  defaultOpen = false,
+  children,
+}: FilterCollapsibleSectionProps) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} data-testid={testId}>
+      <CollapsibleTrigger
+        data-testid={`${testId}-trigger`}
+        aria-label={`${label} filter`}
+        className="flex w-full items-center justify-between gap-2 rounded-[4px] px-1.5 py-1 text-left transition-colors duration-[120ms] outline-none hover:bg-[var(--overlay-weak)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+      >
+        <FilterSectionLabel inline>{label}</FilterSectionLabel>
+        <span
+          className="inline-flex shrink-0 items-center gap-1.5 text-[0.625rem] font-medium"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <span>{summary}</span>
+          <ChevronDown
+            className="h-3 w-3 transition-transform duration-[120ms]"
+            aria-hidden="true"
+            style={{
+              transform: open ? "rotate(180deg)" : "rotate(0deg)",
+            }}
+          />
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-1">{children}</CollapsibleContent>
+    </Collapsible>
   );
 }
 

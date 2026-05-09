@@ -714,7 +714,8 @@ describe("AgentsSidebar", () => {
     expect(archivedFilter).toHaveTextContent("4");
     expect(archivedCountCalls.at(-1)).toEqual(["project-1"]);
 
-    await user.click(within(archivedFilter).getByRole("checkbox"));
+    expect(archivedFilter).toHaveAttribute("role", "checkbox");
+    await user.click(archivedFilter);
     expect(onShowArchivedChange).toHaveBeenCalledWith(true);
   });
 
@@ -936,10 +937,18 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
+    expect(screen.getByTestId("agents-filter-group-by")).toHaveTextContent("Project");
+
+    await user.click(
+      screen.getByTestId("agents-filter-projects-section-trigger")
+    );
     expect(screen.getByTestId("agents-filter-all-projects")).toHaveTextContent(
       "All projects"
     );
-    expect(screen.getByTestId("agents-filter-group-by")).toHaveTextContent("Project");
+
+    await user.click(
+      screen.getByTestId("agents-filter-publication-section-trigger")
+    );
     expect(screen.getByTestId("agents-filter-publication-state-active")).toHaveTextContent(
       "Active"
     );
@@ -988,8 +997,9 @@ describe("AgentsSidebar", () => {
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
     await user.click(
-      within(screen.getByTestId("agents-filter-all-projects")).getByRole("checkbox")
+      screen.getByTestId("agents-filter-projects-section-trigger")
     );
+    await user.click(screen.getByTestId("agents-filter-all-projects"));
 
     await waitFor(() =>
       expect(useAgentSessionStore.getState().showAllProjects).toBe(true),
