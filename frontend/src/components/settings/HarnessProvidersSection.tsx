@@ -500,8 +500,8 @@ export function HarnessProvidersSection() {
                           Skip Permissions
                         </Label>
                         <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
-                          Passes --dangerously-skip-permissions and bypasses
-                          Claude permission prompts for RalphX-launched runs.
+                          Actually bypasses Claude permission prompts for
+                          RalphX-launched runs.
                         </p>
                       </div>
                       <Switch
@@ -516,31 +516,6 @@ export function HarnessProvidersSection() {
                       />
                     </div>
 
-                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
-                      <div className="space-y-1">
-                        <Label
-                          htmlFor="claude-allow-dangerous-skip"
-                          className="text-xs text-[var(--text-primary)]"
-                        >
-                          Allow Skip Option
-                        </Label>
-                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
-                          Makes Claude's dangerous skip mode available as an
-                          option. Allow Skip Option does not bypass prompts by
-                          itself.
-                        </p>
-                      </div>
-                      <Switch
-                        id="claude-allow-dangerous-skip"
-                        checked={provider.claudeAllowDangerouslySkipPermissions}
-                        disabled={isUpdating}
-                        onCheckedChange={(checked) =>
-                          void updateProvider(provider, {
-                            claudeAllowDangerouslySkipPermissions: checked,
-                          })
-                        }
-                      />
-                    </div>
                   </>
                 )}
               </div>

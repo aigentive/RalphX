@@ -31,6 +31,7 @@ describe("WelcomeScreen", () => {
       screen.getByText("The best way to ship software with AI"),
     ).toBeInTheDocument();
     expect(screen.getByText("Choose your agent harness.")).toBeInTheDocument();
+    expect(screen.getByText("Project workspace ready.")).toBeInTheDocument();
     expect(screen.getByTestId("welcome-setup-steps")).toBeInTheDocument();
     expect(screen.getByTestId("welcome-project-step")).toHaveAttribute(
       "data-status",
@@ -42,6 +43,24 @@ describe("WelcomeScreen", () => {
 
     expect(onSetupProviders).toHaveBeenCalledTimes(2);
     expect(onCreateProject).not.toHaveBeenCalled();
+  });
+
+  it("shows the project setup subtitle when provider setup is required before a first project", () => {
+    render(
+      <WelcomeScreen
+        onCreateProject={vi.fn()}
+        onSetupProviders={vi.fn()}
+        providerSetupRequired
+        hasProjects={false}
+      />,
+    );
+
+    expect(screen.getByText("Choose your agent harness.")).toBeInTheDocument();
+    expect(screen.getByText("Create your first project.")).toBeInTheDocument();
+    expect(screen.getByTestId("welcome-project-step")).toHaveAttribute(
+      "data-status",
+      "pending",
+    );
   });
 
   it("keeps the first-project action when provider setup is not required", () => {

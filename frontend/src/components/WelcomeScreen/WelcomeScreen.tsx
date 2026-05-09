@@ -68,6 +68,9 @@ export default function WelcomeScreen({
       ? "Continue"
       : "Start Your First Project";
   const projectStepStatus = hasProjects ? "complete" : "pending";
+  const projectStepSubtitle = hasProjects
+    ? "Project workspace ready."
+    : "Create your first project.";
 
   return (
     <div
@@ -184,7 +187,7 @@ export default function WelcomeScreen({
               data-testid="welcome-project-step"
               data-current="false"
               data-status={projectStepStatus}
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-md border px-3 py-2 text-sm"
+              className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
               style={{
                 backgroundColor: "var(--bg-surface)",
                 borderColor: "var(--border-subtle)",
@@ -192,11 +195,19 @@ export default function WelcomeScreen({
               }}
             >
               {hasProjects ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-[var(--status-success)]" />
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-success)]" />
               ) : (
-                <Sparkles className="h-4 w-4 shrink-0" />
+                <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
               )}
-              <span className="truncate font-medium">Project</span>
+              <span className="min-w-0">
+                <span className="block truncate font-medium">Project</span>
+                <span
+                  className="block truncate text-[0.6875rem]"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {projectStepSubtitle}
+                </span>
+              </span>
             </div>
           </div>
         )}

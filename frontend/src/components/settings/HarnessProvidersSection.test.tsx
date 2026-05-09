@@ -291,17 +291,12 @@ describe("HarnessProvidersSection", () => {
       claudeDangerouslySkipPermissions: false,
     });
     expect(
-      screen.getByText(/Passes --dangerously-skip-permissions/i),
+      screen.getByText(/Actually bypasses Claude permission prompts/i),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Allow Skip Option"));
-    expect(updateProviderAsync).toHaveBeenCalledWith({
-      provider: "claude",
-      claudeAllowDangerouslySkipPermissions: false,
-    });
     expect(
-      screen.getByText(/Allow Skip Option does not bypass prompts by itself/i),
-    ).toBeInTheDocument();
+      screen.queryByText("Allow Skip Option"),
+    ).not.toBeInTheDocument();
   });
 
   it("resets provider defaults and applies them to lanes when the provider is default", async () => {
