@@ -1124,40 +1124,44 @@ function AgentSessionRow({
             {title}
           </span>
           <span
-            className="agents-session-meta min-w-0 truncate text-[0.6875rem] leading-[1.35]"
+            className="agents-session-meta flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap text-[0.6875rem] leading-[1.35]"
             style={{
               fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
             }}
           >
             {showProjectNameInMeta && projectName && (
               <>
-                <span>{projectName}</span>
-                <span>{" · "}</span>
+                <span className="max-w-24 shrink-0 truncate">{projectName}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
               </>
             )}
             <span className="inline-flex min-w-0 items-center gap-1">
               {refKind === "pull-request" ? (
                 <GitPullRequest
-                  className="h-3 w-3 shrink-0"
+                  className="h-3 w-3 shrink-0 -translate-y-px"
                   data-ref-kind="pull-request"
                   data-testid={`agents-ref-icon-${conversation.id}`}
                   aria-hidden="true"
                 />
               ) : (
                 <GitBranch
-                  className="h-3 w-3 shrink-0"
+                  className="h-3 w-3 shrink-0 -translate-y-px"
                   data-ref-kind="branch"
                   data-testid={`agents-ref-icon-${conversation.id}`}
                   aria-hidden="true"
                 />
               )}
-              <span>{refLabel}</span>
+              <span className="min-w-0 truncate">{refLabel}</span>
             </span>
-            <span>{" · "}</span>
+            <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+              ·
+            </span>
             {publicationLabel && (
               <>
                 <span
-                  className="agents-session-publication-state font-medium"
+                  className="agents-session-publication-state shrink-0 font-medium"
                   style={{
                     color:
                       publicationState === "merged"
@@ -1169,13 +1173,19 @@ function AgentSessionRow({
                 >
                   {publicationLabel}
                 </span>
-                <span>{" · "}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
               </>
             )}
-            <span title={createdTitle || undefined}>{createdLabel}</span>
+            <span className="shrink-0" title={createdTitle || undefined}>
+              {createdLabel}
+            </span>
             {showRuntimeState && (
               <>
-                <span>{" · "}</span>
+                <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
+                  ·
+                </span>
                 <SessionRuntimeLabel state={runtimeState} />
               </>
             )}
