@@ -248,6 +248,37 @@ describe("agentSessionStore", () => {
       expect(s.pinnedConversationIds["conversation-1"]).toBeUndefined();
     });
 
+    it("toggles individual sidebar project and publication-state filters", () => {
+      const {
+        setSidebarProjectFilterIds,
+        setSidebarPublicationStateFilters,
+        toggleSidebarProjectFilter,
+        toggleSidebarPublicationStateFilter,
+      } = useAgentSessionStore.getState();
+
+      setSidebarProjectFilterIds(["project-1"]);
+      toggleSidebarProjectFilter("project-2");
+      expect(useAgentSessionStore.getState()).toMatchObject({
+        showAllProjects: false,
+        sidebarProjectFilterIds: ["project-1", "project-2"],
+      });
+      toggleSidebarProjectFilter("project-1");
+      expect(useAgentSessionStore.getState().sidebarProjectFilterIds).toEqual([
+        "project-2",
+      ]);
+
+      setSidebarPublicationStateFilters(["merged"]);
+      toggleSidebarPublicationStateFilter("closed");
+      expect(useAgentSessionStore.getState().sidebarPublicationStateFilters).toEqual([
+        "merged",
+        "closed",
+      ]);
+      toggleSidebarPublicationStateFilter("merged");
+      expect(useAgentSessionStore.getState().sidebarPublicationStateFilters).toEqual([
+        "closed",
+      ]);
+    });
+
     it("artifact actions: open/tab/state/taskMode flow", () => {
       const {
         setArtifactOpen,

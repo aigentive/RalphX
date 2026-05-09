@@ -1041,6 +1041,29 @@ describe("AgentsSidebar", () => {
     ).toBe(true);
   });
 
+  it("switches from all projects to individual project filters inside the filter popover", async () => {
+    const user = userEvent.setup();
+    const alpha = project({ id: "project-1", name: "alpha" });
+    const beta = project({ id: "project-2", name: "beta" });
+    const gamma = project({ id: "project-3", name: "gamma" });
+
+    renderSidebar([alpha, beta, gamma]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByTestId("agents-filter-projects-section-trigger"));
+    await user.click(screen.getByTestId("agents-filter-project-project-2"));
+
+    expect(useAgentSessionStore.getState()).toMatchObject({
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1", "project-3"],
+    });
+
+    await user.click(screen.getByTestId("agents-filter-project-project-3"));
+    expect(useAgentSessionStore.getState().sidebarProjectFilterIds).toEqual([
+      "project-1",
+    ]);
+  });
+
   it("hydrates individually selected project filters while all projects is off", () => {
     const focused = project({ id: "project-1", name: "alpha" });
     const selected = project({ id: "project-2", name: "beta" });
@@ -1838,6 +1861,89 @@ describe("AgentsSidebar", () => {
       ])
     );
     expect(screen.queryByTestId("agents-project-row-project-1")).not.toBeInTheDocument();
+  });
+
+  it("handles row selection and actions inside publication-state groups", async () => {
+    const user = userEvent.setup();
+    const onSelectConversation = vi.fn();
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const onArchiveConversation = vi.fn();
+    const active = conversation({ id: "conversation-publication-active", title: "Active row" });
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [active],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      onSelectConversation,
+      onRenameConversation,
+      onArchiveConversation,
+    });
+
+    await user.click(screen.getByText("Active row"));
+    expect(onSelectConversation).toHaveBeenCalledWith("project-1", active);
+
+    const row = screen.getByTestId("agents-session-conversation-publication-active");
+    await user.click(within(row).getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    const input = screen.getByLabelText("Session title");
+    await user.clear(input);
+    await user.type(input, "Publication rename{Enter}");
+    await waitFor(() =>
+      expect(onRenameConversation).toHaveBeenCalledWith(
+        "conversation-publication-active",
+        "Publication rename"
+      )
+    );
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-publication-active")).getByRole(
+        "button",
+        { name: "Session actions" }
+      )
+    );
+    await user.click(screen.getByText("Archive session"));
+    expect(screen.getByText("Archive session?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Archive session" }));
+    expect(onArchiveConversation).toHaveBeenCalledWith(active);
+  });
+
+  it("hides publication groups when every publication state is filtered out", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-active", title: "Active run" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    expect(screen.getByTestId("agents-publication-row-active")).toBeInTheDocument();
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(
+      screen.getByTestId("agents-filter-publication-section-trigger")
+    );
+    await user.click(screen.getByTestId("agents-filter-publication-state-active"));
+
+    expect(useAgentSessionStore.getState().sidebarPublicationStateFilters).toEqual([]);
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-publication-row-active")).not.toBeInTheDocument()
+    );
   });
 
   it("closes the rename dialog via Escape (onOpenChange false branch)", async () => {
