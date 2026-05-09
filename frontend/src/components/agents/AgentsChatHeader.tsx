@@ -57,6 +57,10 @@ import {
   hasPublishedWorkspacePr,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
+import {
+  AGENT_WORKSPACE_FRESHNESS_STALE_MS,
+  agentWorkspaceKeys,
+} from "./agentWorkspaceQueries";
 
 const HEADER_ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -566,12 +570,12 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
     ? workspace.publicationPrStatus
     : null;
   const { data: freshness } = useQuery({
-    queryKey: ["agents", "conversation-workspace-freshness", workspace.conversationId],
+    queryKey: agentWorkspaceKeys.freshness(workspace.conversationId),
     queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(workspace.conversationId),
     enabled:
       !terminalStatus &&
       (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),
-    staleTime: 10_000,
+    staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const isBaseBlocked = freshness?.baseStatus === "blocked";
   const isBehindBase = !isBaseBlocked && !terminalStatus && Boolean(freshness?.isBaseAhead);

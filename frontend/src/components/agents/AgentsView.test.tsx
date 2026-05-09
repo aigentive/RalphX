@@ -22,6 +22,7 @@ import {
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 const {
+  getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   getLatestChildSessionIdMock,
   useConversationMock,
@@ -85,6 +86,38 @@ describe("AgentsView", () => {
     const baseLine = await screen.findByTestId("agents-conversation-base");
     expect(baseLine).toHaveTextContent("Project default (main)");
     expect(within(baseLine).getByRole("button", { name: "Start from" })).toBeDisabled();
+  });
+
+  it("preflights workspace freshness on selection without duplicate rapid reselect checks", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    let resolveWorkspace: (
+      workspace: ReturnType<typeof conversationWorkspace>
+    ) => void = () => undefined;
+    const workspacePromise = new Promise<ReturnType<typeof conversationWorkspace>>(
+      (resolve) => {
+        resolveWorkspace = resolve;
+      }
+    );
+    getAgentConversationWorkspaceMock.mockReturnValue(workspacePromise);
+
+    renderAgentsView();
+    const row = selectSidebarConversationRow();
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceMock).toHaveBeenCalled()
+    );
+    fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
+    fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
+    expect(getAgentConversationWorkspaceFreshnessMock).not.toHaveBeenCalled();
+
+    resolveWorkspace(conversationWorkspace({ mode: "edit" }));
+
+    await waitFor(() =>
+      expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledTimes(1)
+    );
+    expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
+      "conversation-1"
+    );
   });
 
   it("does not hydrate attached ideation session data for edit conversations", async () => {
