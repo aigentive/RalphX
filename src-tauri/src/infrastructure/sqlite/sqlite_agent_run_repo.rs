@@ -395,6 +395,26 @@ impl AgentRunRepository for SqliteAgentRunRepository {
             .await
     }
 
+    async fn cancel_running_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u32> {
+        let cutoff = cutoff.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                let changes = conn.execute(
+                    "UPDATE agent_runs SET status = 'cancelled', completed_at = ?1, error_message = ?2 WHERE status = 'running' AND started_at < ?3",
+                    rusqlite::params![
+                        Utc::now().to_rfc3339(),
+                        ORPHANED_AGENT_RUN_ON_APP_RESTART,
+                        cutoff
+                    ],
+                )?;
+                Ok(changes as u32)
+            })
+            .await
+    }
+
     async fn get_interrupted_conversations(&self) -> AppResult<Vec<InterruptedConversation>> {
         self.db
             .run(move |conn| {

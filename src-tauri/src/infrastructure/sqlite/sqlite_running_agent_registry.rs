@@ -1,7 +1,7 @@
 // SQLite implementation of RunningAgentRegistry
 //
 // Persists running agent PIDs to the running_agents table so they survive app restarts.
-// On restart, stop_all() kills orphaned processes before new agents are spawned.
+// On restart, boot-scoped cleanup kills orphaned processes before new agents are spawned.
 //
 // All rusqlite calls go through DbConnection::run() (spawn_blocking + blocking_lock)
 // to prevent blocking the tokio async runtime / timer driver.
@@ -485,6 +485,60 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
                 Ok(())
             })
             .await;
+
+        stopped
+    }
+
+    async fn stop_all_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<RunningAgentKey> {
+        let entries: Vec<(RunningAgentKey, RunningAgentInfo)> = self
+            .list_all()
+            .await
+            .into_iter()
+            .filter(|(_, info)| info.started_at < cutoff)
+            .collect();
+        if entries.is_empty() {
+            return Vec::new();
+        }
+
+        for (_, info) in &entries {
+            kill_process(info.pid);
+        }
+
+        let cutoff_str = cutoff.to_rfc3339();
+        let delete_result = self
+            .db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM running_agents WHERE started_at < ?1",
+                    rusqlite::params![cutoff_str],
+                )?;
+                Ok(())
+            })
+            .await;
+
+        if let Err(e) = delete_result {
+            tracing::warn!(
+                error = %e,
+                "stop_all_started_before: failed to delete previous-session registry rows"
+            );
+        }
+
+        let mut stopped = Vec::new();
+        for (key, _) in entries {
+            if self.get(&key).await.is_none() {
+                let token = {
+                    let mut tokens = self.tokens.lock().await;
+                    tokens.remove(&key)
+                };
+                if let Some(token) = token {
+                    token.cancel();
+                }
+                stopped.push(key);
+            }
+        }
 
         stopped
     }

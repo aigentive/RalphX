@@ -80,7 +80,7 @@ pub(crate) struct StartupPipelineDeps {
 }
 
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let previous_session_cutoff = chrono::Utc::now();
 
     if startup_jobs::is_startup_recovery_disabled() {
         info!(
@@ -89,6 +89,16 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         );
         return Ok(());
     }
+
+    // Pattern-based MCP cleanup cannot reliably distinguish current-boot agent
+    // servers after user actions begin, so run it before delayed PR/workspace recovery.
+    let mcp_killed =
+        crate::domain::services::running_agent_registry::kill_orphaned_mcp_servers();
+    if mcp_killed > 0 {
+        info!(count = mcp_killed, "Killed orphaned MCP server processes");
+    }
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     info!("Starting startup job runner...");
 
@@ -332,6 +342,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_app_handle(app_handle.clone())
     .with_review_repo(Arc::clone(&review_repo))
     .with_chat_service(recovery_chat_service)
+    .with_previous_session_cutoff(previous_session_cutoff)
     .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids));
 
     let startup_ideation_recovery_claims = runner.run().await;

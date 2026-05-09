@@ -5,8 +5,8 @@ use ralphx_lib::commands::execution_commands::{AGENT_ACTIVE_STATUSES, AUTO_TRANS
 use ralphx_lib::commands::{ActiveProjectState, ExecutionState};
 use ralphx_lib::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunStatus, ArtifactId, ChatContextType,
-    ChatConversation, IdeationSessionBuilder, IdeationSessionId, InternalStatus, PlanBranch,
-    Project, ProjectId, Task, TaskCategory,
+    ChatConversation, ChatConversationId, IdeationSessionBuilder, IdeationSessionId,
+    InternalStatus, PlanBranch, Project, ProjectId, Task, TaskCategory,
 };
 use ralphx_lib::domain::execution::ExecutionSettings;
 use ralphx_lib::domain::repositories::{AppStateRepository, PlanBranchRepository};
@@ -102,6 +102,78 @@ fn build_runner(
         Some(Arc::clone(&app_state.plan_branch_repo) as Arc<dyn PlanBranchRepository>),
     );
     (runner, app_state_repo)
+}
+
+#[tokio::test]
+async fn test_delayed_startup_cleanup_preserves_current_boot_agent_and_run() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let old_key = RunningAgentKey::new("project", "old-conversation");
+    let current_key = RunningAgentKey::new("project", "current-conversation");
+    let old_token = tokio_util::sync::CancellationToken::new();
+    let current_token = tokio_util::sync::CancellationToken::new();
+    let old_run = AgentRun::new(ChatConversationId::new());
+    let old_run_id = old_run.id;
+
+    app_state.agent_run_repo.create(old_run).await.unwrap();
+    app_state
+        .running_agent_registry
+        .register(
+            old_key.clone(),
+            999_981,
+            "conv-old".to_string(),
+            old_run_id.as_str().to_string(),
+            None,
+            Some(old_token.clone()),
+        )
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let boot_cutoff = Utc::now();
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let current_run = AgentRun::new(ChatConversationId::new());
+    let current_run_id = current_run.id;
+    app_state.agent_run_repo.create(current_run).await.unwrap();
+    app_state
+        .running_agent_registry
+        .register(
+            current_key.clone(),
+            999_982,
+            "conv-current".to_string(),
+            current_run_id.as_str().to_string(),
+            None,
+            Some(current_token.clone()),
+        )
+        .await;
+
+    let (runner, _) = build_runner(&app_state, &execution_state);
+    let runner = runner.with_previous_session_cutoff(boot_cutoff);
+
+    runner.run().await;
+
+    assert!(!app_state.running_agent_registry.is_running(&old_key).await);
+    assert!(app_state.running_agent_registry.is_running(&current_key).await);
+    assert!(old_token.is_cancelled());
+    assert!(!current_token.is_cancelled());
+
+    let old = app_state
+        .agent_run_repo
+        .get_by_id(&old_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        old.error_message,
+        Some("Orphaned on app restart".to_string())
+    );
+
+    let current = app_state
+        .agent_run_repo
+        .get_by_id(&current_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.status, AgentRunStatus::Running);
+    assert_eq!(current.error_message, None);
 }
 
 #[test]
