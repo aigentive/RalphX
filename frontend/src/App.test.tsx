@@ -14,6 +14,9 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { useRunningProcesses } from "@/hooks/useRunningProcesses";
+import { useMergePipeline } from "@/hooks/useMergePipeline";
+import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { toast } from "sonner";
 
@@ -1138,7 +1141,10 @@ describe("App", () => {
       render(<App />);
 
       // useExecutionStatus should be called with undefined (no active project)
-      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(undefined);
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        undefined,
+        expect.objectContaining({ enabled: false, refetchInterval: false })
+      );
     });
 
     it("should call useExecutionStatus with project ID when project is active", () => {
@@ -1148,7 +1154,67 @@ describe("App", () => {
       render(<App />);
 
       // When a project is active, useExecutionStatus should be called with that project ID
-      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith("test-project-123");
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({
+          enabled: true,
+          refetchInterval: false,
+          refetchOnWindowFocus: false,
+          staleTime: 30_000,
+        })
+      );
+    });
+
+    it("does not hydrate footer-only execution data on the Agents view", () => {
+      useProjectStore.setState({ activeProjectId: "test-project-123" });
+
+      render(<App />);
+
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: false })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: false })
+      );
+    });
+
+    it("hydrates footer-only execution data when the execution footer is visible", () => {
+      useProjectStore.setState({ activeProjectId: "test-project-123" });
+      useUiStore.setState({ currentView: "kanban" });
+
+      render(<App />);
+
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({
+          enabled: true,
+          refetchInterval: 30000,
+          refetchOnWindowFocus: true,
+        })
+      );
+    });
+
+    it("does not hydrate ideation view data while the Agents view is active", () => {
+      render(<App />);
+
+      expect(vi.mocked(useIdeationSession)).toHaveBeenCalledWith(
+        "",
+        expect.objectContaining({ enabled: false })
+      );
+      expect(vi.mocked(useIdeationSessions)).toHaveBeenCalledWith(
+        "demo-project-1",
+        expect.objectContaining({ enabled: false })
+      );
     });
   });
 });

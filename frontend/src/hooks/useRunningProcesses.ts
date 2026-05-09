@@ -42,23 +42,40 @@ export const runningProcessesKeys = {
  * );
  * ```
  */
-export function useRunningProcesses(projectId?: string) {
+interface UseRunningProcessesOptions {
+  enabled?: boolean;
+  refetchInterval?: number | false;
+  refetchOnWindowFocus?: boolean;
+  subscribeToEvents?: boolean;
+}
+
+export function useRunningProcesses(
+  projectId?: string,
+  options: UseRunningProcessesOptions = {}
+) {
   const queryClient = useQueryClient();
   const bus = useEventBus();
+  const enabled = options.enabled ?? true;
+  const subscribeToEvents = options.subscribeToEvents ?? enabled;
 
   const query = useQuery<RunningProcessesResponse, Error>({
     queryKey: runningProcessesKeys.list(projectId),
     queryFn: async () => {
       return await runningProcessesApi.getRunningProcesses(projectId);
     },
+    enabled,
     // Fallback poll every 10s (real-time updates come via events)
-    refetchInterval: 10000,
+    refetchInterval: enabled ? options.refetchInterval ?? 10000 : false,
     // Also refetch on window focus
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: options.refetchOnWindowFocus ?? enabled,
   });
 
   // Listen for task status changes and step updates to trigger refetch
   useEffect(() => {
+    if (!subscribeToEvents) {
+      return;
+    }
+
     const unsubscribes: Unsubscribe[] = [];
 
     // Refetch when any task status changes (task might enter or leave agent-active state)
@@ -85,7 +102,7 @@ export function useRunningProcesses(projectId?: string) {
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, projectId, queryClient]);
+  }, [bus, projectId, queryClient, subscribeToEvents]);
 
   return query;
 }

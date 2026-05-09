@@ -26,7 +26,9 @@ export function useArchivedConversationCounts(projectIds: string[]) {
           true
         ),
       enabled: Boolean(projectId),
-      staleTime: 5_000,
+      staleTime: 60_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
     })),
   });
 
