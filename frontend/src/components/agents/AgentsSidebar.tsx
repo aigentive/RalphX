@@ -14,16 +14,22 @@ import {
   ChevronLeft,
   ChevronRight,
   Folder,
+  GitBranch,
+  GitPullRequest,
   MoreHorizontal,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +49,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -51,6 +62,8 @@ import { useChatStore } from "@/stores/chatStore";
 import {
   useAgentSessionStore,
   type AgentProjectSort,
+  type AgentSidebarGroupBy,
+  type AgentSidebarPublicationState,
 } from "@/stores/agentSessionStore";
 import { withAlpha } from "@/lib/theme-colors";
 import type { Project } from "@/types/project";
@@ -60,7 +73,16 @@ import {
   getAgentConversationStoreKey,
   type AgentConversation,
 } from "./agentConversations";
+import {
+  getConversationRefDisplay,
+  getSidebarPublicationGroupLabel,
+  getSidebarPublicationLabel,
+  getSidebarPublicationState,
+  PUBLICATION_STATE_OPTIONS,
+  shouldShowConversationForPublicationFilters,
+} from "./agentSidebarMetadata";
 import { useProjectAgentConversations } from "./useProjectAgentConversations";
+import { useProjectAgentConversationWorkspaces } from "./useProjectAgentConversationWorkspaces";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
@@ -131,12 +153,47 @@ export function AgentsSidebar({
   const setShowAllProjects = useAgentSessionStore((s) => s.setShowAllProjects);
   const projectSort = useAgentSessionStore((s) => s.projectSort);
   const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
-  const shouldHydrateAllSidebarProjects =
-    showAllProjects || showArchived || normalizedSearch.length > 0;
+  const sidebarGroupBy = useAgentSessionStore((s) => s.sidebarGroupBy);
+  const setSidebarGroupBy = useAgentSessionStore((s) => s.setSidebarGroupBy);
+  const sidebarProjectFilterIds = useAgentSessionStore(
+    (s) => s.sidebarProjectFilterIds
+  );
+  const setSidebarProjectFilterIds = useAgentSessionStore(
+    (s) => s.setSidebarProjectFilterIds
+  );
+  const toggleSidebarProjectFilter = useAgentSessionStore(
+    (s) => s.toggleSidebarProjectFilter
+  );
+  const sidebarPublicationStateFilters = useAgentSessionStore(
+    (s) => s.sidebarPublicationStateFilters
+  );
+  const toggleSidebarPublicationStateFilter = useAgentSessionStore(
+    (s) => s.toggleSidebarPublicationStateFilter
+  );
+  const pinnedConversationIds = useAgentSessionStore((s) => s.pinnedConversationIds);
+  const togglePinnedConversation = useAgentSessionStore(
+    (s) => s.togglePinnedConversation
+  );
+  const selectedProjectFilterIds = useMemo(() => {
+    if (showAllProjects) {
+      return projects.map((project) => project.id);
+    }
+    if (sidebarProjectFilterIds.length > 0) {
+      return sidebarProjectFilterIds;
+    }
+    if (focusedProjectId) {
+      return [focusedProjectId];
+    }
+    return projects[0] ? [projects[0].id] : [];
+  }, [focusedProjectId, projects, showAllProjects, sidebarProjectFilterIds]);
+  const selectedProjectFilterSet = useMemo(
+    () => new Set(selectedProjectFilterIds),
+    [selectedProjectFilterIds]
+  );
   const pinnedProjectId = pinnedConversation?.projectId ?? null;
   const archivedCountProjectIds = useMemo(() => {
-    if (shouldHydrateAllSidebarProjects) {
-      return projects.map((project) => project.id);
+    if (selectedProjectFilterIds.length > 0) {
+      return selectedProjectFilterIds;
     }
 
     const projectIds = new Set<string>();
@@ -150,18 +207,25 @@ export function AgentsSidebar({
       projectIds.add(projects[0].id);
     }
     return Array.from(projectIds);
-  }, [focusedProjectId, pinnedProjectId, projects, shouldHydrateAllSidebarProjects]);
+  }, [
+    focusedProjectId,
+    pinnedProjectId,
+    projects,
+    selectedProjectFilterIds,
+  ]);
   const { totalArchivedCount } = useArchivedConversationCounts(archivedCountProjectIds);
   const orderedProjects = useMemo(() => {
     if (projectSort === "latest") {
-      return projects;
+      return projects.filter((project) => selectedProjectFilterSet.has(project.id));
     }
 
     const sortedProjects = [...projects].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
     );
-    return projectSort === "za" ? sortedProjects.reverse() : sortedProjects;
-  }, [projectSort, projects]);
+    const nextProjects = projectSort === "za" ? sortedProjects.reverse() : sortedProjects;
+    return nextProjects.filter((project) => selectedProjectFilterSet.has(project.id));
+  }, [projectSort, projects, selectedProjectFilterSet]);
+  const selectedPublicationStates = sidebarPublicationStateFilters;
 
   return (
     <aside
@@ -291,97 +355,24 @@ export function AgentsSidebar({
       )}
 
       {projects.length > 0 && (
-        <div
-          className="mb-2 flex h-8 shrink-0 items-center gap-1 px-3"
-          role="toolbar"
-          aria-label="Agent list filters"
-          data-testid="agents-filter-toolbar"
-          style={{
-            backgroundColor: "var(--bg-surface)",
-          }}
-        >
-          <button
-            type="button"
-            data-testid="agents-show-all-projects-pill"
-            aria-pressed={showAllProjects}
-            onClick={() => setShowAllProjects(!showAllProjects)}
-            className="inline-flex h-full min-w-0 shrink-0 items-center justify-start whitespace-nowrap rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-            style={{
-              backgroundColor: "transparent",
-              borderColor: "transparent",
-              color: showAllProjects ? "var(--text-primary)" : "var(--text-muted)",
-              boxShadow: "none",
-            }}
-          >
-            All projects
-          </button>
-
-          <DropdownMenu>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    data-testid="agents-project-sort-pill"
-                    aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
-                    className="inline-flex h-full w-8 shrink-0 items-center justify-center whitespace-nowrap rounded-[4px] border border-transparent text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-                    style={{
-                      backgroundColor: "transparent",
-                      borderColor: "transparent",
-                      color: "var(--text-muted)",
-                      boxShadow: "none",
-                    }}
-                  >
-                    <ArrowDownUp className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
-                </DropdownMenuTrigger>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                Sort projects: {PROJECT_SORT_LABELS[projectSort]}
-              </TooltipContent>
-            </Tooltip>
-            <DropdownMenuContent align="start" className="min-w-[120px]">
-              <DropdownMenuRadioGroup
-                value={projectSort}
-                onValueChange={(value) => setProjectSort(value as AgentProjectSort)}
-              >
-                {(["latest", "az", "za"] as AgentProjectSort[]).map((sort) => (
-                  <DropdownMenuRadioItem key={sort} value={sort} className="text-xs">
-                    {PROJECT_SORT_LABELS[sort]}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {(showArchived || totalArchivedCount > 0) && (
-            <button
-              type="button"
-              data-testid="agents-show-archived-pill"
-              aria-pressed={showArchived}
-              aria-label="Show archived sessions"
-              onClick={() => onShowArchivedChange(!showArchived)}
-              className="ml-auto inline-flex h-full min-w-0 shrink-0 items-center justify-end gap-1.5 whitespace-nowrap rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-              style={{
-                backgroundColor: "transparent",
-                borderColor: "transparent",
-                color: showArchived ? "var(--text-primary)" : "var(--text-muted)",
-                boxShadow: "none",
-              }}
-            >
-              <span>Archived</span>
-              <span
-                className="rounded-full px-1.5 text-[0.625rem] font-semibold leading-[1.6]"
-                style={{
-                  backgroundColor: "var(--overlay-weak)",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {totalArchivedCount}
-              </span>
-            </button>
-          )}
-        </div>
+        <AgentsSidebarToolbar
+          projects={projects}
+          focusedProjectId={focusedProjectId}
+          projectSort={projectSort}
+          selectedProjectFilterSet={selectedProjectFilterSet}
+          selectedPublicationStates={selectedPublicationStates}
+          setProjectSort={setProjectSort}
+          setShowAllProjects={setShowAllProjects}
+          setSidebarGroupBy={setSidebarGroupBy}
+          setSidebarProjectFilterIds={setSidebarProjectFilterIds}
+          showAllProjects={showAllProjects}
+          showArchived={showArchived}
+          sidebarGroupBy={sidebarGroupBy}
+          toggleSidebarProjectFilter={toggleSidebarProjectFilter}
+          toggleSidebarPublicationStateFilter={toggleSidebarPublicationStateFilter}
+          totalArchivedCount={totalArchivedCount}
+          onShowArchivedChange={onShowArchivedChange}
+        />
       )}
 
       <div className="flex-1 overflow-y-auto px-3 pb-3 pt-0.5">
@@ -401,6 +392,23 @@ export function AgentsSidebar({
               Open starter
             </Button>
           </div>
+        ) : sidebarGroupBy === "publication" ? (
+          <PublicationStateGroups
+            projects={orderedProjects}
+            pinnedConversation={pinnedConversation}
+            pinnedConversationIds={pinnedConversationIds}
+            selectedConversationId={selectedConversationId}
+            searchQuery={normalizedSearch}
+            selectedPublicationStates={selectedPublicationStates}
+            onArchiveConversation={onArchiveConversation}
+            onArchiveProject={onArchiveProject}
+            onFocusProject={onFocusProject}
+            onRenameConversation={onRenameConversation}
+            onRestoreConversation={onRestoreConversation}
+            onSelectConversation={onSelectConversation}
+            onTogglePinnedConversation={togglePinnedConversation}
+            showArchived={showArchived}
+          />
         ) : (
           orderedProjects.map((project) => (
             <ProjectSessionGroup
@@ -418,8 +426,14 @@ export function AgentsSidebar({
               onRenameConversation={onRenameConversation}
               onArchiveConversation={onArchiveConversation}
               onRestoreConversation={onRestoreConversation}
+              onTogglePinnedConversation={togglePinnedConversation}
+              pinnedConversationIds={pinnedConversationIds}
+              publicationStateFilter={null}
+              selectedPublicationStates={selectedPublicationStates}
               showArchived={showArchived}
               showAllProjects={showAllProjects}
+              showProjectHeader
+              showProjectNameInMeta={false}
             />
           ))
         )}
@@ -455,6 +469,372 @@ export function AgentsSidebar({
   );
 }
 
+interface AgentsSidebarToolbarProps {
+  projects: Project[];
+  focusedProjectId: string | null;
+  projectSort: AgentProjectSort;
+  selectedProjectFilterSet: Set<string>;
+  selectedPublicationStates: AgentSidebarPublicationState[];
+  setProjectSort: (projectSort: AgentProjectSort) => void;
+  setShowAllProjects: (showAllProjects: boolean) => void;
+  setSidebarGroupBy: (groupBy: AgentSidebarGroupBy) => void;
+  setSidebarProjectFilterIds: (projectIds: string[]) => void;
+  showAllProjects: boolean;
+  showArchived: boolean;
+  sidebarGroupBy: AgentSidebarGroupBy;
+  toggleSidebarProjectFilter: (projectId: string) => void;
+  toggleSidebarPublicationStateFilter: (
+    state: AgentSidebarPublicationState
+  ) => void;
+  totalArchivedCount: number;
+  onShowArchivedChange: (showArchived: boolean) => void;
+}
+
+function AgentsSidebarToolbar({
+  projects,
+  focusedProjectId,
+  projectSort,
+  selectedProjectFilterSet,
+  selectedPublicationStates,
+  setProjectSort,
+  setShowAllProjects,
+  setSidebarGroupBy,
+  setSidebarProjectFilterIds,
+  showAllProjects,
+  showArchived,
+  sidebarGroupBy,
+  toggleSidebarProjectFilter,
+  toggleSidebarPublicationStateFilter,
+  totalArchivedCount,
+  onShowArchivedChange,
+}: AgentsSidebarToolbarProps) {
+  const ensureScopedProjectSelection = () => {
+    if (selectedProjectFilterSet.size > 0) {
+      return;
+    }
+    const fallbackProjectId = focusedProjectId ?? projects[0]?.id;
+    if (fallbackProjectId) {
+      setSidebarProjectFilterIds([fallbackProjectId]);
+    }
+  };
+
+  const handleAllProjectsChange = (checked: boolean | "indeterminate") => {
+    const nextChecked = checked === true;
+    setShowAllProjects(nextChecked);
+    if (!nextChecked) {
+      ensureScopedProjectSelection();
+    }
+  };
+
+  const handleProjectFilterChange = (
+    projectId: string,
+    checked: boolean | "indeterminate"
+  ) => {
+    if (showAllProjects) {
+      setShowAllProjects(false);
+      const nextProjectIds = projects
+        .map((project) => project.id)
+        .filter((candidateProjectId) =>
+          checked === true
+            ? true
+            : candidateProjectId !== projectId
+        );
+      setSidebarProjectFilterIds(nextProjectIds);
+      return;
+    }
+
+    toggleSidebarProjectFilter(projectId);
+  };
+
+  return (
+    <div
+      className="mb-2 flex h-8 shrink-0 items-center gap-1 px-3"
+      role="toolbar"
+      aria-label="Agent list filters"
+      data-testid="agents-filter-toolbar"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+      }}
+    >
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            data-testid="agents-filters-trigger"
+            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+            style={{
+              backgroundColor: "transparent",
+              borderColor: "transparent",
+              color: "var(--text-muted)",
+              boxShadow: "none",
+            }}
+          >
+            <span>Filters</span>
+            <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className="w-64 p-3"
+          data-testid="agents-filter-popover"
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            boxShadow: "var(--shadow-sm)",
+          }}
+        >
+          <div className="space-y-3 text-xs">
+            <FilterSectionLabel>Visibility</FilterSectionLabel>
+            <label
+              className="flex items-center justify-between gap-3"
+              data-testid="agents-filter-archived"
+            >
+              <span className="inline-flex items-center gap-2">
+                <Checkbox
+                  checked={showArchived}
+                  onCheckedChange={(checked) => onShowArchivedChange(checked === true)}
+                  aria-label="Show archived conversations"
+                />
+                <span>Archived</span>
+              </span>
+              <span
+                className="rounded-full px-1.5 text-[0.625rem] font-semibold leading-[1.6]"
+                style={{
+                  backgroundColor: "var(--overlay-weak)",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                {totalArchivedCount}
+              </span>
+            </label>
+
+            <div className="space-y-1.5">
+              <FilterSectionLabel>Projects</FilterSectionLabel>
+              <label
+                className="flex items-center gap-2"
+                data-testid="agents-filter-all-projects"
+              >
+                <Checkbox
+                  checked={showAllProjects}
+                  onCheckedChange={handleAllProjectsChange}
+                  aria-label="All projects"
+                />
+                <span>All projects</span>
+              </label>
+              <div className="max-h-28 space-y-1 overflow-y-auto pl-1">
+                {projects.map((project) => (
+                  <label
+                    key={project.id}
+                    className="flex min-w-0 items-center gap-2"
+                    data-testid={`agents-filter-project-${project.id}`}
+                  >
+                    <Checkbox
+                      checked={showAllProjects || selectedProjectFilterSet.has(project.id)}
+                      onCheckedChange={(checked) =>
+                        handleProjectFilterChange(project.id, checked)
+                      }
+                      aria-label={`Show ${project.name}`}
+                    />
+                    <span className="truncate">{project.name}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1.5" data-testid="agents-filter-group-by">
+              <FilterSectionLabel>Group by</FilterSectionLabel>
+              <div className="grid grid-cols-2 gap-1" role="radiogroup" aria-label="Group by">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={sidebarGroupBy === "project"}
+                  className="rounded-[4px] px-2 py-1 text-left outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
+                  onClick={() => setSidebarGroupBy("project")}
+                  style={{
+                    backgroundColor:
+                      sidebarGroupBy === "project"
+                        ? "var(--accent-muted)"
+                        : "transparent",
+                    color:
+                      sidebarGroupBy === "project"
+                        ? "var(--text-primary)"
+                        : "var(--text-muted)",
+                  }}
+                >
+                  Project
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={sidebarGroupBy === "publication"}
+                  className="rounded-[4px] px-2 py-1 text-left outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
+                  onClick={() => setSidebarGroupBy("publication")}
+                  style={{
+                    backgroundColor:
+                      sidebarGroupBy === "publication"
+                        ? "var(--accent-muted)"
+                        : "transparent",
+                    color:
+                      sidebarGroupBy === "publication"
+                        ? "var(--text-primary)"
+                        : "var(--text-muted)",
+                  }}
+                >
+                  Publication state
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <FilterSectionLabel>Publication state</FilterSectionLabel>
+              {PUBLICATION_STATE_OPTIONS.map((option) => (
+                <label
+                  key={option.value}
+                  className="flex items-center gap-2"
+                  data-testid={`agents-filter-publication-state-${option.value}`}
+                >
+                  <Checkbox
+                    checked={selectedPublicationStates.includes(option.value)}
+                    onCheckedChange={() =>
+                      toggleSidebarPublicationStateFilter(option.value)
+                    }
+                    aria-label={option.label}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            data-testid="agents-sort-trigger"
+            aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
+            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+            style={{
+              backgroundColor: "transparent",
+              borderColor: "transparent",
+              color: "var(--text-muted)",
+              boxShadow: "none",
+            }}
+          >
+            <span>Sort</span>
+            <ArrowDownUp className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-[120px]">
+          <DropdownMenuRadioGroup
+            value={projectSort}
+            onValueChange={(value) => setProjectSort(value as AgentProjectSort)}
+          >
+            {(["latest", "az", "za"] as AgentProjectSort[]).map((sort) => (
+              <DropdownMenuRadioItem key={sort} value={sort} className="text-xs">
+                {PROJECT_SORT_LABELS[sort]}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function FilterSectionLabel({ children }: { children: string }) {
+  return (
+    <div
+      className="text-[0.625rem] font-semibold uppercase leading-none tracking-[0.12em]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      {children}
+    </div>
+  );
+}
+
+interface PublicationStateGroupsProps {
+  projects: Project[];
+  pinnedConversation: AgentConversation | null;
+  pinnedConversationIds: Record<string, true>;
+  selectedConversationId: string | null;
+  searchQuery: string;
+  selectedPublicationStates: AgentSidebarPublicationState[];
+  onFocusProject: (projectId: string) => void;
+  onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
+  onArchiveProject: (projectId: string) => void | Promise<void>;
+  onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
+  onArchiveConversation: (conversation: AgentConversation) => void;
+  onRestoreConversation: (conversation: AgentConversation) => void;
+  onTogglePinnedConversation: (conversationId: string) => void;
+  showArchived: boolean;
+}
+
+function PublicationStateGroups({
+  projects,
+  pinnedConversation,
+  pinnedConversationIds,
+  selectedConversationId,
+  searchQuery,
+  selectedPublicationStates,
+  onArchiveConversation,
+  onArchiveProject,
+  onFocusProject,
+  onRenameConversation,
+  onRestoreConversation,
+  onSelectConversation,
+  onTogglePinnedConversation,
+  showArchived,
+}: PublicationStateGroupsProps) {
+  return (
+    <>
+      {selectedPublicationStates.map((publicationState) => (
+        <div
+          key={publicationState}
+          className="my-1"
+          data-testid={`agents-publication-group-${publicationState}`}
+        >
+          <div
+            className="px-2 py-1 text-[0.625rem] font-semibold uppercase leading-none tracking-[0.12em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {getSidebarPublicationGroupLabel(publicationState)}
+          </div>
+          {projects.map((project) => (
+            <ProjectSessionGroup
+              key={`${publicationState}-${project.id}`}
+              project={project}
+              isFocused={false}
+              selectedConversationId={selectedConversationId}
+              pinnedConversation={
+                pinnedConversation?.projectId === project.id ? pinnedConversation : null
+              }
+              searchQuery={searchQuery}
+              onFocusProject={onFocusProject}
+              onSelectConversation={onSelectConversation}
+              onArchiveProject={onArchiveProject}
+              onRenameConversation={onRenameConversation}
+              onArchiveConversation={onArchiveConversation}
+              onRestoreConversation={onRestoreConversation}
+              onTogglePinnedConversation={onTogglePinnedConversation}
+              pinnedConversationIds={pinnedConversationIds}
+              publicationStateFilter={publicationState}
+              selectedPublicationStates={selectedPublicationStates}
+              showArchived={showArchived}
+              showAllProjects
+              showProjectHeader={false}
+              showProjectNameInMeta
+            />
+          ))}
+        </div>
+      ))}
+    </>
+  );
+}
+
 interface ProjectSessionGroupProps {
   project: Project;
   isFocused: boolean;
@@ -467,8 +847,14 @@ interface ProjectSessionGroupProps {
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
+  onTogglePinnedConversation: (conversationId: string) => void;
+  pinnedConversationIds: Record<string, true>;
+  publicationStateFilter: AgentSidebarPublicationState | null;
+  selectedPublicationStates: AgentSidebarPublicationState[];
   showArchived: boolean;
   showAllProjects: boolean;
+  showProjectHeader: boolean;
+  showProjectNameInMeta: boolean;
 }
 
 function ProjectSessionGroup({
@@ -483,8 +869,14 @@ function ProjectSessionGroup({
   onRenameConversation,
   onArchiveConversation,
   onRestoreConversation,
+  onTogglePinnedConversation,
+  pinnedConversationIds,
+  publicationStateFilter,
+  selectedPublicationStates,
   showArchived,
   showAllProjects,
+  showProjectHeader,
+  showProjectNameInMeta,
 }: ProjectSessionGroupProps) {
   const projectActionsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -499,28 +891,59 @@ function ProjectSessionGroup({
   const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
   const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
-  const shouldEnableConversationQuery =
-    showAllProjects ||
-    showArchived ||
-    isFocused ||
-    Boolean(pinnedConversation) ||
-    searchQuery.length > 0;
   const conversations = useProjectAgentConversations(project.id, showArchived, {
     search: searchQuery,
-    enabled: shouldEnableConversationQuery,
+    enabled: true,
+  });
+  const workspaces = useProjectAgentConversationWorkspaces(project.id, {
+    enabled: true,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
+  const workspaceByConversationId = useMemo(() => {
+    return new Map(
+      workspaces.data.map((workspace) => [workspace.conversationId, workspace])
+    );
+  }, [workspaces.data]);
   const visibleConversations = useMemo(() => {
     const items = conversations.data ?? [];
-    if (
-      !pinnedConversation ||
-      items.some((conversation) => conversation.id === pinnedConversation.id)
-    ) {
-      return items;
+    const deduped = new Map<string, AgentConversation>();
+    for (const conversation of items) {
+      deduped.set(conversation.id, conversation);
     }
-    return [pinnedConversation, ...items];
-  }, [conversations.data, pinnedConversation]);
+    if (pinnedConversation && !deduped.has(pinnedConversation.id)) {
+      deduped.set(pinnedConversation.id, pinnedConversation);
+    }
+    return Array.from(deduped.values())
+      .filter((conversation) => {
+        const workspace = workspaceByConversationId.get(conversation.id) ?? null;
+        if (publicationStateFilter) {
+          return getSidebarPublicationState(workspace) === publicationStateFilter;
+        }
+        return shouldShowConversationForPublicationFilters(
+          workspace,
+          selectedPublicationStates
+        );
+      })
+      .sort((a, b) => {
+        const pinnedConversationA = pinnedConversation?.id === a.id;
+        const pinnedConversationB = pinnedConversation?.id === b.id;
+        const pinnedDelta =
+          Number(Boolean(pinnedConversationIds[b.id]) || pinnedConversationB) -
+          Number(Boolean(pinnedConversationIds[a.id]) || pinnedConversationA);
+        if (pinnedDelta !== 0) {
+          return pinnedDelta;
+        }
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+  }, [
+    conversations.data,
+    pinnedConversation,
+    pinnedConversationIds,
+    publicationStateFilter,
+    selectedPublicationStates,
+    workspaceByConversationId,
+  ]);
   const totalConversationCount = conversations.total;
   const activeRuntimeCount = visibleConversations.filter((conversation) => {
     const rowKey = getAgentConversationStoreKey(conversation);
@@ -554,14 +977,22 @@ function ProjectSessionGroup({
   if (
     !conversations.isLoading &&
     visibleConversations.length === 0 &&
-    (showArchived || searchQuery.length > 0 || !showAllProjects)
+    (!showProjectHeader || showArchived || searchQuery.length > 0 || !showAllProjects)
   ) {
     return null;
   }
 
   return (
-    <div className="my-1 flex flex-col gap-0.5" data-testid={`agents-project-${project.id}`}>
+    <div
+      className="my-1 flex flex-col gap-0.5"
+      data-testid={
+        showProjectHeader
+          ? `agents-project-${project.id}`
+          : `agents-project-${project.id}-${publicationStateFilter ?? "state"}`
+      }
+    >
         <div className="relative">
+          {showProjectHeader && (
           <div className="group/project-row relative">
           <button
             type="button"
@@ -666,6 +1097,7 @@ function ProjectSessionGroup({
               </DropdownMenu>
             </div>
           </div>
+          )}
 
           <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
             <AlertDialogContent>
@@ -778,7 +1210,7 @@ function ProjectSessionGroup({
             </AlertDialogContent>
           </AlertDialog>
 
-          {expanded && (
+          {(showProjectHeader ? expanded : true) && (
             <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
                 {visibleConversations.map((conversation) => {
                   const rowKey = getAgentConversationStoreKey(conversation);
@@ -789,7 +1221,15 @@ function ProjectSessionGroup({
                   const title = conversation.title || "Untitled agent";
                   const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
                   const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
-                  const branchLabel = project.baseBranch ?? "master";
+                  const workspace = workspaceByConversationId.get(conversation.id) ?? null;
+                  const refDisplay = getConversationRefDisplay(
+                    conversation,
+                    project,
+                    workspace
+                  );
+                  const publicationState = getSidebarPublicationState(workspace);
+                  const publicationLabel = getSidebarPublicationLabel(publicationState);
+                  const isPinned = Boolean(pinnedConversationIds[conversation.id]);
                   const runtimeState = getSessionRuntimeState(
                     conversation,
                     isActiveRuntime,
@@ -826,8 +1266,49 @@ function ProjectSessionGroup({
                               fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
                             }}
                           >
-                            <span>{branchLabel}</span>
+                            {showProjectNameInMeta && (
+                              <>
+                                <span>{project.name}</span>
+                                <span>{" · "}</span>
+                              </>
+                            )}
+                            <span className="inline-flex min-w-0 items-center gap-1">
+                              {refDisplay.kind === "pull-request" ? (
+                                <GitPullRequest
+                                  className="h-3 w-3 shrink-0"
+                                  data-ref-kind="pull-request"
+                                  data-testid={`agents-ref-icon-${conversation.id}`}
+                                  aria-hidden="true"
+                                />
+                              ) : (
+                                <GitBranch
+                                  className="h-3 w-3 shrink-0"
+                                  data-ref-kind="branch"
+                                  data-testid={`agents-ref-icon-${conversation.id}`}
+                                  aria-hidden="true"
+                                />
+                              )}
+                              <span>{refDisplay.label}</span>
+                            </span>
                             <span>{" · "}</span>
+                            {publicationLabel && (
+                              <>
+                                <span
+                                  className="agents-session-publication-state font-medium"
+                                  style={{
+                                    color:
+                                      publicationState === "merged"
+                                        ? "var(--status-success)"
+                                        : publicationState === "closed"
+                                          ? "var(--text-muted)"
+                                          : "var(--status-warning)",
+                                  }}
+                                >
+                                  {publicationLabel}
+                                </span>
+                                <span>{" · "}</span>
+                              </>
+                            )}
                             <span title={createdTitle || undefined}>{createdLabel}</span>
                             {showRuntimeState && (
                               <>
@@ -844,7 +1325,12 @@ function ProjectSessionGroup({
                               : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
                           }`}
                         >
-                          <SessionStatusDot state={runtimeState} selected={isSelected} />
+                          <SessionStatusIcon
+                            isPinned={isPinned}
+                            state={runtimeState}
+                            conversationId={conversation.id}
+                            selected={isSelected}
+                          />
                         </span>
                       </button>
                       <DropdownMenu
@@ -885,6 +1371,17 @@ function ProjectSessionGroup({
                           >
                             <Pencil className="w-3.5 h-3.5" />
                             Rename session
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="gap-2 text-xs"
+                            onClick={() => onTogglePinnedConversation(conversation.id)}
+                          >
+                            {isPinned ? (
+                              <PinOff className="w-3.5 h-3.5" />
+                            ) : (
+                              <Pin className="w-3.5 h-3.5" />
+                            )}
+                            {isPinned ? "Unpin session" : "Pin session"}
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           {conversation.archivedAt ? (
@@ -1063,6 +1560,33 @@ function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {
       running
     </span>
   );
+}
+
+function SessionStatusIcon({
+  conversationId,
+  isPinned,
+  state,
+  selected,
+}: {
+  conversationId: string;
+  isPinned: boolean;
+  state: SessionRuntimeState;
+  selected: boolean;
+}) {
+  if (isPinned) {
+    return (
+      <Pin
+        aria-hidden="true"
+        className="h-3.5 w-3.5"
+        data-testid={`agents-pin-icon-${conversationId}`}
+        style={{
+          color: state === "running" ? "var(--accent-primary)" : "var(--text-subtle)",
+        }}
+      />
+    );
+  }
+
+  return <SessionStatusDot state={state} selected={selected} />;
 }
 
 function SessionStatusDot({

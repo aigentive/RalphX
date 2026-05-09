@@ -1,12 +1,12 @@
 import type { IdeationSessionResponse } from "@/api/ideation";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
-import {
-  formatHumanTimestampLabel,
-  formatHumanTimestampTitle,
-} from "@/lib/formatters";
+import { formatHumanTimestampTitle } from "@/lib/formatters";
 import type { ChatConversation } from "@/types/chat-conversation";
 
-const AGENT_CONVERSATION_RELATIVE_CUTOFF_MS = 24 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+const AGENT_CONVERSATION_DAY_CUTOFF_MS = 7 * DAY_MS;
 
 export type AgentIdeationSession = Pick<
   IdeationSessionResponse,
@@ -70,15 +70,24 @@ export function formatAgentConversationCreatedAt(
 ): string {
   const date = input instanceof Date ? input : new Date(input);
   if (Number.isNaN(date.getTime())) {
-    return formatHumanTimestampLabel(input);
+    return "";
   }
 
   const diffMs = Math.max(0, Date.now() - date.getTime());
-  if (diffMs >= AGENT_CONVERSATION_RELATIVE_CUTOFF_MS) {
+  if (diffMs >= AGENT_CONVERSATION_DAY_CUTOFF_MS) {
     return formatAgentConversationCreatedDate(date);
   }
 
-  return formatHumanTimestampLabel(input);
+  if (diffMs < MINUTE_MS) {
+    return "now";
+  }
+  if (diffMs < HOUR_MS) {
+    return `${Math.max(1, Math.floor(diffMs / MINUTE_MS))}m`;
+  }
+  if (diffMs < DAY_MS) {
+    return `${Math.max(1, Math.floor(diffMs / HOUR_MS))}h`;
+  }
+  return `${Math.max(1, Math.floor(diffMs / DAY_MS))}d`;
 }
 
 export function formatAgentConversationCreatedAtTitle(
