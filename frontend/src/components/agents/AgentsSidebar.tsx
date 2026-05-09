@@ -631,7 +631,7 @@ function AgentsSidebarToolbar({
                   type="button"
                   role="radio"
                   aria-checked={sidebarGroupBy === "project"}
-                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
+                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
                   onClick={() => setSidebarGroupBy("project")}
                   style={{
                     backgroundColor:
@@ -650,7 +650,7 @@ function AgentsSidebarToolbar({
                   type="button"
                   role="radio"
                   aria-checked={sidebarGroupBy === "publication"}
-                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:2px_solid_var(--border-focus)]"
+                  className="truncate rounded-[4px] px-1.5 py-1 text-left whitespace-nowrap outline-none focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
                   onClick={() => setSidebarGroupBy("publication")}
                   style={{
                     backgroundColor:
@@ -807,7 +807,7 @@ function FilterToggleRow({
       aria-label={ariaLabel}
       data-testid={testId}
       onClick={onToggle}
-      className="flex w-full min-w-0 items-center justify-between gap-2 rounded-[4px] px-1.5 py-1 text-left text-xs transition-colors duration-[120ms] outline-none hover:bg-[var(--overlay-weak)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+      className="flex w-full min-w-0 items-center justify-between gap-2 rounded-[4px] px-1.5 py-1 text-left text-xs transition-colors duration-[120ms] outline-none hover:bg-[var(--overlay-weak)] focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
       style={{
         backgroundColor: "transparent",
         color: selected ? "var(--text-primary)" : "var(--text-muted)",
@@ -850,7 +850,7 @@ function FilterCollapsibleSection({
       <CollapsibleTrigger
         data-testid={`${testId}-trigger`}
         aria-label={`${label} filter`}
-        className="flex w-full items-center justify-between gap-2 rounded-[4px] px-1.5 py-1 text-left transition-colors duration-[120ms] outline-none hover:bg-[var(--overlay-weak)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+        className="flex w-full items-center justify-between gap-2 rounded-[4px] px-1.5 py-1 text-left transition-colors duration-[120ms] outline-none hover:bg-[var(--overlay-weak)] focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:0px]"
       >
         <FilterSectionLabel inline>{label}</FilterSectionLabel>
         <span
