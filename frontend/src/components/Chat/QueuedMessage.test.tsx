@@ -241,6 +241,27 @@ describe("QueuedMessage", () => {
     expect(screen.getByTestId("queued-message-edit-input")).toBeInTheDocument();
   });
 
+  it("enters edit mode with the full message when isEditing changes after render", () => {
+    const longContent = `Start ${"A".repeat(500)} End`;
+    const message = createMockMessage({ content: longContent });
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+
+    const { rerender } = render(
+      <QueuedMessage message={message} onEdit={onEdit} onDelete={onDelete} />
+    );
+
+    rerender(
+      <QueuedMessage
+        message={{ ...message, isEditing: true }}
+        onEdit={onEdit}
+        onDelete={onDelete}
+      />
+    );
+
+    expect(screen.getByTestId("queued-message-edit-input")).toHaveValue(longContent);
+  });
+
   it("trims whitespace when saving", async () => {
     const user = userEvent.setup();
     const message = createMockMessage();
@@ -260,14 +281,31 @@ describe("QueuedMessage", () => {
     expect(onEdit).toHaveBeenCalledWith("test-message-1", "Trimmed content");
   });
 
-  it("renders long messages correctly", () => {
-    const longContent = "A".repeat(500);
+  it("renders long messages as an excerpt in read-only mode", () => {
+    const longContent = `Start ${"A".repeat(500)} End`;
     const message = createMockMessage({ content: longContent });
     const onEdit = vi.fn();
     const onDelete = vi.fn();
 
     render(<QueuedMessage message={message} onEdit={onEdit} onDelete={onDelete} />);
 
-    expect(screen.getByTestId("queued-message-content")).toHaveTextContent(longContent);
+    const preview = screen.getByTestId("queued-message-content");
+    expect(preview).not.toHaveTextContent(longContent);
+    expect(preview.textContent).toMatch(/^Start A+/);
+    expect(preview.textContent).toMatch(/\.\.\.$/);
+  });
+
+  it("keeps the full message available when editing an excerpted queued message", async () => {
+    const user = userEvent.setup();
+    const longContent = `Start ${"A".repeat(500)} End`;
+    const message = createMockMessage({ content: longContent });
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+
+    render(<QueuedMessage message={message} onEdit={onEdit} onDelete={onDelete} />);
+
+    await user.click(screen.getByTestId("queued-message-edit"));
+
+    expect(screen.getByTestId("queued-message-edit-input")).toHaveValue(longContent);
   });
 });
