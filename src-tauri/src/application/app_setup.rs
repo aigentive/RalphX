@@ -15,7 +15,8 @@ use tracing::warn;
 const BUNDLED_PLUGIN_DIR_REL: &str = "plugins/app";
 const BUNDLED_AGENTS_DIR_REL: &str = "agents";
 const BUNDLED_CONFIG_DIR_REL: &str = "config";
-const GENERATED_CLAUDE_PLUGIN_DIR_REL: &str = "generated/claude-plugin";
+const GENERATED_RUNTIME_DIR_REL: &str = "generated";
+const GENERATED_CLAUDE_PLUGIN_DIR_NAME: &str = "claude-plugin";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BundledRuntimePaths {
@@ -39,8 +40,23 @@ fn resolve_bundled_runtime_paths(
     Some(BundledRuntimePaths {
         plugin_dir,
         config_dir: config_dir.is_dir().then_some(config_dir),
-        generated_plugin_dir: app_data_dir.join(GENERATED_CLAUDE_PLUGIN_DIR_REL),
+        generated_plugin_dir: generated_plugin_dir_for_app_data(app_data_dir),
     })
+}
+
+fn generated_plugin_runtime_profile_component() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
+fn generated_plugin_dir_for_app_data(app_data_dir: &Path) -> PathBuf {
+    app_data_dir
+        .join(GENERATED_RUNTIME_DIR_REL)
+        .join(generated_plugin_runtime_profile_component())
+        .join(GENERATED_CLAUDE_PLUGIN_DIR_NAME)
 }
 
 fn configure_bundled_runtime_paths(
@@ -138,7 +154,8 @@ pub(crate) fn run_app_setup(
 #[cfg(test)]
 mod tests {
     use super::{
-        configure_bundled_runtime_paths, resolve_bundled_runtime_paths, BundledRuntimePaths,
+        configure_bundled_runtime_paths, generated_plugin_dir_for_app_data,
+        resolve_bundled_runtime_paths, BundledRuntimePaths,
     };
     use tempfile::tempdir;
 
@@ -162,7 +179,17 @@ mod tests {
         assert_eq!(paths.config_dir, None);
         assert_eq!(
             paths.generated_plugin_dir,
-            app_data_dir.join("generated/claude-plugin")
+            generated_plugin_dir_for_app_data(&app_data_dir)
+        );
+        assert!(
+            paths
+                .generated_plugin_dir
+                .starts_with(app_data_dir.join("generated")),
+            "generated plugin dir should stay under app data generated root"
+        );
+        assert!(
+            paths.generated_plugin_dir.ends_with("claude-plugin"),
+            "generated plugin dir should keep the Claude plugin leaf"
         );
 
         std::fs::create_dir_all(resource_dir.join("config")).expect("config dir");

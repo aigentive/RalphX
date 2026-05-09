@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::application::git_service::git_cmd;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::{AppState, GitService};
-use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspacePrDescription, ChatConversation, Project,
 };
@@ -22,6 +22,7 @@ const MAX_STAT_CHARS: usize = 8_000;
 const MAX_MESSAGE_CHARS: usize = 1_600;
 const MAX_CONTEXT_MESSAGES: usize = 12;
 const MAX_COMMIT_SUMMARIES: usize = 40;
+const PR_DESCRIBER_SUBMIT_TOOL: &str = "submit_agent_workspace_pr_description";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PullRequestTemplateContext {
@@ -119,6 +120,7 @@ pub async fn draft_agent_workspace_pr_description(
         agent_names::AGENT_PR_DESCRIBER,
         PathBuf::from(&project.working_directory),
     );
+    ensure_pr_describer_submit_tool_available(helper_harness, &bootstrap.plugin_dir)?;
 
     let output = agent_client
         .spawn_agent(AgentConfig {
@@ -157,9 +159,7 @@ pub async fn draft_agent_workspace_pr_description(
         .get_pr_description(&workspace.conversation_id)
         .await?
     else {
-        return Err(AppError::Infrastructure(
-            "PR describer agent completed without submitting a PR description".to_string(),
-        ));
+        return Err(pr_describer_missing_submission_error(&output));
     };
 
     validate_agent_workspace_pr_description_body(&description.body_markdown)?;
@@ -167,6 +167,127 @@ pub async fn draft_agent_workspace_pr_description(
         description.title,
         description.body_markdown,
     ))
+}
+
+fn ensure_pr_describer_submit_tool_available(
+    harness: AgentHarnessKind,
+    plugin_dir: &Path,
+) -> AppResult<()> {
+    if harness != AgentHarnessKind::Codex {
+        return Ok(());
+    }
+
+    ensure_codex_pr_describer_prompt_contract(plugin_dir)?;
+    let overrides = crate::infrastructure::agents::codex::build_codex_mcp_overrides(
+        plugin_dir,
+        agent_names::AGENT_PR_DESCRIBER,
+        false,
+        None,
+    )
+    .map_err(|error| {
+        AppError::Infrastructure(format!(
+            "PR describer Codex MCP preflight failed for {}: {error}",
+            plugin_dir.display()
+        ))
+    })?;
+
+    if codex_pr_describer_overrides_expose_submit_tool(&overrides) {
+        return Ok(());
+    }
+
+    Err(AppError::Infrastructure(format!(
+        "PR describer Codex MCP preflight failed: required tool `{PR_DESCRIBER_SUBMIT_TOOL}` is not exposed for plugin dir {}",
+        plugin_dir.display()
+    )))
+}
+
+fn ensure_codex_pr_describer_prompt_contract(plugin_dir: &Path) -> AppResult<()> {
+    let project_root =
+        crate::infrastructure::agents::harness_agent_catalog::resolve_project_root_from_plugin_dir(
+            plugin_dir,
+        );
+    let prompt = crate::infrastructure::agents::harness_agent_catalog::load_harness_agent_prompt(
+        &project_root,
+        agent_names::SHORT_PR_DESCRIBER,
+        crate::infrastructure::agents::harness_agent_catalog::AgentPromptHarness::Codex,
+    )
+    .ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "PR describer Codex prompt contract is missing for plugin dir {}",
+            plugin_dir.display()
+        ))
+    })?;
+
+    if prompt.contains(PR_DESCRIBER_SUBMIT_TOOL) {
+        return Ok(());
+    }
+
+    Err(AppError::Infrastructure(format!(
+        "PR describer Codex prompt contract does not mention required tool `{PR_DESCRIBER_SUBMIT_TOOL}` for plugin dir {}",
+        plugin_dir.display()
+    )))
+}
+
+fn codex_pr_describer_overrides_expose_submit_tool(overrides: &[String]) -> bool {
+    let enabled_tools_ok = overrides.iter().any(|entry| {
+        override_json_value(entry, ".enabled_tools")
+            .is_some_and(|value| json_string_array_contains(value, PR_DESCRIBER_SUBMIT_TOOL))
+    });
+    let args_override = overrides
+        .iter()
+        .find_map(|entry| override_json_value(entry, ".args"));
+    let stdio_args_ok = args_override
+        .is_none_or(|value| codex_stdio_args_allow_required_tool(value, PR_DESCRIBER_SUBMIT_TOOL));
+
+    enabled_tools_ok && stdio_args_ok
+}
+
+fn override_json_value<'a>(entry: &'a str, key_suffix: &str) -> Option<&'a str> {
+    let (key, value) = entry.split_once('=')?;
+    key.ends_with(key_suffix).then_some(value)
+}
+
+fn json_string_array_contains(value: &str, needle: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(value)
+        .map(|values| values.iter().any(|value| value == needle))
+        .unwrap_or(false)
+}
+
+fn codex_stdio_args_allow_required_tool(args_json: &str, required_tool: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(args_json)
+        .map(|args| {
+            args.iter().any(|arg| {
+                arg.strip_prefix("--allowed-tools=")
+                    .is_some_and(|tools| tools.split(',').any(|tool| tool == required_tool))
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn pr_describer_missing_submission_error(output: &crate::domain::agents::AgentOutput) -> AppError {
+    let raw_output = output.content.trim();
+    let base = if pr_describer_output_reports_missing_submit_tool(raw_output) {
+        format!(
+            "PR describer infrastructure error: required tool `{PR_DESCRIBER_SUBMIT_TOOL}` was unavailable to the agent"
+        )
+    } else {
+        "PR describer agent completed without submitting a PR description".to_string()
+    };
+
+    if raw_output.is_empty() {
+        return AppError::Infrastructure(base);
+    }
+
+    AppError::Infrastructure(format!("{base}. Raw output: {raw_output}"))
+}
+
+fn pr_describer_output_reports_missing_submit_tool(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains(PR_DESCRIBER_SUBMIT_TOOL)
+        && (lower.contains("not available")
+            || lower.contains("unavailable")
+            || lower.contains("cannot submit")
+            || lower.contains("can't submit"))
 }
 
 async fn read_pull_request_template_context(
@@ -384,6 +505,7 @@ mod tests {
         title: Option<String>,
         body_markdown: String,
         output: AgentOutput,
+        submit_on_success: bool,
         capabilities: ClientCapabilities,
         spawned_configs: tokio::sync::Mutex<Vec<AgentConfig>>,
     }
@@ -401,6 +523,24 @@ mod tests {
                 title,
                 body_markdown: body_markdown.into(),
                 output: AgentOutput::success("submitted"),
+                submit_on_success: true,
+                capabilities: ClientCapabilities::mock(),
+                spawned_configs: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn success_without_submission(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: crate::domain::entities::ChatConversationId,
+            output: impl Into<String>,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+                title: None,
+                body_markdown: String::new(),
+                output: AgentOutput::success(output),
+                submit_on_success: false,
                 capabilities: ClientCapabilities::mock(),
                 spawned_configs: tokio::sync::Mutex::new(Vec::new()),
             }
@@ -416,6 +556,7 @@ mod tests {
                 title: None,
                 body_markdown: String::new(),
                 output: AgentOutput::failed("agent failed", 1),
+                submit_on_success: false,
                 capabilities: ClientCapabilities::mock(),
                 spawned_configs: tokio::sync::Mutex::new(Vec::new()),
             }
@@ -438,7 +579,7 @@ mod tests {
         }
 
         async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
-            if self.output.success {
+            if self.output.success && self.submit_on_success {
                 self.repo
                     .save_pr_description(
                         &self.conversation_id,
@@ -782,6 +923,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_pr_describer_submit_tool_preflight_requires_enabled_tool_and_allowed_arg() {
+        let missing_enabled_tools = vec![format!(
+            "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools={PR_DESCRIBER_SUBMIT_TOOL}\"]"
+        )];
+        assert!(
+            !codex_pr_describer_overrides_expose_submit_tool(&missing_enabled_tools),
+            "preflight must reject Codex surfaces without enabled_tools"
+        );
+
+        let missing_allowed_arg = vec![
+            format!("mcp_servers.ralphx.enabled_tools=[\"{PR_DESCRIBER_SUBMIT_TOOL}\"]"),
+            "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools=other_tool\"]".to_string(),
+        ];
+        assert!(
+            !codex_pr_describer_overrides_expose_submit_tool(&missing_allowed_arg),
+            "preflight must reject stdio surfaces that do not pass the submit-tool allowlist"
+        );
+
+        let complete_surface = vec![
+            format!("mcp_servers.ralphx.enabled_tools=[\"{PR_DESCRIBER_SUBMIT_TOOL}\"]"),
+            format!(
+                "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools={PR_DESCRIBER_SUBMIT_TOOL}\"]"
+            ),
+        ];
+        assert!(
+            codex_pr_describer_overrides_expose_submit_tool(&complete_surface),
+            "preflight should accept Codex surfaces exposing the submit tool in both layers"
+        );
+    }
+
     #[tokio::test]
     async fn draft_pr_description_collects_git_context_and_uses_submitted_body() {
         let (_temp_dir, repo, base) = create_reviewable_repo();
@@ -955,5 +1127,46 @@ mod tests {
         assert!(error
             .to_string()
             .contains("PR describer agent exited unsuccessfully"));
+    }
+
+    #[tokio::test]
+    async fn draft_pr_description_surfaces_raw_tool_unavailable_output_when_agent_submits_nothing()
+    {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let mut conversation = conversation_for(&project);
+        conversation.provider_harness = Some(AgentHarnessKind::Codex);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let state = AppState::new_test();
+        let raw_output = format!(
+            "I cannot submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` is not available in this session's tools."
+        );
+        let codex_client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            raw_output.clone(),
+        ));
+        let state = state.with_harness_agent_client(AgentHarnessKind::Codex, codex_client);
+
+        let error = draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        let error = error.to_string();
+
+        assert!(
+            error.contains("PR describer infrastructure error"),
+            "tool-unavailable output should be classified as infrastructure: {error}"
+        );
+        assert!(
+            error.contains(&raw_output),
+            "raw model output should be surfaced for publish failure diagnostics: {error}"
+        );
     }
 }

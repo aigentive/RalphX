@@ -13,7 +13,9 @@ use std::sync::{Mutex, OnceLock};
 use tracing::warn;
 
 const GENERATED_PLUGIN_DIR_REL_DEBUG: &str = ".artifacts/generated/claude-plugin";
-const GENERATED_PLUGIN_DIR_REL_PROD: &str = "generated/claude-plugin";
+const GENERATED_PLUGIN_DIR_REL_PROD_ROOT: &str = "generated";
+const GENERATED_PLUGIN_DIR_NAME: &str = "claude-plugin";
+const GENERATED_AGENTS_DIR: &str = "agents";
 const INTERNAL_MCP_SERVER_DIR: &str = "ralphx-mcp-server";
 const EXTERNAL_MCP_SERVER_DIR: &str = "ralphx-external-mcp";
 const FALLBACK_RUNTIME_ENTRY_NAMES: &[&str] = &[INTERNAL_MCP_SERVER_DIR, EXTERNAL_MCP_SERVER_DIR];
@@ -62,17 +64,32 @@ fn generated_plugin_cache_key(base_plugin_dir: &Path) -> PathBuf {
         .unwrap_or_else(|_| base_plugin_dir.to_path_buf())
 }
 
-fn cached_generated_plugin_dir(base_plugin_dir: &Path) -> Result<Option<PathBuf>, String> {
-    let cache = generated_plugin_dir_cache()
+fn cached_generated_plugin_dir(
+    base_plugin_dir: &Path,
+    runtime_source_plugin_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let cache_key = generated_plugin_cache_key(base_plugin_dir);
+    let cached = {
+        let cache = generated_plugin_dir_cache()
+            .lock()
+            .map_err(|_| "Generated Claude plugin cache lock poisoned".to_string())?;
+        cache.get(&cache_key).cloned()
+    };
+
+    let Some(generated_dir) = cached else {
+        return Ok(None);
+    };
+
+    if generated_plugin_dir_is_current(base_plugin_dir, runtime_source_plugin_dir, &generated_dir)?
+    {
+        return Ok(Some(generated_dir));
+    }
+
+    let mut cache = generated_plugin_dir_cache()
         .lock()
         .map_err(|_| "Generated Claude plugin cache lock poisoned".to_string())?;
-    Ok(cache
-        .get(&generated_plugin_cache_key(base_plugin_dir))
-        .filter(|generated_dir| {
-            // codeql[rust/path-injection]
-            generated_dir.exists()
-        })
-        .cloned())
+    cache.remove(&cache_key);
+    Ok(None)
 }
 
 fn cache_generated_plugin_dir(
@@ -100,24 +117,29 @@ pub(crate) fn materialize_generated_plugin_dir_with_runtime_source(
     base_plugin_dir: &Path,
     fallback_runtime_plugin_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    let runtime_source_plugin_dir =
+        resolve_runtime_entries_source_plugin_dir(base_plugin_dir, fallback_runtime_plugin_dir);
+
     // Generated Claude assets are process-local runtime bootstrap outputs.
-    // After the first successful materialization, keep reusing that directory
-    // so later agent launches do not rewrite prompts under already-starting children.
-    if let Some(cached_dir) = cached_generated_plugin_dir(base_plugin_dir)? {
+    // Reuse a clean first materialization, but repair the dir if another
+    // process mutates managed symlinks or leaves unmanaged top-level entries.
+    if let Some(cached_dir) =
+        cached_generated_plugin_dir(base_plugin_dir, &runtime_source_plugin_dir)?
+    {
         return Ok(cached_dir);
     }
 
     let _guard = generated_plugin_materialization_lock()
         .lock()
         .map_err(|_| "Generated Claude plugin materialization lock poisoned".to_string())?;
-    if let Some(cached_dir) = cached_generated_plugin_dir(base_plugin_dir)? {
+    if let Some(cached_dir) =
+        cached_generated_plugin_dir(base_plugin_dir, &runtime_source_plugin_dir)?
+    {
         return Ok(cached_dir);
     }
 
     let project_root = resolve_project_root_from_plugin_dir(base_plugin_dir);
     let generated_plugin_dir = generated_plugin_dir_for_base(base_plugin_dir);
-    let runtime_source_plugin_dir =
-        resolve_runtime_entries_source_plugin_dir(base_plugin_dir, fallback_runtime_plugin_dir);
 
     // codeql[rust/path-injection]
     fs::create_dir_all(&generated_plugin_dir).map_err(|error| {
@@ -127,6 +149,7 @@ pub(crate) fn materialize_generated_plugin_dir_with_runtime_source(
         )
     })?;
 
+    prune_unmanaged_generated_plugin_entries(&generated_plugin_dir)?;
     sync_runtime_entries(
         base_plugin_dir,
         &runtime_source_plugin_dir,
@@ -178,7 +201,17 @@ fn generated_plugin_dir_for_base_with_override(
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("com.ralphx.app")
-            .join(GENERATED_PLUGIN_DIR_REL_PROD)
+            .join(GENERATED_PLUGIN_DIR_REL_PROD_ROOT)
+            .join(generated_plugin_runtime_profile_component())
+            .join(GENERATED_PLUGIN_DIR_NAME)
+    }
+}
+
+fn generated_plugin_runtime_profile_component() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
     }
 }
 
@@ -189,20 +222,149 @@ fn sync_runtime_entries(
 ) -> Result<(), String> {
     for file_name in GENERATED_PLUGIN_ENTRY_NAMES {
         let target = generated_plugin_dir.join(file_name);
-        let preferred_runtime_source = runtime_source_plugin_dir.join(file_name);
-        let source = if FALLBACK_RUNTIME_ENTRY_NAMES.contains(file_name)
-            && runtime_source_plugin_dir != base_plugin_dir
-            // codeql[rust/path-injection]
-            && preferred_runtime_source.exists()
-        {
-            preferred_runtime_source
-        } else {
-            base_plugin_dir.join(file_name)
-        };
+        let source =
+            expected_runtime_entry_source(base_plugin_dir, runtime_source_plugin_dir, file_name);
 
         ensure_symlink(&source, &target)?;
     }
     Ok(())
+}
+
+fn expected_runtime_entry_source(
+    base_plugin_dir: &Path,
+    runtime_source_plugin_dir: &Path,
+    file_name: &str,
+) -> PathBuf {
+    let preferred_runtime_source = runtime_source_plugin_dir.join(file_name);
+    if FALLBACK_RUNTIME_ENTRY_NAMES.contains(&file_name)
+        && runtime_source_plugin_dir != base_plugin_dir
+        // codeql[rust/path-injection]
+        && preferred_runtime_source.exists()
+    {
+        preferred_runtime_source
+    } else {
+        base_plugin_dir.join(file_name)
+    }
+}
+
+fn generated_plugin_dir_is_current(
+    base_plugin_dir: &Path,
+    runtime_source_plugin_dir: &Path,
+    generated_plugin_dir: &Path,
+) -> Result<bool, String> {
+    // codeql[rust/path-injection]
+    if !generated_plugin_dir.exists() {
+        return Ok(false);
+    }
+
+    if !generated_plugin_dir_has_only_managed_entries(generated_plugin_dir)? {
+        return Ok(false);
+    }
+
+    let generated_agents_dir = generated_plugin_dir.join(GENERATED_AGENTS_DIR);
+    // codeql[rust/path-injection]
+    match fs::symlink_metadata(&generated_agents_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect generated Claude agents dir {}: {error}",
+                generated_agents_dir.display()
+            ));
+        }
+    }
+
+    for file_name in GENERATED_PLUGIN_ENTRY_NAMES {
+        let target = generated_plugin_dir.join(file_name);
+        let expected_source =
+            expected_runtime_entry_source(base_plugin_dir, runtime_source_plugin_dir, file_name);
+        // codeql[rust/path-injection]
+        match fs::read_link(&target) {
+            Ok(existing) if existing == expected_source => {}
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect generated Claude plugin symlink {}: {error}",
+                    target.display()
+                ));
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+fn generated_plugin_dir_has_only_managed_entries(
+    generated_plugin_dir: &Path,
+) -> Result<bool, String> {
+    // codeql[rust/path-injection]
+    let entries = fs::read_dir(generated_plugin_dir).map_err(|error| {
+        format!(
+            "Failed to list generated Claude plugin dir {}: {error}",
+            generated_plugin_dir.display()
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to read generated Claude plugin dir entry {}: {error}",
+                generated_plugin_dir.display()
+            )
+        })?;
+        if !is_managed_generated_plugin_entry(&entry.file_name()) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn prune_unmanaged_generated_plugin_entries(generated_plugin_dir: &Path) -> Result<(), String> {
+    let generated_root = generated_plugin_dir.canonicalize().map_err(|error| {
+        format!(
+            "Failed to canonicalize generated Claude plugin dir {}: {error}",
+            generated_plugin_dir.display()
+        )
+    })?;
+    // codeql[rust/path-injection]
+    let entries = fs::read_dir(&generated_root).map_err(|error| {
+        format!(
+            "Failed to list generated Claude plugin dir {}: {error}",
+            generated_root.display()
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed to read generated Claude plugin dir entry {}: {error}",
+                generated_root.display()
+            )
+        })?;
+        if is_managed_generated_plugin_entry(&entry.file_name()) {
+            continue;
+        }
+
+        let path =
+            trusted_existing_generated_plugin_top_level_path(&generated_root, &entry.path())?;
+        warn!(
+            path = %path.display(),
+            "Removing unmanaged generated Claude plugin entry"
+        );
+        remove_existing_path(&path)?;
+    }
+
+    Ok(())
+}
+
+fn is_managed_generated_plugin_entry(file_name: &std::ffi::OsStr) -> bool {
+    file_name == GENERATED_AGENTS_DIR
+        || GENERATED_PLUGIN_ENTRY_NAMES
+            .iter()
+            .any(|name| file_name == *name)
 }
 
 fn sync_generated_agent_prompts(
@@ -328,6 +490,39 @@ fn trusted_generated_plugin_child_path(
         return Err(format!(
             "Generated Claude plugin output has no file name: {}",
             target.display()
+        ));
+    };
+    Ok(canonical_parent.join(file_name))
+}
+
+fn trusted_existing_generated_plugin_top_level_path(
+    generated_root: &Path,
+    existing_path: &Path,
+) -> Result<PathBuf, String> {
+    let Some(parent) = existing_path.parent() else {
+        return Err(format!(
+            "Generated Claude plugin entry has no parent: {}",
+            existing_path.display()
+        ));
+    };
+    let canonical_parent = parent.canonicalize().map_err(|error| {
+        format!(
+            "Failed to canonicalize generated Claude plugin entry parent {}: {error}",
+            parent.display()
+        )
+    })?;
+    if canonical_parent != generated_root {
+        return Err(format!(
+            "Refusing to remove generated Claude plugin entry outside {}: {}",
+            generated_root.display(),
+            existing_path.display()
+        ));
+    }
+
+    let Some(file_name) = existing_path.file_name() else {
+        return Err(format!(
+            "Generated Claude plugin entry has no file name: {}",
+            existing_path.display()
         ));
     };
     Ok(canonical_parent.join(file_name))
