@@ -16,6 +16,9 @@ import type {
   ConversationStatsResponse,
   AgentConversationWorkspace,
   AgentConversationWorkspacePublicationEvent,
+  AgentSidebarConversationGroupsResponse,
+  AgentSidebarConversationsInput,
+  AgentSidebarPublicationState,
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
   SendAgentMessageResult,
@@ -87,6 +90,9 @@ export interface MockChatController {
     search?: string,
     archivedOnly?: boolean
   ): Promise<ConversationListPageResponse>;
+  listAgentSidebarConversations(
+    input: AgentSidebarConversationsInput
+  ): Promise<AgentSidebarConversationGroupsResponse>;
   getConversation(
     conversationId: string
   ): Promise<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>;
@@ -199,6 +205,7 @@ function exposeMockChatController(): void {
     clearChildSessionStatusOverrides: mockClearChildSessionStatusOverrides,
     listConversations: mockListConversations,
     listConversationsPage: mockListConversationsPage,
+    listAgentSidebarConversations: mockListAgentSidebarConversations,
     getConversation: mockGetConversation,
     getConversationStats: mockGetConversationStats,
     seedAgentConversationWorkspace: seedMockAgentConversationWorkspace,
@@ -264,6 +271,169 @@ export async function mockListConversationsPage(
     total: conversations.length,
     hasMore: offset + pagedConversations.length < conversations.length,
   };
+}
+
+const MOCK_PUBLICATION_STATES: AgentSidebarPublicationState[] = [
+  "active",
+  "draft",
+  "merged",
+  "closed",
+  "uncommitted",
+  "unpushed",
+];
+
+export async function mockListAgentSidebarConversations(
+  input: AgentSidebarConversationsInput
+): Promise<AgentSidebarConversationGroupsResponse> {
+  const projectIds = Array.from(
+    new Set(input.projectIds.map((projectId) => projectId.trim()).filter(Boolean))
+  );
+  const publicationStates = input.publicationStates ?? MOCK_PUBLICATION_STATES;
+  const normalizedSearch = input.search?.trim().toLowerCase();
+  const includeArchived = input.includeArchived ?? false;
+  const archivedOnly = input.archivedOnly ?? false;
+  const pinnedConversationIds = new Set(input.pinnedConversationIds ?? []);
+
+  const rows = projectIds
+    .flatMap((projectId) =>
+      Array.from(mockConversations.values())
+        .filter(
+          (conversation) =>
+            conversation.contextType === "project" &&
+            conversation.contextId === projectId &&
+            (archivedOnly
+              ? Boolean(conversation.archivedAt)
+              : includeArchived || !conversation.archivedAt)
+        )
+        .filter((conversation) => {
+          if (!normalizedSearch) return true;
+          return (conversation.title ?? "Untitled agent")
+            .toLowerCase()
+            .includes(normalizedSearch);
+        })
+        .map((conversation) => {
+          const workspace = mockWorkspaces.get(conversation.id) ?? null;
+          const publicationState = getMockPublicationState(workspace);
+          return {
+            conversation,
+            workspace,
+            refKind:
+              workspace?.publicationPrNumber != null
+                ? ("pull-request" as const)
+                : ("branch" as const),
+            refLabel:
+              workspace?.publicationPrNumber != null
+                ? `PR #${workspace.publicationPrNumber}`
+                : workspace?.baseRef || "master",
+            publicationState,
+            publicationLabel:
+              publicationState === "active"
+                ? null
+                : getMockPublicationLabel(publicationState),
+          };
+        })
+        .filter((row) => publicationStates.includes(row.publicationState))
+    )
+    .sort((left, right) => {
+      const pinnedDelta =
+        Number(pinnedConversationIds.has(right.conversation.id)) -
+        Number(pinnedConversationIds.has(left.conversation.id));
+      if (pinnedDelta !== 0) return pinnedDelta;
+      return (
+        new Date(right.conversation.createdAt).getTime() -
+        new Date(left.conversation.createdAt).getTime()
+      );
+    });
+
+  const groupBy = input.groupBy ?? "project";
+  const limit = input.limitPerGroup ?? 20;
+  const offsets = input.offsets ?? {};
+
+  if (groupBy === "publication") {
+    return {
+      groups: publicationStates.map((state) =>
+        buildMockSidebarGroup(
+          state,
+          getMockPublicationGroupLabel(state),
+          rows.filter((row) => row.publicationState === state),
+          offsets[state] ?? 0,
+          limit
+        )
+      ),
+    };
+  }
+
+  return {
+    groups: projectIds.map((projectId) =>
+      buildMockSidebarGroup(
+        projectId,
+        projectId,
+        rows.filter((row) => row.conversation.contextId === projectId),
+        offsets[projectId] ?? 0,
+        limit
+      )
+    ),
+  };
+}
+
+function buildMockSidebarGroup(
+  key: string,
+  label: string,
+  rows: AgentSidebarConversationGroupsResponse["groups"][number]["rows"],
+  offset: number,
+  limit: number
+): AgentSidebarConversationGroupsResponse["groups"][number] {
+  const pagedRows = rows.slice(offset, offset + limit);
+  return {
+    key,
+    label,
+    total: rows.length,
+    offset,
+    limit,
+    hasMore: offset + pagedRows.length < rows.length,
+    rows: pagedRows,
+  };
+}
+
+function getMockPublicationState(
+  workspace: AgentConversationWorkspace | null
+): AgentSidebarPublicationState {
+  const prStatus = workspace?.publicationPrStatus?.trim().toLowerCase();
+  const pushStatus = workspace?.publicationPushStatus?.trim().toLowerCase();
+
+  if (prStatus === "merged") return "merged";
+  if (prStatus === "closed") return "closed";
+  if (pushStatus === "needs_agent") return "uncommitted";
+  if (
+    pushStatus === "pending" ||
+    pushStatus === "failed" ||
+    pushStatus === "description_failed"
+  ) {
+    return "unpushed";
+  }
+  if (prStatus === "draft") return "draft";
+  return "active";
+}
+
+function getMockPublicationLabel(state: AgentSidebarPublicationState): string {
+  return getMockPublicationGroupLabel(state).toLowerCase();
+}
+
+function getMockPublicationGroupLabel(state: AgentSidebarPublicationState): string {
+  switch (state) {
+    case "active":
+      return "Active";
+    case "draft":
+      return "Draft";
+    case "merged":
+      return "Merged";
+    case "closed":
+      return "Closed";
+    case "uncommitted":
+      return "Uncommitted";
+    case "unpushed":
+      return "Unpushed";
+  }
 }
 
 export async function mockGetConversation(
@@ -667,6 +837,7 @@ export const mockChatApi = {
   getAgentConversationWorkspace: mockGetAgentConversationWorkspace,
   listAgentConversationWorkspacesByProject:
     mockListAgentConversationWorkspacesByProject,
+  listAgentSidebarConversations: mockListAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents:
     mockListAgentConversationWorkspacePublicationEvents,
   publishAgentConversationWorkspace: mockPublishAgentConversationWorkspace,

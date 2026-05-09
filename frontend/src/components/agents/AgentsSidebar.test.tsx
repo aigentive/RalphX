@@ -45,6 +45,15 @@ const { workspacesByProject, workspaceCalls } = vi.hoisted(() => ({
     enabled?: boolean;
   }>,
 }));
+const { publicationGroupCalls } = vi.hoisted(() => ({
+  publicationGroupCalls: [] as Array<{
+    projectIds: string[];
+    publicationState: string;
+    archivedOnly: boolean;
+    search: string;
+    pinnedConversationIds: string[];
+  }>,
+}));
 
 vi.mock("./useProjectAgentConversations", () => ({
   useProjectAgentConversations: (
@@ -107,6 +116,118 @@ vi.mock("./useProjectAgentConversationWorkspaces", () => ({
     return {
       data: workspacesByProject.get(projectId ?? "") ?? [],
       isLoading: false,
+    };
+  },
+}));
+
+vi.mock("./useAgentSidebarPublicationGroup", () => ({
+  useAgentSidebarPublicationGroup: ({
+    projectIds,
+    publicationState,
+    archivedOnly,
+    search,
+    pinnedConversationIds,
+  }: {
+    projectIds: string[];
+    publicationState: string;
+    archivedOnly: boolean;
+    search: string;
+    pinnedConversationIds: string[];
+  }) => {
+    const getPublicationState = (
+      workspace: AgentConversationWorkspace | null
+    ): string => {
+      const prStatus = workspace?.publicationPrStatus?.trim().toLowerCase();
+      const pushStatus = workspace?.publicationPushStatus?.trim().toLowerCase();
+      if (prStatus === "merged") return "merged";
+      if (prStatus === "closed") return "closed";
+      if (pushStatus === "needs_agent") return "uncommitted";
+      if (
+        pushStatus === "pending" ||
+        pushStatus === "failed" ||
+        pushStatus === "description_failed"
+      ) {
+        return "unpushed";
+      }
+      if (prStatus === "draft") return "draft";
+      return "active";
+    };
+    const getPublicationLabel = (state: string): string =>
+      state
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+
+    publicationGroupCalls.push({
+      projectIds,
+      publicationState,
+      archivedOnly,
+      search,
+      pinnedConversationIds,
+    });
+
+    const normalizedSearch = search.trim().toLowerCase();
+    const pinnedIds = new Set(pinnedConversationIds);
+    const workspaceByConversationId = new Map(
+      projectIds.flatMap((projectId) =>
+        (workspacesByProject.get(projectId) ?? []).map((workspace) => [
+          workspace.conversationId,
+          workspace,
+        ] as const)
+      )
+    );
+    const rows = projectIds
+      .flatMap((projectId) => conversationsByProject.get(projectId)?.data ?? [])
+      .filter((conversation) =>
+        archivedOnly ? Boolean(conversation.archivedAt) : !conversation.archivedAt
+      )
+      .filter((conversation) => {
+        if (!normalizedSearch) return true;
+        return (conversation.title ?? "Untitled agent")
+          .toLowerCase()
+          .includes(normalizedSearch);
+      })
+      .map((conversation) => {
+        const workspace = workspaceByConversationId.get(conversation.id) ?? null;
+        const state = getPublicationState(workspace);
+        return {
+          conversation,
+          workspace,
+          refKind: workspace?.publicationPrNumber != null ? "pull-request" : "branch",
+          refLabel:
+            workspace?.publicationPrNumber != null
+              ? `PR #${workspace.publicationPrNumber}`
+              : workspace?.baseRef ?? "master",
+          publicationState: state,
+          publicationLabel: state === "active" ? null : state,
+        };
+      })
+      .filter((row) => row.publicationState === publicationState)
+      .sort((left, right) => {
+        const pinnedDelta =
+          Number(pinnedIds.has(right.conversation.id)) -
+          Number(pinnedIds.has(left.conversation.id));
+        if (pinnedDelta !== 0) return pinnedDelta;
+        return (
+          new Date(right.conversation.createdAt).getTime() -
+          new Date(left.conversation.createdAt).getTime()
+        );
+      });
+
+    return {
+      group: {
+        key: publicationState,
+        label: getPublicationLabel(publicationState),
+        total: rows.length,
+        offset: 0,
+        limit: 20,
+        hasMore: false,
+        rows,
+      },
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
     };
   },
 }));
@@ -215,6 +336,7 @@ describe("AgentsSidebar", () => {
     archivedCountCalls.length = 0;
     workspacesByProject.clear();
     workspaceCalls.length = 0;
+    publicationGroupCalls.length = 0;
     useChatStore.setState({ activeConversationIds: {}, agentStatus: {} });
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": false },
@@ -1485,6 +1607,20 @@ describe("AgentsSidebar", () => {
     );
     expect(screen.getByTestId("agents-publication-group-closed")).toHaveTextContent(
       "Closed"
+    );
+    expect(publicationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectIds: ["project-1"],
+          publicationState: "merged",
+          archivedOnly: false,
+        }),
+        expect.objectContaining({
+          projectIds: ["project-1"],
+          publicationState: "closed",
+          archivedOnly: false,
+        }),
+      ])
     );
     expect(screen.queryByTestId("agents-project-row-project-1")).not.toBeInTheDocument();
   });
