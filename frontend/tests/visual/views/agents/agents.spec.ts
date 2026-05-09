@@ -492,7 +492,7 @@ async function seedAgentsScenario(page: Page) {
       archivedOnly: false,
       publicationStates,
       groupBy: "project",
-      limitPerGroup: 20,
+      limitPerGroup: 6,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
     });
@@ -502,7 +502,7 @@ async function seedAgentsScenario(page: Page) {
       archivedOnly: true,
       publicationStates,
       groupBy: "project",
-      limitPerGroup: 20,
+      limitPerGroup: 6,
       offsets: { "project-mock-1": 0 },
       pinnedConversationIds: [],
     });
@@ -678,6 +678,7 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-sort-trigger")).toBeVisible();
     await page.getByTestId("agents-filters-trigger").click();
     await expect(page.getByTestId("agents-filter-archived")).toBeVisible();
+    await page.getByTestId("agents-filter-projects-section-trigger").click();
     await expect(page.getByTestId("agents-filter-all-projects")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("agents-filter-popover")).toHaveCount(0);

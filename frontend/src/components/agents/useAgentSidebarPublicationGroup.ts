@@ -7,7 +7,7 @@ import {
   type AgentSidebarGroupBy,
 } from "@/api/chat";
 
-const AGENT_SIDEBAR_GROUP_PAGE_SIZE = 20;
+const AGENT_SIDEBAR_GROUP_PAGE_SIZE = 6;
 
 export const agentSidebarConversationKeys = {
   all: ["agents", "sidebar-conversations"] as const,

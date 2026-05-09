@@ -346,7 +346,7 @@ export async function mockListAgentSidebarConversations(
     });
 
   const groupBy = input.groupBy ?? "project";
-  const limit = input.limitPerGroup ?? 20;
+  const limit = input.limitPerGroup ?? 6;
   const offsets = input.offsets ?? {};
 
   if (groupBy === "publication") {

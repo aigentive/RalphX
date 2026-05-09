@@ -227,7 +227,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         label: groupLabel,
         total: total ?? rows.length,
         offset: 0,
-        limit: 20,
+        limit: 6,
         hasMore: hasNextPage ?? false,
         rows,
       },
@@ -643,7 +643,10 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    fireEvent.click(screen.getByTestId("agents-load-more-project-1"));
+    const loadMoreButton = screen.getByTestId("agents-load-more-project-1");
+    expect(loadMoreButton.parentElement).toHaveClass("justify-end");
+
+    fireEvent.click(loadMoreButton);
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
@@ -1697,12 +1700,28 @@ describe("AgentsSidebar", () => {
     await user.click(screen.getByTestId("agents-filters-trigger"));
     await user.click(screen.getByRole("radio", { name: "Publication state" }));
 
-    expect(screen.getByTestId("agents-publication-group-merged")).toHaveTextContent(
-      "Merged"
-    );
-    expect(screen.getByTestId("agents-publication-group-closed")).toHaveTextContent(
-      "Closed"
-    );
+    const activeButton = screen.getByTestId("agents-publication-row-active");
+    const mergedButton = screen.getByTestId("agents-publication-row-merged");
+    const closedButton = screen.getByTestId("agents-publication-row-closed");
+    const mergedRow = within(mergedButton);
+    const closedRow = within(closedButton);
+    expect(activeButton).toHaveAttribute("aria-current", "true");
+    expect(mergedRow.getByText("Merged")).toBeInTheDocument();
+    expect(mergedRow.getByText("1")).toHaveClass("agents-project-count");
+    expect(closedRow.getByText("Closed")).toBeInTheDocument();
+    expect(closedRow.getByText("1")).toHaveClass("agents-project-count");
+    expect(screen.queryByTestId("agents-session-conversation-merged")).not.toBeInTheDocument();
+
+    await user.click(mergedButton);
+    expect(mergedButton).toHaveAttribute("aria-current", "true");
+    expect(activeButton).not.toHaveAttribute("aria-current");
+    expect(screen.getByTestId("agents-session-conversation-merged")).toBeInTheDocument();
+
+    await user.click(closedButton);
+    expect(closedButton).toHaveAttribute("aria-current", "true");
+    expect(mergedButton).not.toHaveAttribute("aria-current");
+    expect(screen.queryByTestId("agents-session-conversation-merged")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-session-conversation-closed")).toBeInTheDocument();
     expect(publicationGroupCalls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

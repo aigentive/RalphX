@@ -901,11 +901,28 @@ function PublicationStateGroups({
   onTogglePinnedConversation,
   showArchived,
 }: PublicationStateGroupsProps) {
+  const [expandedPublicationState, setExpandedPublicationState] =
+    useState<AgentSidebarPublicationState | null>(() => selectedPublicationStates[0] ?? null);
+
+  useEffect(() => {
+    if (selectedPublicationStates.length === 0) {
+      setExpandedPublicationState(null);
+      return;
+    }
+    if (
+      expandedPublicationState !== null &&
+      !selectedPublicationStates.includes(expandedPublicationState)
+    ) {
+      setExpandedPublicationState(selectedPublicationStates[0] ?? null);
+    }
+  }, [expandedPublicationState, selectedPublicationStates]);
+
   return (
     <>
       {selectedPublicationStates.map((publicationState) => (
         <PublicationStateGroup
           key={publicationState}
+          expandedPublicationState={expandedPublicationState}
           projects={projects}
           priorityConversationIds={priorityConversationIds}
           pinnedConversationIds={pinnedConversationIds}
@@ -918,6 +935,9 @@ function PublicationStateGroups({
           onRestoreConversation={onRestoreConversation}
           onSelectConversation={onSelectConversation}
           onTogglePinnedConversation={onTogglePinnedConversation}
+          onTogglePublicationState={(state, expanded) =>
+            setExpandedPublicationState(expanded ? state : null)
+          }
         />
       ))}
     </>
@@ -925,6 +945,7 @@ function PublicationStateGroups({
 }
 
 interface PublicationStateGroupProps {
+  expandedPublicationState: AgentSidebarPublicationState | null;
   projects: Project[];
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
@@ -937,9 +958,14 @@ interface PublicationStateGroupProps {
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onTogglePinnedConversation: (conversationId: string) => void;
+  onTogglePublicationState: (
+    publicationState: AgentSidebarPublicationState,
+    expanded: boolean,
+  ) => void;
 }
 
 function PublicationStateGroup({
+  expandedPublicationState,
   projects,
   priorityConversationIds,
   pinnedConversationIds,
@@ -952,6 +978,7 @@ function PublicationStateGroup({
   onRestoreConversation,
   onSelectConversation,
   onTogglePinnedConversation,
+  onTogglePublicationState,
 }: PublicationStateGroupProps) {
   const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
   const projectById = useMemo(
@@ -987,17 +1014,42 @@ function PublicationStateGroup({
     await onRenameConversation(renameDialogConversation.id, trimmed);
     setRenameDialogConversation(null);
   };
+  const isCurrentPublicationState = expandedPublicationState === publicationState;
+  const expanded = searchQuery.length > 0 ? true : isCurrentPublicationState;
+  const groupLabel =
+    groupQuery.group.label || getSidebarPublicationGroupLabel(publicationState);
+  const totalConversationCount = groupQuery.group.total;
 
   return (
     <div
-      className="my-1"
+      className="my-1 flex flex-col gap-0.5"
       data-testid={`agents-publication-group-${publicationState}`}
     >
-      <div
-        className="px-2 py-1 text-[0.625rem] font-semibold uppercase leading-none tracking-[0.12em]"
-        style={{ color: "var(--text-muted)" }}
-      >
-        {groupQuery.group.label || getSidebarPublicationGroupLabel(publicationState)}
+      <div className="group/publication-row relative">
+        <button
+          type="button"
+          className="agents-project-row grid w-full grid-cols-[12px_14px_minmax(0,1fr)_auto] items-center gap-[7px] rounded-[6px] px-2 py-1.5 text-left text-[0.8438rem] transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          data-testid={`agents-publication-row-${publicationState}`}
+          aria-expanded={expanded}
+          aria-current={isCurrentPublicationState ? "true" : undefined}
+          aria-label={`${expanded ? "Collapse" : "Expand"} publication state ${groupLabel}`}
+          onClick={() => onTogglePublicationState(publicationState, !expanded)}
+        >
+          <span
+            className="agents-project-chevron grid h-3 w-3 place-items-center rounded"
+            aria-hidden="true"
+          >
+            <ChevronRight
+              className={`h-2.5 w-2.5 transition-transform duration-[120ms] ${expanded ? "rotate-90" : ""}`}
+              strokeWidth={2}
+            />
+          </span>
+          <PublicationStateGroupIcon state={publicationState} />
+          <span className="min-w-0 truncate">{groupLabel}</span>
+          <span className="agents-project-count agents-publication-count grid min-w-[18px] place-items-center rounded-full border px-1.5 text-[0.6562rem] leading-[1.6]">
+            {totalConversationCount}
+          </span>
+        </button>
       </div>
 
       <Dialog
@@ -1086,84 +1138,110 @@ function PublicationStateGroup({
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
-        {groupQuery.group.rows.map((row) => {
-          const conversation = toProjectAgentConversation(row.conversation);
-          const project = projectById.get(conversation.projectId);
-          const rowKey = getAgentConversationStoreKey(conversation);
-          const activeConversationId = activeConversationIds[rowKey] ?? null;
-          const agentStatus = agentStatuses[rowKey] ?? "idle";
-          const isSelected = selectedConversationId === conversation.id;
-          const isActiveRuntime = activeConversationId === conversation.id;
-          const isPinned = Boolean(pinnedConversationIds[conversation.id]);
-          const runtimeState = getSessionRuntimeState(
-            conversation,
-            isActiveRuntime,
-            agentStatus
-          );
-          const showRuntimeState = runtimeState === "running";
-          const sessionActionsOpen = openSessionActionsId === conversation.id;
+      {expanded && (
+        <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
+          {groupQuery.group.rows.map((row) => {
+            const conversation = toProjectAgentConversation(row.conversation);
+            const project = projectById.get(conversation.projectId);
+            const rowKey = getAgentConversationStoreKey(conversation);
+            const activeConversationId = activeConversationIds[rowKey] ?? null;
+            const agentStatus = agentStatuses[rowKey] ?? "idle";
+            const isSelected = selectedConversationId === conversation.id;
+            const isActiveRuntime = activeConversationId === conversation.id;
+            const isPinned = Boolean(pinnedConversationIds[conversation.id]);
+            const runtimeState = getSessionRuntimeState(
+              conversation,
+              isActiveRuntime,
+              agentStatus
+            );
+            const showRuntimeState = runtimeState === "running";
+            const sessionActionsOpen = openSessionActionsId === conversation.id;
 
-          return (
-            <AgentSessionRow
-              key={conversation.id}
-              conversation={conversation}
-              projectName={project?.name ?? conversation.projectId}
-              showProjectNameInMeta
-              refKind={row.refKind}
-              refLabel={row.refLabel}
-              publicationState={row.publicationState}
-              publicationLabel={row.publicationLabel}
-              isSelected={isSelected}
-              isPinned={isPinned}
-              runtimeState={runtimeState}
-              showRuntimeState={showRuntimeState}
-              sessionActionsOpen={sessionActionsOpen}
-              onSelect={() => onSelectConversation(conversation.projectId, conversation)}
-              onRename={() => openRenameDialog(conversation)}
-              onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
-              onRestore={() => onRestoreConversation(conversation)}
-              onArchiveRequest={() => setArchiveDialogConversation(conversation)}
-              setActionsTriggerRef={(node) => {
-                sessionActionsTriggerRefs.current[conversation.id] = node;
-              }}
-              onActionsOpenChange={(open) => {
-                setOpenSessionActionsId(open ? conversation.id : null);
-                if (!open) {
-                  requestAnimationFrame(() => {
-                    sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                  });
-                }
-              }}
-            />
-          );
-        })}
+            return (
+              <AgentSessionRow
+                key={conversation.id}
+                conversation={conversation}
+                projectName={project?.name ?? conversation.projectId}
+                showProjectNameInMeta
+                refKind={row.refKind}
+                refLabel={row.refLabel}
+                publicationState={row.publicationState}
+                publicationLabel={row.publicationLabel}
+                isSelected={isSelected}
+                isPinned={isPinned}
+                runtimeState={runtimeState}
+                showRuntimeState={showRuntimeState}
+                sessionActionsOpen={sessionActionsOpen}
+                onSelect={() => onSelectConversation(conversation.projectId, conversation)}
+                onRename={() => openRenameDialog(conversation)}
+                onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+                onRestore={() => onRestoreConversation(conversation)}
+                onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+                setActionsTriggerRef={(node) => {
+                  sessionActionsTriggerRefs.current[conversation.id] = node;
+                }}
+                onActionsOpenChange={(open) => {
+                  setOpenSessionActionsId(open ? conversation.id : null);
+                  if (!open) {
+                    requestAnimationFrame(() => {
+                      sessionActionsTriggerRefs.current[conversation.id]?.blur();
+                    });
+                  }
+                }}
+              />
+            );
+          })}
 
-        {groupQuery.group.rows.length > 0 && groupQuery.hasNextPage && (
-          <div className="py-0.5">
-            <button
-              type="button"
-              className="inline-flex items-center pl-[26px] text-[0.6719rem] font-medium transition-colors"
-              onClick={() => void groupQuery.fetchNextPage()}
-              disabled={groupQuery.isFetchingNextPage}
-              data-testid={`agents-load-more-publication-${publicationState}`}
-              style={{
-                color: "var(--text-muted)",
-                opacity: groupQuery.isFetchingNextPage ? 0.7 : 1,
-              }}
-            >
-              {groupQuery.isFetchingNextPage ? "Loading..." : "Load more"}
-            </button>
-          </div>
-        )}
+          {groupQuery.group.rows.length > 0 && groupQuery.hasNextPage && (
+            <div className="flex justify-end py-0.5 pr-2">
+              <button
+                type="button"
+                className="inline-flex items-center text-[0.6719rem] font-medium transition-colors"
+                onClick={() => void groupQuery.fetchNextPage()}
+                disabled={groupQuery.isFetchingNextPage}
+                data-testid={`agents-load-more-publication-${publicationState}`}
+                style={{
+                  color: "var(--text-muted)",
+                  opacity: groupQuery.isFetchingNextPage ? 0.7 : 1,
+                }}
+              >
+                {groupQuery.isFetchingNextPage ? "Loading..." : "Load more"}
+              </button>
+            </div>
+          )}
 
-        {groupQuery.isLoading && (
-          <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
-            Loading...
-          </div>
-        )}
-      </div>
+          {groupQuery.isLoading && (
+            <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+              Loading...
+            </div>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function PublicationStateGroupIcon({
+  state,
+}: {
+  state: AgentSidebarPublicationState;
+}) {
+  if (state === "active") {
+    return (
+      <GitBranch
+        className="agents-project-icon h-3.5 w-3.5 shrink-0"
+        strokeWidth={1.8}
+        aria-hidden="true"
+      />
+    );
+  }
+
+  return (
+    <GitPullRequest
+      className="agents-project-icon h-3.5 w-3.5 shrink-0"
+      strokeWidth={1.8}
+      aria-hidden="true"
+    />
   );
 }
 
@@ -1754,10 +1832,10 @@ function ProjectSessionGroup({
                   })}
 
                 {visibleConversations.length > 0 && groupQuery.hasNextPage && (
-                  <div className="py-0.5">
+                  <div className="flex justify-end py-0.5 pr-2">
                     <button
                       type="button"
-                      className="inline-flex items-center pl-[26px] text-[0.6719rem] font-medium transition-colors"
+                      className="inline-flex items-center text-[0.6719rem] font-medium transition-colors"
                       onClick={() => void groupQuery.fetchNextPage()}
                       disabled={groupQuery.isFetchingNextPage}
                       data-testid={`agents-load-more-${project.id}`}

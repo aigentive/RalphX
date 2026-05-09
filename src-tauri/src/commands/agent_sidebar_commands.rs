@@ -11,7 +11,7 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::domain::entities::{ChatContextType, ChatConversation, Project, ProjectId};
 
-const DEFAULT_LIMIT_PER_GROUP: u32 = 20;
+const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
 
 #[derive(Debug, Deserialize)]
@@ -500,7 +500,7 @@ mod tests {
             search: None,
             publication_states: None,
             group_by: Some("publication".to_string()),
-            limit_per_group: Some(20),
+            limit_per_group: Some(6),
             offsets: None,
             pinned_conversation_ids: None,
         }
