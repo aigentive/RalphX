@@ -5,15 +5,13 @@ use std::time::Duration;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::Deserialize;
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Emitter, Listener, Manager, Runtime};
 
-use crate::application::agent_conversation_workspace_base::{
-    resolve_workspace_base, BaseStatus,
-};
 use crate::application::agent_conversation_workspace::{
     is_terminal_agent_conversation_publication_status,
     resolve_valid_agent_conversation_workspace_path,
 };
+use crate::application::agent_conversation_workspace_base::{resolve_workspace_base, BaseStatus};
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::publish_resilience::{
     count_unpublished_publish_commits, inspect_publish_branch_freshness_for_source,
@@ -98,7 +96,10 @@ impl AutoPublishSkipReason {
 /// Register backend-only listeners that continue already-published agent
 /// workspace PRs after an agent turn finishes. First-time PR creation remains a
 /// deliberate user action; this only updates PRs that already exist.
-pub(crate) fn install_agent_workspace_auto_publish_listeners(app: &tauri::App<tauri::Wry>) {
+pub(crate) fn install_agent_workspace_auto_publish_listeners<R>(app: &tauri::App<R>)
+where
+    R: Runtime,
+{
     start_agent_workspace_auto_publish_freshness_scan(app.handle().clone());
 
     let run_completed_handle = app.handle().clone();
@@ -120,10 +121,12 @@ pub(crate) fn install_agent_workspace_auto_publish_listeners(app: &tauri::App<ta
     });
 }
 
-pub(crate) fn schedule_agent_workspace_auto_publish_after_freshness_detected(
-    app_handle: tauri::AppHandle,
+pub(crate) fn schedule_agent_workspace_auto_publish_after_freshness_detected<R>(
+    app_handle: tauri::AppHandle<R>,
     conversation_id: ChatConversationId,
-) {
+) where
+    R: Runtime,
+{
     spawn_auto_publish_existing_pr(
         app_handle,
         "agent_workspace_freshness",
@@ -132,11 +135,13 @@ pub(crate) fn schedule_agent_workspace_auto_publish_after_freshness_detected(
     );
 }
 
-fn spawn_auto_publish_from_completion_event(
-    app_handle: tauri::AppHandle,
+fn spawn_auto_publish_from_completion_event<R>(
+    app_handle: tauri::AppHandle<R>,
     event_name: &'static str,
     payload: &str,
-) {
+) where
+    R: Runtime,
+{
     let payload = match serde_json::from_str::<AgentCompletionPayload>(payload) {
         Ok(payload) => payload,
         Err(error) => {
@@ -162,12 +167,14 @@ fn spawn_auto_publish_from_completion_event(
     );
 }
 
-fn spawn_auto_publish_existing_pr(
-    app_handle: tauri::AppHandle,
+fn spawn_auto_publish_existing_pr<R>(
+    app_handle: tauri::AppHandle<R>,
     event_name: &'static str,
     trigger: AutoPublishTrigger,
     conversation_id: ChatConversationId,
-) {
+) where
+    R: Runtime,
+{
     let Some(_guard) = begin_auto_publish(&conversation_id) else {
         tracing::debug!(
             event_name,
@@ -206,7 +213,10 @@ fn spawn_auto_publish_existing_pr(
     });
 }
 
-fn start_agent_workspace_auto_publish_freshness_scan(app_handle: tauri::AppHandle) {
+fn start_agent_workspace_auto_publish_freshness_scan<R>(app_handle: tauri::AppHandle<R>)
+where
+    R: Runtime,
+{
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(AUTO_PUBLISH_FRESHNESS_SCAN_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -234,9 +244,12 @@ fn start_agent_workspace_auto_publish_freshness_scan(app_handle: tauri::AppHandl
     });
 }
 
-async fn auto_publish_stale_published_agent_workspace_prs_from_app_handle(
-    app_handle: &tauri::AppHandle,
-) -> Result<usize, String> {
+async fn auto_publish_stale_published_agent_workspace_prs_from_app_handle<R>(
+    app_handle: &tauri::AppHandle<R>,
+) -> Result<usize, String>
+where
+    R: Runtime,
+{
     let state = app_handle
         .try_state::<AppState>()
         .ok_or_else(|| "AppState is not available".to_string())?;
@@ -299,7 +312,7 @@ async fn auto_publish_stale_published_agent_workspace_prs_from_app_handle(
 }
 
 async fn auto_publish_existing_agent_workspace_pr_from_app_handle(
-    app_handle: &tauri::AppHandle,
+    app_handle: &tauri::AppHandle<impl Runtime>,
     conversation_id: ChatConversationId,
     trigger: AutoPublishTrigger,
 ) -> Result<AutoPublishDecision, String> {
@@ -326,14 +339,17 @@ async fn auto_publish_existing_agent_workspace_pr_from_app_handle(
     .await
 }
 
-async fn auto_publish_existing_agent_workspace_pr(
+async fn auto_publish_existing_agent_workspace_pr<R>(
     state: &AppState,
     execution_state: &Arc<ExecutionState>,
     team_service: Option<Arc<TeamService>>,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<tauri::AppHandle<R>>,
     conversation_id: ChatConversationId,
     trigger: AutoPublishTrigger,
-) -> Result<AutoPublishDecision, String> {
+) -> Result<AutoPublishDecision, String>
+where
+    R: Runtime,
+{
     let Some(workspace) = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -535,7 +551,16 @@ fn begin_auto_publish(conversation_id: &ChatConversationId) -> Option<AutoPublis
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::{IdeationAnalysisBaseRefKind, ProjectId};
+    use crate::domain::entities::{IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId};
+    use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+
+    fn mock_app(state: AppState, execution_state: Arc<ExecutionState>) -> tauri::App<MockRuntime> {
+        mock_builder()
+            .manage(state)
+            .manage(execution_state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
 
     fn workspace() -> AgentConversationWorkspace {
         let mut workspace = AgentConversationWorkspace::new(
@@ -553,6 +578,144 @@ mod tests {
         workspace.publication_pr_status = Some("open".to_string());
         workspace.publication_push_status = Some("pushed".to_string());
         workspace
+    }
+
+    fn facts() -> AutoPublishFacts {
+        AutoPublishFacts {
+            has_uncommitted_changes: false,
+            unpublished_commit_count: Some(0),
+            base_is_ahead: false,
+            base_is_blocked: false,
+        }
+    }
+
+    #[test]
+    fn skip_reason_strings_are_stable_for_logs() {
+        let cases = [
+            (
+                AutoPublishSkipReason::InactiveWorkspace,
+                "inactive_workspace",
+            ),
+            (
+                AutoPublishSkipReason::NotEditWorkspace,
+                "not_edit_workspace",
+            ),
+            (
+                AutoPublishSkipReason::ExecutionOwnedWorkspace,
+                "execution_owned_workspace",
+            ),
+            (AutoPublishSkipReason::NoExistingPr, "no_existing_pr"),
+            (AutoPublishSkipReason::TerminalPr, "terminal_pr"),
+            (
+                AutoPublishSkipReason::PublishAlreadyActive,
+                "publish_already_active",
+            ),
+            (
+                AutoPublishSkipReason::NoPendingLocalWork,
+                "no_pending_local_work",
+            ),
+            (AutoPublishSkipReason::BaseBlocked, "base_blocked"),
+            (AutoPublishSkipReason::BaseCurrent, "base_current"),
+            (AutoPublishSkipReason::AlreadyInFlight, "already_in_flight"),
+        ];
+
+        for (reason, expected) in cases {
+            assert_eq!(reason.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn static_preflight_skips_inactive_workspace() {
+        let mut workspace = workspace();
+        workspace.status = AgentConversationWorkspaceStatus::Archived;
+
+        assert_eq!(
+            static_auto_publish_skip_reason(&workspace),
+            Some(AutoPublishSkipReason::InactiveWorkspace)
+        );
+    }
+
+    #[test]
+    fn static_preflight_skips_non_edit_workspace() {
+        let mut workspace = workspace();
+        workspace.mode = AgentConversationWorkspaceMode::Chat;
+
+        assert_eq!(
+            static_auto_publish_skip_reason(&workspace),
+            Some(AutoPublishSkipReason::NotEditWorkspace)
+        );
+    }
+
+    #[test]
+    fn static_preflight_skips_execution_owned_workspace() {
+        let mut workspace = workspace();
+        workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1".to_string()));
+
+        assert_eq!(
+            static_auto_publish_skip_reason(&workspace),
+            Some(AutoPublishSkipReason::ExecutionOwnedWorkspace)
+        );
+    }
+
+    #[test]
+    fn static_preflight_skips_terminal_pr() {
+        let mut workspace = workspace();
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        assert_eq!(
+            static_auto_publish_skip_reason(&workspace),
+            Some(AutoPublishSkipReason::TerminalPr)
+        );
+    }
+
+    #[test]
+    fn active_publish_statuses_lock_auto_publish() {
+        for status in [
+            "checking",
+            "committing",
+            "refreshing",
+            "describing",
+            "pushing",
+            "needs_agent",
+        ] {
+            assert!(is_active_publish_status(status));
+        }
+        assert!(!is_active_publish_status("pushed"));
+        assert!(!is_active_publish_status("failed"));
+    }
+
+    #[test]
+    fn in_flight_guard_serializes_by_conversation_id() {
+        let conversation_id =
+            ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+        let guard = begin_auto_publish(&conversation_id).expect("first guard should enter");
+
+        assert!(begin_auto_publish(&conversation_id).is_none());
+
+        drop(guard);
+        assert!(begin_auto_publish(&conversation_id).is_some());
+    }
+
+    #[test]
+    fn malformed_completion_payload_is_ignored() {
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        spawn_auto_publish_from_completion_event(app.handle().clone(), "test_event", "{not-json");
+    }
+
+    #[test]
+    fn non_project_completion_payload_is_ignored() {
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        spawn_auto_publish_from_completion_event(
+            app.handle().clone(),
+            "test_event",
+            r#"{"conversation_id":"33333333-3333-3333-3333-333333333333","context_type":"task"}"#,
+        );
     }
 
     #[test]
@@ -579,14 +742,11 @@ mod tests {
 
     #[test]
     fn auto_publish_runs_for_existing_pr_with_uncommitted_changes() {
+        let mut facts = facts();
+        facts.has_uncommitted_changes = true;
         let decision = should_auto_publish_existing_pr(
             &workspace(),
-            AutoPublishFacts {
-                has_uncommitted_changes: true,
-                unpublished_commit_count: Some(0),
-                base_is_ahead: false,
-                base_is_blocked: false,
-            },
+            facts,
             AutoPublishTrigger::AgentCompletion,
         );
 
@@ -595,14 +755,11 @@ mod tests {
 
     #[test]
     fn auto_publish_runs_for_existing_pr_with_unpublished_commits() {
+        let mut facts = facts();
+        facts.unpublished_commit_count = Some(2);
         let decision = should_auto_publish_existing_pr(
             &workspace(),
-            AutoPublishFacts {
-                has_uncommitted_changes: false,
-                unpublished_commit_count: Some(2),
-                base_is_ahead: false,
-                base_is_blocked: false,
-            },
+            facts,
             AutoPublishTrigger::AgentCompletion,
         );
 
@@ -613,12 +770,7 @@ mod tests {
     fn auto_publish_skips_existing_pr_without_pending_local_work() {
         let decision = should_auto_publish_existing_pr(
             &workspace(),
-            AutoPublishFacts {
-                has_uncommitted_changes: false,
-                unpublished_commit_count: Some(0),
-                base_is_ahead: false,
-                base_is_blocked: false,
-            },
+            facts(),
             AutoPublishTrigger::AgentCompletion,
         );
 
@@ -652,36 +804,188 @@ mod tests {
 
     #[test]
     fn auto_publish_runs_for_existing_pr_with_stale_base_without_local_work() {
-        let decision = should_auto_publish_existing_pr(
-            &workspace(),
-            AutoPublishFacts {
-                has_uncommitted_changes: false,
-                unpublished_commit_count: Some(0),
-                base_is_ahead: true,
-                base_is_blocked: false,
-            },
-            AutoPublishTrigger::BaseFreshness,
-        );
+        let mut facts = facts();
+        facts.base_is_ahead = true;
+        let decision =
+            should_auto_publish_existing_pr(&workspace(), facts, AutoPublishTrigger::BaseFreshness);
 
         assert_eq!(decision, AutoPublishDecision::Publish);
     }
 
     #[test]
     fn freshness_scan_skips_existing_pr_when_base_is_current() {
-        let decision = should_auto_publish_existing_pr(
-            &workspace(),
-            AutoPublishFacts {
-                has_uncommitted_changes: true,
-                unpublished_commit_count: Some(1),
-                base_is_ahead: false,
-                base_is_blocked: false,
-            },
-            AutoPublishTrigger::BaseFreshness,
-        );
+        let mut facts = facts();
+        facts.has_uncommitted_changes = true;
+        facts.unpublished_commit_count = Some(1);
+        let decision =
+            should_auto_publish_existing_pr(&workspace(), facts, AutoPublishTrigger::BaseFreshness);
 
         assert_eq!(
             decision,
             AutoPublishDecision::Skip(AutoPublishSkipReason::BaseCurrent)
+        );
+    }
+
+    #[test]
+    fn auto_publish_skips_blocked_base() {
+        let mut facts = facts();
+        facts.base_is_blocked = true;
+
+        let decision = should_auto_publish_existing_pr(
+            &workspace(),
+            facts,
+            AutoPublishTrigger::AgentCompletion,
+        );
+
+        assert_eq!(
+            decision,
+            AutoPublishDecision::Skip(AutoPublishSkipReason::BaseBlocked)
+        );
+    }
+
+    #[tokio::test]
+    async fn app_handle_auto_publish_errors_without_state() {
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let error = auto_publish_existing_agent_workspace_pr_from_app_handle(
+            app.handle(),
+            ChatConversationId::from_string("44444444-4444-4444-4444-444444444444"),
+            AutoPublishTrigger::AgentCompletion,
+        )
+        .await
+        .expect_err("missing state should fail");
+
+        assert_eq!(error, "AppState is not available");
+    }
+
+    #[tokio::test]
+    async fn app_handle_auto_publish_skips_when_workspace_is_missing() {
+        let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+        let decision = auto_publish_existing_agent_workspace_pr_from_app_handle(
+            app.handle(),
+            ChatConversationId::from_string("55555555-5555-5555-5555-555555555555"),
+            AutoPublishTrigger::AgentCompletion,
+        )
+        .await
+        .expect("missing workspace should be a skip");
+
+        assert_eq!(
+            decision,
+            AutoPublishDecision::Skip(AutoPublishSkipReason::NoExistingPr)
+        );
+    }
+
+    #[tokio::test]
+    async fn app_handle_freshness_scan_skips_when_startup_git_auth_is_pending() {
+        let state = AppState::new_test();
+        state.startup_git_auth_recovery_state.mark_pending();
+        let app = mock_app(state, Arc::new(ExecutionState::new()));
+
+        let count = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
+            .await
+            .expect("pending startup recovery should skip scan");
+
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn freshness_scan_continues_past_workspace_errors() {
+        let state = AppState::new_test();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace())
+            .await
+            .expect("workspace should seed");
+        let app = mock_app(state, Arc::new(ExecutionState::new()));
+
+        let count = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
+            .await
+            .expect("workspace-level errors should be logged and skipped");
+
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn direct_auto_publish_reports_missing_project() {
+        let state = AppState::new_test();
+        let workspace = workspace();
+        let conversation_id = workspace.conversation_id.clone();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
+            &state,
+            &execution_state,
+            None,
+            None,
+            conversation_id,
+            AutoPublishTrigger::AgentCompletion,
+        )
+        .await
+        .expect_err("missing project should fail");
+
+        assert!(error.contains("Project not found: project-1"));
+    }
+
+    #[tokio::test]
+    async fn repair_routing_check_reads_needs_agent_status() {
+        let state = AppState::new_test();
+        let conversation_id =
+            ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
+
+        assert!(
+            !publish_was_routed_to_agent_repair(&state, &conversation_id)
+                .await
+                .expect("missing workspace should not be routed")
+        );
+
+        let mut workspace = workspace();
+        workspace.conversation_id = conversation_id.clone();
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+
+        assert!(publish_was_routed_to_agent_repair(&state, &conversation_id)
+            .await
+            .expect("needs_agent workspace should be routed"));
+    }
+
+    #[tokio::test]
+    async fn direct_auto_publish_static_skip_does_not_resolve_project() {
+        let state = AppState::new_test();
+        let mut workspace = workspace();
+        workspace.status = AgentConversationWorkspaceStatus::Missing;
+        let conversation_id = workspace.conversation_id.clone();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let decision = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
+            &state,
+            &execution_state,
+            None,
+            None,
+            conversation_id,
+            AutoPublishTrigger::AgentCompletion,
+        )
+        .await
+        .expect("static skip should not need a project");
+
+        assert_eq!(
+            decision,
+            AutoPublishDecision::Skip(AutoPublishSkipReason::InactiveWorkspace)
         );
     }
 }
