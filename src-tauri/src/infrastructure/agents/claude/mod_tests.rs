@@ -882,6 +882,60 @@ description: Generates concise ideation session titles from user or plan context
 }
 
 #[test]
+fn test_materialize_generated_plugin_dir_repairs_cached_runtime_entries_after_external_mutation() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-utility-session-namer");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: ralphx-utility-session-namer\nrole: session_namer\n",
+    )
+    .expect("write shared definition");
+    std::fs::write(
+        agent_root.join("shared/prompt.md"),
+        "Prompt before runtime contamination",
+    )
+    .expect("write shared prompt");
+
+    let generated_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("first generated plugin dir");
+    let expected_mcp_source = std::fs::read_link(generated_dir.join("ralphx-mcp-server"))
+        .expect("read initial mcp symlink");
+    let stale_runtime = tempfile::TempDir::new().expect("create stale runtime dir");
+    let stale_mcp_dir = stale_runtime.path().join("plugins/app/ralphx-mcp-server");
+    std::fs::create_dir_all(&stale_mcp_dir).expect("create stale mcp dir");
+    let generated_mcp_dir = generated_dir.join("ralphx-mcp-server");
+    // codeql[rust/path-injection]
+    if std::fs::remove_file(&generated_mcp_dir).is_err() {
+        // codeql[rust/path-injection]
+        std::fs::remove_dir(&generated_mcp_dir).expect("remove generated mcp dir symlink");
+    }
+    symlink_dir(&stale_mcp_dir, &generated_mcp_dir);
+    symlink_dir(&stale_mcp_dir, generated_dir.join(".cache"));
+
+    let repaired_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("repair generated plugin dir");
+
+    assert_eq!(repaired_dir, generated_dir);
+    assert_eq!(
+        std::fs::read_link(repaired_dir.join("ralphx-mcp-server"))
+            .expect("read repaired mcp symlink"),
+        expected_mcp_source,
+        "cached materialization should repair externally mutated managed runtime symlinks"
+    );
+    assert!(
+        std::fs::symlink_metadata(repaired_dir.join(".cache")).is_err(),
+        "cached materialization should remove unmanaged top-level entries"
+    );
+    assert!(
+        std::fs::read_to_string(repaired_dir.join("agents/ralphx-utility-session-namer.md"))
+            .expect("read repaired generated prompt")
+            .contains("Prompt before runtime contamination"),
+        "repair should preserve generated canonical prompt materialization"
+    );
+}
+
+#[test]
 fn test_materialize_generated_plugin_dir_prefers_root_canonical_claude_disallowed_tools() {
     let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
     let generated_dir =
