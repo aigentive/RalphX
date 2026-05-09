@@ -92,6 +92,26 @@ fn run_completed_emitted_when_queue_had_items_but_none_processed() {
     // The unconditional emission path is the fix (tested at call site in production code).
 }
 
+#[test]
+fn queue_processing_outcome_uses_last_queued_run_for_terminal_event() {
+    let outcome = super::super::chat_service_queue::QueueProcessingOutcome {
+        total_processed: 2,
+        last_run_id: Some("queued-run-2".to_string()),
+    };
+
+    assert_eq!(outcome.terminal_run_id("parent-run"), "queued-run-2");
+}
+
+#[test]
+fn queue_processing_outcome_falls_back_to_parent_run_without_queued_run() {
+    let outcome = super::super::chat_service_queue::QueueProcessingOutcome {
+        total_processed: 0,
+        last_run_id: None,
+    };
+
+    assert_eq!(outcome.terminal_run_id("parent-run"), "parent-run");
+}
+
 #[tokio::test]
 async fn queue_processing_leaves_messages_pending_when_execution_paused() {
     let app_state = AppState::new_test();
@@ -107,7 +127,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
     let conversation_id = ChatConversationId::new();
     let unused_paused_path = Path::new(".");
 
-    let processed = super::super::chat_service_queue::process_queued_messages::<tauri::Wry>(
+    let outcome = super::super::chat_service_queue::process_queued_messages::<tauri::Wry>(
         ChatContextType::Ideation,
         crate::domain::agents::AgentHarnessKind::Claude,
         "session-paused",
@@ -137,9 +157,10 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
     .await;
 
     assert_eq!(
-        processed, 0,
+        outcome.total_processed, 0,
         "paused queue processing must not launch messages"
     );
+    assert_eq!(outcome.last_run_id, None);
     assert_eq!(
         app_state
             .message_queue
@@ -148,6 +169,65 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         1,
         "paused queue processing must leave the queued message pending"
     );
+}
+
+#[tokio::test]
+async fn queue_processing_records_run_id_before_spawn_failure() {
+    let app_state = AppState::new_test();
+    let message_queue = Arc::clone(&app_state.message_queue);
+    let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
+    let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&app_state.artifact_repo);
+    let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
+    let task_repo = Arc::clone(&app_state.task_repo);
+    let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
+    let app = tauri::test::mock_builder()
+        .manage(app_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+
+    message_queue.queue(
+        ChatContextType::Ideation,
+        "session-spawn-fails",
+        "Queued message".to_string(),
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
+    let unused_path = Path::new(".");
+
+    let outcome = super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+        ChatContextType::Ideation,
+        crate::domain::agents::AgentHarnessKind::Claude,
+        "session-spawn-fails",
+        "session-spawn-fails",
+        conversation_id,
+        "session-cli",
+        &message_queue,
+        &chat_message_repo,
+        &chat_attachment_repo,
+        &artifact_repo,
+        &activity_event_repo,
+        &task_repo,
+        &ideation_session_repo,
+        invalid_cli_path,
+        unused_path,
+        unused_path,
+        None,
+        None,
+        Some(app_handle),
+        None,
+        false,
+        tokio_util::sync::CancellationToken::new(),
+        None,
+        None,
+        super::StreamingStateCache::new(),
+    )
+    .await;
+
+    assert_eq!(outcome.total_processed, 1);
+    assert!(outcome.last_run_id.is_some());
 }
 
 /// Verifies that session swap recovery enqueues rehydration at front of queue,

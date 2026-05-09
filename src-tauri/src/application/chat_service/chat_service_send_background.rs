@@ -1141,7 +1141,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 "agent:run_completed",
-                                AgentRunCompletedPayload::with_provider_session(
+                                AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                    Some(agent_run_id.clone()),
                                     conversation_id.as_str().to_string(),
                                     context_type.to_string(),
                                     context_id.clone(),
@@ -1176,7 +1177,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
 
                 // Process queued messages via extracted function
                 if let Some(ref sess_id) = effective_session_id {
-                    let total_processed = super::chat_service_queue::process_queued_messages(
+                    let queue_outcome = super::chat_service_queue::process_queued_messages(
                         context_type,
                         harness,
                         &context_id,
@@ -1204,6 +1205,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         streaming_state_cache.clone(),
                     )
                     .await;
+                    let total_processed = queue_outcome.total_processed;
 
                     // After ALL queue processing is done, emit the final run_completed.
                     // Always emit regardless of total_processed — if will_process_queue=true,
@@ -1236,7 +1238,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     if let Some(ref handle) = app_handle {
                         let _ = handle.emit(
                             "agent:run_completed",
-                            AgentRunCompletedPayload::with_provider_session(
+                            AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                Some(queue_outcome.terminal_run_id(&agent_run_id)),
                                 conversation_id.as_str().to_string(),
                                 context_type.to_string(),
                                 context_id.clone(),
@@ -1392,7 +1395,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 Some(&agent_run_id),
                                 streaming_state_cache.clone(),
                             )
-                            .await;
+                            .await
+                            .total_processed;
 
                             tracing::info!(
                                 context_type = %context_type,

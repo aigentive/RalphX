@@ -547,6 +547,8 @@ export interface AgentRunStartedPayload {
  * Fields remain snake_case to match the backend serializer for these payloads.
  */
 export interface AgentRunCompletedPayload {
+  run_id?: string | null;
+  agent_run_id?: string | null;
   conversation_id: string;
   context_type: string;
   context_id: string;

@@ -3278,7 +3278,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "agent:stopped",
                     serde_json::json!({
                         "conversation_id": info.conversation_id,
-                        "agent_run_id": info.agent_run_id,
+                        "agent_run_id": info.agent_run_id.clone(),
                         "context_type": context_type.to_string(),
                         "context_id": context_id,
                     }),
@@ -3296,7 +3296,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 // Also emit run_completed so frontend knows agent is no longer running
                 self.emit_event(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(info.agent_run_id.clone()),
                         info.conversation_id,
                         context_type.to_string(),
                         context_id.to_string(),

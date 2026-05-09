@@ -123,6 +123,8 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
   const deleteQueuedMessage = useChatStore((s) => s.deleteQueuedMessage);
   const queueMessage = useChatStore((s) => s.queueMessage);
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
+  const setActiveAgentRun = useChatStore((s) => s.setActiveAgentRun);
+  const clearActiveAgentRun = useChatStore((s) => s.clearActiveAgentRun);
   const clearActiveQuestion = useUiStore((s) => s.clearActiveQuestion);
   const clearPendingPlan = useTeamStore((s) => s.clearPendingPlan);
 
@@ -184,7 +186,42 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
     // Shared cleanup for agent termination (run_completed, stopped, error).
     // Handler-specific logic (updateLastAgentEvent, toast) stays in each caller.
-    function handleAgentTermination(storeKey: string, eventContextId: string, conversationId: string) {
+    function lifecycleRunId(payload: { run_id?: string | null; agent_run_id?: string | null }) {
+      return payload.run_id ?? payload.agent_run_id ?? null;
+    }
+
+    function shouldIgnoreLifecycleEvent(
+      storeKey: string,
+      conversationId: string,
+      eventRunId: string | null,
+      eventName: string
+    ): boolean {
+      const activeConvId = useChatStore.getState().activeConversationIds[storeKey];
+      if (activeConvId != null && conversationId !== activeConvId) {
+        logger.warn(
+          `[AgentEvents] Ignoring stale ${eventName}: conversation_id=${conversationId} does not match active=${activeConvId} for key=${storeKey}`
+        );
+        return true;
+      }
+
+      const activeRunId = useChatStore.getState().activeAgentRunIds[storeKey];
+      if (eventRunId != null && activeRunId != null && eventRunId !== activeRunId) {
+        logger.warn(
+          `[AgentEvents] Ignoring stale ${eventName}: run=${eventRunId} does not match active=${activeRunId} for key=${storeKey}`
+        );
+        return true;
+      }
+
+      return false;
+    }
+
+    function handleAgentTermination(
+      storeKey: string,
+      eventContextId: string,
+      conversationId: string,
+      eventRunId: string | null
+    ) {
+      clearActiveAgentRun(storeKey, eventRunId);
       setAgentStatus(storeKey, "idle");
       clearActiveQuestion(eventContextId);
       clearPendingPlan(storeKey);
@@ -254,16 +291,15 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     // instead of clearing to `idle`. The parent's generating state is synthetic — it reflects
     // the child session running. Normal termination events must not clear it prematurely.
     // Uses getState() pattern (not closure-captured values) matching watchdog at line 438.
-    function guardedTermination(storeKey: string, eventContextId: string, conversationId: string) {
-      // Conversation ID validation: ignore stale run_completed/stopped/error events from
-      // previous conversations. Fail-open when activeConvId is null (unmounted panels)
-      // to prevent stuck generating states.
-      const activeConvId = useChatStore.getState().activeConversationIds[storeKey];
-      if (activeConvId != null && conversationId !== activeConvId) {
-        logger.warn(
-          `[AgentEvents] Ignoring stale termination event: conversation_id=${conversationId} does not match active=${activeConvId} for key=${storeKey}`
-        );
-        return;
+    function guardedTermination(
+      storeKey: string,
+      eventContextId: string,
+      conversationId: string,
+      eventRunId: string | null,
+      eventName: string
+    ): boolean {
+      if (shouldIgnoreLifecycleEvent(storeKey, conversationId, eventRunId, eventName)) {
+        return false;
       }
 
       const parsed = parseStoreKey(storeKey);
@@ -272,10 +308,11 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (activeChildId) {
           // Verification child is running — re-assert generating instead of clearing
           setAgentStatus(storeKey, "generating");
-          return;
+          return true;
         }
       }
-      handleAgentTermination(storeKey, eventContextId, conversationId);
+      handleAgentTermination(storeKey, eventContextId, conversationId, eventRunId);
+      return true;
     }
 
     // NOTE: Streaming cache updates disabled per user request.
@@ -311,6 +348,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
         // Set agent as generating for this context
         setAgentStatus(eventContextKey, "generating");
+        setActiveAgentRun(eventContextKey, payload.run_id);
 
         updateConversationProviderMetadata({
           conversationId: conversation_id,
@@ -449,7 +487,20 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           conversation_id
         );
 
-        // Final heartbeat — clears the "stuck" condition before transitioning to idle.
+        const eventRunId = lifecycleRunId(payload);
+        if (
+          !guardedTermination(
+            eventContextKey,
+            eventContextId,
+            conversation_id,
+            eventRunId,
+            "run_completed"
+          )
+        ) {
+          return;
+        }
+
+        // Final heartbeat for accepted terminal events.
         updateLastAgentEvent(eventContextKey);
 
         updateConversationProviderMetadata({
@@ -459,7 +510,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           ...extractConversationProviderMetadataFromRunPayload(payload),
         });
 
-        guardedTermination(eventContextKey, eventContextId, conversation_id);
         handleChildTerminationReverseLink(eventContextId);
         if (context_type === "project") {
           invalidateAgentWorkspacePublishQueries(conversation_id);
@@ -486,6 +536,18 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           eventContextId,
           conversation_id
         );
+
+        const eventRunId = lifecycleRunId(payload);
+        if (
+          shouldIgnoreLifecycleEvent(
+            eventContextKey,
+            conversation_id,
+            eventRunId,
+            "turn_completed"
+          )
+        ) {
+          return;
+        }
 
         // Heartbeat: agent is alive between turns, reset watchdog timer.
         updateLastAgentEvent(eventContextKey);
@@ -604,8 +666,17 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           conversation_id
         );
 
-        guardedTermination(eventContextKey, eventContextId, conversation_id);
-        handleChildTerminationReverseLink(eventContextId);
+        if (
+          guardedTermination(
+            eventContextKey,
+            eventContextId,
+            conversation_id,
+            lifecycleRunId(payload),
+            "stopped"
+          )
+        ) {
+          handleChildTerminationReverseLink(eventContextId);
+        }
         if (context_type === "project") {
           invalidateAgentWorkspacePublishQueries(conversation_id);
         }
@@ -620,6 +691,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         context_type: string;
         context_id: string;
         conversation_id: string;
+        agent_run_id?: string | null;
         error: string;
         teammate_name?: string | null;
       }>("agent:error", (payload) => {
@@ -633,7 +705,17 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           conversation_id
         );
 
-        guardedTermination(eventContextKey, eventContextId, conversation_id);
+        if (
+          !guardedTermination(
+            eventContextKey,
+            eventContextId,
+            conversation_id,
+            lifecycleRunId(payload),
+            "error"
+          )
+        ) {
+          return;
+        }
         handleChildTerminationReverseLink(eventContextId);
         if (context_type === "project") {
           invalidateAgentWorkspacePublishQueries(conversation_id);
@@ -700,7 +782,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, clearActiveQuestion, clearPendingPlan]);
+  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun, clearActiveQuestion, clearPendingPlan]);
 
   // Global singleton watchdog — defense-in-depth for stuck generating state.
   // If the backend misses run_completed for any reason, this forces idle after
