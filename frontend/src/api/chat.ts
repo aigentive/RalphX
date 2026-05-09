@@ -277,6 +277,7 @@ export type AgentSidebarPublicationState =
   | "unpushed";
 
 export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarSort = "latest" | "az" | "za";
 
 export interface AgentSidebarConversationsInput {
   projectIds: string[];
@@ -285,6 +286,7 @@ export interface AgentSidebarConversationsInput {
   search?: string;
   publicationStates?: AgentSidebarPublicationState[];
   groupBy?: AgentSidebarGroupBy;
+  sort?: AgentSidebarSort;
   limitPerGroup?: number;
   offsets?: Record<string, number>;
   pinnedConversationIds?: string[];
@@ -1661,6 +1663,7 @@ export async function listAgentSidebarConversations(
         ...(normalizedSearch ? { search: normalizedSearch } : {}),
         ...(input.publicationStates ? { publicationStates: input.publicationStates } : {}),
         ...(input.groupBy ? { groupBy: input.groupBy } : {}),
+        ...(input.sort ? { sort: input.sort } : {}),
         ...(input.limitPerGroup != null ? { limitPerGroup: input.limitPerGroup } : {}),
         ...(input.offsets ? { offsets: input.offsets } : {}),
         ...(input.pinnedConversationIds

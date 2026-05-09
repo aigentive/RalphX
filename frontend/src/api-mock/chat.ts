@@ -19,6 +19,7 @@ import type {
   AgentSidebarConversationGroupsResponse,
   AgentSidebarConversationsInput,
   AgentSidebarPublicationState,
+  AgentSidebarSort,
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
   SendAgentMessageResult,
@@ -334,16 +335,9 @@ export async function mockListAgentSidebarConversations(
         })
         .filter((row) => publicationStates.includes(row.publicationState))
     )
-    .sort((left, right) => {
-      const pinnedDelta =
-        Number(pinnedConversationIds.has(right.conversation.id)) -
-        Number(pinnedConversationIds.has(left.conversation.id));
-      if (pinnedDelta !== 0) return pinnedDelta;
-      return (
-        new Date(right.conversation.createdAt).getTime() -
-        new Date(left.conversation.createdAt).getTime()
-      );
-    });
+    .sort((left, right) =>
+      compareMockSidebarRows(left, right, input.sort ?? "latest", pinnedConversationIds)
+    );
 
   const groupBy = input.groupBy ?? "project";
   const limit = input.limitPerGroup ?? 6;
@@ -374,6 +368,32 @@ export async function mockListAgentSidebarConversations(
       )
     ),
   };
+}
+
+function compareMockSidebarRows(
+  left: AgentSidebarConversationGroupsResponse["groups"][number]["rows"][number],
+  right: AgentSidebarConversationGroupsResponse["groups"][number]["rows"][number],
+  sort: AgentSidebarSort,
+  pinnedConversationIds: Set<string>
+): number {
+  const pinnedDelta =
+    Number(pinnedConversationIds.has(right.conversation.id)) -
+    Number(pinnedConversationIds.has(left.conversation.id));
+  if (pinnedDelta !== 0) return pinnedDelta;
+
+  if (sort === "az" || sort === "za") {
+    const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
+    const rightTitle = (right.conversation.title ?? "Untitled agent").toLowerCase();
+    const titleDelta = leftTitle.localeCompare(rightTitle);
+    if (titleDelta !== 0) {
+      return sort === "az" ? titleDelta : -titleDelta;
+    }
+  }
+
+  return (
+    new Date(right.conversation.createdAt).getTime() -
+    new Date(left.conversation.createdAt).getTime()
+  );
 }
 
 function buildMockSidebarGroup(

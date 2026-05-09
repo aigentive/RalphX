@@ -23,6 +23,7 @@ pub struct AgentSidebarConversationsInput {
     pub search: Option<String>,
     pub publication_states: Option<Vec<String>>,
     pub group_by: Option<String>,
+    pub sort: Option<String>,
     pub limit_per_group: Option<u32>,
     pub offsets: Option<HashMap<String, u32>>,
     pub pinned_conversation_ids: Option<Vec<String>>,
@@ -66,6 +67,24 @@ impl SidebarGroupBy {
             None | Some("project") => Ok(Self::Project),
             Some("publication") | Some("publication_state") => Ok(Self::Publication),
             Some(value) => Err(format!("invalid sidebar group_by: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarRowSort {
+    Latest,
+    Az,
+    Za,
+}
+
+impl SidebarRowSort {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("latest") => Ok(Self::Latest),
+            Some("az") => Ok(Self::Az),
+            Some("za") => Ok(Self::Za),
+            Some(value) => Err(format!("invalid sidebar sort: {value}")),
         }
     }
 }
@@ -161,6 +180,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     state: &AppState,
 ) -> Result<AgentSidebarConversationGroupsResponse, String> {
     let group_by = SidebarGroupBy::parse(input.group_by.as_deref())?;
+    let row_sort = SidebarRowSort::parse(input.sort.as_deref())?;
     let limit = input
         .limit_per_group
         .unwrap_or(DEFAULT_LIMIT_PER_GROUP)
@@ -252,7 +272,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
         right
             .is_pinned
             .cmp(&left.is_pinned)
-            .then_with(|| right.sort_at.cmp(&left.sort_at))
+            .then_with(|| compare_sidebar_rows(left, right, row_sort))
     });
 
     let offsets = input.offsets.unwrap_or_default();
@@ -262,6 +282,30 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     };
 
     Ok(AgentSidebarConversationGroupsResponse { groups })
+}
+
+fn compare_sidebar_rows(
+    left: &SidebarConversationRow,
+    right: &SidebarConversationRow,
+    sort: SidebarRowSort,
+) -> std::cmp::Ordering {
+    match sort {
+        SidebarRowSort::Latest => right.sort_at.cmp(&left.sort_at),
+        SidebarRowSort::Az => conversation_sort_title(left)
+            .cmp(&conversation_sort_title(right))
+            .then_with(|| right.sort_at.cmp(&left.sort_at)),
+        SidebarRowSort::Za => conversation_sort_title(right)
+            .cmp(&conversation_sort_title(left))
+            .then_with(|| right.sort_at.cmp(&left.sort_at)),
+    }
+}
+
+fn conversation_sort_title(row: &SidebarConversationRow) -> String {
+    row.conversation
+        .title
+        .as_deref()
+        .unwrap_or("Untitled agent")
+        .to_lowercase()
 }
 
 fn normalize_publication_states(
@@ -500,6 +544,7 @@ mod tests {
             search: None,
             publication_states: None,
             group_by: Some("publication".to_string()),
+            sort: None,
             limit_per_group: Some(6),
             offsets: None,
             pinned_conversation_ids: None,
@@ -669,6 +714,39 @@ mod tests {
             response.groups[0].rows[0].conversation.id,
             older.id.as_str()
         );
+    }
+
+    #[tokio::test]
+    async fn publication_grouping_sorts_rows_by_requested_title_order() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let zulu = create_conversation(&state, &project.id, "Zulu merged", now).await;
+        create_workspace(&state, &zulu, &project.id, Some(12), Some("merged"), None).await;
+        let alpha = create_conversation(
+            &state,
+            &project.id,
+            "Alpha merged",
+            now - chrono::Duration::minutes(5),
+        )
+        .await;
+        create_workspace(&state, &alpha, &project.id, Some(11), Some("merged"), None).await;
+
+        let mut input = sidebar_input(&project.id);
+        input.publication_states = Some(vec!["merged".to_string()]);
+        input.sort = Some("az".to_string());
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(response.groups.len(), 1);
+        assert_eq!(response.groups[0].rows.len(), 2);
+        assert_eq!(
+            response.groups[0].rows[0].conversation.id,
+            alpha.id.as_str()
+        );
+        assert_eq!(response.groups[0].rows[1].conversation.id, zulu.id.as_str());
     }
 
     #[tokio::test]

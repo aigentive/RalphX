@@ -5,6 +5,7 @@ import {
   type AgentSidebarConversationGroup,
   type AgentSidebarPublicationState,
   type AgentSidebarGroupBy,
+  type AgentSidebarSort,
 } from "@/api/chat";
 
 const AGENT_SIDEBAR_GROUP_PAGE_SIZE = 6;
@@ -16,7 +17,8 @@ export const agentSidebarConversationKeys = {
     publicationState: AgentSidebarPublicationState,
     archivedOnly: boolean,
     search = "",
-    pinnedConversationIds: string[] = []
+    pinnedConversationIds: string[] = [],
+    sort: AgentSidebarSort = "latest"
   ) =>
     [
       ...agentSidebarConversationKeys.all,
@@ -30,6 +32,8 @@ export const agentSidebarConversationKeys = {
       search.trim().toLowerCase(),
       "pinned",
       pinnedConversationIds,
+      "sort",
+      sort,
     ] as const,
   projectGroup: (
     projectId: string | null | undefined,
@@ -59,6 +63,7 @@ export function useAgentSidebarPublicationGroup({
   archivedOnly,
   search,
   pinnedConversationIds,
+  sort,
   enabled = true,
 }: {
   projectIds: string[];
@@ -66,6 +71,7 @@ export function useAgentSidebarPublicationGroup({
   archivedOnly: boolean;
   search: string;
   pinnedConversationIds: string[];
+  sort: AgentSidebarSort;
   enabled?: boolean;
 }) {
   return useAgentSidebarGroup({
@@ -76,13 +82,15 @@ export function useAgentSidebarPublicationGroup({
     search,
     publicationStates: [publicationState],
     pinnedConversationIds,
+    sort,
     enabled,
     queryKey: agentSidebarConversationKeys.publicationGroup(
       projectIds,
       publicationState,
       archivedOnly,
       search,
-      pinnedConversationIds
+      pinnedConversationIds,
+      sort
     ),
   });
 }
@@ -129,6 +137,7 @@ function useAgentSidebarGroup({
   search,
   publicationStates,
   pinnedConversationIds,
+  sort,
   enabled,
   queryKey,
 }: {
@@ -139,6 +148,7 @@ function useAgentSidebarGroup({
   search: string;
   publicationStates: AgentSidebarPublicationState[];
   pinnedConversationIds: string[];
+  sort?: AgentSidebarSort;
   enabled: boolean;
   queryKey: readonly unknown[];
 }) {
@@ -153,6 +163,7 @@ function useAgentSidebarGroup({
         ...(normalizedSearch ? { search: normalizedSearch } : {}),
         publicationStates,
         groupBy,
+        ...(sort ? { sort } : {}),
         limitPerGroup: AGENT_SIDEBAR_GROUP_PAGE_SIZE,
         offsets: { [groupKey]: pageParam },
         pinnedConversationIds,

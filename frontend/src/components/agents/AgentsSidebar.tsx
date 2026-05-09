@@ -99,6 +99,17 @@ const PROJECT_SORT_LABELS: Record<AgentProjectSort, string> = {
   za: "Z-A",
 };
 
+function afterSidebarControlPaint(callback: () => void) {
+  if (typeof window === "undefined") {
+    callback();
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    window.setTimeout(callback, 0);
+  });
+}
+
 const STATIC_RECENT_RUNS = [
   {
     title: "Add ranking to reefbot homepage",
@@ -414,6 +425,7 @@ export function AgentsSidebar({
             projects={orderedProjects}
             priorityConversationIds={priorityConversationIds}
             pinnedConversationIds={pinnedConversationIds}
+            rowSort={projectSort}
             selectedConversationId={selectedConversationId}
             searchQuery={normalizedSearch}
             selectedPublicationStates={selectedPublicationStates}
@@ -520,6 +532,7 @@ function AgentsSidebarToolbar({
   totalArchivedCount,
   onShowArchivedChange,
 }: AgentsSidebarToolbarProps) {
+  const sortTarget = sidebarGroupBy === "project" ? "projects" : "conversations";
   const ensureScopedProjectSelection = () => {
     if (selectedProjectFilterSet.size > 0) {
       return;
@@ -558,6 +571,11 @@ function AgentsSidebarToolbar({
     toggleSidebarProjectFilter(projectId);
   };
 
+  const handleSortChange = (value: string) => {
+    const nextSort = value as AgentProjectSort;
+    afterSidebarControlPaint(() => setProjectSort(nextSort));
+  };
+
   return (
     <div
       className="mb-2 flex h-8 shrink-0 items-center gap-1 px-3"
@@ -568,7 +586,7 @@ function AgentsSidebarToolbar({
         backgroundColor: "var(--bg-surface)",
       }}
     >
-      <Popover>
+      <Popover modal={false}>
         <PopoverTrigger asChild>
           <button
             type="button"
@@ -728,12 +746,12 @@ function AgentsSidebarToolbar({
         </PopoverContent>
       </Popover>
 
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             data-testid="agents-sort-trigger"
-            aria-label={`Sort projects: ${PROJECT_SORT_LABELS[projectSort]}`}
+            aria-label={`Sort ${sortTarget}: ${PROJECT_SORT_LABELS[projectSort]}`}
             className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
             style={{
               backgroundColor: "transparent",
@@ -749,7 +767,7 @@ function AgentsSidebarToolbar({
         <DropdownMenuContent align="start" className="min-w-[120px]">
           <DropdownMenuRadioGroup
             value={projectSort}
-            onValueChange={(value) => setProjectSort(value as AgentProjectSort)}
+            onValueChange={handleSortChange}
           >
             {(["latest", "az", "za"] as AgentProjectSort[]).map((sort) => (
               <DropdownMenuRadioItem key={sort} value={sort} className="text-xs">
@@ -876,6 +894,7 @@ interface PublicationStateGroupsProps {
   projects: Project[];
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
+  rowSort: AgentProjectSort;
   selectedConversationId: string | null;
   searchQuery: string;
   selectedPublicationStates: AgentSidebarPublicationState[];
@@ -891,6 +910,7 @@ function PublicationStateGroups({
   projects,
   priorityConversationIds,
   pinnedConversationIds,
+  rowSort,
   selectedConversationId,
   searchQuery,
   selectedPublicationStates,
@@ -927,6 +947,7 @@ function PublicationStateGroups({
           priorityConversationIds={priorityConversationIds}
           pinnedConversationIds={pinnedConversationIds}
           publicationState={publicationState}
+          rowSort={rowSort}
           searchQuery={searchQuery}
           selectedConversationId={selectedConversationId}
           showArchived={showArchived}
@@ -950,6 +971,7 @@ interface PublicationStateGroupProps {
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   publicationState: AgentSidebarPublicationState;
+  rowSort: AgentProjectSort;
   searchQuery: string;
   selectedConversationId: string | null;
   showArchived: boolean;
@@ -970,6 +992,7 @@ function PublicationStateGroup({
   priorityConversationIds,
   pinnedConversationIds,
   publicationState,
+  rowSort,
   searchQuery,
   selectedConversationId,
   showArchived,
@@ -991,6 +1014,7 @@ function PublicationStateGroup({
     archivedOnly: showArchived,
     search: searchQuery,
     pinnedConversationIds: priorityConversationIds,
+    sort: rowSort,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
@@ -1394,7 +1418,7 @@ function AgentSessionRow({
           />
         </span>
       </button>
-      <DropdownMenu onOpenChange={onActionsOpenChange}>
+      <DropdownMenu modal={false} onOpenChange={onActionsOpenChange}>
         <DropdownMenuTrigger asChild>
           <Button
             ref={setActionsTriggerRef}
@@ -1624,6 +1648,7 @@ function ProjectSessionGroup({
               onClick={(event) => event.stopPropagation()}
             >
               <DropdownMenu
+                modal={false}
                 onOpenChange={(open) => {
                   setProjectActionsOpen(open);
                   if (!open) {

@@ -53,6 +53,7 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
     archivedOnly: boolean;
     search: string;
     pinnedConversationIds: string[];
+    sort: string;
   }>,
 }));
 
@@ -136,6 +137,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
     search,
     publicationStates,
     pinnedConversationIds,
+    sort = "latest",
     total,
     hasNextPage,
     isFetchingNextPage,
@@ -149,6 +151,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
     search: string;
     publicationStates: string[];
     pinnedConversationIds: string[];
+    sort?: string;
     total?: number;
     hasNextPage?: boolean;
     isFetchingNextPage?: boolean;
@@ -215,6 +218,12 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
           Number(pinnedIds.has(right.conversation.id)) -
           Number(pinnedIds.has(left.conversation.id));
         if (pinnedDelta !== 0) return pinnedDelta;
+        if (sort === "az" || sort === "za") {
+          const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
+          const rightTitle = (right.conversation.title ?? "Untitled agent").toLowerCase();
+          const titleDelta = leftTitle.localeCompare(rightTitle);
+          if (titleDelta !== 0) return sort === "az" ? titleDelta : -titleDelta;
+        }
         return (
           new Date(right.conversation.createdAt).getTime() -
           new Date(left.conversation.createdAt).getTime()
@@ -245,12 +254,14 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       archivedOnly,
       search,
       pinnedConversationIds,
+      sort,
     }: {
       projectIds: string[];
       publicationState: string;
       archivedOnly: boolean;
       search: string;
       pinnedConversationIds: string[];
+      sort: string;
     }) => {
       publicationGroupCalls.push({
         projectIds,
@@ -258,6 +269,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         archivedOnly,
         search,
         pinnedConversationIds,
+        sort,
       });
       return buildGroupResult({
         projectIds,
@@ -267,6 +279,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         search,
         publicationStates: [publicationState],
         pinnedConversationIds,
+        sort,
       });
     },
     useAgentSidebarProjectGroup: ({
@@ -400,6 +413,12 @@ function renderSidebar(
 function getProjectRowOrder() {
   return screen
     .getAllByTestId((testId) => testId.startsWith("agents-project-project-"))
+    .map((row) => row.getAttribute("data-testid"));
+}
+
+function getSessionRowOrder() {
+  return screen
+    .getAllByTestId((testId) => testId.startsWith("agents-session-conversation-"))
     .map((row) => row.getAttribute("data-testid"));
 }
 
@@ -932,6 +951,10 @@ describe("AgentsSidebar", () => {
     );
     expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
     expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
+    expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
+      "aria-label",
+      "Sort projects: Latest"
+    );
     expect(
       screen.getByTestId("agents-filters-trigger").compareDocumentPosition(
         screen.getByTestId("agents-sort-trigger")
@@ -941,6 +964,11 @@ describe("AgentsSidebar", () => {
 
     await user.click(screen.getByTestId("agents-filters-trigger"));
     expect(screen.getByTestId("agents-filter-group-by")).toHaveTextContent("Project");
+    await user.click(screen.getByRole("radio", { name: "Publication state" }));
+    expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
+      "aria-label",
+      "Sort conversations: Latest"
+    );
 
     await user.click(
       screen.getByTestId("agents-filter-projects-section-trigger")
@@ -1068,6 +1096,26 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filters-trigger")).toBeInTheDocument();
   });
 
+  it("opens the sort dropdown synchronously with a selected conversation", () => {
+    const conv = conversation({ id: "conversation-selected", title: "Selected run" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { selectedConversationId: conv.id });
+
+    fireEvent.pointerDown(screen.getByTestId("agents-sort-trigger"), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(screen.getByRole("menuitemradio", { name: "Latest" })).toBeInTheDocument();
+  });
+
   it("preserves incoming project order for latest sort and can sort projects alphabetically", async () => {
     const user = userEvent.setup();
     const alpha = project({ id: "project-1", name: "alpha" });
@@ -1098,11 +1146,64 @@ describe("AgentsSidebar", () => {
     await user.click(screen.getByTestId("agents-sort-trigger"));
     await user.click(screen.getByRole("menuitemradio", { name: "A-Z" }));
 
-    expect(useAgentSessionStore.getState().projectSort).toBe("az");
-    expect(getProjectRowOrder()).toEqual([
-      "agents-project-project-1",
-      "agents-project-project-2",
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().projectSort).toBe("az")
+    );
+    await waitFor(() =>
+      expect(getProjectRowOrder()).toEqual([
+        "agents-project-project-1",
+        "agents-project-project-2",
+      ])
+    );
+  });
+
+  it("uses sort for conversations inside publication-state groups", async () => {
+    const user = userEvent.setup();
+    const zulu = conversation({
+      id: "conversation-zulu",
+      title: "Zulu task",
+      createdAt: "2026-05-02T10:00:00Z",
+    });
+    const alpha = conversation({
+      id: "conversation-alpha",
+      title: "Alpha task",
+      createdAt: "2026-05-01T10:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [alpha, zulu],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByRole("radio", { name: "Publication state" }));
+
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-zulu",
+      "agents-session-conversation-alpha",
     ]);
+
+    await user.click(screen.getByTestId("agents-sort-trigger"));
+    await user.click(screen.getByRole("menuitemradio", { name: "A-Z" }));
+
+    await waitFor(() =>
+      expect(getSessionRowOrder()).toEqual([
+        "agents-session-conversation-alpha",
+        "agents-session-conversation-zulu",
+      ])
+    );
+    expect(publicationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          publicationState: "active",
+          sort: "az",
+        }),
+      ])
+    );
   });
 
   it("keeps project actions visible while open and confirms before archiving", () => {
