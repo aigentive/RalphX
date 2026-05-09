@@ -482,6 +482,7 @@ fn escape_xml_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::pin::Pin;
     use std::process::Command;
 
@@ -951,6 +952,115 @@ mod tests {
         assert!(
             codex_pr_describer_overrides_expose_submit_tool(&complete_surface),
             "preflight should accept Codex surfaces exposing the submit tool in both layers"
+        );
+    }
+
+    #[test]
+    fn pr_describer_submit_tool_preflight_skips_non_codex_harnesses() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+
+        ensure_pr_describer_submit_tool_available(AgentHarnessKind::Claude, dir.path())
+            .expect("Claude PR describer should not require Codex submit-tool preflight");
+    }
+
+    #[test]
+    fn codex_pr_describer_prompt_contract_rejects_missing_or_invalid_prompt() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let root = dir.path();
+        let plugin_dir = root.join("plugins/app");
+        let agent_root = root.join("agents").join(agent_names::SHORT_PR_DESCRIBER);
+        let shared_prompt_dir = agent_root.join("shared");
+        fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        fs::create_dir_all(&shared_prompt_dir).expect("create shared prompt dir");
+        fs::write(
+            agent_root.join("agent.yaml"),
+            format!("name: {}\nrole: utility\n", agent_names::SHORT_PR_DESCRIBER),
+        )
+        .expect("write agent definition");
+
+        let error = ensure_codex_pr_describer_prompt_contract(&plugin_dir)
+            .expect_err("missing prompt should fail preflight")
+            .to_string();
+        assert!(
+            error.contains("prompt contract is missing"),
+            "unexpected missing-prompt error: {error}"
+        );
+
+        fs::write(
+            shared_prompt_dir.join("prompt.md"),
+            "Draft a reviewer-focused PR description.",
+        )
+        .expect("write prompt without submit tool");
+        let error = ensure_codex_pr_describer_prompt_contract(&plugin_dir)
+            .expect_err("prompt without submit tool should fail preflight")
+            .to_string();
+        assert!(
+            error.contains("does not mention required tool"),
+            "unexpected invalid-prompt error: {error}"
+        );
+
+        fs::write(
+            shared_prompt_dir.join("prompt.md"),
+            format!("Call `{PR_DESCRIBER_SUBMIT_TOOL}` with the final PR body."),
+        )
+        .expect("write prompt with submit tool");
+        ensure_codex_pr_describer_prompt_contract(&plugin_dir)
+            .expect("prompt with submit tool should satisfy preflight");
+    }
+
+    #[test]
+    fn pr_describer_missing_submission_error_preserves_raw_output_without_tool_hint() {
+        let output = AgentOutput::success("Generated a body but did not call the submit tool.");
+
+        let error = pr_describer_missing_submission_error(&output).to_string();
+
+        assert!(
+            error.contains("completed without submitting a PR description"),
+            "generic no-submit output should keep the workflow failure classification: {error}"
+        );
+        assert!(
+            error.contains("Raw output: Generated a body"),
+            "generic no-submit output should still preserve raw diagnostics: {error}"
+        );
+    }
+
+    #[test]
+    fn pr_describer_missing_submission_error_omits_raw_section_for_empty_output() {
+        let output = AgentOutput::success("   \n");
+
+        let error = pr_describer_missing_submission_error(&output).to_string();
+
+        assert!(
+            error.contains("completed without submitting a PR description"),
+            "empty no-submit output should keep the workflow failure classification: {error}"
+        );
+        assert!(
+            !error.contains("Raw output:"),
+            "empty no-submit output should not add an empty raw diagnostics suffix: {error}"
+        );
+    }
+
+    #[test]
+    fn pr_describer_tool_unavailable_detector_accepts_observed_wording() {
+        for output in [
+            format!(
+                "I can't submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` is not available in this session's tools."
+            ),
+            format!(
+                "I cannot submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` was unavailable."
+            ),
+        ] {
+            assert!(
+                pr_describer_output_reports_missing_submit_tool(&output),
+                "observed tool-unavailable wording should be classified: {output}"
+            );
+        }
+
+        assert!(
+            !pr_describer_output_reports_missing_submit_tool(
+                "I drafted the PR description but forgot to submit it."
+            ),
+            "generic no-submit output should not be upgraded to infrastructure"
         );
     }
 

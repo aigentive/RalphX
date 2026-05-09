@@ -755,7 +755,14 @@ fn symlink_path(source: &Path, target: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generated_plugin_dir_for_base_with_override, trusted_generated_plugin_child_path};
+    use super::{
+        ensure_symlink, expected_runtime_entry_source, generated_plugin_dir_for_base_with_override,
+        generated_plugin_dir_has_only_managed_entries, generated_plugin_dir_is_current,
+        prune_unmanaged_generated_plugin_entries, trusted_existing_generated_plugin_top_level_path,
+        trusted_generated_plugin_child_path, EXTERNAL_MCP_SERVER_DIR, GENERATED_AGENTS_DIR,
+        GENERATED_PLUGIN_ENTRY_NAMES, INTERNAL_MCP_SERVER_DIR,
+    };
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -767,6 +774,141 @@ mod tests {
         );
 
         assert_eq!(resolved, PathBuf::from(&override_dir));
+    }
+
+    #[test]
+    fn generated_plugin_dir_uses_debug_repo_artifact_path_without_override() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let root = dir.path();
+        let base_plugin_dir = root.join("plugins/app");
+        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
+
+        let resolved = generated_plugin_dir_for_base_with_override(&base_plugin_dir, None);
+
+        assert_eq!(resolved, root.join(".artifacts/generated/claude-plugin"));
+    }
+
+    #[test]
+    fn expected_runtime_entry_source_uses_fallback_only_for_runnable_entries() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let fallback_plugin_dir = dir.path().join("fallback/plugins/app");
+        fs::create_dir_all(fallback_plugin_dir.join(INTERNAL_MCP_SERVER_DIR))
+            .expect("create fallback internal mcp dir");
+
+        assert_eq!(
+            expected_runtime_entry_source(
+                &base_plugin_dir,
+                &fallback_plugin_dir,
+                INTERNAL_MCP_SERVER_DIR,
+            ),
+            fallback_plugin_dir.join(INTERNAL_MCP_SERVER_DIR)
+        );
+        assert_eq!(
+            expected_runtime_entry_source(
+                &base_plugin_dir,
+                &fallback_plugin_dir,
+                EXTERNAL_MCP_SERVER_DIR,
+            ),
+            base_plugin_dir.join(EXTERNAL_MCP_SERVER_DIR),
+            "missing fallback runtime entry should keep the base plugin source"
+        );
+        assert_eq!(
+            expected_runtime_entry_source(&base_plugin_dir, &fallback_plugin_dir, ".mcp.json"),
+            base_plugin_dir.join(".mcp.json"),
+            "non-runnable entries should always preserve the base plugin surface"
+        );
+    }
+
+    fn seed_generated_runtime_links(base_plugin_dir: &Path, generated_dir: &Path) {
+        fs::create_dir_all(generated_dir.join(GENERATED_AGENTS_DIR))
+            .expect("create generated agents dir");
+        for entry_name in GENERATED_PLUGIN_ENTRY_NAMES {
+            ensure_symlink(
+                &base_plugin_dir.join(entry_name),
+                &generated_dir.join(entry_name),
+            )
+            .expect("seed generated runtime symlink");
+        }
+    }
+
+    #[test]
+    fn generated_plugin_dir_current_validation_rejects_dirty_or_stale_shapes() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing generated agents dir should be inspectable"));
+
+        seed_generated_runtime_links(&base_plugin_dir, &generated_dir);
+        assert!(generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("clean generated dir should be inspectable"));
+
+        fs::write(generated_dir.join(".cache"), "stale dev cache").expect("write unmanaged entry");
+        assert!(
+            !generated_plugin_dir_has_only_managed_entries(&generated_dir)
+                .expect("unmanaged entry should be inspectable")
+        );
+        prune_unmanaged_generated_plugin_entries(&generated_dir)
+            .expect("prune unmanaged generated entry");
+        assert!(
+            generated_plugin_dir_has_only_managed_entries(&generated_dir)
+                .expect("managed entries should be inspectable after prune")
+        );
+
+        fs::remove_file(generated_dir.join(INTERNAL_MCP_SERVER_DIR))
+            .expect("remove managed runtime symlink");
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing runtime symlink should be inspectable"));
+        ensure_symlink(
+            &dir.path()
+                .join("stale/plugins/app")
+                .join(INTERNAL_MCP_SERVER_DIR),
+            &generated_dir.join(INTERNAL_MCP_SERVER_DIR),
+        )
+        .expect("seed stale runtime symlink");
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("stale runtime symlink should be inspectable"));
+    }
+
+    #[test]
+    fn trusted_existing_generated_plugin_top_level_path_rejects_nested_entries() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let generated_root = dir.path().canonicalize().expect("canonical temp dir");
+        let top_level = generated_root.join(".cache");
+        let nested_parent = generated_root.join("agents");
+        fs::create_dir_all(&nested_parent).expect("create nested parent");
+
+        assert_eq!(
+            trusted_existing_generated_plugin_top_level_path(&generated_root, &top_level)
+                .expect("top-level generated entry should be accepted"),
+            top_level
+        );
+        assert!(trusted_existing_generated_plugin_top_level_path(
+            &generated_root,
+            &nested_parent.join("nested.md"),
+        )
+        .expect_err("nested generated entry should be rejected")
+        .contains("outside"));
     }
 
     #[test]
