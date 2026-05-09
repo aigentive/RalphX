@@ -6,7 +6,8 @@ pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
     standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings,
-    LogicalEffort,
+    LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
@@ -76,6 +77,7 @@ pub struct ClaudeRuntimeConfig {
     pub mcp_server_name: String,
     pub permission_mode: String,
     pub dangerously_skip_permissions: bool,
+    pub allow_dangerously_skip_permissions: bool,
     pub permission_prompt_tool: String,
     pub use_append_system_prompt_file: bool,
     pub setting_sources: Option<Vec<String>>,
@@ -190,6 +192,7 @@ struct ClaudeRuntimeConfigRaw {
     setting_sources: Option<Vec<String>>,
     permission_mode: String,
     dangerously_skip_permissions: bool,
+    allow_dangerously_skip_permissions: bool,
     permission_prompt_tool: String,
     append_system_prompt_file: bool,
     /// Optional profile selector for claude settings (`settings_profiles.<name>`).
@@ -211,8 +214,9 @@ impl Default for ClaudeRuntimeConfigRaw {
         Self {
             mcp_server_name: "ralphx".to_string(),
             setting_sources: None,
-            permission_mode: "default".to_string(),
-            dangerously_skip_permissions: false,
+            permission_mode: CLAUDE_DEFAULT_PERMISSION_MODE.to_string(),
+            dangerously_skip_permissions: CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
+            allow_dangerously_skip_permissions: CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
             permission_prompt_tool: "permission_request".to_string(),
             append_system_prompt_file: true,
             settings_profile: None,
@@ -274,6 +278,7 @@ struct ClaudeRuntimeConfigOverlay {
     setting_sources: Option<Vec<String>>,
     permission_mode: Option<String>,
     dangerously_skip_permissions: Option<bool>,
+    allow_dangerously_skip_permissions: Option<bool>,
     permission_prompt_tool: Option<String>,
     append_system_prompt_file: Option<bool>,
     settings_profile: Option<String>,
@@ -451,6 +456,9 @@ fn apply_claude_runtime_config_overlay(
     }
     if let Some(dangerously_skip_permissions) = overlay.dangerously_skip_permissions {
         cfg.dangerously_skip_permissions = dangerously_skip_permissions;
+    }
+    if let Some(allow_dangerously_skip_permissions) = overlay.allow_dangerously_skip_permissions {
+        cfg.allow_dangerously_skip_permissions = allow_dangerously_skip_permissions;
     }
     if let Some(permission_prompt_tool) = overlay.permission_prompt_tool {
         cfg.permission_prompt_tool = permission_prompt_tool;
@@ -1109,6 +1117,7 @@ fn resolve_loaded_config_with_lookup(
         setting_sources: parsed.claude.setting_sources,
         permission_mode: parsed.claude.permission_mode,
         dangerously_skip_permissions: parsed.claude.dangerously_skip_permissions,
+        allow_dangerously_skip_permissions: parsed.claude.allow_dangerously_skip_permissions,
         permission_prompt_tool: normalize_mcp_tool_name(
             &parsed.claude.permission_prompt_tool,
             &parsed.claude.mcp_server_name,
@@ -1599,8 +1608,10 @@ fn load_config() -> LoadedConfig {
                 claude: ClaudeRuntimeConfig {
                     mcp_server_name: "ralphx".to_string(),
                     setting_sources: None,
-                    permission_mode: "default".to_string(),
-                    dangerously_skip_permissions: false,
+                    permission_mode: CLAUDE_DEFAULT_PERMISSION_MODE.to_string(),
+                    dangerously_skip_permissions: CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
+                    allow_dangerously_skip_permissions:
+                        CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
                     permission_prompt_tool: "mcp__ralphx__permission_request".to_string(),
                     use_append_system_prompt_file: true,
                     settings: None,

@@ -129,11 +129,23 @@ pub(crate) async fn validate_chat_runtime_for_context_with_override(
     surface_name: &str,
     harness_override: Option<AgentHarnessKind>,
 ) -> Result<(), String> {
+    crate::application::resolve_enabled_default_provider(
+        &state.agent_provider_settings_repo,
+        surface_name,
+    )
+    .await?;
+
     let availability =
         resolve_context_runtime_availability(state, context_type, context_id, harness_override)
             .await;
 
     if availability.available {
+        crate::application::ensure_provider_spawn_enabled(
+            &state.agent_provider_settings_repo,
+            availability.effective_harness,
+            surface_name,
+        )
+        .await?;
         Ok(())
     } else {
         let error = availability.error.clone().unwrap_or_else(|| {
@@ -179,7 +191,7 @@ async fn resolve_context_runtime_availability(
     }
 
     let Some(lane) = runtime_lane_for_context(context_type) else {
-        return build_default_harness_availability();
+        return build_default_harness_availability(state).await;
     };
 
     let project_id = project_id_for_context(state, context_type, context_id).await;
@@ -202,12 +214,24 @@ pub(crate) fn build_harness_override_availability(
     )
 }
 
-fn build_default_harness_availability() -> LaneHarnessAvailability {
-    let probe = probe_default_harness();
+async fn build_default_harness_availability(state: &AppState) -> LaneHarnessAvailability {
+    let harness = crate::application::resolve_enabled_default_provider(
+        &state.agent_provider_settings_repo,
+        "default chat runtime",
+    )
+    .await
+    .map(|settings| settings.provider)
+    .unwrap_or(DEFAULT_AGENT_HARNESS);
+    let probe = if harness == DEFAULT_AGENT_HARNESS {
+        probe_default_harness()
+    } else {
+        let probes = probe_supported_harnesses();
+        probe_for_harness(&probes, harness)
+    };
     LaneHarnessAvailability {
         lane: AgentLane::IdeationPrimary,
         configured_harness: None,
-        effective_harness: DEFAULT_AGENT_HARNESS,
+        effective_harness: harness,
         binary_path: probe.binary_path.clone(),
         binary_found: probe.binary_found,
         probe_succeeded: probe.probe_succeeded,

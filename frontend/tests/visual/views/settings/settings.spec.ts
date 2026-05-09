@@ -3,11 +3,12 @@ import { SettingsPage } from "../../../pages/settings.page";
 import { setupSettings } from "../../../fixtures/setup.fixtures";
 
 const SETTINGS_SECTION_VISUALS = [
+  { id: "providers", heading: "Providers" },
+  { id: "models", heading: "Models" },
   { id: "repository", heading: "Repository" },
   { id: "project-analysis", heading: "Setup & Validation" },
   { id: "execution", heading: "Execution" },
   { id: "execution-harnesses", heading: "Execution Pipeline Agents" },
-  { id: "models", heading: "Models" },
   { id: "global-execution", heading: "Global Capacity" },
   { id: "review", heading: "Review Policy" },
   { id: "ideation-workflow", heading: "Planning & Verification" },
@@ -28,7 +29,7 @@ test.describe("Settings Dialog", () => {
   test("renders settings dialog layout", async () => {
     await expect(settingsPage.settingsDialog).toBeVisible();
     await expect(settingsPage.settingsTitle).toBeVisible();
-    await settingsPage.waitForSection("repository", "Repository");
+    await settingsPage.waitForSection("providers", "Providers");
   });
 
   test("renders above the underlying view (modal overlay)", async ({ page }) => {
@@ -108,6 +109,7 @@ test.describe("Settings Dialog", () => {
     });
     await setupSettings(page);
     settingsPage = new SettingsPage(page);
+    await settingsPage.openViaStore("repository");
     await settingsPage.waitForSection("repository", "Repository");
 
     const repairPanel = page.getByTestId("git-auth-repair-panel");

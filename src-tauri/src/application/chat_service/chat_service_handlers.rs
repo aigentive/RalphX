@@ -343,6 +343,10 @@ fn build_runtime_factory_deps<R: Runtime>(
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo)),
+        app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
         plan_branch_repo,
         interactive_process_registry,
     )

@@ -22,9 +22,19 @@ test.describe("WelcomeScreen Visual Tests", () => {
     // Verify all key elements are present
     await expect(welcomeScreenPage.container).toBeVisible();
     await expect(welcomeScreenPage.title).toContainText("RalphX");
-    await expect(welcomeScreenPage.tagline).toContainText("Describe it. Ship it.");
+    await expect(welcomeScreenPage.tagline).toContainText(
+      "The best way to ship software with AI",
+    );
+    await expect(page.getByTestId("welcome-provider-step")).toHaveAttribute(
+      "data-status",
+      "complete",
+    );
+    await expect(page.getByTestId("welcome-project-step")).toHaveAttribute(
+      "data-status",
+      "complete",
+    );
     await expect(welcomeScreenPage.createProjectButton).toBeVisible();
-    await expect(welcomeScreenPage.keyboardHint).toBeVisible();
+    await expect(welcomeScreenPage.keyboardHint).toBeHidden();
 
     // Close button should be visible (manually opened)
     await expect(welcomeScreenPage.closeButton).toBeVisible();
@@ -57,10 +67,12 @@ test.describe("WelcomeScreen Visual Tests", () => {
     });
   });
 
-  test("should display create project button with correct styling", async ({ page }) => {
+  test("should display primary action button with correct styling", async ({ page }) => {
     // Verify button is visible and has correct text
     await expect(welcomeScreenPage.createProjectButton).toBeVisible();
-    await expect(welcomeScreenPage.createProjectButton).toContainText("Start Your First Project");
+    await expect(welcomeScreenPage.createProjectButton).toContainText(
+      /Start Your First Project|Continue/,
+    );
 
     // Hover over button to check hover state
     await welcomeScreenPage.createProjectButton.hover();
@@ -70,10 +82,8 @@ test.describe("WelcomeScreen Visual Tests", () => {
     });
   });
 
-  test("should show keyboard shortcut hint", async ({ page }) => {
-    // Verify keyboard hint is visible
-    await expect(welcomeScreenPage.keyboardHint).toBeVisible();
-    await expect(welcomeScreenPage.keyboardHint).toContainText("⌘N");
+  test("should hide project shortcut hint when projects already exist", async ({ page }) => {
+    await expect(welcomeScreenPage.keyboardHint).toBeHidden();
 
     await expect(page).toHaveScreenshot("welcome-screen-keyboard-hint.png", {
       fullPage: true,

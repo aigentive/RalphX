@@ -327,9 +327,12 @@ mod v20260505090000_agent_model_registry_tests;
 mod v20260506131356_agent_workspace_pr_descriptions;
 #[cfg(test)]
 mod v20260506131356_agent_workspace_pr_descriptions_tests;
+mod v20260508103000_agent_provider_settings;
+#[cfg(test)]
+mod v20260508103000_agent_provider_settings_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260506131356;
+pub const SCHEMA_VERSION: i64 = 20260508103000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -933,6 +936,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260506131356,
         name: "agent_workspace_pr_descriptions",
         migrate: v20260506131356_agent_workspace_pr_descriptions::migrate,
+    },
+    Migration {
+        version: 20260508103000,
+        name: "agent_provider_settings",
+        migrate: v20260508103000_agent_provider_settings::migrate,
     },
 ];
 

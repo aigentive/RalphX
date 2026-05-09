@@ -21,6 +21,9 @@ pub enum AgentHarnessKind {
 pub const DEFAULT_AGENT_HARNESS: AgentHarnessKind = AgentHarnessKind::Claude;
 pub const STANDARD_AGENT_HARNESSES: [AgentHarnessKind; 2] =
     [AgentHarnessKind::Claude, AgentHarnessKind::Codex];
+pub const CLAUDE_DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
+pub const CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS: bool = true;
+pub const CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS: bool = false;
 pub const CODEX_DEFAULT_APPROVAL_POLICY: &str = "never";
 pub const CODEX_DEFAULT_SANDBOX_MODE: &str = "danger-full-access";
 

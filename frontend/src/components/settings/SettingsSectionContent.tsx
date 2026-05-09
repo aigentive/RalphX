@@ -5,6 +5,11 @@ import type { ProjectSettings } from "@/types/settings";
 import type { SettingsSectionId } from "./settings-registry";
 
 const LazyExecutionSection = lazy(() => import("./sections/ExecutionSection"));
+const LazyHarnessProvidersSection = lazy(() =>
+  import("./HarnessProvidersSection").then((module) => ({
+    default: module.HarnessProvidersSection,
+  })),
+);
 const LazyExecutionHarnessSection = lazy(() =>
   import("./IdeationHarnessSection").then((module) => ({
     default: module.ExecutionHarnessSection,
@@ -105,6 +110,7 @@ export function SettingsSectionContent({
             disabled={disabled}
           />
         ) : null)}
+      {section === "providers" && <LazyHarnessProvidersSection />}
       {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
