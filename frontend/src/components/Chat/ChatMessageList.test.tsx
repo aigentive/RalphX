@@ -1335,6 +1335,44 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
     });
 
+    it("renders live text metadata after each streaming text block before the typing indicator", () => {
+      const blocks: StreamingContentBlock[] = [
+        { type: "text", text: "First live paragraph." },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-1", name: GENERIC_TOOL_NAME, arguments: { url: "https://example.com" }, result: "content" },
+        },
+        { type: "text", text: "Second live paragraph." },
+      ];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isAgentRunning={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      const metadataRows = screen.getAllByTestId("message-meta");
+      const copyButtons = screen.getAllByTestId("message-copy-button");
+      const typingIndicator = screen.getByTestId("chat-typing-indicator");
+      const liveAssistantRow = screen
+        .getByText("First live paragraph.")
+        .closest('[data-chat-message-item="true"]');
+
+      expect(metadataRows).toHaveLength(2);
+      expect(copyButtons).toHaveLength(2);
+      expect(liveAssistantRow).toBeInTheDocument();
+      expect(typingIndicator.closest('[data-chat-message-item="true"]')).toBeNull();
+      expect(metadataRows[0]).toHaveTextContent(/just now/i);
+      expect(metadataRows[1]).toHaveTextContent(/just now/i);
+      expect(screen.getByText("First live paragraph.").compareDocumentPosition(metadataRows[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(metadataRows[0]!.compareDocumentPosition(screen.getByTestId("tool-call-indicator")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getByText("Second live paragraph.").compareDocumentPosition(metadataRows[1]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(metadataRows[1]!.compareDocumentPosition(typingIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it("renders multiple non-diff tool calls in order", () => {
       const blocks: StreamingContentBlock[] = [
         {
@@ -1433,7 +1471,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
       );
 
       expect(screen.getByText("Actual content here")).toBeInTheDocument();
-      // Only one MessageItem is rendered from the one non-empty block.
+      // Only the one non-empty text block receives live message metadata.
       expect(container.querySelectorAll('[data-testid="message-meta"]')).toHaveLength(1);
     });
   });
@@ -2171,17 +2209,24 @@ describe("ChatMessageList - Scroll Behavior", () => {
     const GENERIC = "webfetch";
 
     it("(1) agent running + no data → shows TypingIndicator", () => {
-      render(
+      const { container } = render(
         <ChatMessageList
           {...defaultProps}
+          messages={[]}
           isAgentRunning={true}
           streamingToolCalls={[]}
           streamingContentBlocks={undefined}
         />
       );
 
-      expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
+      const typingIndicator = screen.getByTestId("chat-typing-indicator");
+
+      expect(typingIndicator).toBeInTheDocument();
       expect(screen.queryByTestId("tool-call-indicator")).not.toBeInTheDocument();
+      expect(typingIndicator.closest('[data-chat-message-item="true"]')).toBeNull();
+      expect(container.querySelectorAll('[data-chat-message-item="true"]')).toHaveLength(0);
+      expect(container.querySelectorAll('[data-testid="message-meta"]')).toHaveLength(0);
+      expect(typingIndicator.querySelectorAll("svg.lucide-bot")).toHaveLength(1);
     });
 
     it("(2) agent running + tool calls + no content blocks → shows tool fallback and typing indicator", () => {
@@ -2200,11 +2245,14 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
       const toolCall = screen.getByTestId("tool-call-indicator");
       const liveAssistantRow = toolCall.closest('[data-chat-message-item="true"]');
+      const typingIndicator = screen.getByTestId("chat-typing-indicator");
 
       expect(toolCall).toBeInTheDocument();
       expect(liveAssistantRow).toBeInTheDocument();
       expect(liveAssistantRow?.querySelector("svg.lucide-bot")).toBeInTheDocument();
-      expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
+      expect(typingIndicator).toBeInTheDocument();
+      expect(typingIndicator.closest('[data-chat-message-item="true"]')).toBeNull();
+      expect(liveAssistantRow!.compareDocumentPosition(typingIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("(2b) shows multiple ToolCallIndicators when multiple pending tool calls and no content blocks", () => {
@@ -2243,8 +2291,12 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
       // Content blocks render through the live timeline, with a typing indicator
       // pinned beneath them while the agent is still active.
-      expect(screen.getByText(/I am working on it/)).toBeInTheDocument();
-      expect(screen.getByTestId("chat-typing-indicator")).toBeInTheDocument();
+      const liveText = screen.getByText(/I am working on it/);
+      const typingIndicator = screen.getByTestId("chat-typing-indicator");
+      expect(liveText).toBeInTheDocument();
+      expect(typingIndicator).toBeInTheDocument();
+      expect(typingIndicator.closest('[data-chat-message-item="true"]')).toBeNull();
+      expect(liveText.compareDocumentPosition(typingIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("shows ToolCallIndicator fallback and typing indicator when tool calls exist but content blocks is empty array", () => {

@@ -8,14 +8,11 @@
  */
 
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { chatApi } from "@/api/chat";
 import { useEventBus } from "@/providers/EventProvider";
-import type {
-  ChatMessageResponse,
-  ConversationMessagesPageResponse,
-} from "@/api/chat";
+import type { ChatMessageResponse } from "@/api/chat";
 import {
   mergeConversationProviderMetadata,
   type ChatConversation,
@@ -36,13 +33,17 @@ import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
 import {
   chatKeys,
   invalidateConversationDataQueries,
+  type ConversationQueryData,
 } from "./useChat";
+import {
+  appendMessageToConversationHistory,
+  replaceMatchingOptimisticMessage,
+  type ConversationHistoryCacheData,
+} from "./chat-cache";
 import { ideationKeys } from "./useIdeation";
 import { conversationStatsKey } from "./useConversationStats";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { logger } from "@/lib/logger";
-
-type ConversationHistoryCacheData = InfiniteData<ConversationMessagesPageResponse>;
 
 function isConversationHistoryCacheData(
   data: ConversationHistoryCacheData | undefined
@@ -65,60 +66,6 @@ function updateConversationHistoryConversation(
       conversation: updateConversation(page.conversation),
     })),
   };
-}
-
-function appendMessageToConversationHistory(
-  data: ConversationHistoryCacheData | undefined,
-  message: ChatMessageResponse
-): ConversationHistoryCacheData | undefined {
-  if (!isConversationHistoryCacheData(data) || data.pages.length === 0) {
-    return data;
-  }
-
-  if (data.pages.some((page) => page.messages.some((item) => item.id === message.id))) {
-    return data;
-  }
-
-  return {
-    ...data,
-    pages: data.pages.map((page, index) => {
-      if (index !== 0) {
-        return page;
-      }
-      const messages = replaceMatchingOptimisticMessage(page.messages, message);
-      return {
-        ...page,
-        messages,
-        totalMessageCount:
-          page.totalMessageCount + (messages.length > page.messages.length ? 1 : 0),
-      };
-    }),
-  };
-}
-
-function replaceMatchingOptimisticMessage(
-  messages: ChatMessageResponse[],
-  message: ChatMessageResponse
-) {
-  if (messages.some((item) => item.id === message.id)) {
-    return messages;
-  }
-
-  const optimisticIndex = messages.findIndex(
-    (item) =>
-      item.id.startsWith("optimistic:") &&
-      item.conversationId === message.conversationId &&
-      item.role === message.role &&
-      item.content === message.content
-  );
-
-  if (optimisticIndex === -1) {
-    return [...messages, message];
-  }
-
-  const nextMessages = [...messages];
-  nextMessages[optimisticIndex] = message;
-  return nextMessages;
 }
 
 function shouldRouteRunStartSelectionToCallerStoreKey(
@@ -206,7 +153,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           claudeSessionId,
         });
 
-      queryClient.setQueryData<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>(
+      queryClient.setQueryData<ConversationQueryData>(
         chatKeys.conversation(conversationId),
         (oldData) => {
           if (!oldData) return oldData;
@@ -458,7 +405,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           };
 
           // Optimistic append for user messages in the active conversation only
-          queryClient.setQueryData<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>(
+          queryClient.setQueryData<ConversationQueryData>(
             chatKeys.conversation(activeConversationId),
             (oldData) => {
               if (!oldData) return oldData;
