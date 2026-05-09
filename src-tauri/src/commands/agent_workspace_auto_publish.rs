@@ -552,6 +552,8 @@ fn begin_auto_publish(conversation_id: &ChatConversationId) -> Option<AutoPublis
 mod tests {
     use super::*;
     use crate::domain::entities::{IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId};
+    use std::path::Path;
+    use std::process::Command;
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 
     fn mock_app(state: AppState, execution_state: Arc<ExecutionState>) -> tauri::App<MockRuntime> {
@@ -560,6 +562,17 @@ mod tests {
             .manage(execution_state)
             .build(mock_context(noop_assets()))
             .expect("mock app should build")
+    }
+
+    fn mock_app_with_state(state: AppState) -> tauri::App<MockRuntime> {
+        mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
+
+    async fn wait_for_spawned_auto_publish() {
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
     fn workspace() -> AgentConversationWorkspace {
@@ -587,6 +600,75 @@ mod tests {
             base_is_ahead: false,
             base_is_blocked: false,
         }
+    }
+
+    fn run_git(repo_path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be utf8")
+            .trim()
+            .to_string()
+    }
+
+    fn git_workspace_fixture() -> (tempfile::TempDir, Project, AgentConversationWorkspace) {
+        let root = tempfile::tempdir().expect("temp repo should be created");
+        let project_repo = root.path().join("project");
+        let worktree_parent = root.path().join("worktrees");
+        std::fs::create_dir_all(&project_repo).expect("project repo directory should be created");
+        std::fs::create_dir_all(&worktree_parent).expect("worktree parent should be created");
+
+        run_git(&project_repo, &["init"]);
+        run_git(&project_repo, &["config", "user.email", "test@example.com"]);
+        run_git(&project_repo, &["config", "user.name", "Test User"]);
+        run_git(&project_repo, &["checkout", "-b", "main"]);
+        std::fs::write(project_repo.join("README.md"), "initial\n")
+            .expect("fixture file should be written");
+        run_git(&project_repo, &["add", "README.md"]);
+        run_git(&project_repo, &["commit", "-m", "initial"]);
+        let base_commit = run_git(&project_repo, &["rev-parse", "HEAD"]);
+
+        let mut workspace = workspace();
+        let mut project = Project::new(
+            "Auto Publish Fixture".to_string(),
+            project_repo.to_string_lossy().to_string(),
+        );
+        project.id = workspace.project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        workspace.base_ref = "main".to_string();
+        workspace.base_display_name = Some("main".to_string());
+        workspace.base_commit = Some(base_commit);
+        workspace.branch_name = "ralphx/test/agent-workspace".to_string();
+        let worktree_path = crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path(
+            &project,
+            &workspace.conversation_id,
+        )
+        .expect("workspace path should resolve");
+        run_git(
+            &project_repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &workspace.branch_name,
+                worktree_path
+                    .to_str()
+                    .expect("worktree path should be utf8"),
+                "main",
+            ],
+        );
+        workspace.worktree_path = worktree_path.to_string_lossy().to_string();
+
+        (root, project, workspace)
     }
 
     #[test]
@@ -697,6 +779,23 @@ mod tests {
     }
 
     #[test]
+    fn spawn_auto_publish_skips_when_already_in_flight() {
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let conversation_id =
+            ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+        let _guard = begin_auto_publish(&conversation_id).expect("guard should enter");
+
+        spawn_auto_publish_existing_pr(
+            app.handle().clone(),
+            "test_event",
+            AutoPublishTrigger::AgentCompletion,
+            conversation_id,
+        );
+    }
+
+    #[test]
     fn malformed_completion_payload_is_ignored() {
         let app = mock_builder()
             .build(mock_context(noop_assets()))
@@ -716,6 +815,56 @@ mod tests {
             "test_event",
             r#"{"conversation_id":"33333333-3333-3333-3333-333333333333","context_type":"task"}"#,
         );
+    }
+
+    #[tokio::test]
+    async fn project_completion_payload_schedules_auto_publish_task() {
+        let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+        spawn_auto_publish_from_completion_event(
+            app.handle().clone(),
+            "test_event",
+            r#"{"conversation_id":"44444444-4444-4444-4444-444444444444","context_type":"project"}"#,
+        );
+
+        wait_for_spawned_auto_publish().await;
+    }
+
+    #[tokio::test]
+    async fn freshness_detected_schedules_auto_publish_task() {
+        let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+        schedule_agent_workspace_auto_publish_after_freshness_detected(
+            app.handle().clone(),
+            ChatConversationId::from_string("55555555-5555-5555-5555-555555555555"),
+        );
+
+        wait_for_spawned_auto_publish().await;
+    }
+
+    #[tokio::test]
+    async fn installed_listeners_handle_completion_events() {
+        let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+        install_agent_workspace_auto_publish_listeners(&app);
+
+        app.emit(
+            AGENT_RUN_COMPLETED,
+            serde_json::json!({
+                "conversation_id": "66666666-6666-6666-6666-666666666666",
+                "context_type": "project"
+            }),
+        )
+        .expect("run completion event should emit");
+        app.emit(
+            AGENT_TURN_COMPLETED,
+            serde_json::json!({
+                "conversation_id": "77777777-7777-7777-7777-777777777777",
+                "context_type": "project"
+            }),
+        )
+        .expect("turn completion event should emit");
+
+        wait_for_spawned_auto_publish().await;
     }
 
     #[test]
@@ -860,6 +1009,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn app_handle_auto_publish_errors_without_execution_state() {
+        let app = mock_app_with_state(AppState::new_test());
+        let error = auto_publish_existing_agent_workspace_pr_from_app_handle(
+            app.handle(),
+            ChatConversationId::from_string("88888888-8888-8888-8888-888888888888"),
+            AutoPublishTrigger::AgentCompletion,
+        )
+        .await
+        .expect_err("missing execution state should fail");
+
+        assert_eq!(error, "ExecutionState is not available");
+    }
+
+    #[tokio::test]
     async fn app_handle_auto_publish_skips_when_workspace_is_missing() {
         let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
 
@@ -886,6 +1049,70 @@ mod tests {
         let count = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
             .await
             .expect("pending startup recovery should skip scan");
+
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn app_handle_freshness_scan_errors_without_execution_state() {
+        let app = mock_app_with_state(AppState::new_test());
+        let error = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
+            .await
+            .expect_err("missing execution state should fail");
+
+        assert_eq!(error, "ExecutionState is not available");
+    }
+
+    #[tokio::test]
+    async fn app_handle_freshness_scan_returns_zero_without_workspaces() {
+        let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
+
+        let count = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
+            .await
+            .expect("empty workspace set should scan successfully");
+
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn app_handle_freshness_scan_skips_current_base_workspace() {
+        let (_repo, project, workspace) = git_workspace_fixture();
+        let state = AppState::new_test();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should seed");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let app = mock_app(state, Arc::new(ExecutionState::new()));
+
+        let count = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
+            .await
+            .expect("current-base workspace should be skipped");
+
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn app_handle_freshness_scan_skips_in_flight_workspace() {
+        let state = AppState::new_test();
+        let workspace = workspace();
+        let conversation_id = workspace.conversation_id.clone();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let _guard = begin_auto_publish(&conversation_id).expect("guard should enter");
+        let app = mock_app(state, Arc::new(ExecutionState::new()));
+
+        let count = auto_publish_stale_published_agent_workspace_prs_from_app_handle(app.handle())
+            .await
+            .expect("in-flight workspace should be skipped");
 
         assert_eq!(count, 0);
     }
@@ -931,6 +1158,58 @@ mod tests {
         .expect_err("missing project should fail");
 
         assert!(error.contains("Project not found: project-1"));
+    }
+
+    #[tokio::test]
+    async fn direct_auto_publish_skips_valid_current_base_without_local_work() {
+        let (_repo, project, workspace) = git_workspace_fixture();
+        let state = AppState::new_test();
+        let conversation_id = workspace.conversation_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should seed");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should seed");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let decision = auto_publish_existing_agent_workspace_pr::<MockRuntime>(
+            &state,
+            &execution_state,
+            None,
+            None,
+            conversation_id,
+            AutoPublishTrigger::AgentCompletion,
+        )
+        .await
+        .expect("current-base workspace should skip");
+
+        assert_eq!(
+            decision,
+            AutoPublishDecision::Skip(AutoPublishSkipReason::NoPendingLocalWork)
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_auto_publish_facts_reports_blocked_base() {
+        let (_repo, project, mut workspace) = git_workspace_fixture();
+        workspace.base_ref = "deleted-base".to_string();
+        workspace.base_commit = None;
+
+        let facts = collect_auto_publish_facts(
+            &project,
+            &workspace,
+            PathBuf::from(&workspace.worktree_path),
+        )
+        .await
+        .expect("blocked base should still collect facts");
+
+        assert!(facts.base_is_blocked);
+        assert!(!facts.base_is_ahead);
     }
 
     #[tokio::test]
