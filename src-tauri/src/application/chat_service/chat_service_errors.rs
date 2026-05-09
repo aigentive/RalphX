@@ -543,6 +543,64 @@ pub fn classify_provider_error(error_text: &str) -> Option<StreamError> {
     None
 }
 
+/// Classify provider errors from parsed assistant text.
+///
+/// Assistant content is model/transcript output, so generic strings like
+/// `rate_limit` are not trustworthy provider-runtime evidence. Keep only the
+/// Claude subscription exhaustion banners that are known to arrive as assistant
+/// content on the success path.
+#[doc(hidden)]
+pub fn classify_provider_error_from_assistant_content(error_text: &str) -> Option<StreamError> {
+    let lower = error_text.to_lowercase();
+    if lower.contains(CLAUDE_USAGE_LIMIT_PREFIX) || lower.contains(CLAUDE_EXTRA_USAGE_PREFIX) {
+        classify_provider_error(error_text)
+    } else {
+        None
+    }
+}
+
+/// Classify the terminal error for a Codex JSONL stream.
+///
+/// Codex `command_execution` and MCP tool errors can contain arbitrary local
+/// repository output, so only runtime-level Codex errors are eligible for
+/// provider backpressure classification.
+#[doc(hidden)]
+pub fn classify_codex_stream_failure(
+    runtime_errors: &[String],
+    local_tool_errors: &[String],
+    exit_code: Option<i32>,
+) -> Option<StreamError> {
+    for message in runtime_errors {
+        if let Some(provider_error) = classify_provider_error(message) {
+            return Some(provider_error);
+        }
+    }
+
+    if runtime_errors.len() > 1 {
+        let runtime_message = runtime_errors.join("; ");
+        if let Some(provider_error) = classify_provider_error(&runtime_message) {
+            return Some(provider_error);
+        }
+    }
+
+    let error_message = runtime_errors
+        .iter()
+        .chain(local_tool_errors.iter())
+        .map(String::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if error_message.is_empty() {
+        None
+    } else {
+        Some(StreamError::AgentExit {
+            exit_code,
+            stderr: error_message,
+        })
+    }
+}
+
 /// Return true when stderr indicates the agent terminated because the user
 /// cancelled an MCP tool call rather than because the assistant produced a
 /// user-visible failure that should be serialized into the transcript.
@@ -679,7 +737,10 @@ pub fn classify_agent_error(
 
 #[cfg(test)]
 mod tests {
-    use super::is_nonfatal_mcp_tool_cancellation;
+    use super::{
+        classify_codex_stream_failure, classify_provider_error_from_assistant_content,
+        is_nonfatal_mcp_tool_cancellation, ProviderErrorCategory, StreamError,
+    };
 
     #[test]
     fn detects_user_cancelled_mcp_tool_call_variants() {
@@ -692,5 +753,106 @@ mod tests {
         assert!(!is_nonfatal_mcp_tool_cancellation(
             "tool call failed: provider timeout"
         ));
+    }
+
+    #[test]
+    fn codex_local_command_failure_with_rate_limit_text_is_agent_exit() {
+        let runtime_errors = Vec::<String>::new();
+        let local_tool_errors = vec![
+            "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
+             src-tauri/src/application/chat_service/chat_service_errors.rs: RateLimit => write!(f, \"rate_limit\")"
+                .to_string(),
+        ];
+
+        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+            .expect("local command failure should surface as an agent error");
+
+        match result {
+            StreamError::AgentExit { exit_code, stderr } => {
+                assert_eq!(exit_code, Some(1));
+                assert!(stderr.contains("No such file or directory"));
+                assert!(stderr.contains("rate_limit"));
+            }
+            other => panic!("expected local Codex failure to remain AgentExit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+        let runtime_errors = Vec::<String>::new();
+        let local_tool_errors = vec![
+            "delegate_start failed after reading provider_error category rate_limit from local metadata"
+                .to_string(),
+        ];
+
+        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+            .expect("local MCP failure should surface as an agent error");
+
+        assert!(
+            matches!(result, StreamError::AgentExit { .. }),
+            "local MCP failures must not become provider backpressure"
+        );
+    }
+
+    #[test]
+    fn codex_runtime_rate_limit_error_still_classifies_as_provider_error() {
+        let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
+        let local_tool_errors = Vec::<String>::new();
+
+        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+            .expect("runtime provider failure should classify");
+
+        match result {
+            StreamError::ProviderError { category, .. } => {
+                assert_eq!(category, ProviderErrorCategory::RateLimit);
+            }
+            other => panic!("expected provider error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_split_runtime_provider_error_joins_runtime_messages() {
+        let runtime_errors = vec!["429".to_string(), "Usage limit exceeded".to_string()];
+        let local_tool_errors = Vec::<String>::new();
+
+        let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+            .expect("split runtime provider failure should classify");
+
+        match result {
+            StreamError::ProviderError { category, .. } => {
+                assert_eq!(category, ProviderErrorCategory::RateLimit);
+            }
+            other => panic!("expected provider error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_stream_failure_without_error_text_returns_none() {
+        assert!(classify_codex_stream_failure(&[], &[], Some(0)).is_none());
+    }
+
+    #[test]
+    fn assistant_content_rate_limit_literal_is_not_provider_error() {
+        assert!(
+            classify_provider_error_from_assistant_content(
+                "The local metadata file contains the literal rate_limit string."
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn assistant_content_claude_usage_limit_banner_stays_provider_error() {
+        let result = classify_provider_error_from_assistant_content(
+            "You've hit your limit. Your limit will reset at 2026-05-09 18:00:00",
+        )
+        .expect("Claude usage-limit banner should classify");
+
+        match result {
+            StreamError::ProviderError { category, .. } => {
+                assert_eq!(category, ProviderErrorCategory::RateLimit);
+            }
+            other => panic!("expected provider rate limit, got {other:?}"),
+        }
     }
 }

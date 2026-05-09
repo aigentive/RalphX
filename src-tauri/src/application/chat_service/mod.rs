@@ -90,9 +90,9 @@ pub use chat_service_context::{
     resolve_working_directory, ProviderResumeMode,
 };
 pub use chat_service_errors::{
-    classify_agent_error, classify_provider_error, parse_retry_after_from_message,
-    truncate_error_message, PauseReason, ProviderErrorCategory, ProviderErrorMetadata, StreamError,
-    STALE_SESSION_ERROR,
+    classify_agent_error, classify_codex_stream_failure, classify_provider_error,
+    parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
+    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
 };
 pub use chat_service_helpers::harness_supports_team_mode;
 pub use chat_service_helpers::{
