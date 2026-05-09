@@ -1,6 +1,6 @@
 use serde::Serialize;
-use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::application::AppState;
 
@@ -23,7 +23,9 @@ pub struct ReleaseNotesResponse {
 }
 
 #[tauri::command]
-pub async fn get_current_release_notes(app: AppHandle) -> Result<ReleaseNotesResponse, String> {
+pub async fn get_current_release_notes<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<ReleaseNotesResponse, String> {
     let version = app.package_info().version.to_string();
     Ok(read_release_notes_for_version(&app, &version)?)
 }
@@ -53,8 +55,8 @@ pub async fn mark_release_notes_seen(
         .map_err(|error| error.to_string())
 }
 
-fn read_release_notes_for_version(
-    app: &AppHandle,
+fn read_release_notes_for_version<R: Runtime>(
+    app: &AppHandle<R>,
     version: &str,
 ) -> Result<ReleaseNotesResponse, String> {
     let filename = release_notes_filename(version)?;
@@ -62,17 +64,33 @@ fn read_release_notes_for_version(
     Ok(read_release_notes_from_candidates(version, candidates))
 }
 
-fn release_notes_candidates(app: &AppHandle, filename: &str) -> Vec<(PathBuf, ReleaseNotesSource)> {
+fn release_notes_candidates<R: Runtime>(
+    app: &AppHandle<R>,
+    filename: &str,
+) -> Vec<(PathBuf, ReleaseNotesSource)> {
+    let resource_dir = app.path().resource_dir().ok();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|path| path.to_path_buf());
+
+    release_notes_candidates_from_roots(resource_dir, repo_root, filename)
+}
+
+fn release_notes_candidates_from_roots(
+    resource_dir: Option<PathBuf>,
+    repo_root: Option<PathBuf>,
+    filename: &str,
+) -> Vec<(PathBuf, ReleaseNotesSource)> {
     let mut candidates = Vec::new();
 
-    if let Ok(resource_dir) = app.path().resource_dir() {
+    if let Some(resource_dir) = resource_dir {
         candidates.push((
             resource_dir.join(RELEASE_NOTES_DIR).join(filename),
             ReleaseNotesSource::BundledResource,
         ));
     }
 
-    if let Some(repo_root) = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent() {
+    if let Some(repo_root) = repo_root {
         candidates.push((
             repo_root.join(RELEASE_NOTES_DIR).join(filename),
             ReleaseNotesSource::DevelopmentCheckout,
@@ -86,8 +104,18 @@ fn read_release_notes_from_candidates(
     version: &str,
     candidates: Vec<(PathBuf, ReleaseNotesSource)>,
 ) -> ReleaseNotesResponse {
+    read_release_notes_from_candidates_with_reader(version, candidates, |path| {
+        std::fs::read_to_string(path)
+    })
+}
+
+fn read_release_notes_from_candidates_with_reader(
+    version: &str,
+    candidates: Vec<(PathBuf, ReleaseNotesSource)>,
+    mut read_file: impl FnMut(&Path) -> std::io::Result<String>,
+) -> ReleaseNotesResponse {
     for (path, source) in candidates {
-        if let Ok(body) = std::fs::read_to_string(path) {
+        if let Ok(body) = read_file(&path) {
             return ReleaseNotesResponse {
                 version: version.to_string(),
                 body: Some(body),

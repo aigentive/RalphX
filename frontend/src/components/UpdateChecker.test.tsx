@@ -206,6 +206,19 @@ describe("UpdateChecker", () => {
     );
   });
 
+  it("native menu check reports manual update check failures", async () => {
+    mocks.check.mockRejectedValue(new Error("offline"));
+    render(<UpdateChecker />);
+
+    eventListeners.get("ralphx://check-for-updates")?.({ payload: undefined });
+    await flushAsyncWork();
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to check for updates. Please try again later.",
+      expect.objectContaining({ id: "update-check-result" }),
+    );
+  });
+
   it("checks on app focus after the lifecycle cooldown", async () => {
     mocks.check.mockResolvedValue(null);
     render(<UpdateChecker />);
@@ -293,5 +306,59 @@ describe("UpdateChecker", () => {
     expect(screen.getByTestId("release-notes-dialog-body")).toHaveTextContent(
       "Manual menu access",
     );
+  });
+
+  it("native menu release notes reports loading failures", async () => {
+    mocks.getCurrentReleaseNotes.mockRejectedValue(new Error("missing resource"));
+
+    render(<UpdateChecker />);
+
+    await act(async () => {
+      eventListeners.get("ralphx://show-release-notes")?.({ payload: undefined });
+      await flushAsyncWork();
+    });
+
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      "Failed to open release notes. Please try again later.",
+      expect.objectContaining({ id: "release-notes-error" }),
+    );
+  });
+
+  it("native menu release notes shows an unavailable state when notes are missing", async () => {
+    mocks.getCurrentReleaseNotes.mockResolvedValue({
+      version: "0.9.0",
+      body: null,
+      source: "missing",
+    });
+
+    render(<UpdateChecker />);
+
+    await act(async () => {
+      eventListeners.get("ralphx://show-release-notes")?.({ payload: undefined });
+      await flushAsyncWork();
+    });
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toHaveTextContent(
+      "Release notes are not available for this version.",
+    );
+  });
+
+  it("does not show What's new when current release notes were already seen", async () => {
+    mocks.check.mockResolvedValue(null);
+    mocks.getCurrentReleaseNotes.mockResolvedValue({
+      version: "0.9.0",
+      body: "## Already Seen",
+      source: "development_checkout",
+    });
+    mocks.getLastSeenReleaseNotesVersion.mockResolvedValue("0.9.0");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(mocks.toast).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "whats-new-0.9.0" }),
+    );
+    expect(mocks.markReleaseNotesSeen).not.toHaveBeenCalled();
   });
 });

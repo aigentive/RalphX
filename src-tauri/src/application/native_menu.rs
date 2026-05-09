@@ -64,6 +64,10 @@ fn install_ralphx_app_menu_items<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tauri::menu::MenuId;
+    use tauri::Listener;
 
     #[test]
     fn maps_ralphx_menu_ids_to_frontend_events() {
@@ -76,5 +80,43 @@ mod tests {
             Some(EVENT_SHOW_RELEASE_NOTES)
         );
         assert_eq!(menu_event_name_for_id("unrelated"), None);
+    }
+
+    #[test]
+    fn handle_menu_event_emits_frontend_event() {
+        let app = crate::testing::create_mock_app();
+        let (sender, receiver) = mpsc::channel();
+        let _unlisten = app.handle().listen(EVENT_CHECK_FOR_UPDATES, move |_| {
+            sender.send(()).expect("send event notification");
+        });
+
+        handle_menu_event(
+            app.handle(),
+            MenuEvent {
+                id: MenuId::new(MENU_CHECK_FOR_UPDATES_ID),
+            },
+        );
+
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("menu event should emit frontend event");
+    }
+
+    #[test]
+    fn handle_menu_event_ignores_unrelated_ids() {
+        let app = crate::testing::create_mock_app();
+        let (sender, receiver) = mpsc::channel();
+        let _unlisten = app.handle().listen(EVENT_CHECK_FOR_UPDATES, move |_| {
+            sender.send(()).expect("send event notification");
+        });
+
+        handle_menu_event(
+            app.handle(),
+            MenuEvent {
+                id: MenuId::new("unrelated"),
+            },
+        );
+
+        assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
     }
 }
