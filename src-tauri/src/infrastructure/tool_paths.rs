@@ -121,15 +121,21 @@ pub(crate) fn resolve_tasklist_cli_path() -> PathBuf {
 }
 
 pub(crate) fn find_claude_cli_path() -> Option<PathBuf> {
-    find_cli_path_with_candidates(
+    let extra_candidates = javascript_tool_env_candidates("claude");
+    let user_candidates = home_local_tool_candidates("claude");
+
+    find_cli_path_with_candidate_groups(
         "claude",
         &[
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
             "/usr/bin/claude",
         ],
-        &javascript_tool_env_candidates("claude"),
+        &extra_candidates,
+        &user_candidates,
     )
+    .into_iter()
+    .next()
 }
 
 pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
@@ -137,14 +143,18 @@ pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn find_codex_cli_candidates() -> Vec<PathBuf> {
-    find_cli_path_candidates_with_candidates(
+    let extra_candidates = javascript_tool_env_candidates("codex");
+    let user_candidates = home_local_tool_candidates("codex");
+
+    find_cli_path_with_candidate_groups(
         "codex",
         &[
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
             "/usr/bin/codex",
         ],
-        &javascript_tool_env_candidates("codex"),
+        &extra_candidates,
+        &user_candidates,
     )
 }
 
@@ -206,6 +216,15 @@ fn find_cli_path_candidates_with_candidates(
     fixed_candidates: &[&'static str],
     extra_candidates: &[PathBuf],
 ) -> Vec<PathBuf> {
+    find_cli_path_with_candidate_groups(tool_name, fixed_candidates, extra_candidates, &[])
+}
+
+fn find_cli_path_with_candidate_groups(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+    user_candidates: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(path) = which::which(tool_name) {
@@ -217,6 +236,14 @@ fn find_cli_path_candidates_with_candidates(
     for candidate in extra_candidates {
         // Extra candidates are derived from trusted env-path conventions such as NVM_BIN
         // and VOLTA_HOME/bin, then validated before probing.
+        // codeql[rust/path-injection]
+        if is_launchable_tool_path(tool_name, candidate) {
+            push_unique_path(&mut candidates, candidate.clone());
+        }
+    }
+
+    for candidate in user_candidates {
+        // User candidates are built from fixed tool locations under a shape-validated home dir.
         // codeql[rust/path-injection]
         if is_launchable_tool_path(tool_name, candidate) {
             push_unique_path(&mut candidates, candidate.clone());
@@ -269,12 +296,37 @@ fn javascript_tool_env_candidates(tool_name: &'static str) -> Vec<PathBuf> {
     candidates
 }
 
+fn home_local_tool_candidates(tool_name: &'static str) -> Vec<PathBuf> {
+    let Some(home_dir) = tool_path_home_dir() else {
+        return Vec::new();
+    };
+
+    let candidate = home_dir.join(".local").join("bin").join(tool_name);
+    matches_tool_path(tool_name, &candidate)
+        .then_some(candidate)
+        .into_iter()
+        .collect()
+}
+
 fn nvm_versioned_tool_candidates(tool_name: &'static str) -> Vec<PathBuf> {
-    let Some(home_dir) = dirs::home_dir().filter(|path| has_safe_absolute_shape(path)) else {
+    let Some(home_dir) = tool_path_home_dir() else {
         return Vec::new();
     };
 
     nvm_versioned_tool_candidates_from_home(tool_name, &home_dir)
+}
+
+#[cfg(test)]
+fn tool_path_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .filter(|path| has_safe_absolute_shape(path))
+}
+
+#[cfg(not(test))]
+fn tool_path_home_dir() -> Option<PathBuf> {
+    dirs::home_dir().filter(|path| has_safe_absolute_shape(path))
 }
 
 fn nvm_versioned_tool_candidates_from_home(
@@ -342,7 +394,7 @@ fn parse_nvm_node_version_dir(name: &str) -> Option<(u64, u64, u64)> {
 fn find_login_shell_cli(tool_name: &'static str) -> Option<PathBuf> {
     let command = format!("command -v {tool_name}");
     let output = Command::new("/bin/zsh")
-        .args(["-lc", command.as_str()])
+        .args(["-ilc", command.as_str()])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -352,7 +404,17 @@ fn find_login_shell_cli(tool_name: &'static str) -> Option<PathBuf> {
     }
 
     let stdout = String::from_utf8(output.stdout).ok()?;
-    safe_cli_path_from_shell_output(tool_name, &stdout)
+    launchable_cli_path_from_shell_output(tool_name, &stdout)
+}
+
+pub(crate) fn launchable_cli_path_from_shell_output(
+    tool_name: &str,
+    output: &str,
+) -> Option<PathBuf> {
+    output.lines().rev().find_map(|line| {
+        let candidate = PathBuf::from(line.trim());
+        is_launchable_tool_path(tool_name, &candidate).then_some(candidate)
+    })
 }
 
 fn safe_cli_path_from_shell_output(tool_name: &str, output: &str) -> Option<PathBuf> {
@@ -438,10 +500,10 @@ mod tests {
         agent_subprocess_env_path_from_parts, find_claude_cli_path, find_codex_cli_candidates,
         find_codex_cli_path, nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
         prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
+        TEST_ENV_MUTEX,
     };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
 
     fn write_fake_tool(path: &Path) {
         std::fs::write(path, "").expect("write fake tool");
@@ -455,8 +517,6 @@ mod tests {
             std::fs::set_permissions(path, permissions).expect("mark fake tool executable");
         }
     }
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         key: &'static str,
@@ -522,7 +582,7 @@ mod tests {
 
     #[test]
     fn resolve_node_cli_path_uses_nvm_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let nvm_bin = temp_dir.path().join("nvm-bin");
         std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
@@ -538,7 +598,7 @@ mod tests {
 
     #[test]
     fn resolve_node_cli_path_uses_volta_home_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let volta_home = temp_dir.path().join("volta-home");
         let volta_bin = volta_home.join("bin");
@@ -555,7 +615,7 @@ mod tests {
 
     #[test]
     fn resolve_node_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let nvm_node_bin = temp_dir
             .path()
@@ -578,7 +638,7 @@ mod tests {
 
     #[test]
     fn find_codex_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let older_codex_bin = temp_dir
             .path()
@@ -616,7 +676,7 @@ mod tests {
 
     #[test]
     fn find_claude_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let claude_bin = temp_dir
             .path()
@@ -680,7 +740,7 @@ mod tests {
 
     #[test]
     fn prepend_resolved_node_bin_to_path_preserves_existing_path() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let mut cmd = std::process::Command::new("/usr/bin/env");
         cmd.env("PATH", "/usr/bin:/bin");
@@ -710,7 +770,7 @@ mod tests {
     }
     #[test]
     fn prepend_resolved_node_bin_to_path_is_noop_when_node_bin_is_already_first() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let mut cmd = std::process::Command::new("/usr/bin/env");
         cmd.env("PATH", "/tmp/fake-node-bin:/usr/bin:/bin");
@@ -735,7 +795,7 @@ mod tests {
 
     #[test]
     fn prepend_resolved_node_bin_to_path_uses_inherited_path_when_command_path_is_unset() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
         let mut cmd = std::process::Command::new("/usr/bin/env");
