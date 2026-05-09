@@ -14,6 +14,7 @@ import {
   getAgentConversationStoreKey,
   type AgentConversation,
 } from "./agentConversations";
+import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
 
 interface UseAgentConversationActionsArgs {
   activeProjectId: string | null;
@@ -70,9 +71,13 @@ export function useAgentConversationActions({
         getAgentConversationStoreKey(conversation),
         conversation.id
       );
+      if (conversation.contextType === "project") {
+        void preflightAgentWorkspaceFreshness(queryClient, conversation.id);
+      }
     },
     [
       clearAgentConversationSelection,
+      queryClient,
       selectConversation,
       selectedConversationId,
       selectedProjectId,

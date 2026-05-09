@@ -26,6 +26,7 @@ import { useAgentsTerminalDocks } from "./useAgentsTerminalDocks";
 import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
 import { normalizeRuntimeSelection } from "./agentOptions";
+import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
 import {
   getFocusedArtifactIdeationSessionId,
   latestVerificationChildSessionIdQueryKey,
@@ -121,6 +122,12 @@ export function useAgentsViewController({
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
   }, [selectedConversationId]);
+  useEffect(() => {
+    if (!selectedConversationId || activeConversation?.contextType !== "project") {
+      return;
+    }
+    void preflightAgentWorkspaceFreshness(queryClient, selectedConversationId);
+  }, [activeConversation?.contextType, queryClient, selectedConversationId]);
   const focusedArtifactIdeationSessionId =
     getFocusedArtifactIdeationSessionId(chatFocus);
   const handleFocusIdeationSession = useCallback((sessionId: string) => {

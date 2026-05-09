@@ -16,11 +16,15 @@ import {
 import {
   getAgentWorkspaceEffectiveBaseLabel,
   getAgentWorkspaceTerminalPublicationLabel,
-  hasPublishedWorkspacePr,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
+import {
+  AGENT_WORKSPACE_FRESHNESS_STALE_MS,
+  AGENT_WORKSPACE_STALE_MS,
+  agentWorkspaceKeys,
+  canInspectAgentWorkspaceFreshness,
+} from "./agentWorkspaceQueries";
 import { normalizeRuntimeSelection } from "./agentOptions";
-import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import type { AgentModelRegistry } from "@/lib/agent-models";
 
 interface UseAgentsWorkspaceModelArgs {
@@ -39,12 +43,12 @@ export function useAgentsWorkspaceModel({
   selectedConversationId,
 }: UseAgentsWorkspaceModelArgs) {
   const conversationWorkspaceQuery = useQuery({
-    queryKey: ["agents", "conversation-workspace", selectedConversationId],
+    queryKey: agentWorkspaceKeys.workspace(selectedConversationId),
     queryFn: () => chatApi.getAgentConversationWorkspace(selectedConversationId!),
     enabled:
       !!selectedConversationId &&
       activeConversation?.contextType === "project",
-    staleTime: 5_000,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
   });
   const activeWorkspace =
     conversationWorkspaceQuery.data ??
@@ -63,25 +67,15 @@ export function useAgentsWorkspaceModel({
   const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime, modelRegistry);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
-  const activeWorkspaceHasPublishedPr = hasPublishedWorkspacePr(activeWorkspace);
   const canInspectActiveWorkspaceFreshness =
-    Boolean(activeWorkspace) &&
-    !terminalPublicationLabel &&
-    (activeWorkspace?.mode === "edit" || activeWorkspaceHasPublishedPr) &&
-    (activeWorkspace?.mode !== "edit" || activeWorkspace?.status !== "missing");
-  const canHydrateActiveWorkspaceFreshness = useDeferredAgentHydration(
-    selectedConversationId && canInspectActiveWorkspaceFreshness
-      ? selectedConversationId
-      : null,
-  );
+    canInspectAgentWorkspaceFreshness(activeWorkspace);
   const activeWorkspaceFreshnessQuery = useQuery({
-    queryKey: ["agents", "conversation-workspace-freshness", selectedConversationId],
+    queryKey: agentWorkspaceKeys.freshness(selectedConversationId),
     queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(selectedConversationId!),
     enabled:
-      canHydrateActiveWorkspaceFreshness &&
       !!selectedConversationId &&
       canInspectActiveWorkspaceFreshness,
-    staleTime: 5_000,
+    staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const isPublishShortcutCurrent = isAgentWorkspacePublishCurrent(
     activeWorkspace,
