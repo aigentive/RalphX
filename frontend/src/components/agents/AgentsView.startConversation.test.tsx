@@ -167,6 +167,7 @@ describe("AgentsView start conversation", () => {
   it("renders a queued starter prompt and paused explanation when global execution is paused", async () => {
     mockAgentViewData();
     useUiStore.getState().setExecutionPaused(true);
+    const queuedPrompt = `build ${"queued feature ".repeat(40)}final`;
     const pausedConversation = conversation({
       id: "conversation-paused",
       contextId: "project-1",
@@ -198,7 +199,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Queue Prompt");
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "build the queued feature" },
+      target: { value: queuedPrompt },
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
@@ -206,7 +207,7 @@ describe("AgentsView start conversation", () => {
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           conversationId: "conversation-paused",
-          content: "build the queued feature",
+          content: queuedPrompt,
         })
       )
     );
@@ -214,7 +215,7 @@ describe("AgentsView start conversation", () => {
       expect(useChatStore.getState().queuedMessages["project:conversation-paused"]).toEqual([
         expect.objectContaining({
           id: "queued-paused-start",
-          content: "build the queued feature",
+          content: queuedPrompt,
           isEditing: false,
         }),
       ])
@@ -225,7 +226,10 @@ describe("AgentsView start conversation", () => {
     expect(queuedEmptyState).toHaveTextContent(
       "This prompt will start when execution resumes."
     );
-    expect(queuedEmptyState).toHaveTextContent("build the queued feature");
+    const queuedPromptPreview = screen.getByTestId("agents-paused-queued-prompt");
+    expect(queuedPromptPreview).not.toHaveTextContent(queuedPrompt);
+    expect(queuedPromptPreview.textContent).toMatch(/^build queued feature/);
+    expect(queuedPromptPreview.textContent).toMatch(/\.\.\.$/);
   });
 
   it("starts with the remembered runtime when the project has a valid runtime preference", async () => {
