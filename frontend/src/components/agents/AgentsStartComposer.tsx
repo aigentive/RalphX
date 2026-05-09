@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PauseCircle, Sparkles } from "lucide-react";
 
 import type {
@@ -19,7 +19,7 @@ import {
   loadBranchBaseOptions,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
-import { useAgentModels } from "@/hooks/useAgentModels";
+import type { AgentModelRegistry } from "@/lib/agent-models";
 import {
   AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
@@ -52,6 +52,7 @@ interface AgentsStartComposerProps {
   executionHaltState?: AgentQueueHaltState;
   isLoadingProjects: boolean;
   isSubmitting: boolean;
+  modelRegistry: AgentModelRegistry;
   onCreateProject: () => void;
   onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
   onSubmit: (input: {
@@ -100,6 +101,7 @@ export function AgentsStartComposer({
   executionHaltState = null,
   isLoadingProjects,
   isSubmitting,
+  modelRegistry,
   onCreateProject,
   onRuntimePreferenceChange,
   onSubmit,
@@ -122,8 +124,6 @@ export function AgentsStartComposer({
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
-  const animatedHeadingWord = useAnimatedStarterWord();
-  const { registry: modelRegistry } = useAgentModels();
   const branchBaseCacheByProjectId = useAgentSessionStore(
     (s) => s.branchBaseCacheByProjectId
   );
@@ -466,19 +466,7 @@ export function AgentsStartComposer({
           >
             <span className="inline-flex items-baseline justify-center whitespace-nowrap">
               <span>Start your&nbsp;</span>
-              <span className="inline-flex items-baseline whitespace-nowrap">
-                <span
-                  data-testid="agents-start-heading-word"
-                  style={{ color: "var(--accent-primary)" }}
-                >
-                  {animatedHeadingWord}
-                </span>
-                <span
-                  aria-hidden="true"
-                  className="animate-starter-caret ml-0.5 inline-block h-[0.9em] w-[2px] rounded-full align-middle"
-                  style={{ background: "var(--accent-primary)" }}
-                />
-              </span>
+              <AnimatedStarterHeadingWord />
             </span>
           </h2>
           <p
@@ -629,6 +617,26 @@ export function AgentsStartComposer({
     </div>
   );
 }
+
+const AnimatedStarterHeadingWord = memo(function AnimatedStarterHeadingWord() {
+  const animatedHeadingWord = useAnimatedStarterWord();
+
+  return (
+    <span className="inline-flex items-baseline whitespace-nowrap">
+      <span
+        data-testid="agents-start-heading-word"
+        style={{ color: "var(--accent-primary)" }}
+      >
+        {animatedHeadingWord}
+      </span>
+      <span
+        aria-hidden="true"
+        className="animate-starter-caret ml-0.5 inline-block h-[0.9em] w-[2px] rounded-full align-middle"
+        style={{ background: "var(--accent-primary)" }}
+      />
+    </span>
+  );
+});
 
 function resolveBranchSelectionKey(
   options: BranchBaseOption[],

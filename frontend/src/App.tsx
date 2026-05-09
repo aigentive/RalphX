@@ -140,6 +140,7 @@ function AppContent() {
   const toggleGraphRightPanelCompactOpen = useUiStore(
     (s) => s.toggleGraphRightPanelCompactOpen
   );
+  const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
   const battleModeActive = useUiStore((s) => s.battleModeActive);
   const enterBattleMode = useUiStore((s) => s.enterBattleMode);
@@ -177,6 +178,13 @@ function AppContent() {
 
   const prevProjectIdRef = useRef<string | null>(null);
   const agentsReturnViewRef = useRef<ViewType>(DEFAULT_PROJECT_VIEW);
+  const showsExecutionFooter =
+    currentView === "kanban" || currentView === "graph" || currentView === "ideation";
+  const shouldHydrateAgentHaltState = currentView === "agents";
+  const shouldHydrateExecutionStatus =
+    showsExecutionFooter || shouldHydrateAgentHaltState;
+  const shouldHydrateIdeationView = currentView === "ideation";
+  const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
   const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
@@ -228,8 +236,10 @@ function AppContent() {
   const [executionSettings, setExecutionSettings] = useState<ProjectSettings | null>(null);
 
   // Running processes data for popover
-  const { data: runningProcessesData } = useRunningProcesses(activeProjectId ?? undefined);
-  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+  const { data: runningProcessesData } = useRunningProcesses(activeProjectId ?? undefined, {
+    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  });
+  const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -253,11 +263,18 @@ function AppContent() {
   useExecutionEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Pass currentProjectId for per-project execution status scoping
-  useExecutionStatus(currentProjectId || undefined);
+  useExecutionStatus(currentProjectId || undefined, {
+    enabled: shouldHydrateExecutionStatus && Boolean(currentProjectId),
+    refetchInterval: showsExecutionFooter ? 30000 : false,
+    refetchOnWindowFocus: showsExecutionFooter,
+    staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
+  });
   const { isApproving, isRequestingChanges } = useReviewMutations();
 
   // Merge pipeline data
-  const { data: mergePipelineData } = useMergePipeline(activeProjectId ?? undefined);
+  const { data: mergePipelineData } = useMergePipeline(activeProjectId ?? undefined, {
+    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  });
   const mergingCount = useMemo(() => {
     if (!mergePipelineData) return 0;
     return mergePipelineData.active.length + mergePipelineData.waiting.length;
@@ -276,8 +293,13 @@ function AppContent() {
   const pausedCount = pausedTasks.length;
 
   // Ideation hooks
-  const { data: sessionData, isLoading: isSessionLoading } = useIdeationSession(activeSession?.id ?? "");
-  const { data: allSessions = [] } = useIdeationSessions(currentProjectId);
+  const { data: sessionData, isLoading: isSessionLoading } = useIdeationSession(
+    activeSession?.id ?? "",
+    { enabled: shouldHydrateIdeationView }
+  );
+  const { data: allSessions = [] } = useIdeationSessions(currentProjectId, {
+    enabled: shouldHydrateIdeationView,
+  });
   const archiveSession = useArchiveIdeationSession();
   const { deleteProposal, reorder, updateProposal } = useProposalMutations();
   const { apply: applyProposalsMutation } = useApplyProposals();
@@ -291,11 +313,11 @@ function AppContent() {
 
   // Sync proposals from sessionData to the store
   useEffect(() => {
-    if (sessionData?.proposals) {
+    if (shouldHydrateIdeationView && sessionData?.proposals) {
       // Convert API response to store type using proper mapping function
       setProposals(sessionData.proposals.map(toTaskProposal));
     }
-  }, [sessionData?.proposals, setProposals]);
+  }, [sessionData?.proposals, setProposals, shouldHydrateIdeationView]);
 
 
   // Sync fetched projects to store and auto-select first project
@@ -353,12 +375,21 @@ function AppContent() {
 
   // Load execution settings from database when project changes
   useEffect(() => {
+    if (!shouldHydrateExecutionSettings) {
+      return;
+    }
+
+    let isCancelled = false;
+
     async function loadSettings() {
       try {
         setIsLoadingSettings(true);
         setSettingsError(null);
         // Phase 82: Pass currentProjectId for per-project settings
         const response = await executionApi.getSettings(currentProjectId || undefined);
+        if (isCancelled) {
+          return;
+        }
         // Map API response (camelCase) to settings type (snake_case)
         setExecutionSettings({
           ...DEFAULT_PROJECT_SETTINGS,
@@ -371,16 +402,24 @@ function AppContent() {
           },
         });
       } catch (err) {
+        if (isCancelled) {
+          return;
+        }
         console.error("Failed to load execution settings:", err);
         setSettingsError(err instanceof Error ? err.message : "Failed to load settings");
         // Fall back to defaults
         setExecutionSettings(DEFAULT_PROJECT_SETTINGS);
       } finally {
-        setIsLoadingSettings(false);
+        if (!isCancelled) {
+          setIsLoadingSettings(false);
+        }
       }
     }
     loadSettings();
-  }, [currentProjectId]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentProjectId, shouldHydrateExecutionSettings]);
 
   // Debounced handler for execution settings changes (300ms)
   const handleSettingsChange = useCallback((newSettings: ProjectSettings) => {
