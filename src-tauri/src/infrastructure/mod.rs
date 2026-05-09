@@ -29,6 +29,8 @@ pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 #[cfg(test)]
 mod external_mcp_supervisor_tests;
 #[cfg(test)]
+mod tool_paths_tests;
+#[cfg(test)]
 mod webhook_http_client_tests;
 #[cfg(test)]
 mod webhook_publisher_tests;
