@@ -810,13 +810,11 @@ mod tests {
                 &fallback_plugin_dir,
                 EXTERNAL_MCP_SERVER_DIR,
             ),
-            base_plugin_dir.join(EXTERNAL_MCP_SERVER_DIR),
-            "missing fallback runtime entry should keep the base plugin source"
+            base_plugin_dir.join(EXTERNAL_MCP_SERVER_DIR)
         );
         assert_eq!(
             expected_runtime_entry_source(&base_plugin_dir, &fallback_plugin_dir, ".mcp.json"),
-            base_plugin_dir.join(".mcp.json"),
-            "non-runnable entries should always preserve the base plugin surface"
+            base_plugin_dir.join(".mcp.json")
         );
     }
 
@@ -926,10 +924,7 @@ mod tests {
         let error =
             generated_plugin_dir_is_current(&base_plugin_dir, &base_plugin_dir, &generated_dir)
                 .expect_err("managed directory in symlink slot should be reported");
-        assert!(
-            error.contains("Failed to inspect generated Claude plugin symlink"),
-            "unexpected managed-entry error: {error}"
-        );
+        assert!(error.contains("Failed to inspect generated Claude plugin symlink"));
     }
 
     #[test]
@@ -941,35 +936,28 @@ mod tests {
 
         let error = generated_plugin_dir_has_only_managed_entries(&file_path)
             .expect_err("file path should not be listed as generated dir");
-        assert!(
-            error.contains("Failed to list generated Claude plugin dir"),
-            "unexpected generated dir list error: {error}"
-        );
+        assert!(error.contains("Failed to list generated Claude plugin dir"));
 
         let missing_dir = generated_root.join("missing-generated-dir");
         let error = prune_unmanaged_generated_plugin_entries(&missing_dir)
             .expect_err("missing generated dir should not be pruned");
-        assert!(
-            error.contains("Failed to canonicalize generated Claude plugin dir"),
-            "unexpected generated dir canonicalize error: {error}"
-        );
+        assert!(error.contains("Failed to canonicalize generated Claude plugin dir"));
 
         let error = prune_unmanaged_generated_plugin_entries(&file_path)
             .expect_err("file path should not be pruned as generated dir");
-        assert!(
-            error.contains("Failed to list generated Claude plugin dir"),
-            "unexpected generated dir prune-list error: {error}"
-        );
+        assert!(error.contains("Failed to list generated Claude plugin dir"));
 
         let error = trusted_existing_generated_plugin_top_level_path(
             &generated_root,
             &generated_root.join("missing-parent").join(".cache"),
         )
         .expect_err("entry with missing parent should be rejected");
-        assert!(
-            error.contains("Failed to canonicalize generated Claude plugin entry parent"),
-            "unexpected generated entry parent error: {error}"
-        );
+        assert!(error.contains("Failed to canonicalize generated Claude plugin entry parent"));
+
+        let error =
+            trusted_existing_generated_plugin_top_level_path(&generated_root, Path::new(""))
+                .expect_err("empty generated entry path should be rejected");
+        assert!(error.contains("Generated Claude plugin entry has no parent"));
     }
 
     #[test]

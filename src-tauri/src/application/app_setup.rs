@@ -181,16 +181,10 @@ mod tests {
             paths.generated_plugin_dir,
             generated_plugin_dir_for_app_data(&app_data_dir)
         );
-        assert!(
-            paths
-                .generated_plugin_dir
-                .starts_with(app_data_dir.join("generated")),
-            "generated plugin dir should stay under app data generated root"
-        );
-        assert!(
-            paths.generated_plugin_dir.ends_with("claude-plugin"),
-            "generated plugin dir should keep the Claude plugin leaf"
-        );
+        assert!(paths
+            .generated_plugin_dir
+            .starts_with(app_data_dir.join("generated")));
+        assert!(paths.generated_plugin_dir.ends_with("claude-plugin"));
 
         std::fs::create_dir_all(resource_dir.join("config")).expect("config dir");
         let paths = resolve_bundled_runtime_paths(&resource_dir, &app_data_dir)

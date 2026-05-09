@@ -929,19 +929,17 @@ mod tests {
         let missing_enabled_tools = vec![format!(
             "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools={PR_DESCRIBER_SUBMIT_TOOL}\"]"
         )];
-        assert!(
-            !codex_pr_describer_overrides_expose_submit_tool(&missing_enabled_tools),
-            "preflight must reject Codex surfaces without enabled_tools"
-        );
+        assert!(!codex_pr_describer_overrides_expose_submit_tool(
+            &missing_enabled_tools
+        ));
 
         let missing_allowed_arg = vec![
             format!("mcp_servers.ralphx.enabled_tools=[\"{PR_DESCRIBER_SUBMIT_TOOL}\"]"),
             "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools=other_tool\"]".to_string(),
         ];
-        assert!(
-            !codex_pr_describer_overrides_expose_submit_tool(&missing_allowed_arg),
-            "preflight must reject stdio surfaces that do not pass the submit-tool allowlist"
-        );
+        assert!(!codex_pr_describer_overrides_expose_submit_tool(
+            &missing_allowed_arg
+        ));
 
         let complete_surface = vec![
             format!("mcp_servers.ralphx.enabled_tools=[\"{PR_DESCRIBER_SUBMIT_TOOL}\"]"),
@@ -949,10 +947,9 @@ mod tests {
                 "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools={PR_DESCRIBER_SUBMIT_TOOL}\"]"
             ),
         ];
-        assert!(
-            codex_pr_describer_overrides_expose_submit_tool(&complete_surface),
-            "preflight should accept Codex surfaces exposing the submit tool in both layers"
-        );
+        assert!(codex_pr_describer_overrides_expose_submit_tool(
+            &complete_surface
+        ));
     }
 
     #[test]
@@ -981,10 +978,7 @@ mod tests {
         let error = ensure_codex_pr_describer_prompt_contract(&plugin_dir)
             .expect_err("missing prompt should fail preflight")
             .to_string();
-        assert!(
-            error.contains("prompt contract is missing"),
-            "unexpected missing-prompt error: {error}"
-        );
+        assert!(error.contains("prompt contract is missing"));
 
         fs::write(
             shared_prompt_dir.join("prompt.md"),
@@ -994,10 +988,7 @@ mod tests {
         let error = ensure_codex_pr_describer_prompt_contract(&plugin_dir)
             .expect_err("prompt without submit tool should fail preflight")
             .to_string();
-        assert!(
-            error.contains("does not mention required tool"),
-            "unexpected invalid-prompt error: {error}"
-        );
+        assert!(error.contains("does not mention required tool"));
 
         fs::write(
             shared_prompt_dir.join("prompt.md"),
@@ -1016,14 +1007,8 @@ mod tests {
 
         let error = pr_describer_missing_submission_error(&output).to_string();
 
-        assert!(
-            error.contains("completed without submitting a PR description"),
-            "generic no-submit output should keep the workflow failure classification: {error}"
-        );
-        assert!(
-            error.contains("Raw output: Generated a body"),
-            "generic no-submit output should still preserve raw diagnostics: {error}"
-        );
+        assert!(error.contains("completed without submitting a PR description"));
+        assert!(error.contains("Raw output: Generated a body"));
     }
 
     #[test]
@@ -1032,14 +1017,8 @@ mod tests {
 
         let error = pr_describer_missing_submission_error(&output).to_string();
 
-        assert!(
-            error.contains("completed without submitting a PR description"),
-            "empty no-submit output should keep the workflow failure classification: {error}"
-        );
-        assert!(
-            !error.contains("Raw output:"),
-            "empty no-submit output should not add an empty raw diagnostics suffix: {error}"
-        );
+        assert!(error.contains("completed without submitting a PR description"));
+        assert!(!error.contains("Raw output:"));
     }
 
     #[test]
@@ -1054,18 +1033,12 @@ mod tests {
             format!("I cannot submit because `{PR_DESCRIBER_SUBMIT_TOOL}` was missing."),
             format!("I can't submit because `{PR_DESCRIBER_SUBMIT_TOOL}` was missing."),
         ] {
-            assert!(
-                pr_describer_output_reports_missing_submit_tool(&output),
-                "observed tool-unavailable wording should be classified: {output}"
-            );
+            assert!(pr_describer_output_reports_missing_submit_tool(&output));
         }
 
-        assert!(
-            !pr_describer_output_reports_missing_submit_tool(
-                "I drafted the PR description but forgot to submit it."
-            ),
-            "generic no-submit output should not be upgraded to infrastructure"
-        );
+        assert!(!pr_describer_output_reports_missing_submit_tool(
+            "I drafted the PR description but forgot to submit it."
+        ));
     }
 
     #[tokio::test]
@@ -1274,10 +1247,7 @@ mod tests {
         .unwrap_err();
         let error = error.to_string();
 
-        assert!(
-            error.contains("PR describer infrastructure error"),
-            "tool-unavailable output should be classified as infrastructure: {error}"
-        );
+        assert!(error.contains("PR describer infrastructure error"));
         assert!(
             error.contains(&raw_output),
             "raw model output should be surfaced for publish failure diagnostics: {error}"
