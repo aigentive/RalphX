@@ -183,6 +183,7 @@ function AppContent() {
   const {
     settings: providerSettings,
     isLoading: isLoadingProviderSettings,
+    isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders();
 
   // Project creation wizard state
@@ -239,7 +240,9 @@ function AppContent() {
   // fetchedProjects already has data.
   const hasNoProjects = !isLoadingProjects && (!fetchedProjects || fetchedProjects.length === 0);
   const providerSetupRequired =
-    !isLoadingProviderSettings && providerSettings.requiresOnboarding;
+    !isLoadingProviderSettings &&
+    !isPlaceholderProviderSettings &&
+    providerSettings.requiresOnboarding;
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";

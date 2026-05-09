@@ -85,6 +85,20 @@ function ProviderBadge({ provider }: { provider: AgentProviderSettingsResponse }
   );
 }
 
+function providerStatusText(provider: AgentProviderSettingsResponse): string {
+  const status = provider.status.trim();
+  const binaryPath = provider.binaryPath?.trim();
+  if (!binaryPath) return status;
+
+  const removePathSuffix = (suffix: string) => {
+    if (!status.endsWith(suffix)) return null;
+    const trimmed = status.slice(0, status.length - suffix.length).trimEnd();
+    return `${trimmed.replace(/\s+at$/i, "")}.`;
+  };
+
+  return removePathSuffix(`${binaryPath}.`) ?? removePathSuffix(binaryPath) ?? status;
+}
+
 function ProviderCliStatus({
   provider,
 }: {
@@ -94,6 +108,7 @@ function ProviderCliStatus({
     ? "bg-[var(--status-success)]"
     : "bg-[var(--status-warning)]";
   const statusLabel = provider.available ? "CLI Ready" : "CLI Not Ready";
+  const statusText = providerStatusText(provider);
 
   return (
     <div className="space-y-1.5">
@@ -106,7 +121,7 @@ function ProviderCliStatus({
           </code>
         )}
       </div>
-      <p className="text-xs text-[var(--text-muted)]">{provider.status}</p>
+      <p className="text-xs text-[var(--text-muted)]">{statusText}</p>
       {!provider.available && (
         <a
           href={PROVIDER_INSTALL_LINKS[provider.provider]}

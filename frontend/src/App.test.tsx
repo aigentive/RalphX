@@ -218,6 +218,7 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
     },
     providers: [],
     isLoading: false,
+    isPlaceholderData: false,
   }),
 }));
 
@@ -369,6 +370,7 @@ describe("App", () => {
       },
       providers: [],
       isLoading: false,
+      isPlaceholderData: false,
     } as never);
 
     // Setup default mock return values for execution hooks
@@ -1086,6 +1088,7 @@ describe("App", () => {
         },
         providers: [],
         isLoading: false,
+        isPlaceholderData: false,
       } as never);
 
       render(<App />);
@@ -1105,6 +1108,24 @@ describe("App", () => {
 
       expect(useUiStore.getState().activeModal).toBe("settings");
       expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+    });
+
+    it("does not show provider onboarding while provider settings are placeholder data", () => {
+      vi.mocked(useHarnessProviders).mockReturnValue({
+        settings: {
+          providers: [],
+          defaultProvider: null,
+          requiresOnboarding: true,
+        },
+        providers: [],
+        isLoading: false,
+        isPlaceholderData: true,
+      } as never);
+
+      render(<App />);
+
+      expect(screen.queryByTestId("welcome-screen")).toBeNull();
+      expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
     });
   });
 

@@ -967,8 +967,8 @@ function HarnessSubsection({
   } = useAgentHarnessSettings(projectId);
   const isDisabled = !isGlobal && projectId === null;
 
-  // Progressive disclosure: persisted per-tab. Defaults = global open, project
-  // collapsed. Warnings force a lane open regardless of the stored preference.
+  // Progressive disclosure: persisted per-tab and collapsed by default.
+  // Warnings force a lane open regardless of the stored preference.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -984,7 +984,7 @@ function HarnessSubsection({
         if (current === undefined) {
           const stored = persisted[lane.lane];
           next[lane.lane] =
-            stored !== undefined ? stored || hasWarning : isGlobal || hasWarning;
+            stored !== undefined ? stored || hasWarning : hasWarning;
           changed = true;
         } else if (hasWarning && !current) {
           next[lane.lane] = true;

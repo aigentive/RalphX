@@ -209,6 +209,10 @@ function openSelect(testId: string) {
   fireEvent.keyDown(trigger, { key: "ArrowDown", code: "ArrowDown" });
 }
 
+function expandAllLanes() {
+  fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+}
+
 describe("IdeationHarnessSection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -246,6 +250,7 @@ describe("IdeationHarnessSection", () => {
   it("hides Codex permission controls behind a disclosure by default", async () => {
     const user = userEvent.setup();
     render(<IdeationHarnessSection />);
+    expandAllLanes();
 
     expect(screen.getByRole("button", { name: "Show permissions" })).toHaveAttribute(
       "aria-expanded",
@@ -269,6 +274,26 @@ describe("IdeationHarnessSection", () => {
     );
     expect(screen.getByText("Ideation Agents")).toBeInTheDocument();
     expect(screen.queryByText("Execution Worker")).not.toBeInTheDocument();
+  });
+
+  it("collapses lanes by default and restores the user's expansion choice", () => {
+    const { unmount } = render(<IdeationHarnessSection />);
+
+    expect(screen.getByRole("button", { name: "Expand all" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Primary Ideation model")).not.toBeVisible();
+
+    fireEvent.click(screen.getByText("Primary Ideation").closest("button")!);
+
+    expect(screen.getByLabelText("Primary Ideation model")).toBeInTheDocument();
+    expect(localStorage.getItem("ralphx-settings-harness-expanded")).toBe(
+      JSON.stringify({ "global:ideation_primary": true }),
+    );
+
+    unmount();
+    render(<IdeationHarnessSection />);
+
+    expect(screen.getByLabelText("Primary Ideation model")).toBeVisible();
+    expect(screen.getByLabelText("Verification model")).not.toBeVisible();
   });
 
   it("persists the selected agent settings tab", async () => {
@@ -337,6 +362,7 @@ describe("IdeationHarnessSection", () => {
 
   it("renders settings notices with explicit token-backed paint styles", () => {
     render(<IdeationHarnessSection />);
+    expandAllLanes();
     fireEvent.click(screen.getByRole("button", { name: "Show permissions" }));
 
     const lockedNotice = screen
@@ -357,6 +383,7 @@ describe("IdeationHarnessSection", () => {
 
   it("allows switching model presets without clearing the current value first", async () => {
     render(<IdeationHarnessSection />);
+    expandAllLanes();
 
     openSelect("model-ideation_primary");
     fireEvent.click(screen.getByRole("option", { name: /gpt-5\.4-mini/ }));
@@ -394,7 +421,6 @@ describe("IdeationHarnessSection", () => {
       { onError: expect.any(Function) },
     );
 
-    await user.click(screen.getByRole("button", { name: "Collapse all" }));
     await user.click(screen.getByRole("button", { name: "Expand all" }));
 
     fireEvent.keyDown(screen.getByLabelText("Primary Ideation effort"), {
@@ -437,6 +463,7 @@ describe("IdeationHarnessSection", () => {
 
   it("shows Codex model presets in the model select", async () => {
     render(<IdeationHarnessSection />);
+    expandAllLanes();
 
     openSelect("model-ideation_primary");
 
@@ -462,6 +489,7 @@ describe("IdeationHarnessSection", () => {
 
   it("shows Claude model presets for Claude harness lanes", async () => {
     render(<IdeationHarnessSection />);
+    expandAllLanes();
 
     openSelect("model-ideation_verifier");
 
@@ -472,6 +500,7 @@ describe("IdeationHarnessSection", () => {
 
   it("exposes explicit accessible labels for provider and model controls", () => {
     render(<IdeationHarnessSection />);
+    expandAllLanes();
 
     expect(screen.getByLabelText("Primary Ideation provider")).toBeInTheDocument();
     expect(screen.getByLabelText("Primary Ideation model")).toBeInTheDocument();
@@ -693,6 +722,7 @@ describe("ExecutionHarnessSection", () => {
 
   it("uses a consistent single-line h-9 trigger height for provider, model, and effort selections", () => {
     render(<ExecutionHarnessSection />);
+    expandAllLanes();
 
     expect(screen.getByTestId("harness-execution_worker")).toHaveClass("h-9");
     expect(screen.getByTestId("harness-execution_worker")).toHaveClass("items-center");

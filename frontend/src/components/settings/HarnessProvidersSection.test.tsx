@@ -174,6 +174,10 @@ describe("HarnessProvidersSection", () => {
     expect(screen.getByText("Default")).toBeInTheDocument();
     expect(screen.getByText("CLI Ready")).toBeInTheDocument();
     expect(screen.getByText("/opt/homebrew/bin/codex")).toBeInTheDocument();
+    expect(screen.getByText("Available codex detected.")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Available codex detected at /opt/homebrew/bin/codex."),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Claude CLI not found")).toBeInTheDocument();
     expect(screen.getByText("CLI Not Ready")).toBeInTheDocument();
     expect(
