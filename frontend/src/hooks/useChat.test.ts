@@ -659,6 +659,85 @@ describe("useChat", () => {
     });
   });
 
+  it("rolls back an optimistic user message when sending fails", async () => {
+    vi.mocked(chatApi.sendAgentMessage).mockRejectedValueOnce(new Error("send failed"));
+    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
+    const { queryClient, wrapper } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [mockMessage1, mockMessage2],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [mockMessage1, mockMessage2],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 2,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      }
+    );
+
+    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
+
+    await expect(
+      result.current.sendMessage.mutateAsync({ content: "Rollback me" })
+    ).rejects.toThrow("send failed");
+
+    const conversationData = queryClient.getQueryData<{
+      messages: ChatMessageResponse[];
+    }>(chatKeys.conversation("conv-1"));
+    const historyData = queryClient.getQueryData<
+      InfiniteData<ConversationMessagesPageResponse>
+    >(chatKeys.conversationHistory("conv-1"));
+
+    expect(conversationData?.messages.map((message) => message.content)).toEqual([
+      "Hello",
+      "Hi there! How can I help?",
+    ]);
+    expect(historyData?.pages[0]?.messages.map((message) => message.content)).toEqual([
+      "Hello",
+      "Hi there! How can I help?",
+    ]);
+    expect(historyData?.pages[0]?.totalMessageCount).toBe(2);
+    expect(mockStoreState.setAgentRunning).toHaveBeenCalledWith("session:session-1", false);
+  });
+
+  it("invalidates the active conversation when target sends skip the optimistic echo", async () => {
+    vi.mocked(chatApi.sendAgentMessage).mockResolvedValueOnce({
+      responseText: "AI response",
+      toolCalls: [],
+      claudeSessionId: "claude-session-123",
+      conversationId: "conv-1",
+    });
+    mockStoreState.activeConversationIds = { "session:session-1": "conv-1" };
+    const { queryClient, wrapper } = createWrapperWithClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    const { result } = renderHook(() => useChat(ideationContext), { wrapper });
+
+    await act(async () => {
+      await result.current.sendMessage.mutateAsync({
+        content: "Send to one agent",
+        target: "reviewer",
+      });
+    });
+
+    expect(
+      invalidateSpy.mock.calls.some(
+        ([filters]) =>
+          Array.isArray(filters?.queryKey) &&
+          filters.queryKey.join("|") === chatKeys.conversation("conv-1").join("|")
+      )
+    ).toBe(true);
+  });
+
   it("should send message in task context", async () => {
     // sendAgentMessage now returns SendContextMessageResult
     const mockResult = {
