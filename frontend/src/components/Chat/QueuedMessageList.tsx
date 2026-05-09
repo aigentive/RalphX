@@ -40,7 +40,9 @@ export function QueuedMessageList({ messages, onEdit, onDelete }: QueuedMessageL
       className="rounded-lg p-4 mb-4"
       style={{
         backgroundColor: "var(--bg-surface)",
-        border: "1px solid var(--border-default)",
+        borderColor: "var(--border-default)",
+        borderStyle: "solid",
+        borderWidth: "1px",
       }}
     >
       {/* Header */}
