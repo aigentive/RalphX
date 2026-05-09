@@ -15,9 +15,10 @@ pub use claude::{
     StreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig, TeammateSpawnResult,
 };
 pub use codex::stream_processor::{
-    extract_codex_agent_message, extract_codex_command_execution, extract_codex_error_message,
-    extract_codex_file_change_snapshot, extract_codex_thread_id, extract_codex_tool_call_snapshot,
-    extract_codex_usage, parse_codex_event_line, CodexCommandExecution, CodexFileChange,
+    extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
+    extract_codex_error_message, extract_codex_file_change_snapshot, extract_codex_thread_id,
+    extract_codex_tool_call_snapshot, extract_codex_usage, parse_codex_event_line,
+    CodexCommandExecution, CodexErrorMessage, CodexErrorSource, CodexFileChange,
     CodexFileChangeSnapshot, CodexItem, CodexItemError, CodexStreamEvent, CodexToolCallPhase,
     CodexToolCallSnapshot, CodexUsage,
 };

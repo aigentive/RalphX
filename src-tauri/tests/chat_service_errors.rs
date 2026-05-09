@@ -1,6 +1,7 @@
 use ralphx_lib::application::chat_service::{
-    classify_agent_error, classify_provider_error, parse_retry_after_from_message, PauseReason,
-    ProviderErrorCategory, ProviderErrorMetadata, StreamError, truncate_error_message,
+    classify_agent_error, classify_codex_stream_failure, classify_provider_error,
+    parse_retry_after_from_message, PauseReason, ProviderErrorCategory, ProviderErrorMetadata,
+    StreamError, truncate_error_message,
 };
 use ralphx_lib::domain::entities::{
     ChatContextType, ChatConversationId, ExecutionFailureSource, InternalStatus,
@@ -393,6 +394,61 @@ fn test_classify_normal_error_not_provider() {
 #[test]
 fn test_classify_empty_string() {
     assert!(classify_provider_error("").is_none());
+}
+
+#[test]
+fn test_codex_local_command_failure_with_rate_limit_text_is_agent_exit() {
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors = vec![
+        "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
+         src-tauri/src/application/chat_service/chat_service_errors.rs: RateLimit => write!(f, \"rate_limit\")"
+            .to_string(),
+    ];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+        .expect("local command failure should surface as an agent error");
+
+    match result {
+        StreamError::AgentExit { exit_code, stderr } => {
+            assert_eq!(exit_code, Some(1));
+            assert!(stderr.contains("No such file or directory"));
+            assert!(stderr.contains("rate_limit"));
+        }
+        other => panic!("expected local Codex failure to remain AgentExit, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_codex_mcp_tool_failure_with_rate_limit_text_is_agent_exit() {
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors = vec![
+        "delegate_start failed after reading provider_error category rate_limit from local metadata"
+            .to_string(),
+    ];
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+        .expect("local MCP failure should surface as an agent error");
+
+    assert!(
+        matches!(result, StreamError::AgentExit { .. }),
+        "local MCP failures must not become provider backpressure"
+    );
+}
+
+#[test]
+fn test_codex_runtime_rate_limit_error_still_classifies_as_provider_error() {
+    let runtime_errors = vec!["Error: rate_limit_exceeded".to_string()];
+    let local_tool_errors = Vec::<String>::new();
+
+    let result = classify_codex_stream_failure(&runtime_errors, &local_tool_errors, Some(1))
+        .expect("runtime provider failure should classify");
+
+    match result {
+        StreamError::ProviderError { category, .. } => {
+            assert_eq!(category, ProviderErrorCategory::RateLimit);
+        }
+        other => panic!("expected provider error, got {other:?}"),
+    }
 }
 
 #[test]

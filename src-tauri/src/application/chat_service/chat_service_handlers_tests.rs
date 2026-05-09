@@ -580,6 +580,123 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
     assert_eq!(ready_after.internal_status, InternalStatus::Ready);
 }
 
+#[tokio::test]
+async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+
+    let project = Project::new(
+        "Codex Local Tool Failure".to_string(),
+        "/tmp/codex-local-tool-failure".to_string(),
+    );
+    let project_id = project.id.clone();
+    app_state.project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id, "Executing".to_string());
+    task.internal_status = InternalStatus::Executing;
+    let task = app_state.task_repo.create(task).await.unwrap();
+    let task_id = task.id.clone();
+
+    let app = mock_builder()
+        .manage(app_state)
+        .manage(Arc::clone(&execution_state))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+
+    let runtime_errors = Vec::<String>::new();
+    let local_tool_errors = vec![
+        "rg: src-tauri/src/domain/entities/agent_run.rs: No such file or directory\n\
+         src-tauri/src/application/chat_service/chat_service_errors.rs: ProviderErrorCategory::RateLimit writes rate_limit"
+            .to_string(),
+    ];
+    let stream_error = crate::application::chat_service::classify_codex_stream_failure(
+        &runtime_errors,
+        &local_tool_errors,
+        Some(1),
+    )
+    .expect("local Codex tool failure should produce a stream error");
+    assert!(
+        matches!(stream_error, StreamError::AgentExit { .. }),
+        "local command output containing rate_limit must not classify as provider error"
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let error_message = stream_error.to_string();
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        &error_message,
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-local-tool-error",
+        "message-id-local-tool-error",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &Some(Arc::clone(&execution_state)),
+        &None,
+        &None,
+        &None,
+        &Some(handle.clone()),
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    assert!(!execution_state.is_paused());
+    assert!(!execution_state.is_provider_blocked());
+
+    let persisted = state.app_state_repo.get().await.unwrap();
+    assert_eq!(persisted.execution_halt_mode, ExecutionHaltMode::Running);
+
+    let updated_task = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated_task.internal_status, InternalStatus::Failed);
+    assert!(
+        ProviderErrorMetadata::from_task_metadata(updated_task.metadata.as_deref()).is_none(),
+        "local tool failures must not persist provider_error metadata"
+    );
+}
+
 // ========================================
 // AgentExit + Step Completion Override Tests
 // ========================================

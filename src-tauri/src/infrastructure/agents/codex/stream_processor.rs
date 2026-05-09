@@ -14,6 +14,18 @@ pub struct CodexItemError {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexErrorSource {
+    Runtime,
+    McpTool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexErrorMessage {
+    pub message: String,
+    pub source: CodexErrorSource,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexFileChange {
     pub path: String,
@@ -223,18 +235,31 @@ pub fn extract_codex_file_change_snapshot(
     })
 }
 
-pub fn extract_codex_error_message(event: &CodexStreamEvent) -> Option<String> {
+pub fn extract_codex_error(event: &CodexStreamEvent) -> Option<CodexErrorMessage> {
     let item = event.item.as_ref()?;
 
-    match item.item_type.as_str() {
-        "error" => item
-            .error
-            .as_ref()
-            .and_then(|error| error.message.clone())
-            .or_else(|| item.text.clone()),
-        "mcp_tool_call" => item.error.as_ref().and_then(|error| error.message.clone()),
-        _ => None,
-    }
+    let (source, message) = match item.item_type.as_str() {
+        "error" => (
+            CodexErrorSource::Runtime,
+            item.error
+                .as_ref()
+                .and_then(|error| error.message.clone())
+                .or_else(|| item.text.clone())?,
+        ),
+        "mcp_tool_call" => (
+            CodexErrorSource::McpTool,
+            item.error
+                .as_ref()
+                .and_then(|error| error.message.clone())?,
+        ),
+        _ => return None,
+    };
+
+    Some(CodexErrorMessage { message, source })
+}
+
+pub fn extract_codex_error_message(event: &CodexStreamEvent) -> Option<String> {
+    extract_codex_error(event).map(|error| error.message)
 }
 
 pub fn is_non_fatal_mcp_resource_probe_error(
@@ -494,5 +519,48 @@ mod tests {
             &event,
             "delegate_start failed",
         ));
+    }
+
+    #[test]
+    fn extract_codex_error_marks_runtime_errors() {
+        let mut item = codex_item("error");
+        item.id = Some("runtime-error".to_string());
+        item.error = Some(CodexItemError {
+            message: Some("Error: rate_limit_exceeded".to_string()),
+        });
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(item),
+            usage: None,
+        };
+
+        let error = extract_codex_error(&event).expect("runtime error");
+        assert_eq!(error.source, CodexErrorSource::Runtime);
+        assert_eq!(error.message, "Error: rate_limit_exceeded");
+    }
+
+    #[test]
+    fn extract_codex_error_marks_mcp_tool_errors_as_local_tool_errors() {
+        let mut item = codex_item("mcp_tool_call");
+        item.id = Some("tool-error".to_string());
+        item.server = Some("ralphx".to_string());
+        item.tool = Some("delegate_start".to_string());
+        item.error = Some(CodexItemError {
+            message: Some("delegate_start saw local rate_limit metadata".to_string()),
+        });
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(item),
+            usage: None,
+        };
+
+        let error = extract_codex_error(&event).expect("mcp error");
+        assert_eq!(error.source, CodexErrorSource::McpTool);
+        assert_eq!(
+            error.message,
+            "delegate_start saw local rate_limit metadata"
+        );
     }
 }

@@ -543,6 +543,48 @@ pub fn classify_provider_error(error_text: &str) -> Option<StreamError> {
     None
 }
 
+/// Classify the terminal error for a Codex JSONL stream.
+///
+/// Codex `command_execution` and MCP tool errors can contain arbitrary local
+/// repository output, so only runtime-level Codex errors are eligible for
+/// provider backpressure classification.
+#[doc(hidden)]
+pub fn classify_codex_stream_failure(
+    runtime_errors: &[String],
+    local_tool_errors: &[String],
+    exit_code: Option<i32>,
+) -> Option<StreamError> {
+    for message in runtime_errors {
+        if let Some(provider_error) = classify_provider_error(message) {
+            return Some(provider_error);
+        }
+    }
+
+    if runtime_errors.len() > 1 {
+        let runtime_message = runtime_errors.join("; ");
+        if let Some(provider_error) = classify_provider_error(&runtime_message) {
+            return Some(provider_error);
+        }
+    }
+
+    let error_message = runtime_errors
+        .iter()
+        .chain(local_tool_errors.iter())
+        .map(String::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if error_message.is_empty() {
+        None
+    } else {
+        Some(StreamError::AgentExit {
+            exit_code,
+            stderr: error_message,
+        })
+    }
+}
+
 /// Return true when stderr indicates the agent terminated because the user
 /// cancelled an MCP tool call rather than because the assistant produced a
 /// user-visible failure that should be serialized into the transcript.

@@ -30,10 +30,10 @@ use crate::infrastructure::agents::claude::{
     ContentBlockItem, DiffContext, StreamEvent, StreamProcessor, ToolCall, ToolCallStats,
 };
 use crate::infrastructure::agents::{
-    extract_codex_agent_message, extract_codex_command_execution, extract_codex_error_message,
+    extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
     extract_codex_file_change_snapshot, extract_codex_thread_id, extract_codex_tool_call_snapshot,
-    extract_codex_usage, parse_codex_event_line, CodexFileChange, CodexFileChangeSnapshot,
-    CodexToolCallPhase, CodexToolCallSnapshot,
+    extract_codex_usage, parse_codex_event_line, CodexErrorSource, CodexFileChange,
+    CodexFileChangeSnapshot, CodexToolCallPhase, CodexToolCallSnapshot,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -2715,7 +2715,8 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut response_text = String::new();
     let mut tool_calls = Vec::<ToolCall>::new();
     let mut content_blocks = Vec::<ContentBlockItem>::new();
-    let mut errors = Vec::<String>::new();
+    let mut runtime_errors = Vec::<String>::new();
+    let mut local_tool_errors = Vec::<String>::new();
     let mut session_id: Option<String> = None;
     let mut usage = AgentRunUsage::default();
     let mut lines_seen = 0usize;
@@ -2981,21 +2982,31 @@ async fn process_codex_stream_background<R: Runtime>(
             if let Some(command_execution) = extract_codex_command_execution(&event) {
                 if let Some(exit_code) = command_execution.exit_code {
                     if exit_code != 0 {
-                        errors.push(command_execution.aggregated_output.clone().unwrap_or_else(
-                            || format!("Codex command_execution failed with exit code {exit_code}"),
-                        ));
+                        local_tool_errors.push(
+                            command_execution
+                                .aggregated_output
+                                .clone()
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Codex command_execution failed with exit code {exit_code}"
+                                    )
+                                }),
+                        );
                     }
                 }
             }
 
-            if let Some(error) = extract_codex_error_message(&event) {
+            if let Some(error) = extract_codex_error(&event) {
                 if crate::infrastructure::agents::codex::stream_processor::is_non_fatal_mcp_resource_probe_error(
                     &event,
-                    &error,
+                    &error.message,
                 ) {
                     continue;
                 }
-                errors.push(error);
+                match error.source {
+                    CodexErrorSource::Runtime => runtime_errors.push(error.message),
+                    CodexErrorSource::McpTool => local_tool_errors.push(error.message),
+                }
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
@@ -3084,17 +3095,12 @@ async fn process_codex_stream_background<R: Runtime>(
         .await;
     persist_agent_run_usage(&agent_run_repo, &agent_run_id, &outcome.usage).await;
 
-    if !errors.is_empty() {
-        let error_message = errors.join("; ");
-        if let Some(provider_error) =
-            super::chat_service_errors::classify_provider_error(&error_message)
-        {
-            return Err(provider_error);
-        }
-        return Err(StreamError::AgentExit {
-            exit_code: status.code(),
-            stderr: error_message,
-        });
+    if let Some(stream_error) = super::chat_service_errors::classify_codex_stream_failure(
+        &runtime_errors,
+        &local_tool_errors,
+        status.code(),
+    ) {
+        return Err(stream_error);
     }
 
     if !status.success()
