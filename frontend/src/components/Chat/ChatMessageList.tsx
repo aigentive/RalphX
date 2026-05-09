@@ -700,8 +700,109 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       textLengthBucket: Math.floor(cumulativeTextLength / TEXT_LENGTH_BUCKET_SIZE),
     }), [streamingToolCalls, totalChildCalls, streamingTasks?.size, normalizedStreamingContentBlocks.length, cumulativeTextLength]);
 
-    // Unified auto-scroll hook — Virtuoso followOutput handles new-message scroll,
-    // while the useEffect above handles streaming footer growth.
+    // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
+    // for consistent typing. When hook events exist, they're interleaved and sorted.
+    const hasHookEvents = hookEvents.length > 0 || activeHooks.length > 0;
+
+    // Filter logic: during active streaming OR when conversation is finalizing (between
+    // message_created clearing state and query refetch completing), exclude only the
+    // provider snapshot for the current turn to prevent duplication with live content.
+    //
+    // isFinalizing is set to true (in the same React batch as clearing streaming state)
+    // by useChatEvents on agent:message_created, and reset to false after 500ms. This
+    // keeps the filter active through the timing window where streaming state is cleared
+    // but the query refetch hasn't completed yet.
+    //
+    // Additionally, when isAgentRunning but no streaming content exists yet (the window
+    // between DB empty-message creation and the first streaming event), filter the last
+    // assistant message if its content is empty/whitespace — prevents the empty "pill" flash.
+    const hasActiveStreaming = normalizedStreamingContentBlocks.length > 0 ||
+                              Boolean(streamingTasks && streamingTasks.size > 0);
+    const suppressedProviderMessageId = useMemo(
+      () => getCurrentTurnProviderMessageId(messages, {
+        hasActiveStreaming,
+        isAgentRunning,
+        isFinalizing,
+      }),
+      [hasActiveStreaming, isAgentRunning, isFinalizing, messages],
+    );
+    const shouldFilterCurrentProviderMessage = suppressedProviderMessageId !== null;
+
+    const timeline = useMemo((): TimelineItem[] => {
+      const items: TimelineItem[] = [];
+
+      const filteredMessages = suppressedProviderMessageId
+        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
+        : messages;
+
+      // Team filter: each tab (lead/teammate) loads its own conversation's messages via
+      // useConversation, so all messages in the data set belong to that conversation.
+      // No per-message filtering needed — the conversation switch handles the scoping.
+      const teamFilteredMessages = filteredMessages;
+
+      for (const msg of teamFilteredMessages) {
+        // Enrich message with attachments if available
+        const attachments = attachmentsMap?.get(msg.id);
+        const enrichedMsg = attachments
+          ? { ...msg, attachments }
+          : msg;
+
+        items.push({
+          kind: "message",
+          data: enrichedMsg,
+          sortTime: new Date(msg.createdAt).getTime(),
+        });
+      }
+
+      if (hasHookEvents) {
+        for (const ev of hookEvents) {
+          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
+        }
+        for (const ev of activeHooks) {
+          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
+        }
+      }
+
+      // Interleave team system messages (filtered by teammate tab)
+      if (teamMessages.length > 0) {
+        const filteredTeamMsgs = teamFilter
+          ? teamMessages.filter((msg) => {
+              if (teamFilter === "lead") {
+                // Lead sees ALL team messages (lead is the orchestrator)
+                return true;
+              }
+              return msg.from === teamFilter || msg.to === teamFilter || msg.to === "*";
+            })
+          : teamMessages;
+
+        for (const msg of filteredTeamMsgs) {
+          items.push({
+            kind: "team_event",
+            data: msg,
+            sortTime: new Date(msg.timestamp).getTime(),
+          });
+        }
+      }
+
+      if (hasFooterStreamingContent) {
+        items.push({
+          kind: "streaming",
+          sortTime: Number.MAX_SAFE_INTEGER,
+        });
+      }
+
+      // Sort if we interleaved any non-message items
+      if (hasHookEvents || teamMessages.length > 0 || hasFooterStreamingContent) {
+        items.sort((a, b) => a.sortTime - b.sortTime);
+      }
+
+      return items;
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
+
+    const lastItemIndex = firstItemIndex + timeline.length - 1;
+
+    // Unified auto-scroll hook — Virtuoso followOutput handles new-message scroll;
+    // the true-bottom pinning paths below handle streaming row growth.
     const {
       messagesEndRef,
       isAtBottom,
@@ -710,7 +811,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       handleAtBottomStateChange,
       handleFollowOutput,
     } = useChatAutoScroll({
-      messageCount: messages.length,
+      messageCount: timeline.length,
       disabled: !!scrollToTimestamp, // Disable auto-scroll in history mode
       virtuosoRef, // Route scrollToBottom through Virtuoso scrollToIndex
       indexOffset: firstItemIndex,
@@ -1053,34 +1154,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       return undefined;
     }, [scrollToTimestamp, messages, firstItemIndex, preferredScrollBehavior]);
 
-    // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
-    // for consistent typing. When hook events exist, they're interleaved and sorted.
-    const hasHookEvents = hookEvents.length > 0 || activeHooks.length > 0;
-
-    // Filter logic: during active streaming OR when conversation is finalizing (between
-    // message_created clearing state and query refetch completing), exclude only the
-    // provider snapshot for the current turn to prevent duplication with live content.
-    //
-    // isFinalizing is set to true (in the same React batch as clearing streaming state)
-    // by useChatEvents on agent:message_created, and reset to false after 500ms. This
-    // keeps the filter active through the timing window where streaming state is cleared
-    // but the query refetch hasn't completed yet.
-    //
-    // Additionally, when isAgentRunning but no streaming content exists yet (the window
-    // between DB empty-message creation and the first streaming event), filter the last
-    // assistant message if its content is empty/whitespace — prevents the empty "pill" flash.
-    const hasActiveStreaming = normalizedStreamingContentBlocks.length > 0 ||
-                              Boolean(streamingTasks && streamingTasks.size > 0);
-    const suppressedProviderMessageId = useMemo(
-      () => getCurrentTurnProviderMessageId(messages, {
-        hasActiveStreaming,
-        isAgentRunning,
-        isFinalizing,
-      }),
-      [hasActiveStreaming, isAgentRunning, isFinalizing, messages],
-    );
-    const shouldFilterCurrentProviderMessage = suppressedProviderMessageId !== null;
-
     // When filter clears (streaming/finalizing ends), scroll to bottom so the newly
     // revealed finalized assistant message is visible.
     useEffect(() => {
@@ -1091,78 +1164,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       prevShouldFilterRef.current = shouldFilterCurrentProviderMessage;
     }, [scheduleBottomPin, shouldFilterCurrentProviderMessage, scrollToTimestamp]);
 
-    const timeline = useMemo((): TimelineItem[] => {
-      const items: TimelineItem[] = [];
-
-      const filteredMessages = suppressedProviderMessageId
-        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
-        : messages;
-
-      // Team filter: each tab (lead/teammate) loads its own conversation's messages via
-      // useConversation, so all messages in the data set belong to that conversation.
-      // No per-message filtering needed — the conversation switch handles the scoping.
-      const teamFilteredMessages = filteredMessages;
-
-      for (const msg of teamFilteredMessages) {
-        // Enrich message with attachments if available
-        const attachments = attachmentsMap?.get(msg.id);
-        const enrichedMsg = attachments
-          ? { ...msg, attachments }
-          : msg;
-
-        items.push({
-          kind: "message",
-          data: enrichedMsg,
-          sortTime: new Date(msg.createdAt).getTime(),
-        });
-      }
-
-      if (hasHookEvents) {
-        for (const ev of hookEvents) {
-          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
-        }
-        for (const ev of activeHooks) {
-          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
-        }
-      }
-
-      // Interleave team system messages (filtered by teammate tab)
-      if (teamMessages.length > 0) {
-        const filteredTeamMsgs = teamFilter
-          ? teamMessages.filter((msg) => {
-              if (teamFilter === "lead") {
-                // Lead sees ALL team messages (lead is the orchestrator)
-                return true;
-              }
-              return msg.from === teamFilter || msg.to === teamFilter || msg.to === "*";
-            })
-          : teamMessages;
-
-        for (const msg of filteredTeamMsgs) {
-          items.push({
-            kind: "team_event",
-            data: msg,
-            sortTime: new Date(msg.timestamp).getTime(),
-          });
-        }
-      }
-
-      if (hasFooterStreamingContent) {
-        items.push({
-          kind: "streaming",
-          sortTime: Number.MAX_SAFE_INTEGER,
-        });
-      }
-
-      // Sort if we interleaved any non-message items
-      if (hasHookEvents || teamMessages.length > 0 || hasFooterStreamingContent) {
-        items.sort((a, b) => a.sortTime - b.sortTime);
-      }
-
-      return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
-
-    const lastItemIndex = firstItemIndex + timeline.length - 1;
     const startReachedHandler =
       hasOlderMessages && onLoadOlderMessages
         ? (_index: number) => {

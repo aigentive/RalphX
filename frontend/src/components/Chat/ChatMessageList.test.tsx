@@ -964,6 +964,28 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(mockScrollToBottom).toHaveBeenCalled();
     });
 
+    it("keeps the scroll-to-bottom click target below the typing indicator", async () => {
+      mockIsAtBottom = false;
+      const user = userEvent.setup();
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={createMessages(10)}
+          isAgentRunning={true}
+          streamingContentBlocks={undefined}
+        />
+      );
+
+      const hookArgs = mockUseChatAutoScroll.mock.calls[0][0] as Record<string, unknown>;
+      expect(hookArgs.messageCount).toBe(11);
+
+      const button = screen.getByText(/Scroll to bottom/i);
+      await user.click(button);
+
+      expect(mockScrollToBottom).toHaveBeenCalled();
+    });
+
     it("should not cause cascading re-renders on isAtBottom toggle", () => {
       mockIsAtBottom = true;
       const { rerender } = render(<ChatMessageList {...defaultProps} />);
@@ -1074,7 +1096,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(hookArgs.disabled).toBe(false);
     });
 
-    it("passes correct messageCount to hook", () => {
+    it("passes rendered timeline item count to hook", () => {
       const messages = createMessages(7);
       render(
         <ChatMessageList
@@ -1085,6 +1107,21 @@ describe("ChatMessageList - Scroll Behavior", () => {
 
       const hookArgs = mockUseChatAutoScroll.mock.calls[0][0] as Record<string, unknown>;
       expect(hookArgs.messageCount).toBe(7);
+    });
+
+    it("includes the active typing indicator in the hook scroll target count", () => {
+      const messages = createMessages(7);
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={messages}
+          isAgentRunning={true}
+          streamingContentBlocks={undefined}
+        />
+      );
+
+      const hookArgs = mockUseChatAutoScroll.mock.calls[0][0] as Record<string, unknown>;
+      expect(hookArgs.messageCount).toBe(8);
     });
 
     it("passes conversationId to useChatAutoScroll hook", () => {
