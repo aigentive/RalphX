@@ -8,6 +8,7 @@ COMMON_FILE="${SCRIPT_DIR}/release-analysis-common.sh"
 PROPOSE_SCRIPT="${SCRIPT_DIR}/propose-release.sh"
 BUMP_SCRIPT="${SCRIPT_DIR}/bump-version.sh"
 NOTES_SCRIPT="${SCRIPT_DIR}/generate-release-notes.sh"
+METADATA_SCRIPT="${SCRIPT_DIR}/append-github-release-metadata.sh"
 
 usage() {
   cat <<'EOF'
@@ -35,7 +36,7 @@ Flow:
   2. Pause for proposal review and acceptance
   3. Persist the accepted version to .artifacts/release-notes/.version
   4. Bump app versions
-  5. Generate release notes
+  5. Generate release notes and append GitHub release metadata
   6. Pause for release-notes review, then print the next manual release steps
 EOF
 }
@@ -105,6 +106,7 @@ done
 [[ -x "${PROPOSE_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${PROPOSE_SCRIPT}"
 [[ -x "${BUMP_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${BUMP_SCRIPT}"
 [[ -x "${NOTES_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${NOTES_SCRIPT}"
+[[ -x "${METADATA_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${METADATA_SCRIPT}"
 [[ -t 0 && -t 1 ]] || release_analysis_die "./scripts/release.sh is interactive. Run it in a terminal with stdin/stdout attached to a TTY."
 
 cd "${REPO_ROOT}"
@@ -194,6 +196,18 @@ fi
 echo
 echo "Step 3/3: Generating release notes..."
 "${NOTES_SCRIPT}" "${notes_args[@]}"
+
+metadata_args=(
+  --tag "v${proposed_version}"
+  --target "${to_ref}"
+  --notes-file "${notes_output}"
+)
+previous_tag="${RELEASE_ANALYSIS_FROM_REF#refs/tags/}"
+if git rev-parse -q --verify "refs/tags/${previous_tag}" >/dev/null 2>&1; then
+  metadata_args+=(--previous-tag "${previous_tag}")
+fi
+
+"${METADATA_SCRIPT}" "${metadata_args[@]}"
 
 echo
 echo "Review the generated files:"

@@ -253,6 +253,11 @@ jobs:
 
           ./scripts/bump-version.sh "${version}"
           ./scripts/generate-release-notes.sh "${version}" --from "${latest_tag}" --to HEAD
+          ./scripts/append-github-release-metadata.sh \
+            --tag "${tag}" \
+            --previous-tag "${latest_tag}" \
+            --target HEAD \
+            --notes-file "release-notes/${tag}.md"
 
           {
             echo "version=${version}"
