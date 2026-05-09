@@ -103,6 +103,8 @@ const globalLanes: AgentHarnessLaneView[] = [
 const updateLane = vi.fn();
 const confirm = vi.fn();
 const providerUpdatedAt = new Date().toISOString();
+const CODEX_MCP_REQUIREMENT_COPY =
+  "Temporarily locked for Codex: RalphX MCP tools currently require Never approval and Danger Full Access.";
 
 const enabledProviderSettings: AgentProvidersSettingsResponse = {
   providers: [
@@ -241,17 +243,24 @@ describe("IdeationHarnessSection", () => {
     confirm.mockResolvedValue(true);
   });
 
-  it("renders Codex-only lane controls for Codex lanes", () => {
+  it("hides Codex permission controls behind a disclosure by default", async () => {
+    const user = userEvent.setup();
     render(<IdeationHarnessSection />);
+
+    expect(screen.getByRole("button", { name: "Show permissions" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.getByText("Approval")).not.toBeVisible();
+    expect(screen.getByText("Sandbox")).not.toBeVisible();
+    expect(screen.getByText(CODEX_MCP_REQUIREMENT_COPY)).not.toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Show permissions" }));
 
     expect(screen.getByText("Approval")).toBeInTheDocument();
     expect(screen.getByText("Sandbox")).toBeInTheDocument();
     expect(screen.queryByText("Fallback Harness")).not.toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Temporarily locked for Codex: RalphX MCP tools currently require Never approval and Danger Full Access.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText(CODEX_MCP_REQUIREMENT_COPY)).toBeInTheDocument();
     expect(screen.getByTestId("approval-ideation_primary")).toHaveAttribute(
       "data-disabled",
     );
@@ -328,11 +337,10 @@ describe("IdeationHarnessSection", () => {
 
   it("renders settings notices with explicit token-backed paint styles", () => {
     render(<IdeationHarnessSection />);
+    fireEvent.click(screen.getByRole("button", { name: "Show permissions" }));
 
     const lockedNotice = screen
-      .getByText(
-        "Temporarily locked for Codex: RalphX MCP tools currently require Never approval and Danger Full Access.",
-      )
+      .getByText(CODEX_MCP_REQUIREMENT_COPY)
       .closest(".settings-inline-notice");
 
     expect(lockedNotice).not.toBeNull();

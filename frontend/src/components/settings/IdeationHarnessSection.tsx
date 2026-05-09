@@ -598,6 +598,7 @@ function HarnessRow({
 }: HarnessRowProps) {
   const meta = LANE_META[lane.lane];
   const configuredHarness = lane.configuredHarness ?? lane.effectiveHarness;
+  const [permissionsExpanded, setPermissionsExpanded] = useState(false);
   const showWarning = !!lane.error || lane.missingCoreExecFeatures.length > 0;
   const showCodexControls = configuredHarness === "codex";
   const codexPolicyLocked = showCodexControls;
@@ -607,6 +608,10 @@ function HarnessRow({
     lane.row?.model ?? null,
     modelRegistry,
   );
+
+  useEffect(() => {
+    setPermissionsExpanded(false);
+  }, [configuredHarness, lane.lane]);
 
   // Effective model: this lane's configured model, falling back to global lane's configured model
   const effectiveModel = lane.row?.model ?? globalLane?.row?.model ?? null;
@@ -619,11 +624,9 @@ function HarnessRow({
   const showEffectiveHarness = lane.effectiveHarness !== configuredHarness;
 
   // Summary values for collapsed state
-  const overrideCount = [
+  const visibleOverrideCount = [
     lane.row?.model,
     lane.row?.effort,
-    lane.row?.approvalPolicy,
-    lane.row?.sandboxMode,
   ].filter((v) => v != null).length;
   const modelSummary = lane.row?.model ?? (isGlobal ? "Harness default" : null);
   const effortSummary = lane.row?.effort
@@ -711,16 +714,10 @@ function HarnessRow({
       </div>
       {!isExpanded && (
         <div className="mt-3 ml-6 flex flex-wrap items-center gap-2">
-          {isGlobal || overrideCount > 0 ? (
+          {isGlobal || visibleOverrideCount > 0 ? (
             <>
               {modelSummary && <SummaryPill>{modelSummary}</SummaryPill>}
               {effortSummary && <SummaryPill>{effortSummary}</SummaryPill>}
-              {showCodexControls && lane.row?.approvalPolicy && (
-                <SummaryPill>{lane.row.approvalPolicy}</SummaryPill>
-              )}
-              {showCodexControls && lane.row?.sandboxMode && (
-                <SummaryPill>{lane.row.sandboxMode}</SummaryPill>
-              )}
             </>
           ) : (
             <span className="text-[0.6875rem] text-[var(--text-muted)] italic">
@@ -802,7 +799,31 @@ function HarnessRow({
             )}
           </div>
           {showCodexControls && (
-            <>
+            <div className="md:col-span-2">
+              <button
+                type="button"
+                onClick={() => setPermissionsExpanded((value) => !value)}
+                aria-expanded={permissionsExpanded}
+                aria-controls={`permissions-${lane.lane}`}
+                className="inline-flex items-center gap-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent-primary)]"
+              >
+                {permissionsExpanded ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+                {permissionsExpanded ? "Hide permissions" : "Show permissions"}
+              </button>
+            </div>
+          )}
+        </div>
+        {showCodexControls && (
+          <div
+            id={`permissions-${lane.lane}`}
+            hidden={!permissionsExpanded}
+            className="space-y-3"
+          >
+            <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
                 <p className="text-xs font-medium text-[var(--text-secondary)]">
                   Approval
@@ -857,11 +878,9 @@ function HarnessRow({
                   </SelectContent>
                 </Select>
               </div>
-            </>
-          )}
-        </div>
-        {showCodexControls && (
-          <InlineNotice tone="info">{CODEX_MCP_REQUIREMENT_COPY}</InlineNotice>
+            </div>
+            <InlineNotice tone="info">{CODEX_MCP_REQUIREMENT_COPY}</InlineNotice>
+          </div>
         )}
         {showWarning && (
           <InlineNotice

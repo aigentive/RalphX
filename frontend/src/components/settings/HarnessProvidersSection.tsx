@@ -1,4 +1,13 @@
-import { Cpu, ExternalLink, RefreshCw, RotateCcw, ShieldCheck } from "lucide-react";
+import { useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Cpu,
+  ExternalLink,
+  RefreshCw,
+  RotateCcw,
+  ShieldCheck,
+} from "lucide-react";
 
 import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
 import type { UpdateAgentProviderSettingsInput } from "@/api/harness-providers";
@@ -113,10 +122,45 @@ function ProviderCliStatus({
   );
 }
 
+function ProvidersLoadingState() {
+  return (
+    <div className="space-y-4" data-testid="providers-loading-state">
+      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
+        <div className="text-sm font-medium text-[var(--text-primary)]">
+          Loading provider settings
+        </div>
+        <div className="text-xs text-[var(--text-muted)]">
+          Checking configured providers and CLI availability.
+        </div>
+      </div>
+      {[1, 2].map((index) => (
+        <div
+          key={index}
+          className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-4"
+        >
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="space-y-2">
+              <div className="h-4 w-28 animate-pulse rounded bg-[var(--overlay-moderate)]" />
+              <div className="h-3 w-56 animate-pulse rounded bg-[var(--overlay-moderate)]" />
+            </div>
+            <div className="h-6 w-11 animate-pulse rounded-full bg-[var(--overlay-moderate)]" />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="h-9 animate-pulse rounded-md bg-[var(--overlay-moderate)]" />
+            <div className="h-9 animate-pulse rounded-md bg-[var(--overlay-moderate)]" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function HarnessProvidersSection() {
   const {
     settings,
     providers,
+    isLoading,
+    isPlaceholderData,
     isError,
     error,
     updateError,
@@ -127,10 +171,14 @@ export function HarnessProvidersSection() {
   const { models } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
+  const [expandedPermissions, setExpandedPermissions] = useState<
+    Record<string, boolean>
+  >({});
 
   const displayedError =
     (isError && error instanceof Error ? error.message : null) ??
     (updateError instanceof Error ? updateError.message : null);
+  const showLoading = isLoading || isPlaceholderData;
 
   const updateProvider = async (
     provider: AgentProviderSettingsResponse,
@@ -212,6 +260,10 @@ export function HarnessProvidersSection() {
         <ErrorBanner error={displayedError} onDismiss={() => undefined} />
       )}
 
+      {showLoading ? (
+        <ProvidersLoadingState />
+      ) : (
+        <>
       <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
         <div className="min-w-0">
           <div className="text-sm font-medium text-[var(--text-primary)]">
@@ -261,6 +313,7 @@ export function HarnessProvidersSection() {
           return (
             <div
               key={provider.provider}
+              data-testid={`provider-card-${provider.provider}`}
               className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
             >
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--border-subtle)] px-4 py-3">
@@ -414,108 +467,139 @@ export function HarnessProvidersSection() {
 
                 {provider.provider === "codex" && (
                   <>
-                    <div className="space-y-1">
-                      <Label htmlFor="codex-approval-policy">
-                        Approval Policy
-                      </Label>
-                      <Select
-                        value={provider.approvalPolicy ?? "never"}
-                        onValueChange={() => undefined}
-                        disabled
-                      >
-                        <SelectTrigger id="codex-approval-policy">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {CODEX_APPROVAL_POLICIES.map((policy) => (
-                            <SelectItem key={policy} value={policy}>
-                              {policy}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <ProviderPermissionDisclosure
+                      provider={provider.provider}
+                      expanded={!!expandedPermissions[provider.provider]}
+                      onToggle={() =>
+                        setExpandedPermissions((current) => ({
+                          ...current,
+                          [provider.provider]: !current[provider.provider],
+                        }))
+                      }
+                    />
+                    <div
+                      id={`provider-permissions-${provider.provider}`}
+                      hidden={!expandedPermissions[provider.provider]}
+                      className="md:col-span-2 grid gap-3 md:grid-cols-2"
+                    >
+                      <div className="space-y-1">
+                        <Label htmlFor="codex-approval-policy">
+                          Approval Policy
+                        </Label>
+                        <Select
+                          value={provider.approvalPolicy ?? "never"}
+                          onValueChange={() => undefined}
+                          disabled
+                        >
+                          <SelectTrigger id="codex-approval-policy">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CODEX_APPROVAL_POLICIES.map((policy) => (
+                              <SelectItem key={policy} value={policy}>
+                                {policy}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                    <div className="space-y-1">
-                      <Label htmlFor="codex-sandbox-mode">Sandbox Mode</Label>
-                      <Select
-                        value={provider.sandboxMode ?? "danger-full-access"}
-                        onValueChange={() => undefined}
-                        disabled
-                      >
-                        <SelectTrigger id="codex-sandbox-mode">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {CODEX_SANDBOX_MODES.map((mode) => (
-                            <SelectItem key={mode} value={mode}>
-                              {mode}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <div className="space-y-1">
+                        <Label htmlFor="codex-sandbox-mode">Sandbox Mode</Label>
+                        <Select
+                          value={provider.sandboxMode ?? "danger-full-access"}
+                          onValueChange={() => undefined}
+                          disabled
+                        >
+                          <SelectTrigger id="codex-sandbox-mode">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CODEX_SANDBOX_MODES.map((mode) => (
+                              <SelectItem key={mode} value={mode}>
+                                {mode}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <p className="md:col-span-2 text-xs text-[var(--text-muted)]">
+                        {CODEX_MCP_LOCK_COPY}
+                      </p>
                     </div>
-                    <p className="md:col-span-2 text-xs text-[var(--text-muted)]">
-                      {CODEX_MCP_LOCK_COPY}
-                    </p>
                   </>
                 )}
 
                 {provider.provider === "claude" && (
                   <>
-                    <div className="space-y-1">
-                      <Label htmlFor="claude-permission-mode">
-                        Permission Mode
-                      </Label>
-                      <Select
-                        value={
-                          provider.claudePermissionMode ?? "bypassPermissions"
-                        }
-                        onValueChange={(claudePermissionMode) =>
-                          void updateProvider(provider, {
-                            claudePermissionMode,
-                          })
-                        }
-                        disabled={isUpdating}
-                      >
-                        <SelectTrigger id="claude-permission-mode">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {CLAUDE_PERMISSION_MODES.map((mode) => (
-                            <SelectItem key={mode} value={mode}>
-                              {mode}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                    <ProviderPermissionDisclosure
+                      provider={provider.provider}
+                      expanded={!!expandedPermissions[provider.provider]}
+                      onToggle={() =>
+                        setExpandedPermissions((current) => ({
+                          ...current,
+                          [provider.provider]: !current[provider.provider],
+                        }))
+                      }
+                    />
+                    <div
+                      id={`provider-permissions-${provider.provider}`}
+                      hidden={!expandedPermissions[provider.provider]}
+                      className="md:col-span-2 grid gap-3 md:grid-cols-2"
+                    >
                       <div className="space-y-1">
-                        <Label
-                          htmlFor="claude-dangerous-skip"
-                          className="text-xs text-[var(--text-primary)]"
-                        >
-                          Skip Permissions
+                        <Label htmlFor="claude-permission-mode">
+                          Permission Mode
                         </Label>
-                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
-                          Actually bypasses Claude permission prompts for
-                          RalphX-launched runs.
-                        </p>
+                        <Select
+                          value={
+                            provider.claudePermissionMode ?? "bypassPermissions"
+                          }
+                          onValueChange={(claudePermissionMode) =>
+                            void updateProvider(provider, {
+                              claudePermissionMode,
+                            })
+                          }
+                          disabled={isUpdating}
+                        >
+                          <SelectTrigger id="claude-permission-mode">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CLAUDE_PERMISSION_MODES.map((mode) => (
+                              <SelectItem key={mode} value={mode}>
+                                {mode}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
-                      <Switch
-                        id="claude-dangerous-skip"
-                        checked={provider.claudeDangerouslySkipPermissions}
-                        disabled={isUpdating}
-                        onCheckedChange={(checked) =>
-                          void updateProvider(provider, {
-                            claudeDangerouslySkipPermissions: checked,
-                          })
-                        }
-                      />
-                    </div>
 
+                      <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                        <div className="space-y-1">
+                          <Label
+                            htmlFor="claude-dangerous-skip"
+                            className="text-xs text-[var(--text-primary)]"
+                          >
+                            Skip Permissions
+                          </Label>
+                          <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                            Actually bypasses Claude permission prompts for
+                            RalphX-launched runs.
+                          </p>
+                        </div>
+                        <Switch
+                          id="claude-dangerous-skip"
+                          checked={provider.claudeDangerouslySkipPermissions}
+                          disabled={isUpdating}
+                          onCheckedChange={(checked) =>
+                            void updateProvider(provider, {
+                              claudeDangerouslySkipPermissions: checked,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
@@ -545,7 +629,38 @@ export function HarnessProvidersSection() {
           );
         })}
       </div>
+        </>
+      )}
       <ConfirmationDialog {...confirmationDialogProps} />
     </SectionCard>
+  );
+}
+
+function ProviderPermissionDisclosure({
+  provider,
+  expanded,
+  onToggle,
+}: {
+  provider: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="md:col-span-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={`provider-permissions-${provider}`}
+        className="inline-flex items-center gap-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent-primary)]"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5" />
+        )}
+        {expanded ? "Hide permissions" : "Show permissions"}
+      </button>
+    </div>
   );
 }

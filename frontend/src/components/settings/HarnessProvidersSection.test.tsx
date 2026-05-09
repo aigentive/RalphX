@@ -148,6 +148,22 @@ describe("HarnessProvidersSection", () => {
     });
   });
 
+  it("shows a loading state while provider settings are placeholder data", () => {
+    mockProviders(
+      { providers: [], defaultProvider: null, requiresOnboarding: true },
+      { isLoading: true, isPlaceholderData: true },
+    );
+
+    render(<HarnessProvidersSection />);
+
+    expect(screen.getByTestId("providers-loading-state")).toBeInTheDocument();
+    expect(screen.getByText("Loading provider settings")).toBeInTheDocument();
+    expect(
+      screen.getByText("Checking configured providers and CLI availability."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Default Provider")).not.toBeInTheDocument();
+  });
+
   it("renders provider readiness, defaults, and repair guidance", async () => {
     const user = userEvent.setup();
     render(<HarnessProvidersSection />);
@@ -215,10 +231,8 @@ describe("HarnessProvidersSection", () => {
       model: "gpt-5.4",
     });
 
-    const claudeCard = screen.getByText("Claude").closest(".rounded-md");
-    expect(claudeCard).not.toBeNull();
     await user.click(
-      within(claudeCard as HTMLElement).getByRole("button", {
+      within(screen.getByTestId("provider-card-claude")).getByRole("button", {
         name: "Apply as Default",
       }),
     );
@@ -272,11 +286,28 @@ describe("HarnessProvidersSection", () => {
       effort: "high",
     });
 
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(within(codexCard).getByText("Approval Policy")).not.toBeVisible();
+    expect(within(codexCard).getByText("Sandbox Mode")).not.toBeVisible();
+    expect(
+      within(codexCard).getByText(/RalphX MCP tools currently require Codex/i),
+    ).not.toBeVisible();
+
+    await user.click(
+      within(codexCard).getByRole("button", { name: "Show permissions" }),
+    );
     expect(document.getElementById("codex-approval-policy")).toBeDisabled();
     expect(document.getElementById("codex-sandbox-mode")).toBeDisabled();
     expect(
-      screen.getByText(/RalphX MCP tools currently require Codex to run with Never approval and Danger Full Access/i),
-    ).toBeInTheDocument();
+      within(codexCard).getByText(/RalphX MCP tools currently require Codex/i),
+    ).toBeVisible();
+
+    const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(within(claudeCard).getByText("Permission Mode")).not.toBeVisible();
+    expect(within(claudeCard).getByText("Skip Permissions")).not.toBeVisible();
+    await user.click(
+      within(claudeCard).getByRole("button", { name: "Show permissions" }),
+    );
 
     openSelectById("claude-permission-mode");
     await user.click(screen.getByRole("option", { name: "default" }));
