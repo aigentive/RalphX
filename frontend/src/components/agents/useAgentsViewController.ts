@@ -453,6 +453,7 @@ export function useAgentsViewController({
       defaultRuntime,
       hasAutoOpenArtifacts,
       isLoadingProjects,
+      modelRegistry,
       normalizedActiveRuntime,
       onActiveConversationModeChange: handleActiveConversationModeChange,
       onActiveEffortChange: handleActiveEffortChange,

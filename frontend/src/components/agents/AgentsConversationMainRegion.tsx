@@ -22,6 +22,7 @@ interface AgentsConversationMainRegionProps {
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
+  modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
@@ -63,6 +64,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   defaultRuntime,
   hasAutoOpenArtifacts,
   isLoadingProjects,
+  modelRegistry,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
   onActiveEffortChange,
@@ -131,6 +133,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
       defaultProjectId={defaultProjectId}
       defaultRuntime={defaultRuntime}
       isLoadingProjects={isLoadingProjects}
+      modelRegistry={modelRegistry}
       onCreateProject={onCreateProject}
       onRuntimePreferenceChange={onRuntimePreferenceChange}
       onStartAgentConversation={onStartAgentConversation}
