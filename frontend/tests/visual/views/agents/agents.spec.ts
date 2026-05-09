@@ -401,7 +401,10 @@ async function seedAgentsScenario(page: Page) {
     if (!queryClient) {
       throw new Error("Expected query client to be available");
     }
-    const { mockListConversationsPage } = await import("/src/api-mock/chat");
+    const {
+      mockListAgentSidebarConversations,
+      mockListConversationsPage,
+    } = await import("/src/api-mock/chat");
     const activePage = await mockListConversationsPage(
       "project",
       "project-mock-1",
@@ -472,6 +475,84 @@ async function seedAgentsScenario(page: Page) {
         ...archivedPage,
         limit: 1,
         conversations: archivedPage.conversations.slice(0, 1),
+      },
+    );
+
+    const publicationStates = [
+      "active",
+      "draft",
+      "merged",
+      "closed",
+      "uncommitted",
+      "unpushed",
+    ];
+    const activeSidebarResponse = await mockListAgentSidebarConversations({
+      projectIds: ["project-mock-1"],
+      includeArchived: false,
+      archivedOnly: false,
+      publicationStates,
+      groupBy: "project",
+      limitPerGroup: 20,
+      offsets: { "project-mock-1": 0 },
+      pinnedConversationIds: [],
+    });
+    const archivedSidebarResponse = await mockListAgentSidebarConversations({
+      projectIds: ["project-mock-1"],
+      includeArchived: true,
+      archivedOnly: true,
+      publicationStates,
+      groupBy: "project",
+      limitPerGroup: 20,
+      offsets: { "project-mock-1": 0 },
+      pinnedConversationIds: [],
+    });
+    const activeSidebarGroup = activeSidebarResponse.groups.find(
+      (group) => group.key === "project-mock-1",
+    );
+    const archivedSidebarGroup = archivedSidebarResponse.groups.find(
+      (group) => group.key === "project-mock-1",
+    );
+    if (!activeSidebarGroup || !archivedSidebarGroup) {
+      throw new Error("Expected seeded sidebar groups");
+    }
+    queryClient.setQueryData(
+      [
+        "agents",
+        "sidebar-conversations",
+        "project",
+        "project-mock-1",
+        "archived",
+        false,
+        "search",
+        "",
+        "states",
+        publicationStates,
+        "pinned",
+        [],
+      ],
+      {
+        pages: [activeSidebarGroup],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData(
+      [
+        "agents",
+        "sidebar-conversations",
+        "project",
+        "project-mock-1",
+        "archived",
+        true,
+        "search",
+        "",
+        "states",
+        publicationStates,
+        "pinned",
+        [],
+      ],
+      {
+        pages: [archivedSidebarGroup],
+        pageParams: [0],
       },
     );
   });
@@ -593,9 +674,13 @@ test.describe("Agents View", () => {
     await setupAgentsView(page);
     await seedAgentsScenario(page);
 
-    await expect(page.getByTestId("agents-show-all-projects-pill")).toBeVisible();
-    await expect(page.getByTestId("agents-project-sort-pill")).toBeVisible();
-    await expect(page.getByTestId("agents-show-archived-pill")).toBeVisible();
+    await expect(page.getByTestId("agents-filters-trigger")).toBeVisible();
+    await expect(page.getByTestId("agents-sort-trigger")).toBeVisible();
+    await page.getByTestId("agents-filters-trigger").click();
+    await expect(page.getByTestId("agents-filter-archived")).toBeVisible();
+    await expect(page.getByTestId("agents-filter-all-projects")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("agents-filter-popover")).toHaveCount(0);
     // Static "Recent" block is now hidden ("Coming soon") on the polished sidebar — present in DOM but aria-hidden + display:none.
     await expect(page.getByTestId("agents-static-recent")).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByTestId(`agents-session-${editConversationId}`)).toBeVisible();
