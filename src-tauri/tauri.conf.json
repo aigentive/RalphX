@@ -30,7 +30,8 @@
     "resources": {
       "../plugins/app": "plugins/app",
       "../agents": "agents",
-      "../config": "config"
+      "../config": "config",
+      "../release-notes": "release-notes"
     },
     "macOS": {
       "minimumSystemVersion": "13.0",

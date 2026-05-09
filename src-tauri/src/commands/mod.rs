@@ -32,6 +32,7 @@ pub mod project_commands;
 pub mod qa_commands;
 pub mod question_commands;
 pub mod research_commands;
+pub mod release_notes_commands;
 pub mod registry;
 pub mod review_commands;
 pub mod review_commands_types;

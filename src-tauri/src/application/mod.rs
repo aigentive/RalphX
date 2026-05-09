@@ -31,6 +31,7 @@ pub mod ideation_service;
 pub mod interactive_process_registry;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
+pub(crate) mod native_menu;
 pub mod pending_session_drain;
 pub mod permission_state;
 pub mod plan_ranking;
