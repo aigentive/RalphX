@@ -1,9 +1,9 @@
 use super::{
     codex_tool_call_content_block, flush_content_before_error, format_agent_exit_stderr,
-    persist_assistant_message_snapshot, process_codex_stream_background, process_exit_details,
-    provider_session_ref_for_harness, resolve_codex_file_change_tool_call_snapshots,
-    stream_mode_for_harness, upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome,
-    StreamingStateCache,
+    persist_assistant_message_snapshot, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
+    upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
 use crate::application::chat_service::chat_service_context::create_assistant_message;
 use crate::application::chat_service::chat_service_errors::{ProviderErrorCategory, StreamError};
@@ -23,7 +23,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
-async fn spawn_codex_jsonl_process(lines: &[&str]) -> tokio::process::Child {
+async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     let mut payload = String::new();
     for line in lines {
         payload.push_str(line);
@@ -47,8 +47,40 @@ async fn spawn_codex_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     child
 }
 
+async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
+    let child = spawn_jsonl_process(lines).await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        None,
+        None,
+        None,
+        CancellationToken::new(),
+        None,
+        false,
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+}
+
 async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
-    let child = spawn_codex_jsonl_process(lines).await;
+    let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
 
@@ -137,6 +169,53 @@ fn provider_session_ref_for_harness_keeps_harness_and_id() {
 
     assert_eq!(session_ref.harness, AgentHarnessKind::Codex);
     assert_eq!(session_ref.provider_session_id, "thread-123");
+}
+
+#[tokio::test]
+async fn claude_stream_assistant_text_with_rate_limit_is_not_provider_error() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"The local metadata file contains the literal rate_limit string."}]},"session_id":"sess-1"}"#,
+    ])
+    .await
+    .expect("normal assistant text should stay successful");
+
+    assert_eq!(
+        outcome.response_text,
+        "The local metadata file contains the literal rate_limit string."
+    );
+    assert!(outcome.tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn claude_stream_runtime_rate_limit_result_still_classifies_as_provider_error() {
+    let result = run_claude_stream_lines(&[
+        r#"{"type":"result","session_id":"sess-1","is_error":true,"errors":["Error: rate_limit_exceeded"],"cost_usd":0.0}"#,
+    ])
+    .await
+    .expect_err("runtime provider failure should classify");
+
+    match result {
+        StreamError::ProviderError { category, .. } => {
+            assert_eq!(category, ProviderErrorCategory::RateLimit);
+        }
+        other => panic!("expected provider rate limit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn claude_stream_usage_limit_assistant_banner_still_classifies_as_provider_error() {
+    let result = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your limit. Your limit will reset at 2026-05-09 18:00:00"}]},"session_id":"sess-1"}"#,
+    ])
+    .await
+    .expect_err("Claude usage-limit banner should classify");
+
+    match result {
+        StreamError::ProviderError { category, .. } => {
+            assert_eq!(category, ProviderErrorCategory::RateLimit);
+        }
+        other => panic!("expected provider rate limit, got {other:?}"),
+    }
 }
 
 #[tokio::test]

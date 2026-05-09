@@ -543,6 +543,22 @@ pub fn classify_provider_error(error_text: &str) -> Option<StreamError> {
     None
 }
 
+/// Classify provider errors from parsed assistant text.
+///
+/// Assistant content is model/transcript output, so generic strings like
+/// `rate_limit` are not trustworthy provider-runtime evidence. Keep only the
+/// Claude subscription exhaustion banners that are known to arrive as assistant
+/// content on the success path.
+#[doc(hidden)]
+pub fn classify_provider_error_from_assistant_content(error_text: &str) -> Option<StreamError> {
+    let lower = error_text.to_lowercase();
+    if lower.contains(CLAUDE_USAGE_LIMIT_PREFIX) || lower.contains(CLAUDE_EXTRA_USAGE_PREFIX) {
+        classify_provider_error(error_text)
+    } else {
+        None
+    }
+}
+
 /// Classify the terminal error for a Codex JSONL stream.
 ///
 /// Codex `command_execution` and MCP tool errors can contain arbitrary local
@@ -722,8 +738,8 @@ pub fn classify_agent_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_codex_stream_failure, is_nonfatal_mcp_tool_cancellation, ProviderErrorCategory,
-        StreamError,
+        classify_codex_stream_failure, classify_provider_error_from_assistant_content,
+        is_nonfatal_mcp_tool_cancellation, ProviderErrorCategory, StreamError,
     };
 
     #[test]
@@ -813,5 +829,30 @@ mod tests {
     #[test]
     fn codex_stream_failure_without_error_text_returns_none() {
         assert!(classify_codex_stream_failure(&[], &[], Some(0)).is_none());
+    }
+
+    #[test]
+    fn assistant_content_rate_limit_literal_is_not_provider_error() {
+        assert!(
+            classify_provider_error_from_assistant_content(
+                "The local metadata file contains the literal rate_limit string."
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn assistant_content_claude_usage_limit_banner_stays_provider_error() {
+        let result = classify_provider_error_from_assistant_content(
+            "You've hit your limit. Your limit will reset at 2026-05-09 18:00:00",
+        )
+        .expect("Claude usage-limit banner should classify");
+
+        match result {
+            StreamError::ProviderError { category, .. } => {
+                assert_eq!(category, ProviderErrorCategory::RateLimit);
+            }
+            other => panic!("expected provider rate limit, got {other:?}"),
+        }
     }
 }

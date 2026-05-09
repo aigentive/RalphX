@@ -1559,6 +1559,15 @@ pub async fn process_stream_background<R: Runtime>(
                             "TurnComplete: finalizing assistant message for interactive turn"
                         );
 
+                        if processor.result_is_error {
+                            tracing::warn!(
+                                conversation_id = %conversation_id_str,
+                                ?session_id,
+                                "TurnComplete carried a result error; preserving processor state for terminal error handling"
+                            );
+                            continue;
+                        }
+
                         // Finalize the current assistant message with accumulated content
                         if let (Some(ref repo), Some(ref msg_id)) =
                             (&chat_message_repo, &assistant_message_id)
@@ -2544,7 +2553,9 @@ pub async fn process_stream_background<R: Runtime>(
 
     if outcome.tool_calls.is_empty() {
         if let Some(provider_err) =
-            super::chat_service_errors::classify_provider_error(&outcome.response_text)
+            super::chat_service_errors::classify_provider_error_from_assistant_content(
+                &outcome.response_text,
+            )
         {
             return Err(provider_err);
         }
@@ -3121,7 +3132,9 @@ async fn process_codex_stream_background<R: Runtime>(
 
     if outcome.tool_calls.is_empty() {
         if let Some(provider_error) =
-            super::chat_service_errors::classify_provider_error(&outcome.response_text)
+            super::chat_service_errors::classify_provider_error_from_assistant_content(
+                &outcome.response_text,
+            )
         {
             return Err(provider_error);
         }
