@@ -6,12 +6,12 @@ use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::application::harness_runtime_registry::default_verification_max_rounds;
 use crate::domain::entities::{
     AcceptanceStatus, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
+    SessionPurpose, VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
 };
 use crate::domain::repositories::ideation_session_repository::{
     IdeationSessionWithProgress, SessionGroupCounts, SessionProgress,
@@ -727,6 +727,39 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                     .query_map([&parent_id], IdeationSession::from_row)?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(sessions)
+            })
+            .await
+    }
+
+    async fn get_latest_child_session_id(
+        &self,
+        parent_id: &IdeationSessionId,
+        purpose: Option<SessionPurpose>,
+        include_archived: bool,
+    ) -> AppResult<Option<IdeationSessionId>> {
+        let parent_id = parent_id.as_str().to_string();
+        let purpose = purpose.map(|value| value.to_string());
+        self.db
+            .query_optional(move |conn| {
+                let mut sql =
+                    "SELECT id FROM ideation_sessions WHERE parent_session_id = ?1".to_string();
+                if purpose.is_some() {
+                    sql.push_str(" AND session_purpose = ?2");
+                }
+                if !include_archived {
+                    sql.push_str(" AND status != 'archived'");
+                }
+                sql.push_str(" ORDER BY created_at DESC LIMIT 1");
+
+                let id = match purpose.as_deref() {
+                    Some(purpose) => conn.query_row(&sql, params![parent_id, purpose], |row| {
+                        row.get::<_, String>(0)
+                    })?,
+                    None => conn.query_row(&sql, params![parent_id], |row| {
+                        row.get::<_, String>(0)
+                    })?,
+                };
+                Ok(IdeationSessionId::from_string(id))
             })
             .await
     }

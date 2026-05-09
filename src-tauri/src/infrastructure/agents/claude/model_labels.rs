@@ -26,8 +26,11 @@ pub(crate) fn model_id_to_label(id: &str) -> String {
         "sonnet" => "Sonnet 4.6",
         "opus" => "Opus 4.6",
         "haiku" => "Haiku 4.5",
+        "gpt-5.5" => "GPT-5.5",
         "gpt-5.4" => "GPT-5.4",
         "gpt-5.4-mini" => "GPT-5.4 Mini",
+        "gpt-5.3-codex" => "GPT-5.3 Codex",
+        "gpt-5.3-codex-spark" => "GPT-5.3 Codex Spark",
         "gpt-4.5" => "GPT-4.5",
         // Full model IDs (Claude API format)
         "claude-sonnet-4-6" => "Sonnet 4.6",
@@ -51,8 +54,14 @@ mod tests {
         assert_eq!(model_id_to_label("sonnet"), "Sonnet 4.6");
         assert_eq!(model_id_to_label("opus"), "Opus 4.6");
         assert_eq!(model_id_to_label("haiku"), "Haiku 4.5");
+        assert_eq!(model_id_to_label("gpt-5.5"), "GPT-5.5");
         assert_eq!(model_id_to_label("gpt-5.4"), "GPT-5.4");
         assert_eq!(model_id_to_label("gpt-5.4-mini"), "GPT-5.4 Mini");
+        assert_eq!(model_id_to_label("gpt-5.3-codex"), "GPT-5.3 Codex");
+        assert_eq!(
+            model_id_to_label("gpt-5.3-codex-spark"),
+            "GPT-5.3 Codex Spark"
+        );
         assert_eq!(model_id_to_label("gpt-4.5"), "GPT-4.5");
     }
 
@@ -81,7 +90,9 @@ mod tests {
         let models: std::collections::HashSet<String> =
             list_canonical_prompt_backed_agents(&project_root, AgentPromptHarness::Claude)
                 .into_iter()
-                .filter_map(|agent_name| load_canonical_claude_metadata(&project_root, &agent_name).model)
+                .filter_map(|agent_name| {
+                    load_canonical_claude_metadata(&project_root, &agent_name).model
+                })
                 .filter(|model| !model.is_empty() && !model.starts_with('<'))
                 .collect();
 

@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Cpu,
   Info,
+  RotateCcw,
   TriangleAlert,
 } from "lucide-react";
 
+import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
 import {
   Select,
   SelectContent,
@@ -25,8 +27,20 @@ import {
   type KnownHarness,
   IDEATION_LANES,
 } from "@/api/ideation-harness";
+import { useAgentModels } from "@/hooks/useAgentModels";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import { useAgentHarnessSettings } from "@/hooks/useIdeationHarnessSettings";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import {
+  agentEffortOptionsForModel,
+  agentModelOptionsForProvider,
+  defaultEffortForModel,
+  defaultModelForProvider,
+  type AgentModelRegistry,
+  type AgentProvider,
+} from "@/lib/agent-models";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 import {
   loadHarnessExpanded,
   loadHarnessTab,
@@ -40,18 +54,17 @@ import {
 // Preset definitions
 // ============================================================================
 
+interface ModelPreset {
+  value: string;
+  display: string;
+  description?: string;
+}
+
 const CLAUDE_MODEL_PRESETS = [
   { value: "sonnet", display: "sonnet" },
   { value: "opus", display: "opus" },
   { value: "haiku", display: "haiku" },
-] as const;
-
-const CODEX_MODEL_PRESETS = [
-  { value: "gpt-5.4", display: "gpt-5.4 (Current)" },
-  { value: "gpt-5.4-mini", display: "gpt-5.4-mini" },
-  { value: "gpt-5.3-codex", display: "gpt-5.3-codex" },
-  { value: "gpt-5.3-codex-spark", display: "gpt-5.3-codex-spark" },
-] as const;
+] as const satisfies readonly ModelPreset[];
 
 const SELECT_TRIGGER_CLASS = "h-9 items-center";
 
@@ -69,41 +82,65 @@ interface InlineNoticeProps {
 
 const NOTICE_STYLES: Record<
   NoticeTone,
-  { wrapper: string; icon: React.ReactNode }
+  { style: CSSProperties; icon: React.ReactNode }
 > = {
   ok: {
-    wrapper:
-      "bg-[var(--notice-ok-bg)] border-[var(--notice-ok-border)] text-[var(--notice-ok-text)]",
+    style: {
+      backgroundColor: "var(--notice-ok-bg)",
+      borderColor: "var(--notice-ok-border)",
+      color: "var(--notice-ok-text)",
+    },
     icon: (
-      <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[var(--notice-ok-icon)]" />
+      <CheckCircle2
+        className="w-3.5 h-3.5 shrink-0 mt-0.5"
+        style={{ color: "var(--notice-ok-icon)" }}
+      />
     ),
   },
   warn: {
-    wrapper:
-      "bg-[var(--notice-warn-bg)] border-[var(--notice-warn-border)] text-[var(--notice-warn-text)]",
+    style: {
+      backgroundColor: "var(--notice-warn-bg)",
+      borderColor: "var(--notice-warn-border)",
+      color: "var(--notice-warn-text)",
+    },
     icon: (
-      <TriangleAlert className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[var(--notice-warn-icon)]" />
+      <TriangleAlert
+        className="w-3.5 h-3.5 shrink-0 mt-0.5"
+        style={{ color: "var(--notice-warn-icon)" }}
+      />
     ),
   },
   info: {
-    wrapper:
-      "bg-[var(--notice-info-bg)] border-[var(--notice-info-border)] text-[var(--notice-info-text)]",
+    style: {
+      backgroundColor: "var(--notice-info-bg)",
+      borderColor: "var(--notice-info-border)",
+      color: "var(--notice-info-text)",
+    },
     icon: (
-      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[var(--notice-info-icon)]" />
+      <Info
+        className="w-3.5 h-3.5 shrink-0 mt-0.5"
+        style={{ color: "var(--notice-info-icon)" }}
+      />
     ),
   },
 };
 
 function InlineNotice({ tone, title, children }: InlineNoticeProps) {
-  const { wrapper, icon } = NOTICE_STYLES[tone];
+  const { style, icon } = NOTICE_STYLES[tone];
   return (
     <div
-      className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[11px] leading-relaxed ${wrapper}`}
+      className="settings-inline-notice flex items-start gap-2 rounded-md border px-3 py-2 text-[0.6875rem] leading-relaxed"
+      style={style}
     >
       {icon}
       <div className="min-w-0 flex-1">
         {title && (
-          <div className="font-medium text-[var(--text-primary)]">{title}</div>
+          <div
+            className="font-medium"
+            style={{ color: "var(--notice-title-text, var(--text-primary))" }}
+          >
+            {title}
+          </div>
         )}
         <div className={title ? "mt-0.5" : undefined}>{children}</div>
       </div>
@@ -111,11 +148,34 @@ function InlineNotice({ tone, title, children }: InlineNoticeProps) {
   );
 }
 
-function getModelPresets(harness: string) {
-  return harness === "codex" ? CODEX_MODEL_PRESETS : CLAUDE_MODEL_PRESETS;
+function isAgentProvider(value: string): value is AgentProvider {
+  return value === "claude" || value === "codex";
 }
 
-function getEffortOptions(isGlobal: boolean) {
+function getModelPresets(
+  harness: string,
+  modelRegistry: AgentModelRegistry,
+): readonly ModelPreset[] {
+  if (!isAgentProvider(harness)) {
+    return CLAUDE_MODEL_PRESETS;
+  }
+  return agentModelOptionsForProvider(harness, modelRegistry).map(
+    ({ id, menuLabel, description }) => ({
+      value: id,
+      display: menuLabel,
+      ...(description ? { description } : {}),
+    })
+  );
+}
+
+function getEffortOptions(
+  isGlobal: boolean,
+  harness: string,
+  model: string | null,
+  modelRegistry: AgentModelRegistry,
+) {
+  const provider = isAgentProvider(harness) ? harness : "claude";
+  const modelId = model ?? defaultModelForProvider(provider, modelRegistry);
   return [
     {
       value: "inherit",
@@ -124,11 +184,14 @@ function getEffortOptions(isGlobal: boolean) {
         ? "Uses the app default from config"
         : "Uses the global default for this lane",
     },
-    { value: "low", label: "Low", description: "Fastest responses, minimal reasoning" },
-    { value: "medium", label: "Medium", description: "Balanced speed and quality" },
-    { value: "high", label: "High", description: "Deeper reasoning, slower responses" },
-    { value: "xhigh", label: "Maximum", description: "Highest quality, longest response time" },
-  ] as const;
+    ...agentEffortOptionsForModel(provider, modelId, modelRegistry).map(
+      ({ id, label, description }) => ({
+        value: id,
+        label,
+        description,
+      })
+    ),
+  ];
 }
 
 function effortLabel(value: string | null | undefined): string {
@@ -137,7 +200,8 @@ function effortLabel(value: string | null | undefined): string {
     case "low": return "Low";
     case "medium": return "Medium";
     case "high": return "High";
-    case "xhigh": return "Maximum";
+    case "xhigh": return "Extra High";
+    case "max": return "Max";
     default: return value;
   }
 }
@@ -157,11 +221,12 @@ interface ModelSelectProps {
   laneLabel: string;
   isGlobal: boolean;
   testId: string;
+  modelRegistry: AgentModelRegistry;
 }
 
 function modelSelectValue(
   value: string | null,
-  presets: readonly { value: string; display: string }[],
+  presets: readonly ModelPreset[],
 ): string {
   if (!value) {
     return MODEL_DEFAULT_VALUE;
@@ -180,8 +245,9 @@ function ModelSelect({
   laneLabel,
   isGlobal,
   testId,
+  modelRegistry,
 }: ModelSelectProps) {
-  const presets = getModelPresets(harness);
+  const presets = getModelPresets(harness, modelRegistry);
   const currentValue = modelSelectValue(value, presets);
   const defaultLabel = isGlobal ? "Harness default" : "Use global default";
   const defaultDescription = isGlobal
@@ -233,7 +299,12 @@ function ModelSelect({
         </SelectItem>
         {presets.map((preset) => (
           <SelectItem key={preset.value} value={preset.value} textValue={preset.display}>
-            <span className="text-[var(--text-primary)]">{preset.display}</span>
+            <div className="flex flex-col">
+              <span className="text-[var(--text-primary)]">{preset.display}</span>
+              {preset.description && (
+                <span className="text-xs text-[var(--text-muted)]">{preset.description}</span>
+              )}
+            </div>
           </SelectItem>
         ))}
         {hasCustomValue && value && (
@@ -288,6 +359,15 @@ const CODEX_LOCKED_APPROVAL_POLICY = "never";
 const CODEX_LOCKED_SANDBOX_MODE = "danger-full-access";
 const CODEX_MCP_REQUIREMENT_COPY =
   "Temporarily locked for Codex: RalphX MCP tools currently require Never approval and Danger Full Access.";
+
+const PROVIDER_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+};
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
 
 const LANE_META: Record<
   AgentLane,
@@ -352,6 +432,7 @@ type HarnessSectionScope = "ideation" | "execution";
 function defaultsForHarness(
   lane: AgentLane,
   harness: KnownHarness,
+  modelRegistry: AgentModelRegistry,
 ): {
   harness: Harness;
   model: string | null;
@@ -369,11 +450,17 @@ function defaultsForHarness(
     };
   }
 
+  const defaultCodexModel = defaultModelForProvider("codex", modelRegistry);
+  const defaultCodexEffort = defaultEffortForModel(
+    "codex",
+    defaultCodexModel,
+    modelRegistry,
+  );
   if (lane === "ideation_primary") {
     return {
       harness,
-      model: "gpt-5.4",
-      effort: "xhigh",
+      model: defaultCodexModel,
+      effort: defaultCodexEffort,
       approvalPolicy: CODEX_LOCKED_APPROVAL_POLICY,
       sandboxMode: CODEX_LOCKED_SANDBOX_MODE,
     };
@@ -392,8 +479,8 @@ function defaultsForHarness(
   if (EXECUTION_LANES.includes(lane)) {
     return {
       harness,
-      model: "gpt-5.4",
-      effort: "xhigh",
+      model: defaultCodexModel,
+      effort: defaultCodexEffort,
       approvalPolicy: CODEX_LOCKED_APPROVAL_POLICY,
       sandboxMode: CODEX_LOCKED_SANDBOX_MODE,
     };
@@ -408,7 +495,26 @@ function defaultsForHarness(
   };
 }
 
-function availabilityCopy(lane: AgentHarnessLaneView): string {
+function defaultsForProvider(
+  lane: AgentLane,
+  provider: AgentProviderSettingsResponse | null,
+  modelRegistry: AgentModelRegistry,
+): ReturnType<typeof defaultsForHarness> | null {
+  if (!provider || !isAgentProvider(provider.provider)) {
+    return null;
+  }
+
+  const fallback = defaultsForHarness(lane, provider.provider, modelRegistry);
+  return {
+    harness: provider.provider,
+    model: provider.model ?? fallback.model,
+    effort: provider.effort ?? fallback.effort,
+    approvalPolicy: provider.approvalPolicy ?? fallback.approvalPolicy,
+    sandboxMode: provider.sandboxMode ?? fallback.sandboxMode,
+  };
+}
+
+function laneIssueCopy(lane: AgentHarnessLaneView): string {
   if (lane.error) {
     return lane.error;
   }
@@ -420,11 +526,7 @@ function availabilityCopy(lane: AgentHarnessLaneView): string {
     return `Missing Codex features: ${lane.missingCoreExecFeatures.join(", ")}.`;
   }
 
-  if (lane.binaryFound && lane.binaryPath) {
-    return `${lane.effectiveHarness} detected at ${lane.binaryPath}.`;
-  }
-
-  return `${lane.effectiveHarness} is the current effective harness for this lane.`;
+  return "This lane needs provider attention before it can run.";
 }
 
 function selectValue(value: string | null | undefined): string {
@@ -458,6 +560,7 @@ interface HarnessRowProps {
   isExpanded: boolean;
   onToggleExpanded: () => void;
   onHarnessChange: (value: KnownHarness) => void;
+  onResetToDefault: () => void;
   onLaneChange: (
     patch: Partial<{
       model: string | null;
@@ -466,11 +569,14 @@ interface HarnessRowProps {
       sandboxMode: string | null;
     }>,
   ) => void;
+  modelRegistry: AgentModelRegistry;
+  harnessOptions: typeof HARNESS_OPTIONS;
+  canResetToDefault: boolean;
 }
 
 function SummaryPill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]">
+    <span className="inline-flex items-center rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[0.6875rem] text-[var(--text-secondary)]">
       {children}
     </span>
   );
@@ -484,14 +590,28 @@ function HarnessRow({
   isExpanded,
   onToggleExpanded,
   onHarnessChange,
+  onResetToDefault,
   onLaneChange,
+  modelRegistry,
+  harnessOptions,
+  canResetToDefault,
 }: HarnessRowProps) {
   const meta = LANE_META[lane.lane];
   const configuredHarness = lane.configuredHarness ?? lane.effectiveHarness;
+  const [permissionsExpanded, setPermissionsExpanded] = useState(false);
   const showWarning = !!lane.error || lane.missingCoreExecFeatures.length > 0;
   const showCodexControls = configuredHarness === "codex";
   const codexPolicyLocked = showCodexControls;
-  const effortOptions = getEffortOptions(isGlobal);
+  const effortOptions = getEffortOptions(
+    isGlobal,
+    configuredHarness,
+    lane.row?.model ?? null,
+    modelRegistry,
+  );
+
+  useEffect(() => {
+    setPermissionsExpanded(false);
+  }, [configuredHarness, lane.lane]);
 
   // Effective model: this lane's configured model, falling back to global lane's configured model
   const effectiveModel = lane.row?.model ?? globalLane?.row?.model ?? null;
@@ -500,16 +620,13 @@ function HarnessRow({
 
   const showEffectiveModel = !isGlobal && effectiveModel !== (lane.row?.model ?? null);
   const showEffectiveEffort = !isGlobal && effectiveEffort !== (lane.row?.effort ?? null);
-  const availabilityStatusLabel = showWarning ? "Needs attention" : "Available";
 
   const showEffectiveHarness = lane.effectiveHarness !== configuredHarness;
 
   // Summary values for collapsed state
-  const overrideCount = [
+  const visibleOverrideCount = [
     lane.row?.model,
     lane.row?.effort,
-    lane.row?.approvalPolicy,
-    lane.row?.sandboxMode,
   ].filter((v) => v != null).length;
   const modelSummary = lane.row?.model ?? (isGlobal ? "Harness default" : null);
   const effortSummary = lane.row?.effort
@@ -536,7 +653,7 @@ function HarnessRow({
             )}
           </span>
           <div className="flex-1 min-w-0">
-            <span className="text-[15px] font-semibold text-[var(--text-primary)] leading-tight group-hover:text-[var(--accent-primary)] transition-colors">
+            <span className="text-[0.9375rem] font-semibold text-[var(--text-primary)] leading-tight group-hover:text-[var(--accent-primary)] transition-colors">
               {meta.label}
             </span>
             <p className="text-xs text-[var(--text-muted)] mt-1">
@@ -544,11 +661,23 @@ function HarnessRow({
             </p>
           </div>
         </button>
-        <div className="shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
+          {canResetToDefault && (
+            <button
+              type="button"
+              onClick={onResetToDefault}
+              disabled={disabled}
+              aria-label={`Reset ${meta.label} to default provider`}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--border-default)] hover:text-[var(--accent-primary)] disabled:pointer-events-none disabled:opacity-50"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Reset
+            </button>
+          )}
           <Select
             value={configuredHarness}
             onValueChange={(value) => onHarnessChange(value as KnownHarness)}
-            disabled={disabled}
+            disabled={disabled || harnessOptions.length === 0}
           >
             <SelectTrigger
               id={`harness-${lane.lane}`}
@@ -558,13 +687,13 @@ function HarnessRow({
             >
               <SelectValue placeholder="Select provider">
                 <span className="truncate">
-                  {HARNESS_OPTIONS.find((o) => o.value === configuredHarness)?.label ??
+              {HARNESS_OPTIONS.find((o) => o.value === configuredHarness)?.label ??
                     configuredHarness}
                 </span>
               </SelectValue>
             </SelectTrigger>
             <SelectContent className="bg-[var(--bg-elevated)] border-[var(--border-default)]">
-              {HARNESS_OPTIONS.map((option) => (
+              {harnessOptions.map((option) => (
                 <SelectItem
                   key={option.value}
                   value={option.value}
@@ -585,36 +714,22 @@ function HarnessRow({
       </div>
       {!isExpanded && (
         <div className="mt-3 ml-6 flex flex-wrap items-center gap-2">
-          {isGlobal || overrideCount > 0 ? (
+          {isGlobal || visibleOverrideCount > 0 ? (
             <>
               {modelSummary && <SummaryPill>{modelSummary}</SummaryPill>}
               {effortSummary && <SummaryPill>{effortSummary}</SummaryPill>}
-              {showCodexControls && lane.row?.approvalPolicy && (
-                <SummaryPill>{lane.row.approvalPolicy}</SummaryPill>
-              )}
-              {showCodexControls && lane.row?.sandboxMode && (
-                <SummaryPill>{lane.row.sandboxMode}</SummaryPill>
-              )}
             </>
           ) : (
-            <span className="text-[11px] text-[var(--text-muted)] italic">
+            <span className="text-[0.6875rem] text-[var(--text-muted)] italic">
               Inherited from global
             </span>
           )}
-          <span
-            className={`ml-auto inline-flex items-center gap-1 text-[11px] ${
-              showWarning
-                ? "text-[var(--warning)]"
-                : "text-[var(--status-success)]"
-            }`}
-          >
-            {showWarning ? (
+          {showWarning && (
+            <span className="ml-auto inline-flex items-center gap-1 text-[0.6875rem] text-[var(--warning)]">
               <TriangleAlert className="w-3 h-3" />
-            ) : (
-              <CheckCircle2 className="w-3 h-3" />
-            )}
-            <span>{availabilityStatusLabel}</span>
-          </span>
+              <span>Needs attention</span>
+            </span>
+          )}
         </div>
       )}
       <div
@@ -631,13 +746,14 @@ function HarnessRow({
               value={lane.row?.model ?? null}
               harness={configuredHarness}
               disabled={disabled}
-              onChange={(nextValue) => onLaneChange({ model: nextValue })}
+              onChange={(nextValue) => onLaneChange({ model: nextValue, effort: null })}
               laneLabel={meta.label}
               isGlobal={isGlobal}
               testId={`model-${lane.lane}`}
+              modelRegistry={modelRegistry}
             />
             {showEffectiveModel && (
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[0.6875rem] text-[var(--text-muted)]">
                 Effective:{" "}
                 <span className="text-[var(--text-secondary)]">
                   {effectiveModel ?? "(harness default)"}
@@ -674,7 +790,7 @@ function HarnessRow({
               </SelectContent>
             </Select>
             {showEffectiveEffort && (
-              <p className="text-[11px] text-[var(--text-muted)]">
+              <p className="text-[0.6875rem] text-[var(--text-muted)]">
                 Effective:{" "}
                 <span className="text-[var(--text-secondary)]">
                   {effortLabel(effectiveEffort)}
@@ -683,7 +799,31 @@ function HarnessRow({
             )}
           </div>
           {showCodexControls && (
-            <>
+            <div className="md:col-span-2">
+              <button
+                type="button"
+                onClick={() => setPermissionsExpanded((value) => !value)}
+                aria-expanded={permissionsExpanded}
+                aria-controls={`permissions-${lane.lane}`}
+                className="inline-flex items-center gap-1 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--accent-primary)]"
+              >
+                {permissionsExpanded ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+                {permissionsExpanded ? "Hide permissions" : "Show permissions"}
+              </button>
+            </div>
+          )}
+        </div>
+        {showCodexControls && (
+          <div
+            id={`permissions-${lane.lane}`}
+            hidden={!permissionsExpanded}
+            className="space-y-3"
+          >
+            <div className="grid gap-3 md:grid-cols-2">
               <div className="space-y-1">
                 <p className="text-xs font-medium text-[var(--text-secondary)]">
                   Approval
@@ -738,24 +878,57 @@ function HarnessRow({
                   </SelectContent>
                 </Select>
               </div>
-            </>
-          )}
-        </div>
-        {showCodexControls && (
-          <InlineNotice tone="info">{CODEX_MCP_REQUIREMENT_COPY}</InlineNotice>
+            </div>
+            <InlineNotice tone="info">{CODEX_MCP_REQUIREMENT_COPY}</InlineNotice>
+          </div>
         )}
-        <InlineNotice
-          tone={showWarning ? "warn" : "ok"}
-          title={
-            showEffectiveHarness
-              ? `${availabilityStatusLabel} · Effective: ${lane.effectiveHarness}`
-              : availabilityStatusLabel
-          }
-        >
-          {availabilityCopy(lane)}
-        </InlineNotice>
+        {showWarning && (
+          <InlineNotice
+            tone="warn"
+            title={
+              showEffectiveHarness
+                ? `Needs attention · Effective: ${lane.effectiveHarness}`
+                : "Needs attention"
+            }
+          >
+            {laneIssueCopy(lane)}
+          </InlineNotice>
+        )}
       </div>
     </div>
+  );
+}
+
+function ProviderSetupNotice({
+  onOpenProviders,
+}: {
+  onOpenProviders: () => void;
+}) {
+  return (
+    <InlineNotice tone="warn" title="Provider Setup Required">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <span>
+          Enable, validate, and set a default provider before configuring agent
+          lanes.
+        </span>
+        <button
+          type="button"
+          onClick={onOpenProviders}
+          className="inline-flex h-8 w-fit items-center gap-1.5 rounded-md border border-[var(--border-default)] bg-[var(--bg-elevated)] px-2.5 text-[0.6875rem] font-medium text-[var(--text-primary)] transition-colors hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)]"
+        >
+          Open Providers
+          <ChevronRight className="h-3 w-3" />
+        </button>
+      </div>
+    </InlineNotice>
+  );
+}
+
+function ProviderSettingsLoadingNotice() {
+  return (
+    <InlineNotice tone="info" title="Loading Providers">
+      Checking configured providers before showing agent lane controls.
+    </InlineNotice>
   );
 }
 
@@ -770,6 +943,9 @@ function HarnessSubsection({
   globalLanes,
   isGlobal,
   tabValue,
+  modelRegistry,
+  harnessOptions,
+  defaultProvider,
 }: {
   projectId: string | null;
   projectName: string | null;
@@ -777,8 +953,12 @@ function HarnessSubsection({
   globalLanes: AgentHarnessLaneView[];
   isGlobal: boolean;
   tabValue: HarnessTabValue;
+  modelRegistry: AgentModelRegistry;
+  harnessOptions: typeof HARNESS_OPTIONS;
+  defaultProvider: AgentProviderSettingsResponse | null;
 }) {
   const [showError, setShowError] = useState(false);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const {
     lanes,
     isPlaceholderData,
@@ -787,8 +967,8 @@ function HarnessSubsection({
   } = useAgentHarnessSettings(projectId);
   const isDisabled = !isGlobal && projectId === null;
 
-  // Progressive disclosure: persisted per-tab. Defaults = global open, project
-  // collapsed. Warnings force a lane open regardless of the stored preference.
+  // Progressive disclosure: persisted per-tab and collapsed by default.
+  // Warnings force a lane open regardless of the stored preference.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
@@ -804,7 +984,7 @@ function HarnessSubsection({
         if (current === undefined) {
           const stored = persisted[lane.lane];
           next[lane.lane] =
-            stored !== undefined ? stored || hasWarning : isGlobal || hasWarning;
+            stored !== undefined ? stored || hasWarning : hasWarning;
           changed = true;
         } else if (hasWarning && !current) {
           next[lane.lane] = true;
@@ -840,7 +1020,7 @@ function HarnessSubsection({
     updateLane(
       {
         lane,
-        ...defaultsForHarness(lane, harness),
+        ...defaultsForHarness(lane, harness, modelRegistry),
       },
       { onError: () => setShowError(true) },
     );
@@ -869,6 +1049,41 @@ function HarnessSubsection({
     );
   };
 
+  const handleResetToDefault = async (laneView: AgentHarnessLaneView) => {
+    if (isDisabled) {
+      return;
+    }
+
+    const nextDefaults = defaultsForProvider(
+      laneView.lane,
+      defaultProvider,
+      modelRegistry,
+    );
+    if (!nextDefaults || !defaultProvider) {
+      return;
+    }
+
+    const meta = LANE_META[laneView.lane];
+    const confirmed = await confirm({
+      title: `Reset ${meta.label} to default provider?`,
+      description: `Use ${providerLabel(defaultProvider.provider)} defaults for this lane.`,
+      confirmText: "Reset lane",
+      cancelText: "Cancel",
+    });
+    if (!confirmed) {
+      return;
+    }
+
+    setShowError(false);
+    updateLane(
+      {
+        lane: laneView.lane,
+        ...nextDefaults,
+      },
+      { onError: () => setShowError(true) },
+    );
+  };
+
   return (
     <div>
       <div className="flex items-start justify-between gap-3 mb-3">
@@ -887,7 +1102,7 @@ function HarnessSubsection({
           <button
             type="button"
             onClick={() => setAllExpanded(!allExpanded)}
-            className="shrink-0 text-[11px] font-medium text-[var(--text-secondary)] hover:text-[var(--accent-primary)] transition-colors"
+            className="shrink-0 text-[0.6875rem] font-medium text-[var(--text-secondary)] hover:text-[var(--accent-primary)] transition-colors"
           >
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
@@ -930,7 +1145,11 @@ function HarnessSubsection({
                     isExpanded={expanded[lane.lane] ?? false}
                     onToggleExpanded={() => toggleLane(lane.lane)}
                     onHarnessChange={(value) => handleHarnessChange(lane.lane, value)}
+                    onResetToDefault={() => void handleResetToDefault(lane)}
                     onLaneChange={(patch) => handleLaneSettingsChange(lane, patch)}
+                    modelRegistry={modelRegistry}
+                    harnessOptions={harnessOptions}
+                    canResetToDefault={defaultProvider !== null}
                   />
                 );
               })}
@@ -938,6 +1157,7 @@ function HarnessSubsection({
           );
         })}
       </div>
+      <ConfirmationDialog {...confirmationDialogProps} />
     </div>
   );
 }
@@ -958,6 +1178,32 @@ function AgentHarnessSection({
   const activeProject = useProjectStore(selectActiveProject);
   const projectId = activeProject?.id ?? null;
   const projectName = activeProject?.name ?? null;
+  const { registry: modelRegistry } = useAgentModels();
+  const openModal = useUiStore((state) => state.openModal);
+  const {
+    settings: providerSettings,
+    isPlaceholderData: isProviderPlaceholderData,
+  } = useHarnessProviders();
+  const defaultProvider =
+    providerSettings.providers.find(
+      (provider) =>
+        provider.provider === providerSettings.defaultProvider &&
+        provider.enabled &&
+        provider.available,
+    ) ?? null;
+  const enabledProviders = new Set(
+    providerSettings.providers
+      .filter((provider) => provider.enabled && provider.available)
+      .map((provider) => provider.provider),
+  );
+  const harnessOptions = HARNESS_OPTIONS.filter((option) =>
+    enabledProviders.has(option.value),
+  );
+  const requiresProviderSetup =
+    !isProviderPlaceholderData &&
+    (providerSettings.requiresOnboarding ||
+      defaultProvider === null ||
+      harnessOptions.length === 0);
 
   // Fetch global lanes for effective value resolution in project rows
   const { lanes: globalLanes } = useAgentHarnessSettings(null);
@@ -969,10 +1215,37 @@ function AgentHarnessSection({
     setActiveTabState(tab);
     saveHarnessTab(scope, tab);
   };
+  const sectionIcon = <Cpu className="w-5 h-5 text-[var(--accent-primary)]" />;
+
+  if (isProviderPlaceholderData) {
+    return (
+      <SectionCard
+        icon={sectionIcon}
+        title={title}
+        description={description}
+      >
+        <ProviderSettingsLoadingNotice />
+      </SectionCard>
+    );
+  }
+
+  if (requiresProviderSetup) {
+    return (
+      <SectionCard
+        icon={sectionIcon}
+        title={title}
+        description={description}
+      >
+        <ProviderSetupNotice
+          onOpenProviders={() => openModal("settings", { section: "providers" })}
+        />
+      </SectionCard>
+    );
+  }
 
   return (
     <SectionCard
-      icon={<Cpu className="w-5 h-5 text-[var(--accent-primary)]" />}
+      icon={sectionIcon}
       title={title}
       description={description}
     >
@@ -1003,6 +1276,9 @@ function AgentHarnessSection({
             globalLanes={globalLanes}
             isGlobal={true}
             tabValue="global"
+            modelRegistry={modelRegistry}
+            harnessOptions={harnessOptions}
+            defaultProvider={defaultProvider}
           />
         </TabsContent>
         <TabsContent value="project" className="mt-4">
@@ -1013,6 +1289,9 @@ function AgentHarnessSection({
             globalLanes={globalLanes}
             isGlobal={false}
             tabValue="project"
+            modelRegistry={modelRegistry}
+            harnessOptions={harnessOptions}
+            defaultProvider={defaultProvider}
           />
         </TabsContent>
       </Tabs>

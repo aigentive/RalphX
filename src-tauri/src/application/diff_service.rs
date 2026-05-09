@@ -8,6 +8,7 @@
 use crate::application::git_service::checkout_free;
 use crate::domain::entities::TaskId;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -145,7 +146,7 @@ impl DiffService {
         project_path: &str,
         base_branch: &str,
     ) -> (u32, u32) {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["diff", "--numstat", base_branch, "--", file_path])
             .current_dir(project_path)
             .output();
@@ -212,7 +213,7 @@ impl DiffService {
     ) -> AppResult<Vec<FileChange>> {
         // Use git diff-tree to get files changed in this commit
         // Format: status\tpath (e.g., "A\tfile.rs" for added, "M\tfile.rs" for modified)
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args([
                 "diff-tree",
                 "--no-commit-id",
@@ -274,7 +275,7 @@ impl DiffService {
         project_path: &str,
     ) -> (u32, u32) {
         // git diff commit^..commit --numstat -- file_path
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args([
                 "diff",
                 "--numstat",
@@ -323,7 +324,7 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<Vec<FileChange>> {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["diff", "--name-status", from_ref, to_ref])
             .current_dir(project_path)
             .output()
@@ -380,7 +381,7 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> (u32, u32) {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["diff", "--numstat", from_ref, to_ref, "--", file_path])
             .current_dir(project_path)
             .output();
@@ -446,7 +447,7 @@ impl DiffService {
 
     /// Determine if a commit has a second parent (true merge commit)
     pub fn is_merge_commit(&self, project_path: &str, commit_sha: &str) -> bool {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["rev-parse", "--verify", &format!("{}^2", commit_sha)])
             .current_dir(project_path)
             .output();
@@ -454,7 +455,10 @@ impl DiffService {
     }
 
     /// Compute base ref for a merged task range.
-    /// If merge commit, use first parent; otherwise use merge-base with base branch.
+    /// True merge commits compare against their first parent. Non-merge recorded
+    /// task merge SHAs are usually squash/rebase commits, so compare against the
+    /// direct parent instead of a current-base merge-base that may include older
+    /// plan/agent branch work.
     pub fn get_merged_base_ref(
         &self,
         project_path: &str,
@@ -465,7 +469,19 @@ impl DiffService {
             return format!("{}^1", merge_commit_sha);
         }
 
-        let output = Command::new("git")
+        let parent_ref = format!("{}^", merge_commit_sha);
+        let parent_output = Command::new(resolve_git_cli_path())
+            .args(["rev-parse", "--verify", &parent_ref])
+            .current_dir(project_path)
+            .output();
+        if parent_output
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+        {
+            return parent_ref;
+        }
+
+        let output = Command::new(resolve_git_cli_path())
             .args(["merge-base", base_branch, merge_commit_sha])
             .current_dir(project_path)
             .output();
@@ -474,7 +490,7 @@ impl DiffService {
             if output.status.success() {
                 let base = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !base.is_empty() {
-                    let resolved_merge = Command::new("git")
+                    let resolved_merge = Command::new(resolve_git_cli_path())
                         .args(["rev-parse", merge_commit_sha])
                         .current_dir(project_path)
                         .output()
@@ -483,7 +499,7 @@ impl DiffService {
                         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
                     if resolved_merge.as_deref() == Some(base.as_str()) {
                         let parent_ref = format!("{}^", merge_commit_sha);
-                        let parent_output = Command::new("git")
+                        let parent_output = Command::new(resolve_git_cli_path())
                             .args(["rev-parse", "--verify", &parent_ref])
                             .current_dir(project_path)
                             .output();
@@ -618,7 +634,7 @@ impl DiffService {
     ///
     /// Uses `git diff --name-only --diff-filter=U` to find unmerged files.
     fn get_conflict_files(repo: &Path) -> AppResult<Vec<PathBuf>> {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["diff", "--name-only", "--diff-filter=U"])
             .current_dir(repo)
             .output()
@@ -641,7 +657,7 @@ impl DiffService {
     fn is_git_238_or_newer() -> bool {
         static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *CACHE.get_or_init(|| {
-            let output = Command::new("git").args(["--version"]).output();
+            let output = Command::new(resolve_git_cli_path()).args(["--version"]).output();
 
             if let Ok(output) = output {
                 let version_str = String::from_utf8_lossy(&output.stdout);
@@ -731,7 +747,7 @@ impl DiffService {
         base_branch: &str,
         task_branch: &str,
     ) -> AppResult<String> {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["merge-base", base_branch, task_branch])
             .current_dir(repo)
             .output()
@@ -755,7 +771,7 @@ impl DiffService {
         git_ref: &str,
         file_path: &str,
     ) -> Option<String> {
-        let output = Command::new("git")
+        let output = Command::new(resolve_git_cli_path())
             .args(["show", &format!("{}:{}", git_ref, file_path)])
             .current_dir(project_path)
             .output()

@@ -42,6 +42,8 @@ That means new harness work is expected to flow through shared:
 
 The goal is to make adding a future harness a targeted extension of that shared surface, not another repo-wide `claude + X` refactor.
 
+RalphX also has provider-neutral [internal skills](internal-skills.md). These are RalphX-owned instruction packs that can be injected into Claude, Codex, or future harness prompts through canonical per-agent allowlists.
+
 ---
 
 ## Where you configure it

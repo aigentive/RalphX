@@ -74,6 +74,12 @@ second "merge approval" unless your integration explicitly defines one.
 
 Never assume approval is always human-only. Never assume approval is always autonomous.
 
+**Accepted-plan follow-ups use append, not a new ideation, while the plan is still open.**
+When the user asks for a small one-off addition after `v1_accept_plan_and_schedule`, call
+`v1_append_task_to_plan` if the plan branch is still active. Open PR / waiting-on-PR plans are still
+open and can receive appended tasks. Once the PR/plan is closed, merged, terminal, or actively
+merging/repairing, start a new ideation continuation instead.
+
 **Conservative intervention.** When uncertain, annotate and wait. A wrong auto-action (retrying a
 non-transient failure, sending a message to a generating agent) causes more damage than a brief
 delay. Escalate to human attention when in doubt.
@@ -115,12 +121,14 @@ Do not ask "shall I approve?" unless approval is genuinely blocked on the user.
 | QA fails (`qa_failed`) | Call `v1_get_task_detail` + surface to human; human decides: `v1_request_changes` or manually skips QA via app UI | Auto-retry QA without human review |
 | `merge:ready` or `pending_merge` | Treat as merge-pipeline progress; monitor for `merge:completed` or `merge:conflict` | Ask the user for a second generic merge approval |
 | Session `delivery_status = delivered` | Report "all tasks merged to main" / "plan delivered" | Continue talking as if approval is still pending |
+| Small follow-up after accepted plan while plan is still open | `v1_append_task_to_plan(session_id, title, steps, acceptance_criteria)` | Start a whole new ideation for a one-off task while the existing plan branch/PR is still open |
+| Follow-up after plan is closed, terminal, or actively merging/repairing | Start a new ideation continuation | Append to a closed, merged, terminal, conflicting, or actively merging plan |
 
 ---
 
 ## 4. Quick Decision Guide
 
-The 10 most common decision points:
+The 11 most common decision points:
 
 **1. Event arrives: `task:status_changed` → `escalated`**
 → `v1_get_task_detail(task_id)` → `v1_create_task_note(task_id, "Escalated: <reason>")` → Alert human
@@ -158,6 +166,11 @@ The 10 most common decision points:
 **10. Session delivery reaches `delivered`**
 → Report concise completion: "All tasks merged to main. Plan delivered."
 → Include task count or key titles only if useful
+
+**11. User asks for a small follow-up after plan acceptance**
+→ `v1_get_session_tasks(session_id)` to inspect delivery/task state
+→ If the plan is still open, including open PR / waiting-on-PR: `v1_append_task_to_plan(session_id, title, steps, acceptance_criteria)`
+→ If the PR/plan is closed, merged, terminal, or actively merging/repairing: start a new ideation continuation
 
 ---
 

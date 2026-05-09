@@ -6,11 +6,12 @@ usage() {
 Build RalphX production release artifacts without mutating local app data.
 
 Usage:
-  ./scripts/build-prod-release.sh [--clean] [--skip-build]
+  ./scripts/build-prod-release.sh [--clean] [--skip-build] [--target <triple>]
 
 Options:
   --clean       Remove existing release bundle artifacts before building
   --skip-build  Skip the build step and only validate/report artifact paths
+  --target      Build against a Rust/Tauri target triple, e.g. x86_64-apple-darwin
   -h, --help    Show this help
 
 This script is production-oriented:
@@ -31,6 +32,7 @@ STAGE_TRACE_LOG="${TRACE_DIR}/release-stages.log"
 
 CLEAN="${RALPHX_RELEASE_CLEAN_BUNDLE:-false}"
 SKIP_BUILD="false"
+BUILD_TARGET="${RALPHX_RELEASE_TARGET:-}"
 
 timestamp_utc() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -113,12 +115,17 @@ stream_tauri_build_output() {
 
 run_tauri_release_build() {
   local tauri_status=0
+  local tauri_args=(build -- --verbose)
+
+  if [[ -n "${BUILD_TARGET}" ]]; then
+    tauri_args+=(--target "${BUILD_TARGET}")
+  fi
 
   emit_stage_marker "frontend-tauri-build-started"
 
   (
     cd "${PROJECT_ROOT}/frontend"
-    CI=false npm run tauri build -- --verbose
+    CI=false npm run tauri "${tauri_args[@]}"
   ) > >(tee "${RAW_TRACE_LOG}" | stream_tauri_build_output) 2>&1 || tauri_status=$?
 
   if [[ "${tauri_status}" -ne 0 ]]; then
@@ -129,26 +136,47 @@ run_tauri_release_build() {
   emit_stage_marker "frontend-tauri-build-completed"
 }
 
-for arg in "$@"; do
-  case "${arg}" in
-    --clean) CLEAN="true" ;;
-    --skip-build) SKIP_BUILD="true" ;;
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --clean)
+      CLEAN="true"
+      shift
+      ;;
+    --skip-build)
+      SKIP_BUILD="true"
+      shift
+      ;;
+    --target)
+      if [[ "$#" -lt 2 || -z "${2:-}" ]]; then
+        echo "--target requires a target triple" >&2
+        usage
+        exit 1
+      fi
+      BUILD_TARGET="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
       ;;
     *)
-      echo "Unknown option: ${arg}" >&2
+      echo "Unknown option: $1" >&2
       usage
       exit 1
       ;;
   esac
 done
 
-APP_PATH="${PROJECT_ROOT}/src-tauri/target/release/bundle/macos/RalphX.app"
-MACOS_BUNDLE_DIR="${PROJECT_ROOT}/src-tauri/target/release/bundle/macos"
-DMG_DIR="${PROJECT_ROOT}/src-tauri/target/release/bundle/dmg"
-BIN_PATH="${PROJECT_ROOT}/src-tauri/target/release/ralphx"
+if [[ -n "${BUILD_TARGET}" ]]; then
+  RELEASE_TARGET_DIR="${PROJECT_ROOT}/src-tauri/target/${BUILD_TARGET}/release"
+else
+  RELEASE_TARGET_DIR="${PROJECT_ROOT}/src-tauri/target/release"
+fi
+
+APP_PATH="${RELEASE_TARGET_DIR}/bundle/macos/RalphX.app"
+MACOS_BUNDLE_DIR="${RELEASE_TARGET_DIR}/bundle/macos"
+DMG_DIR="${RELEASE_TARGET_DIR}/bundle/dmg"
+BIN_PATH="${RELEASE_TARGET_DIR}/ralphx"
 
 prepare_trace_dir
 
@@ -159,7 +187,7 @@ fi
 if [[ "${CLEAN}" == "true" ]]; then
   emit_stage_marker "release-clean-started"
   echo "Cleaning previous release bundle artifacts..."
-  rm -rf "${PROJECT_ROOT}/src-tauri/target/release/bundle"
+  rm -rf "${RELEASE_TARGET_DIR}/bundle"
   emit_stage_marker "release-clean-completed"
 fi
 
@@ -182,6 +210,9 @@ echo "Production release artifact summary"
 echo "---------------------------------"
 echo "Local app data was not modified."
 echo "Application Support plugin/runtime sync was not performed."
+if [[ -n "${BUILD_TARGET}" ]]; then
+  echo "Build target: ${BUILD_TARGET}"
+fi
 echo "Release trace log: ${RAW_TRACE_LOG}"
 echo "Release stage log: ${STAGE_TRACE_LOG}"
 emit_stage_marker "artifact-summary-started"

@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import type {
   IdeationSession,
   TaskProposal,
+  VerificationStatus,
 } from "@/types/ideation";
 import type { ApplyProposalsInput, ApplyProposalsResultResponse } from "@/api/ideation.types";
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,7 @@ import { ReopenSessionDialog } from "./ReopenSessionDialog";
 import type { ReopenMode } from "./ReopenSessionDialog";
 import { useReopenSession, useResetAndReaccept, useIdeationSessions } from "@/hooks/useIdeation";
 import { usePlanBrowserLayout } from "@/hooks/usePlanBrowserLayout";
+import { usePersistentSidebarResize } from "@/hooks/usePersistentSidebarResize";
 import { ideationApi } from "@/api/ideation";
 import { useQuery } from "@tanstack/react-query";
 import { planBranchApi } from "@/api/plan-branch";
@@ -119,7 +121,7 @@ export function AnalysisBanner() {
         className="w-3.5 h-3.5 animate-spin shrink-0"
         style={{ color: "var(--accent-primary)" }}
       />
-      <span className="text-[12px]" style={{ color: "var(--accent-primary)" }}>
+      <span className="text-[0.75rem]" style={{ color: "var(--accent-primary)" }}>
         Analyzing dependencies — accept will be available when complete
       </span>
     </div>
@@ -129,6 +131,10 @@ export function AnalysisBanner() {
 // ============================================================================
 // Main Component
 // ============================================================================
+
+const PLAN_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY = "ralphx-plan-browser-sidebar-width";
+const PLAN_BROWSER_SIDEBAR_MIN_WIDTH = 220;
+const PLAN_BROWSER_SIDEBAR_MAX_WIDTH = 520;
 
 export function PlanningView({
   session,
@@ -149,6 +155,7 @@ export function PlanningView({
   const [isResizing, setIsResizing] = useState(false);
   const [isAcceptModalOpen, setIsAcceptModalOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const planBrowserSidebarRef = useRef<HTMLDivElement | null>(null);
 
   const {
     sidebarWidth,
@@ -158,6 +165,26 @@ export function PlanningView({
     closeOverlay,
     suppressTransition,
   } = usePlanBrowserLayout();
+  const {
+    handleSidebarResizeReset: handlePlanBrowserResizeReset,
+    handleSidebarResizeStart: handlePlanBrowserResizeStart,
+    isSidebarResizing: isPlanBrowserSidebarResizing,
+    userSidebarWidth: userPlanBrowserSidebarWidth,
+  } = usePersistentSidebarResize(planBrowserSidebarRef, {
+    maxWidth: PLAN_BROWSER_SIDEBAR_MAX_WIDTH,
+    minWidth: PLAN_BROWSER_SIDEBAR_MIN_WIDTH,
+    storageKey: PLAN_BROWSER_SIDEBAR_WIDTH_STORAGE_KEY,
+  });
+  const effectiveSidebarWidth =
+    !isCollapsed && userPlanBrowserSidebarWidth !== null && sidebarWidth > 0
+      ? userPlanBrowserSidebarWidth
+      : sidebarWidth;
+  const showPlanBrowserResizeHandle =
+    !isCollapsed && !isOverlayOpen && sidebarWidth > 0;
+  const planBrowserTransition =
+    suppressTransition.current || isPlanBrowserSidebarResizing
+      ? "none"
+      : "width 300ms ease";
 
   const planArtifact = useIdeationStore((state) => state.planArtifact);
   const fetchPlanArtifact = useIdeationStore((state) => state.fetchPlanArtifact);
@@ -357,27 +384,34 @@ export function PlanningView({
   const lastVerificationChildId = useIdeationStore(
     (s) => s.lastVerificationChildId[session?.id ?? ''] ?? null
   );
+  const [displayedVerificationChildId, setDisplayedVerificationChildId] = useState<string | null>(null);
+  const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
+    status: VerificationStatus;
+    inProgress: boolean;
+  } | null>(null);
 
   // Poll status for verification child and direct child session views to detect pending_initial_prompt
-  // Eagerly fetch verification child sessions so lastVerificationChildId is populated
-  // before the user clicks the Verification tab (eliminates cold-start flash of parent chat)
-  const { data: verificationChildren } = useQuery({
-    queryKey: ["childSessions", session?.id, "verification"],
-    queryFn: () => ideationApi.sessions.getChildren(session!.id, "verification"),
+  // Eagerly fetch the latest verification child id so chat routing is ready without
+  // hydrating the full child-session history before the Verification tab needs it.
+  const { data: latestVerificationChild } = useQuery({
+    queryKey: ["childSessionId", session?.id, "verification", "latest"],
+    queryFn: () =>
+      ideationApi.sessions.getLatestChildSessionId(session!.id, "verification", {
+        includeArchived: true,
+      }),
     enabled: !!session?.id && session?.sessionPurpose !== "verification",
     staleTime: 30_000,
   });
 
-  const latestVerificationChildId = useMemo(() => {
-    if (!verificationChildren?.length) return null;
-    const sorted = [...verificationChildren].sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    return sorted[0]?.id ?? null;
-  }, [verificationChildren]);
+  const latestVerificationChildId =
+    latestVerificationChild?.latestChildSessionId ?? null;
 
   const verificationChatSessionId =
-    lastVerificationChildId ?? activeVerificationChildId ?? latestVerificationChildId ?? null;
+    displayedVerificationChildId ??
+    lastVerificationChildId ??
+    activeVerificationChildId ??
+    latestVerificationChildId ??
+    null;
 
   const { data: verificationChildStatus } = useChildSessionStatus(verificationChatSessionId);
   // Poll for the current session unconditionally — works for both child and top-level sessions.
@@ -387,14 +421,16 @@ export function PlanningView({
   // Pre-populate lastVerificationChildId from eager query result.
   // Only sets if store field is null (avoids overwriting event-driven updates).
   useEffect(() => {
-    if (!session?.id || !verificationChildren?.length) return;
+    if (!session?.id || !latestVerificationChildId) return;
     if (lastVerificationChildId) return;
 
-    const latestId = latestVerificationChildId;
-    if (latestId) {
-      setLastVerificationChildId(session.id, latestId);
-    }
-  }, [session?.id, verificationChildren?.length, latestVerificationChildId, lastVerificationChildId, setLastVerificationChildId]);
+    setLastVerificationChildId(session.id, latestVerificationChildId);
+  }, [
+    session?.id,
+    latestVerificationChildId,
+    lastVerificationChildId,
+    setLastVerificationChildId,
+  ]);
 
   // Reset to plan tab when switching sessions
   const prevSessionIdRef = useRef<string | null>(null);
@@ -404,6 +440,10 @@ export function PlanningView({
       // Session changed — reset new session to plan tab, but preserve
       // per-session verification routing state so coming back stays reliable.
       setActiveIdeationTab(session.id, 'plan');
+    }
+    if (prevSessionIdRef.current !== session.id) {
+      setDisplayedVerificationChildId(null);
+      setDisplayedVerificationStatus(null);
     }
     prevSessionIdRef.current = session.id;
   }, [session?.id, setActiveIdeationTab]);
@@ -431,14 +471,18 @@ export function PlanningView({
     !hasKnownPlan && !isVerificationActive && isTerminalVerificationStatus
       ? "unverified"
       : rawVerificationStatus;
+  const effectiveVerificationStatus =
+    displayedVerificationStatus?.status ?? verificationStatus;
+  const effectiveVerificationInProgress =
+    displayedVerificationStatus?.inProgress ?? isVerificationActive;
   const showVerificationTab = Boolean(
-    verificationStatus !== "unverified" || hasKnownPlan
+    effectiveVerificationStatus !== "unverified" || hasKnownPlan
   );
   const verificationBadge: "in_progress" | "verified" | "warning" | null = (() => {
     if (!session) return null;
-    if (isVerificationActive) return "in_progress";
-    if (verificationStatus === "verified" || verificationStatus === "imported_verified") return "verified";
-    if (verificationStatus === "needs_revision") return "warning";
+    if (effectiveVerificationInProgress) return "in_progress";
+    if (effectiveVerificationStatus === "verified" || effectiveVerificationStatus === "imported_verified") return "verified";
+    if (effectiveVerificationStatus === "needs_revision") return "warning";
     return null;
   })();
 
@@ -690,25 +734,22 @@ export function PlanningView({
     // But allow refetch when verification is actively running (state may have changed)
     if (verificationChatSessionId && !isVerificationActive) return;
 
-    // Fetch the latest verification child session
+    // Fetch the latest verification child id without hydrating the full history list.
     try {
-      const children = await ideationApi.sessions.getChildren(session.id, 'verification');
-      if (children.length > 0) {
-        // Sort by createdAt descending, take the most recent
-        const sorted = [...children].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        const latest = sorted[0];
-        if (latest) {
-          // Only set activeVerificationChildId if not already populated (fresh hydration only)
-          if (!activeVerificationChildId) {
-            setActiveVerificationChildId(session.id, latest.id);
-          }
-          setLastVerificationChildId(session.id, latest.id);
+      const latest = await ideationApi.sessions.getLatestChildSessionId(
+        session.id,
+        'verification',
+        { includeArchived: true },
+      );
+      if (latest.latestChildSessionId) {
+        // Only set activeVerificationChildId if not already populated (fresh hydration only)
+        if (!activeVerificationChildId) {
+          setActiveVerificationChildId(session.id, latest.latestChildSessionId);
         }
+        setLastVerificationChildId(session.id, latest.latestChildSessionId);
       }
     } catch (err) {
-      console.error('Verification tab: failed to fetch child sessions', err);
+      console.error('Verification tab: failed to fetch latest child session id', err);
       // Tab switches regardless — child panel stays hidden until child exists
     }
   }, [
@@ -721,6 +762,13 @@ export function PlanningView({
     setActiveVerificationChildId,
     setLastVerificationChildId,
   ]);
+
+  const handleDisplayedVerificationStatusChange = useCallback(
+    (status: VerificationStatus, inProgress: boolean) => {
+      setDisplayedVerificationStatus({ status, inProgress });
+    },
+    [],
+  );
 
   return (
     <>
@@ -777,7 +825,7 @@ export function PlanningView({
               style={{
                 position: "fixed",
                 inset: 0,
-                top: 56,
+                top: 48,
                 background: "var(--overlay-scrim)",
                 zIndex: 34,
               }}
@@ -786,15 +834,17 @@ export function PlanningView({
 
           {/* Inline sidebar column — kept mounted to preserve query cache */}
           <div
+            ref={planBrowserSidebarRef}
             style={{
-              width: isCollapsed && !isOverlayOpen ? 0 : sidebarWidth,
-              minWidth: isCollapsed && !isOverlayOpen ? 0 : sidebarWidth,
+              width: isCollapsed && !isOverlayOpen ? 0 : effectiveSidebarWidth,
+              minWidth: isCollapsed && !isOverlayOpen ? 0 : effectiveSidebarWidth,
               flexShrink: 0,
               overflow: "hidden",
-              transition: suppressTransition.current ? "none" : "width 300ms ease",
+              transition: planBrowserTransition,
               display: isCollapsed && !isOverlayOpen ? "none" : undefined,
             }}
             aria-hidden={isCollapsed && !isOverlayOpen ? "true" : undefined}
+            data-testid="ideation-sidebar-container"
           >
             <PlanBrowser
               projectId={activeProjectId || session?.projectId || ""}
@@ -810,10 +860,19 @@ export function PlanningView({
                 onSelectSession(planId);
                 handleOpenReopenDialog("reset");
               }}
-              width={sidebarWidth || 340}
+              width={effectiveSidebarWidth || 340}
               onCollapse={toggleCollapse}
             />
           </div>
+
+          {showPlanBrowserResizeHandle && (
+            <ResizeHandle
+              isResizing={isPlanBrowserSidebarResizing}
+              onMouseDown={handlePlanBrowserResizeStart}
+              onDoubleClick={handlePlanBrowserResizeReset}
+              testId="ideation-sidebar-resize-handle"
+            />
+          )}
 
           {/* Overlay sidebar */}
           {isOverlayOpen && (
@@ -821,9 +880,9 @@ export function PlanningView({
               className="plan-browser-slide-in"
               style={{
                 position: "fixed",
-                top: 56,
+                top: 48,
                 left: 0,
-                height: "calc(100vh - 56px)",
+                height: "calc(100vh - 48px)",
                 width: 340,
                 zIndex: 35,
               }}
@@ -891,7 +950,7 @@ export function PlanningView({
                         }}
                       >
                         <ArrowLeft className="w-3 h-3" style={{ color: "var(--text-secondary)" }} />
-                        <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                        <span className="text-[0.6875rem]" style={{ color: "var(--text-secondary)" }}>
                           {parentSession.title || "Untitled"}
                         </span>
                       </button>
@@ -901,20 +960,20 @@ export function PlanningView({
                 })()}
                 <div>
                   <h1
-                    className="text-[14px] font-semibold tracking-tight leading-tight"
+                    className="text-[0.875rem] font-semibold tracking-tight leading-tight"
                     style={{ color: "var(--text-primary)" }}
                   >
                     {session.title || "New Session"}
                   </h1>
                   <p
-                    className="text-[12px]"
+                    className="text-[0.75rem]"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {proposals.length} {proposals.length === 1 ? "proposal" : "proposals"}
                   </p>
                   {(session.sourceTaskId || session.spawnReason || session.sourceProjectId || session.sourceSessionId) && (
                     <div
-                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[10px]"
+                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[0.625rem]"
                       style={{ color: "var(--text-secondary)" }}
                     >
                       {session.sourceTaskId && (
@@ -1042,7 +1101,7 @@ export function PlanningView({
                     >
                       <button
                         onClick={() => handleTabChange('plan')}
-                        className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150"
+                        className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150"
                         style={{
                           color: activeTab === "plan"
                             ? "var(--text-primary)"
@@ -1061,7 +1120,7 @@ export function PlanningView({
                       {showVerificationTab && (
                         <button
                           onClick={handleVerificationTabClick}
-                          className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150 flex items-center gap-1.5"
+                          className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150 flex items-center gap-1.5"
                           style={{
                             color: activeTab === "verification"
                               ? "var(--text-primary)"
@@ -1101,7 +1160,7 @@ export function PlanningView({
                       )}
                       <button
                         onClick={() => handleTabChange('proposals')}
-                        className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150 flex items-center gap-1.5"
+                        className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150 flex items-center gap-1.5"
                         style={{
                           color: activeTab === "proposals"
                             ? "var(--text-primary)"
@@ -1112,7 +1171,7 @@ export function PlanningView({
                         Proposals
                         {proposals.length > 0 && (
                           <span
-                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                            className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
                             style={{
                               background: activeTab === "proposals"
                                 ? withAlpha("var(--accent-primary)", 15)
@@ -1135,7 +1194,7 @@ export function PlanningView({
                       {teamArtifacts.length > 0 && (
                         <button
                           onClick={() => handleTabChange('research')}
-                          className="relative h-full px-3 text-[12px] font-medium transition-colors duration-150 flex items-center gap-1.5"
+                          className="relative h-full px-3 text-[0.75rem] font-medium transition-colors duration-150 flex items-center gap-1.5"
                           style={{
                             color: activeTab === "research"
                               ? "var(--text-primary)"
@@ -1145,7 +1204,7 @@ export function PlanningView({
                         >
                           Team Research
                           <span
-                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+                            className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
                             style={{
                               background: activeTab === "research"
                                 ? withAlpha("var(--accent-primary)", 15)
@@ -1189,7 +1248,11 @@ export function PlanningView({
                         data-testid="verification-tab-content"
                         className="flex flex-col flex-1 min-h-0"
                       >
-                        <VerificationPanel session={session} />
+                        <VerificationPanel
+                          session={session}
+                          onDisplayedVerificationChildChange={setDisplayedVerificationChildId}
+                          onDisplayedVerificationStatusChange={handleDisplayedVerificationStatusChange}
+                        />
                       </div>
                     )}
 
@@ -1265,7 +1328,7 @@ export function PlanningView({
                   headerContent={
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <MessageSquare className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--text-muted)" }} />
-                      <span className="text-[13px] font-medium" style={{ color: "var(--text-primary)" }}>Conversation</span>
+                      <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-primary)" }}>Conversation</span>
                     </div>
                   }
                 />
@@ -1291,10 +1354,10 @@ export function PlanningView({
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <ShieldCheck className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--status-warning)" }} />
                         <div className="flex flex-col min-w-0 flex-1">
-                          <span className="text-[11px] font-semibold leading-tight truncate" style={{ color: "var(--status-warning)" }}>
+                          <span className="text-[0.6875rem] font-semibold leading-tight truncate" style={{ color: "var(--status-warning)" }}>
                             Verification
                           </span>
-                          <span className="text-[10px] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
+                          <span className="text-[0.625rem] leading-tight truncate" style={{ color: "var(--text-muted)" }}>
                             {session.title || "Untitled"}
                           </span>
                         </div>

@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render as rtlRender, screen, within } from "@testing-library/react";
+import { render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SettingsDialog from "./SettingsDialog";
@@ -48,6 +48,12 @@ vi.mock("./sections/ReviewPolicySection", () => ({
 vi.mock("./ExternalMcpSettingsPanel", () => ({
   ExternalMcpSettingsPanel: () => (
     <div data-testid="external-mcp-section">External MCP</div>
+  ),
+}));
+
+vi.mock("./HarnessProvidersSection", () => ({
+  HarnessProvidersSection: () => (
+    <div data-testid="providers-section">Providers</div>
   ),
 }));
 
@@ -125,7 +131,8 @@ describe("SettingsDialog", () => {
 
       await user.click(screen.getByRole("button", { name: "Close settings" }));
 
-      expect(mockCloseModal).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("settings-dialog")).toHaveClass("opacity-0");
+      await waitFor(() => expect(mockCloseModal).toHaveBeenCalledTimes(1));
     });
   });
 
@@ -149,13 +156,12 @@ describe("SettingsDialog", () => {
   // --------------------------------------------------------------------------
 
   describe("Section initialization via modalContext deep-link", () => {
-    it("defaults to 'Execution' section when no modalContext.section is provided", () => {
+    it("defaults to the Providers section when no modalContext.section is provided", async () => {
       uiState.activeModal = "settings";
       uiState.modalContext = undefined;
       render(<SettingsDialog {...defaultProps} />);
 
-      // Execution section content is rendered (unique testid)
-      expect(screen.getByTestId("max-concurrent-tasks")).toBeInTheDocument();
+      expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
     });
 
     it("initializes to API Keys section when modalContext.section is 'api-keys'", () => {
@@ -170,14 +176,86 @@ describe("SettingsDialog", () => {
       expect(screen.queryByTestId("max-concurrent-tasks")).not.toBeInTheDocument();
     });
 
-    it("initializes to Execution Agents section when modalContext.section is 'execution-harnesses'", () => {
+    it("initializes to Execution Agents section when modalContext.section is 'execution-harnesses'", async () => {
       uiState.activeModal = "settings";
       uiState.modalContext = { section: "execution-harnesses" };
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(screen.getByText("Execution Pipeline Agents")).toBeInTheDocument();
+      expect(await screen.findByText("Execution Pipeline Agents")).toBeInTheDocument();
     });
 
+  });
+
+  // --------------------------------------------------------------------------
+  // Sidebar order / first paint / persisted section
+  // --------------------------------------------------------------------------
+
+  describe("Sidebar order and section persistence", () => {
+    it("shows Harness first with Providers as the first sidebar item", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      const navigation = screen.getByRole("navigation");
+      const groupLabels = within(navigation)
+        .getAllByText(/Harness|Workspace|General|Ideation|Access|Preferences/)
+        .map((element) => element.textContent);
+
+      expect(groupLabels.slice(0, 2)).toEqual(["Harness", "Workspace"]);
+      expect(within(navigation).getAllByRole("button")[0]).toHaveAccessibleName(
+        "Providers",
+      );
+    });
+
+    it("uses the v30 settings modal shell classes and active nav treatment", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      const dialog = screen.getByTestId("settings-dialog");
+      expect(dialog).toHaveClass("settings-modal");
+
+      const navigation = screen.getByRole("navigation");
+      expect(navigation).toHaveClass("settings-nav");
+      expect(within(navigation).getByRole("button", { name: "Providers" })).toHaveClass(
+        "settings-nav__item",
+      );
+      expect(within(navigation).getByRole("button", { name: "Providers" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    });
+
+    it("paints the settings shell before hydrating the active section", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(screen.getByTestId("settings-dialog")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Providers" })).toBeInTheDocument();
+      expect(screen.getByTestId("settings-section-loading")).toBeInTheDocument();
+      expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
+    });
+
+    it("remembers the last opened section across Settings reopens", async () => {
+      const user = userEvent.setup();
+      uiState.activeModal = "settings";
+      const { rerender } = render(<SettingsDialog {...defaultProps} />);
+
+      expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Review Policy" }));
+      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(localStorage.getItem("ralphx-settings-active-section")).toBe(
+          "review",
+        ),
+      );
+
+      uiState.activeModal = null;
+      rerender(<SettingsDialog {...defaultProps} />);
+
+      uiState.activeModal = "settings";
+      rerender(<SettingsDialog {...defaultProps} />);
+      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -190,16 +268,14 @@ describe("SettingsDialog", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);
 
-      // Default is "execution" — execution section content is visible
-      expect(screen.getByTestId("max-concurrent-tasks")).toBeInTheDocument();
+      expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
       // Click "Review Policy" in the left nav rail
       const reviewNavItem = screen.getByRole("button", { name: "Review Policy" });
       await user.click(reviewNavItem);
 
-      // Execution section content is gone; review policy section content is now visible
-      expect(screen.queryByTestId("max-concurrent-tasks")).not.toBeInTheDocument();
-      expect(screen.getByTestId("review-policy-section")).toBeInTheDocument();
+      expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
+      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
     });
 
     it("switches active section via keyboard Enter on left rail item", async () => {
@@ -213,7 +289,7 @@ describe("SettingsDialog", () => {
       await user.keyboard("{Enter}");
 
       // Review Policy section content is now visible
-      expect(screen.getByTestId("review-policy-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
     });
   });
 

@@ -2,10 +2,12 @@
 // SQLite, file system, and harness-specific external integrations
 
 pub mod agents;
+pub(crate) mod git_auth;
 pub mod memory;
 pub mod services;
 pub mod sqlite;
 pub mod supervisor;
+pub mod tool_paths;
 pub mod external_mcp_supervisor;
 pub mod webhook_http_client;
 pub mod webhook_publisher;

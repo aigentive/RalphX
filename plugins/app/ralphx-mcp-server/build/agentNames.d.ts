@@ -13,6 +13,7 @@ export declare const REVIEW_HISTORY = "ralphx-review-history";
 export declare const WORKER = "ralphx-execution-worker";
 export declare const CODER = "ralphx-execution-coder";
 export declare const SESSION_NAMER = "ralphx-utility-session-namer";
+export declare const PR_DESCRIBER = "ralphx-utility-pr-describer";
 export declare const MERGER = "ralphx-execution-merger";
 export declare const PROJECT_ANALYZER = "ralphx-project-analyzer";
 export declare const QA_PREP = "qa-prep";

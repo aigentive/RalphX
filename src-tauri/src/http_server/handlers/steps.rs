@@ -652,7 +652,7 @@ pub async fn execution_complete_http(
     let task_id = TaskId::from_string(task_id_str.clone());
 
     // Fetch task (needed for worktree_path and metadata update)
-    let mut task = state
+    let task = state
         .app_state
         .task_repo
         .get_by_id(&task_id)
@@ -686,8 +686,12 @@ pub async fn execution_complete_http(
                     };
                     match cache.update_task_metadata(task.metadata.as_deref()) {
                         Ok(new_metadata) => {
-                            task.metadata = Some(new_metadata);
-                            if let Err(e) = state.app_state.task_repo.update(&task).await {
+                            if let Err(e) = state
+                                .app_state
+                                .task_repo
+                                .update_metadata(&task_id, Some(new_metadata))
+                                .await
+                            {
                                 tracing::warn!(
                                     "Failed to store validation cache for task {}: {}",
                                     task_id_str,
@@ -794,3 +798,7 @@ pub async fn execution_complete_http(
         message: format!("Execution complete for task {}", task_id_str),
     }))
 }
+
+#[cfg(test)]
+#[path = "steps_tests.rs"]
+mod steps_tests;

@@ -1017,65 +1017,16 @@ pub async fn apply_proposals_to_kanban(
     // reflecting the actual work (not just the initial user message).
     // Skip if user has set a custom title (title_source == "user").
     if !result.is_user_title {
-        use crate::application::harness_runtime_registry::{
-            default_repo_root_working_directory, resolve_harness_agent_bootstrap,
-        };
-        use crate::domain::agents::DEFAULT_AGENT_HARNESS;
-        use crate::infrastructure::agents::claude::agent_names;
-
         let proposals_context = result.proposal_titles.join("; ");
         let session_id_str = result.session_id.clone();
-        let runtime = state.resolve_session_namer_runtime().await;
-
-        let agent_client = Arc::clone(&runtime.client);
-        let working_directory = default_repo_root_working_directory();
-        let bootstrap = resolve_harness_agent_bootstrap(
-            runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS),
-            agent_names::AGENT_SESSION_NAMER,
-            working_directory,
-        );
-        let harness_for_log = runtime.harness;
-
-        tokio::spawn(async move {
-            use crate::domain::agents::{AgentConfig, AgentRole};
-
-            let prompt = build_session_namer_prompt(&format!(
-                "<session_id>{}</session_id>\n<accepted_proposals>{}</accepted_proposals>",
-                session_id_str, proposals_context
-            ));
-
-            let config = AgentConfig {
-                role: AgentRole::Custom(bootstrap.agent_role.clone()),
-                prompt,
-                working_directory: bootstrap.working_directory,
-                plugin_dir: Some(bootstrap.plugin_dir),
-                agent: Some(bootstrap.agent_name),
-                model: runtime.model,
-                harness: runtime.harness,
-                logical_effort: runtime.logical_effort,
-                approval_policy: runtime.approval_policy,
-                sandbox_mode: runtime.sandbox_mode,
-                max_tokens: None,
-                timeout_secs: Some(60),
-                env: bootstrap.env,
-            };
-
-            match agent_client.spawn_agent(config).await {
-                Ok(handle) => {
-                    tracing::info!(
-                        session_id = %session_id_str,
-                        harness = ?harness_for_log,
-                        "Re-triggering session namer after ideation acceptance"
-                    );
-                    if let Err(e) = agent_client.wait_for_completion(&handle).await {
-                        tracing::warn!("Session namer re-trigger failed: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to spawn session namer at acceptance: {}", e);
-                }
-            }
-        });
+        if let Err(error) = spawn_session_namer_agent(
+            &state,
+            SessionNamerTarget::accepted_session(session_id_str, proposals_context),
+        )
+        .await
+        {
+            tracing::warn!("Failed to prepare session namer at acceptance: {}", error);
+        }
     }
 
     // Emit queue_changed if any tasks were set to Ready status

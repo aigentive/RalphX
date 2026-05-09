@@ -15,9 +15,14 @@ import {
   formatToolErrorMessage,
   parseAllowedToolsFromArgs,
 } from '../tools.js';
-import { loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
+import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
+import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
+import {
+  callCompleteAgentWorkspaceRepairTool,
+  callSubmitAgentWorkspacePrDescriptionTool,
+} from '../agent-workspace-tools.js';
 import {
   IDEATION_TEAM_LEAD,
   IDEATION_TEAM_MEMBER,
@@ -147,6 +152,14 @@ describe('getAllowedToolNames', () => {
       'delegate_cancel',
     ]);
   });
+
+  it('resolves the PR describer legacy alias to canonical metadata', () => {
+    setAgentType('pr-describer');
+
+    expect(canonicalAgentName('pr-describer')).toBe('ralphx-utility-pr-describer');
+    expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
+    expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
+  });
 });
 
 describe('getToolRecoveryHint', () => {
@@ -216,6 +229,54 @@ describe('getToolRecoveryHint', () => {
     expect(editTool?.inputSchema.properties).not.toHaveProperty('caller_session_id');
     expect(updateTool?.description).toContain('derived automatically from live app context');
     expect(editTool?.description).toContain('derived automatically from live app context');
+  });
+});
+
+describe('buildAppendTaskToIdeationPlanPayload', () => {
+  it('maps MCP snake_case arguments to the camelCase Tauri payload', () => {
+    expect(
+      buildAppendTaskToIdeationPlanPayload({
+        project_id: 'project-1',
+        session_id: 'session-1',
+        title: 'Add follow-up coverage',
+        description: 'Cover the waiting-on-PR append path.',
+        steps: ['Add regression test', 'Implement fix'],
+        acceptance_criteria: ['Waiting-on-PR plans accept the task'],
+        depends_on_task_ids: ['task-1'],
+        priority: 4,
+        source_conversation_id: 'conversation-1',
+        source_message_id: 'message-1',
+      })
+    ).toEqual({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      title: 'Add follow-up coverage',
+      description: 'Cover the waiting-on-PR append path.',
+      steps: ['Add regression test', 'Implement fix'],
+      acceptanceCriteria: ['Waiting-on-PR plans accept the task'],
+      dependsOnTaskIds: ['task-1'],
+      priority: 4,
+      sourceConversationId: 'conversation-1',
+      sourceMessageId: 'message-1',
+    });
+  });
+
+  it('omits optional fields that were not provided', () => {
+    expect(
+      buildAppendTaskToIdeationPlanPayload({
+        project_id: 'project-1',
+        session_id: 'session-1',
+        title: 'Small follow-up',
+        steps: [],
+        acceptance_criteria: [],
+      })
+    ).toEqual({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      title: 'Small follow-up',
+      steps: [],
+      acceptanceCriteria: [],
+    });
   });
 });
 

@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { getAllowedToolNames, getFilteredTools, getToolsByAgent, isToolAllowed, setAgentType, getAllTools, getToolRecoveryHint, formatToolErrorMessage, parseAllowedToolsFromArgs, } from '../tools.js';
-import { loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
+import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
@@ -96,6 +96,12 @@ describe('getAllowedToolNames', () => {
             'delegate_cancel',
         ]);
     });
+    it('resolves the PR describer legacy alias to canonical metadata', () => {
+        setAgentType('pr-describer');
+        expect(canonicalAgentName('pr-describer')).toBe('ralphx-utility-pr-describer');
+        expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
+        expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
+    });
 });
 describe('getToolRecoveryHint', () => {
     it('does not expose recovery guidance for removed update_plan_verification', () => {
@@ -154,6 +160,48 @@ describe('getToolRecoveryHint', () => {
         expect(editTool?.inputSchema.properties).not.toHaveProperty('caller_session_id');
         expect(updateTool?.description).toContain('derived automatically from live app context');
         expect(editTool?.description).toContain('derived automatically from live app context');
+    });
+});
+describe('buildAppendTaskToIdeationPlanPayload', () => {
+    it('maps MCP snake_case arguments to the camelCase Tauri payload', () => {
+        expect(buildAppendTaskToIdeationPlanPayload({
+            project_id: 'project-1',
+            session_id: 'session-1',
+            title: 'Add follow-up coverage',
+            description: 'Cover the waiting-on-PR append path.',
+            steps: ['Add regression test', 'Implement fix'],
+            acceptance_criteria: ['Waiting-on-PR plans accept the task'],
+            depends_on_task_ids: ['task-1'],
+            priority: 4,
+            source_conversation_id: 'conversation-1',
+            source_message_id: 'message-1',
+        })).toEqual({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            title: 'Add follow-up coverage',
+            description: 'Cover the waiting-on-PR append path.',
+            steps: ['Add regression test', 'Implement fix'],
+            acceptanceCriteria: ['Waiting-on-PR plans accept the task'],
+            dependsOnTaskIds: ['task-1'],
+            priority: 4,
+            sourceConversationId: 'conversation-1',
+            sourceMessageId: 'message-1',
+        });
+    });
+    it('omits optional fields that were not provided', () => {
+        expect(buildAppendTaskToIdeationPlanPayload({
+            project_id: 'project-1',
+            session_id: 'session-1',
+            title: 'Small follow-up',
+            steps: [],
+            acceptance_criteria: [],
+        })).toEqual({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            title: 'Small follow-up',
+            steps: [],
+            acceptanceCriteria: [],
+        });
     });
 });
 describe('formatToolErrorMessage', () => {

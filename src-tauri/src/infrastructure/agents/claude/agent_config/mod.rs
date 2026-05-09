@@ -6,7 +6,8 @@ pub use ui_config::{UiConfig, UiFeatureFlagsConfig};
 
 use crate::domain::agents::{
     standard_agent_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings,
-    LogicalEffort,
+    LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
+    CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS, CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
@@ -19,7 +20,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tool_sets::canonical_claude_tool_sets;
 
 #[allow(unused_imports)]
@@ -76,6 +77,7 @@ pub struct ClaudeRuntimeConfig {
     pub mcp_server_name: String,
     pub permission_mode: String,
     pub dangerously_skip_permissions: bool,
+    pub allow_dangerously_skip_permissions: bool,
     pub permission_prompt_tool: String,
     pub use_append_system_prompt_file: bool,
     pub setting_sources: Option<Vec<String>>,
@@ -190,6 +192,7 @@ struct ClaudeRuntimeConfigRaw {
     setting_sources: Option<Vec<String>>,
     permission_mode: String,
     dangerously_skip_permissions: bool,
+    allow_dangerously_skip_permissions: bool,
     permission_prompt_tool: String,
     append_system_prompt_file: bool,
     /// Optional profile selector for claude settings (`settings_profiles.<name>`).
@@ -211,8 +214,9 @@ impl Default for ClaudeRuntimeConfigRaw {
         Self {
             mcp_server_name: "ralphx".to_string(),
             setting_sources: None,
-            permission_mode: "default".to_string(),
-            dangerously_skip_permissions: false,
+            permission_mode: CLAUDE_DEFAULT_PERMISSION_MODE.to_string(),
+            dangerously_skip_permissions: CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
+            allow_dangerously_skip_permissions: CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
             permission_prompt_tool: "permission_request".to_string(),
             append_system_prompt_file: true,
             settings_profile: None,
@@ -274,6 +278,7 @@ struct ClaudeRuntimeConfigOverlay {
     setting_sources: Option<Vec<String>>,
     permission_mode: Option<String>,
     dangerously_skip_permissions: Option<bool>,
+    allow_dangerously_skip_permissions: Option<bool>,
     permission_prompt_tool: Option<String>,
     append_system_prompt_file: Option<bool>,
     settings_profile: Option<String>,
@@ -330,6 +335,10 @@ struct ExternalMcpConfigOverlay {
 
 const EMBEDDED_CONFIG: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../config/ralphx.yaml"));
+const EMBEDDED_EXTERNAL_MCP_CONFIG: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../config/external-mcp.yaml"
+));
 
 fn default_defer_merge_enabled() -> bool {
     true
@@ -352,6 +361,35 @@ struct LoadedConfig {
 }
 
 static LOADED_CONFIG_CELL: OnceLock<LoadedConfig> = OnceLock::new();
+
+fn runtime_config_dir_override() -> &'static Mutex<Option<PathBuf>> {
+    static OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn configure_runtime_config_dir(config_dir: PathBuf) {
+    if let Ok(mut guard) = runtime_config_dir_override().lock() {
+        *guard = Some(config_dir);
+    }
+}
+
+fn configured_runtime_config_dir() -> Option<PathBuf> {
+    runtime_config_dir_override()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+fn config_path_for_runtime_config_dir(config_dir: Option<&Path>) -> PathBuf {
+    if let Some(config_dir) = config_dir {
+        return config_dir.join("ralphx.yaml");
+    }
+
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("config")
+        .join("ralphx.yaml")
+}
 
 fn normalize_mcp_tool_name(raw: &str, server_name: &str) -> String {
     if raw.starts_with("mcp__") {
@@ -420,6 +458,9 @@ fn apply_claude_runtime_config_overlay(
     }
     if let Some(dangerously_skip_permissions) = overlay.dangerously_skip_permissions {
         cfg.dangerously_skip_permissions = dangerously_skip_permissions;
+    }
+    if let Some(allow_dangerously_skip_permissions) = overlay.allow_dangerously_skip_permissions {
+        cfg.allow_dangerously_skip_permissions = allow_dangerously_skip_permissions;
     }
     if let Some(permission_prompt_tool) = overlay.permission_prompt_tool {
         cfg.permission_prompt_tool = permission_prompt_tool;
@@ -580,7 +621,31 @@ fn load_external_mcp_config_overlay() -> Option<(PathBuf, ExternalMcpConfigOverl
     // codeql[rust/path-injection]
     let raw = std::fs::read_to_string(&path).ok()?;
     let overlay = parse_external_mcp_config_overlay(&raw)?;
-    Some((path, overlay))
+    Some((path.to_path_buf(), overlay))
+}
+
+fn load_embedded_external_mcp_config_overlay() -> Option<ExternalMcpConfigOverlay> {
+    parse_external_mcp_config_overlay(EMBEDDED_EXTERNAL_MCP_CONFIG)
+}
+
+fn apply_external_mcp_overlay_or_embedded(parsed: &mut RalphxConfig) {
+    apply_external_mcp_overlay_or_embedded_from_path(parsed, &external_mcp_config_path());
+}
+
+fn apply_external_mcp_overlay_or_embedded_from_path(
+    parsed: &mut RalphxConfig,
+    external_mcp_path: &Path,
+) {
+    if let Some((_external_mcp_path, overlay)) =
+        load_external_mcp_config_overlay_from_path(external_mcp_path)
+    {
+        apply_external_mcp_config_overlay(parsed, overlay);
+        return;
+    }
+
+    if let Some(overlay) = load_embedded_external_mcp_config_overlay() {
+        apply_external_mcp_config_overlay(parsed, overlay);
+    }
 }
 
 /// Resolve file_logging setting for early use (before tracing subscriber init).
@@ -673,12 +738,31 @@ fn resolve_tool_spec(project_root: &Path, raw: &AgentConfigRaw) -> AgentToolsSpe
 }
 
 fn canonical_agent_project_root() -> PathBuf {
-    let config_dir = config_path()
+    let fallback_plugin_dir = super::find_base_plugin_dir();
+    canonical_agent_project_root_from_config_path(&config_path(), fallback_plugin_dir.as_deref())
+}
+
+fn canonical_agent_project_root_from_config_path(
+    config_path: &Path,
+    fallback_runtime_plugin_dir: Option<&Path>,
+) -> PathBuf {
+    let config_dir = config_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
-    resolve_project_root_from_catalog_path(&config_dir)
-        .unwrap_or_else(|| resolve_project_root_from_plugin_dir(&config_dir))
+
+    if let Some(project_root) = resolve_project_root_from_catalog_path(&config_dir) {
+        return project_root;
+    }
+
+    if let Some(runtime_plugin_dir) = fallback_runtime_plugin_dir {
+        let runtime_project_root = resolve_project_root_from_plugin_dir(runtime_plugin_dir);
+        if let Some(project_root) = resolve_project_root_from_catalog_path(&runtime_project_root) {
+            return project_root;
+        }
+    }
+
+    resolve_project_root_from_plugin_dir(&config_dir)
 }
 
 fn resolve_system_prompt_file(project_root: &Path, raw: &AgentConfigRaw) -> String {
@@ -1034,6 +1118,7 @@ fn resolve_loaded_config_with_lookup(
         setting_sources: parsed.claude.setting_sources,
         permission_mode: parsed.claude.permission_mode,
         dangerously_skip_permissions: parsed.claude.dangerously_skip_permissions,
+        allow_dangerously_skip_permissions: parsed.claude.allow_dangerously_skip_permissions,
         permission_prompt_tool: normalize_mcp_tool_name(
             &parsed.claude.permission_prompt_tool,
             &parsed.claude.mcp_server_name,
@@ -1459,13 +1544,7 @@ fn load_config() -> LoadedConfig {
                     "Loaded Codex harness config overlay from config/harnesses/codex.yaml"
                 );
             }
-            if let Some((external_mcp_path, overlay)) = load_external_mcp_config_overlay() {
-                apply_external_mcp_config_overlay(&mut parsed, overlay);
-                tracing::info!(
-                    path = %external_mcp_path.display(),
-                    "Loaded external MCP config overlay from config/external-mcp.yaml"
-                );
-            }
+            apply_external_mcp_overlay_or_embedded(&mut parsed);
             if let Some(mut cfg) =
                 resolve_loaded_config_with_lookup(parsed, &|name| std::env::var(name).ok())
             {
@@ -1508,13 +1587,7 @@ fn load_config() -> LoadedConfig {
                     "Loaded Codex harness config overlay from config/harnesses/codex.yaml"
                 );
             }
-            if let Some((external_mcp_path, overlay)) = load_external_mcp_config_overlay() {
-                apply_external_mcp_config_overlay(&mut parsed, overlay);
-                tracing::info!(
-                    path = %external_mcp_path.display(),
-                    "Loaded external MCP config overlay from config/external-mcp.yaml"
-                );
-            }
+            apply_external_mcp_overlay_or_embedded(&mut parsed);
             resolve_loaded_config_with_lookup(parsed, &|name| std::env::var(name).ok())
         })
         .unwrap_or_else(|| {
@@ -1536,8 +1609,10 @@ fn load_config() -> LoadedConfig {
                 claude: ClaudeRuntimeConfig {
                     mcp_server_name: "ralphx".to_string(),
                     setting_sources: None,
-                    permission_mode: "default".to_string(),
-                    dangerously_skip_permissions: false,
+                    permission_mode: CLAUDE_DEFAULT_PERMISSION_MODE.to_string(),
+                    dangerously_skip_permissions: CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,
+                    allow_dangerously_skip_permissions:
+                        CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
                     permission_prompt_tool: "mcp__ralphx__permission_request".to_string(),
                     use_append_system_prompt_file: true,
                     settings: None,

@@ -238,7 +238,7 @@ function TextBubble({
         borderRadius: getCornerRadius(),
       }}
     >
-      <div className="text-[13px] leading-relaxed">
+      <div className="text-[0.8125rem] leading-relaxed">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
           {content}
         </ReactMarkdown>

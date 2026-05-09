@@ -30,6 +30,7 @@ pub use agent_config::{
     ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
     SupervisorRuntimeConfig, UiFeatureFlagsConfig, VerificationConfig,
 };
+pub(crate) use agent_config::configure_runtime_config_dir;
 pub use claude_code_client::kill_all_tracked_processes;
 pub use claude_code_client::ClaudeCodeClient;
 pub use claude_code_client::{
@@ -218,9 +219,22 @@ pub(crate) fn find_base_plugin_dir() -> Option<PathBuf> {
 
 /// Apply common Claude CLI environment flags for RalphX-managed spawns.
 pub fn apply_common_spawn_env(cmd: &mut Command) {
+    apply_common_spawn_env_to_std(cmd.as_std_mut());
+}
+
+fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
+    cmd.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
     cmd.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
     cmd.env("CLAUDE_CODE_ENABLE_TASKS", "1");
     cmd.env("DEBUG", "true");
+    cmd.env(
+        "TAURI_API_URL",
+        crate::utils::backend_endpoint::backend_http_base_url(),
+    );
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
 }
 
 /// Normalize legacy short agent ids to the current canonical ids.
@@ -257,6 +271,7 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "memory-capture" => "ralphx-memory-capture",
         "memory-maintainer" => "ralphx-memory-maintainer",
         "session-namer" => "ralphx-utility-session-namer",
+        "pr-describer" => "ralphx-utility-pr-describer",
         _ => short_name,
     }
 }
@@ -352,12 +367,118 @@ pub fn resolve_model(agent_type: Option<&str>) -> String {
 ///
 /// Priority: `AgentConfig.permission_mode` > `ClaudeRuntimeConfig.permission_mode`
 pub fn resolve_permission_mode(agent_type: Option<&str>) -> String {
-    let default = claude_runtime_config().permission_mode.clone();
+    let default = claude_permission_runtime_override()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|value| value.permission_mode.clone()))
+        .unwrap_or_else(|| claude_runtime_config().permission_mode.clone());
     match agent_type {
         Some(name) => get_agent_config(name)
             .and_then(|c| c.permission_mode.clone())
             .unwrap_or(default),
         None => default,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudePermissionRuntimeOverride {
+    pub permission_mode: Option<String>,
+    pub dangerously_skip_permissions: bool,
+    pub allow_dangerously_skip_permissions: bool,
+}
+
+fn claude_permission_runtime_override() -> &'static Mutex<Option<ClaudePermissionRuntimeOverride>> {
+    static OVERRIDE: OnceLock<Mutex<Option<ClaudePermissionRuntimeOverride>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn set_claude_permission_runtime_override(
+    next: Option<ClaudePermissionRuntimeOverride>,
+) -> Option<ClaudePermissionRuntimeOverride> {
+    claude_permission_runtime_override()
+        .lock()
+        .ok()
+        .and_then(|mut guard| std::mem::replace(&mut *guard, next))
+}
+
+pub(crate) fn claude_permission_override_from_provider_settings(
+    settings: &AgentProviderSettings,
+) -> ClaudePermissionRuntimeOverride {
+    ClaudePermissionRuntimeOverride {
+        permission_mode: settings
+            .claude_permission_mode
+            .clone()
+            .or_else(|| Some(CLAUDE_DEFAULT_PERMISSION_MODE.to_string())),
+        dangerously_skip_permissions: settings.claude_dangerously_skip_permissions,
+        allow_dangerously_skip_permissions: settings.claude_allow_dangerously_skip_permissions,
+    }
+}
+
+pub(crate) fn apply_claude_provider_permission_settings(settings: &AgentProviderSettings) {
+    set_claude_permission_runtime_override(Some(
+        claude_permission_override_from_provider_settings(settings),
+    ));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudePermissionCliOptions {
+    pub permission_prompt_tool: String,
+    pub permission_mode: String,
+    pub dangerously_skip_permissions: bool,
+    pub allow_dangerously_skip_permissions: bool,
+}
+
+pub(crate) fn resolve_claude_permission_cli_options(
+    agent_type: Option<&str>,
+) -> ClaudePermissionCliOptions {
+    let runtime = claude_runtime_config();
+    let override_settings = claude_permission_runtime_override()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    ClaudePermissionCliOptions {
+        permission_prompt_tool: runtime.permission_prompt_tool.clone(),
+        permission_mode: resolve_permission_mode(agent_type),
+        dangerously_skip_permissions: override_settings
+            .as_ref()
+            .map(|settings| settings.dangerously_skip_permissions)
+            .unwrap_or(runtime.dangerously_skip_permissions),
+        allow_dangerously_skip_permissions: override_settings
+            .as_ref()
+            .map(|settings| settings.allow_dangerously_skip_permissions)
+            .unwrap_or(runtime.allow_dangerously_skip_permissions),
+    }
+}
+
+pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: Option<&str>) {
+    let options = resolve_claude_permission_cli_options(agent_type);
+    args.extend([
+        "--permission-prompt-tool".to_string(),
+        options.permission_prompt_tool,
+        "--permission-mode".to_string(),
+        options.permission_mode,
+    ]);
+    if options.allow_dangerously_skip_permissions {
+        args.push("--allow-dangerously-skip-permissions".to_string());
+    }
+    if options.dangerously_skip_permissions {
+        args.push("--dangerously-skip-permissions".to_string());
+    }
+}
+
+fn apply_claude_permission_args(cmd: &mut Command, agent_type: Option<&str>) {
+    let options = resolve_claude_permission_cli_options(agent_type);
+    cmd.args([
+        "--permission-prompt-tool",
+        &options.permission_prompt_tool,
+        "--permission-mode",
+        &options.permission_mode,
+    ]);
+    if options.allow_dangerously_skip_permissions {
+        cmd.arg("--allow-dangerously-skip-permissions");
+    }
+    if options.dangerously_skip_permissions {
+        cmd.arg("--dangerously-skip-permissions");
     }
 }
 
@@ -462,14 +583,8 @@ fn build_base_cli_command_inner_with_runtime_context(
         tracing::debug!(path = %debug_path.display(), "Enabled Claude debug file");
     }
 
-    // Configure permission handling from config/ralphx.yaml.
-    let runtime = claude_runtime_config();
-    cmd.args(["--permission-prompt-tool", &runtime.permission_prompt_tool]);
-    let permission_mode = resolve_permission_mode(agent_type);
-    cmd.args(["--permission-mode", &permission_mode]);
-    if runtime.dangerously_skip_permissions {
-        cmd.arg("--dangerously-skip-permissions");
-    }
+    // Configure permission handling from config/harnesses/claude.yaml.
+    apply_claude_permission_args(&mut cmd, agent_type);
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -832,6 +947,8 @@ pub(crate) fn build_mcp_config_with_runtime_context(
             args_vec.push("--agent-type".to_string());
             args_vec.push(short_name.to_string());
         }
+        args_vec.push("--tauri-api-url".to_string());
+        args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
 
         // Inject --allowed-tools from agent's mcp_tools config (Wave 3).
         // - Agent not in config (None) → skip arg entirely (MCP server resolves canonical metadata,
@@ -1119,6 +1236,7 @@ impl SpawnableCommand {
             stdin.write_all(prompt.as_bytes()).await?;
             stdin.write_all(b"\n").await?; // CLI reads lines — newline signals end of input
             stdin.flush().await?; // Ensure bytes are delivered to the process
+
             // stdin is intentionally NOT dropped — kept open for future messages
         }
 
@@ -1218,7 +1336,41 @@ fn add_prompt_args(
             cmd.args(["--agent", agent_name]);
         } else if let Some(prompt_path) = resolve_agent_system_prompt_path(plugin_dir, agent_name) {
             let runtime = claude_runtime_config();
-            if runtime.use_append_system_prompt_file {
+            let prompt_with_internal_skills =
+                load_agent_system_prompt_with_internal_skills(plugin_dir, agent_name, prompt);
+            if let Some((system_prompt, injected_skill_names)) =
+                prompt_with_internal_skills.as_ref()
+            {
+                if !injected_skill_names.is_empty() {
+                    cmd.args(["--append-system-prompt", system_prompt]);
+                    tracing::debug!(
+                        agent = agent_name,
+                        skills = ?injected_skill_names,
+                        "Injected agent prompt with internal skills via --append-system-prompt"
+                    );
+                } else if runtime.use_append_system_prompt_file {
+                    if let Some(path_str) = prompt_path.to_str() {
+                        cmd.args(["--append-system-prompt-file", path_str]);
+                        tracing::debug!(
+                            agent = agent_name,
+                            path = path_str,
+                            "Injected agent prompt via --append-system-prompt-file"
+                        );
+                    } else {
+                        cmd.args(["--append-system-prompt", system_prompt]);
+                        tracing::debug!(
+                            agent = agent_name,
+                            "Injected agent prompt via --append-system-prompt"
+                        );
+                    }
+                } else {
+                    cmd.args(["--append-system-prompt", system_prompt]);
+                    tracing::debug!(
+                        agent = agent_name,
+                        "Injected agent prompt via --append-system-prompt"
+                    );
+                }
+            } else if runtime.use_append_system_prompt_file {
                 if let Some(path_str) = prompt_path.to_str() {
                     cmd.args(["--append-system-prompt-file", path_str]);
                     tracing::debug!(
@@ -1226,20 +1378,13 @@ fn add_prompt_args(
                         path = path_str,
                         "Injected agent prompt via --append-system-prompt-file"
                     );
-                } else if let Some(system_prompt) = load_agent_system_prompt(plugin_dir, agent_name)
-                {
-                    cmd.args(["--append-system-prompt", &system_prompt]);
-                    tracing::debug!(
+                } else {
+                    tracing::warn!(
                         agent = agent_name,
-                        "Injected agent prompt via --append-system-prompt"
+                        "Agent prompt path was not valid UTF-8; falling back to native --agent"
                     );
+                    cmd.args(["--agent", agent_name]);
                 }
-            } else if let Some(system_prompt) = load_agent_system_prompt(plugin_dir, agent_name) {
-                cmd.args(["--append-system-prompt", &system_prompt]);
-                tracing::debug!(
-                    agent = agent_name,
-                    "Injected agent prompt via --append-system-prompt"
-                );
             } else {
                 tracing::warn!(
                     agent = agent_name,
@@ -1546,8 +1691,8 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     // IMPORTANT: Do NOT specify an "env" field here. The env field in MCP config
     // REPLACES the parent environment entirely (Node.js spawn behavior). We need
     // the MCP server to INHERIT RALPHX_AGENT_TYPE from Claude CLI's environment
-    // (set by Rust when spawning). The MCP server defaults to http://127.0.0.1:3847
-    // for TAURI_API_URL if not specified.
+    // (set by Rust when spawning). The MCP server defaults to the production
+    // backend port when TAURI_API_URL is not specified.
     let mcp_config = serde_json::json!({
         "type": "stdio",
         "command": "node",
@@ -1559,7 +1704,9 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     let mcp_server_name = claude_runtime_config().mcp_server_name.clone();
 
     // First, try to remove existing registration (ignore errors)
-    let remove_result = std::process::Command::new(cli_path)
+    let mut remove_cmd = std::process::Command::new(cli_path);
+    apply_common_spawn_env_to_std(&mut remove_cmd);
+    let remove_result = remove_cmd
         .args(["mcp", "remove", &mcp_server_name, "-s", "user"])
         .output();
 
@@ -1576,7 +1723,9 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     }
 
     // Register the MCP server with user scope
-    let add_result = std::process::Command::new(cli_path)
+    let mut add_cmd = std::process::Command::new(cli_path);
+    apply_common_spawn_env_to_std(&mut add_cmd);
+    let add_result = add_cmd
         .args([
             "mcp",
             "add-json",
@@ -1722,6 +1871,47 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn write_executable(path: &Path, contents: &str) {
+        std::fs::write(path, contents).expect("write executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(path)
+                .expect("executable metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).expect("mark executable");
+        }
+    }
+
     /// build_spawnable_command calls ensure_claude_spawn_allowed() which returns
     /// Err in tests — exercise the function up to that guard.
     #[test]
@@ -1767,6 +1957,94 @@ mod tests {
     fn test_spawnable_command_debug_impl() {
         fn assert_debug<T: std::fmt::Debug>() {}
         assert_debug::<SpawnableCommand>();
+    }
+
+    #[test]
+    fn common_spawn_env_sets_agent_tool_path() {
+        let mut command = Command::new("/fake/claude");
+        apply_common_spawn_env(&mut command);
+
+        let path = command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "PATH").then(|| value.map(|path| path.to_string_lossy().into_owned()))?
+            })
+            .expect("PATH should be explicitly set for agent subprocesses");
+
+        assert!(path.contains("/opt/homebrew/bin"));
+        assert!(path.contains("/usr/local/bin"));
+    }
+
+    #[test]
+    fn test_apply_common_spawn_env_prepends_resolved_node_bin_to_path() {
+        let expected_node_bin = crate::infrastructure::tool_paths::resolve_node_cli_path()
+            .parent()
+            .map(PathBuf::from)
+            .expect("resolved node bin");
+
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("PATH", "/usr/bin:/bin");
+        apply_common_spawn_env(&mut cmd);
+
+        let envs = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|val| (key.to_os_string(), val.to_os_string())))
+            .collect::<Vec<_>>();
+        let path_value = envs
+            .iter()
+            .find(|(key, _)| key == OsStr::new("PATH"))
+            .map(|(_, value)| value.clone())
+            .expect("PATH env");
+        let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
+
+        assert_eq!(path_entries.first(), Some(&expected_node_bin));
+    }
+
+    #[tokio::test]
+    async fn register_mcp_server_prepends_resolved_node_for_env_shim() {
+        let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let empty_path = temp_dir.path().join("empty-path");
+        std::fs::create_dir_all(&empty_path).expect("create empty path");
+        let nvm_bin = temp_dir
+            .path()
+            .join(".nvm")
+            .join("versions")
+            .join("node")
+            .join("v22.16.0")
+            .join("bin");
+        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+        let node_path = nvm_bin.join("node");
+        let claude_path = nvm_bin.join("claude");
+        write_executable(
+            &node_path,
+            r#"#!/bin/sh
+shift
+if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
+  exit 0
+elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
+  exit 0
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+        );
+        write_executable(&claude_path, "#!/usr/bin/env node\n");
+
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _path = EnvGuard::set_os("PATH", &empty_path);
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+        let _node_override = EnvGuard::unset("RALPHX_NODE_PATH");
+
+        register_mcp_server(&claude_path, temp_dir.path())
+            .await
+            .expect("Claude MCP registration should run npm shim with resolved node");
     }
 
     /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the

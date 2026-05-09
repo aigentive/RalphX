@@ -783,55 +783,30 @@ pub async fn report_incomplete(
 
 /// GET /api/git/tasks/{id}/commits
 ///
-/// Get commits on the task branch since it diverged from base.
+/// Get commits scoped to the selected task.
 pub async fn get_task_commits(
     State(state): State<HttpServerState>,
     Path(task_id): Path<String>,
 ) -> Result<Json<Vec<CommitInfoResponse>>, (StatusCode, String)> {
     let task_id = TaskId::from_string(task_id);
 
-    // 1. Get task
-    let task = state
-        .app_state
-        .task_repo
-        .get_by_id(&task_id)
+    let commits = crate::commands::git_commands::get_task_commits_for_state(
+        task_id,
+        state.app_state.as_ref(),
+    )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Task not found".to_string()))?;
+        .map_err(|e| {
+            if e == "Task not found" || e == "Project not found" {
+                (StatusCode::NOT_FOUND, e)
+            } else if e == "Task has no branch assigned" {
+                (StatusCode::BAD_REQUEST, e)
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e)
+            }
+        })?;
 
-    // 2. Check task has a branch (verify exists, don't need the value)
-    task.task_branch.as_ref().ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "Task does not have a git branch".to_string(),
-        )
-    })?;
-
-    // 3. Get project for base branch and working directory
-    let project = state
-        .app_state
-        .project_repo
-        .get_by_id(&task.project_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Project not found".to_string()))?;
-
-    let base_branch = project.base_branch.as_deref().unwrap_or("main");
-
-    // 4. Determine working path (worktree or main repo)
-    let working_path = task
-        .worktree_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&project.working_directory));
-
-    // 5. Get commits from GitService
-    let commits = GitService::get_commits_since(&working_path, base_branch)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // 6. Convert to response format
     let response: Vec<CommitInfoResponse> = commits
+        .commits
         .into_iter()
         .map(|c| CommitInfoResponse {
             sha: c.sha,

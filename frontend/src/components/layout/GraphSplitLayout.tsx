@@ -169,7 +169,7 @@ export function GraphSplitLayout({
       ref={containerRef}
       data-testid="graph-split-layout"
       className="flex h-full overflow-hidden"
-      style={{ backgroundColor: "var(--bg-base)" }}
+      style={{ backgroundColor: "var(--app-content-bg)" }}
     >
       <style>{overlayAnimationStyles}</style>
       {/* Left Section - Graph canvas */}
@@ -239,7 +239,7 @@ export function GraphSplitLayout({
       {overlayVisible && (
         <div
           data-testid="graph-split-right-overlay"
-          className={`fixed top-14 right-0 flex flex-col pointer-events-auto ${
+          className={`fixed top-12 right-0 flex flex-col pointer-events-auto ${
             overlayExiting ? "graph-panel-exit" : "graph-panel-enter"
           }`}
           style={{

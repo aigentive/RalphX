@@ -168,6 +168,16 @@ export function useChatEvents({
         tool_id?: string;
         arguments: unknown;
         result?: unknown;
+        result_preview_truncated?: boolean | null;
+        resultPreviewTruncated?: boolean | null;
+        result_preview_original_bytes?: number | null;
+        resultPreviewOriginalBytes?: number | null;
+        result_preview_line_count?: number | null;
+        resultPreviewLineCount?: number | null;
+        result_preview_omitted_lines?: number | null;
+        resultPreviewOmittedLines?: number | null;
+        detail_ref?: unknown;
+        detailRef?: unknown;
         conversation_id: string;
         context_id?: string;
         context_type?: string;
@@ -199,7 +209,7 @@ export function useChatEvents({
               if (tc.id !== toolUseId) return tc;
               const updated: ToolCall = { ...tc };
               if (result != null) {
-                updated.result = result;
+                applyToolCallResultPreview(updated, result, payload);
               }
               return updated;
             })
@@ -211,7 +221,7 @@ export function useChatEvents({
               if (block.type !== "tool_use" || block.toolCall.id !== toolUseId) return block;
               const updated: ToolCall = { ...block.toolCall };
               if (result != null) {
-                updated.result = result;
+                applyToolCallResultPreview(updated, result, payload);
               }
               return { type: "tool_use", toolCall: updated };
             })
@@ -276,7 +286,7 @@ export function useChatEvents({
                 const existing = updatedCalls[childIdx]!;
                 const updated: ToolCall = { ...existing };
                 if (result != null) {
-                  updated.result = result;
+                  applyToolCallResultPreview(updated, result, payload);
                 }
                 updatedCalls[childIdx] = updated;
                 next.set(taskId, { ...task, childToolCalls: updatedCalls });
@@ -305,7 +315,7 @@ export function useChatEvents({
 
         const entry: ToolCall = { id, name: tool_name, arguments: args };
         if (result != null) {
-          entry.result = result;
+          applyToolCallResultPreview(entry, result, payload);
         }
         if (diffContext) {
           entry.diffContext = diffContext;
@@ -398,7 +408,7 @@ export function useChatEvents({
                 arguments: args ?? existing.arguments,
               };
               if (result != null) {
-                updated.result = result;
+                applyToolCallResultPreview(updated, result, payload);
               } else if (existing.result != null) {
                 updated.result = existing.result;
               }
@@ -427,8 +437,12 @@ export function useChatEvents({
                   ...tc,
                   name: tool_name,
                   arguments: args ?? tc.arguments,
-                  result: result ?? tc.result,
                 };
+                if (result != null) {
+                  applyToolCallResultPreview(updated, result, payload);
+                } else if (tc.result != null) {
+                  updated.result = tc.result;
+                }
                 if (diffContext) {
                   updated.diffContext = diffContext;
                 }
@@ -460,8 +474,12 @@ export function useChatEvents({
                     ...block.toolCall,
                     name: tool_name,
                     arguments: args ?? block.toolCall.arguments,
-                    result: result ?? block.toolCall.result,
                   };
+                  if (result != null) {
+                    applyToolCallResultPreview(updated, result, payload);
+                  } else if (block.toolCall.result != null) {
+                    updated.result = block.toolCall.result;
+                  }
                   if (diffContext) {
                     updated.diffContext = diffContext;
                   }
@@ -904,7 +922,6 @@ export function useChatEvents({
       }>("agent:usage_updated", (payload) => {
         if (!isRelevant(payload)) return;
 
-        invalidateConversationDataQueries(queryClient, payload.conversation_id);
         queryClient.invalidateQueries({
           queryKey: conversationStatsKey(payload.conversation_id),
         });

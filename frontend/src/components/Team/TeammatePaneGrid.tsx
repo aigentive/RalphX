@@ -30,7 +30,7 @@ export const TeammatePaneGrid = React.memo(function TeammatePaneGrid({
         className="flex items-center justify-center h-full"
         style={{ backgroundColor: "var(--bg-base)" }}
       >
-        <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+        <p className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
           No teammates spawned yet
         </p>
       </div>

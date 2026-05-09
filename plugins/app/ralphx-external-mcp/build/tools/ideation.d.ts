@@ -1,7 +1,7 @@
 /**
  * Ideation tool handlers — Flow 2 (Phase 4)
  *
- * 9 tools for starting/monitoring ideation sessions, proposals, and plans.
+ * Tools for starting/monitoring ideation sessions, proposals, plans, and accepted-plan follow-ups.
  * Delegates multi-step operations to composites.
  */
 import type { ApiKeyContext } from "../types.js";
@@ -60,6 +60,11 @@ export declare function handleGetIdeationMessages(args: Record<string, unknown>,
  * GET /api/external/sessions/:session_id/tasks
  */
 export declare function handleGetSessionTasks(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;
+/**
+ * v1_append_task_to_plan — append a one-off task to an accepted active ideation plan.
+ * POST /api/external/sessions/:session_id/tasks
+ */
+export declare function handleAppendTaskToPlan(args: Record<string, unknown>, context: ApiKeyContext): Promise<string>;
 /**
  * v1_analyze_dependencies — get dependency graph for proposals in a session.
  * GET /api/analyze_dependencies/:session_id

@@ -1,0 +1,584 @@
+name: Coverage Reports
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  statuses: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect coverage scope
+    runs-on: ubuntu-latest
+    outputs:
+      run_plugins: ${{ steps.decide.outputs.run_plugins }}
+      run_rust: ${{ steps.decide.outputs.run_rust }}
+      run_frontend: ${{ steps.decide.outputs.run_frontend }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          list-files: shell
+          filters: |
+            plugins:
+              - 'scripts/summarize-coverage.mjs'
+              - 'plugins/app/ralphx-external-mcp/**'
+              - 'plugins/app/ralphx-mcp-server/**'
+            rust:
+              - 'scripts/summarize-coverage.mjs'
+              - 'src-tauri/**'
+              - 'rust-toolchain.toml'
+              - 'scripts/ci-install-linux-deps.sh'
+              - 'scripts/validate_sqlite_migrations.py'
+            frontend:
+              - 'scripts/summarize-coverage.mjs'
+              - 'frontend/**'
+
+      - name: Decide coverage scope
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            {
+              echo "run_plugins=true"
+              echo "run_rust=true"
+              echo "run_frontend=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          is_dependency_manifest() {
+            case "$1" in
+              frontend/package.json|\
+              frontend/package-lock.json|\
+              plugins/app/ralphx-external-mcp/package.json|\
+              plugins/app/ralphx-external-mcp/package-lock.json|\
+              plugins/app/ralphx-mcp-server/package.json|\
+              plugins/app/ralphx-mcp-server/package-lock.json|\
+              src-tauri/Cargo.lock|\
+              src-tauri/Cargo.toml|\
+              src-tauri/crates/*/Cargo.toml)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          has_coverage_relevant_file() {
+            local files="$1"
+            local file
+
+            for file in ${files}; do
+              if ! is_dependency_manifest "${file}"; then
+                return 0
+              fi
+            done
+
+            return 1
+          }
+
+          decide_coverage_scope() {
+            local matched="$1"
+            local files="$2"
+
+            if [[ "${matched}" == "true" ]] && has_coverage_relevant_file "${files}"; then
+              echo "true"
+            else
+              echo "false"
+            fi
+          }
+
+          {
+            echo "run_plugins=$(decide_coverage_scope '${{ steps.filter.outputs.plugins }}' '${{ steps.filter.outputs.plugins_files }}')"
+            echo "run_rust=$(decide_coverage_scope '${{ steps.filter.outputs.rust }}' '${{ steps.filter.outputs.rust_files }}')"
+            echo "run_frontend=$(decide_coverage_scope '${{ steps.filter.outputs.frontend }}' '${{ steps.filter.outputs.frontend_files }}')"
+          } >> "${GITHUB_OUTPUT}"
+
+  rust-lib-coverage:
+    name: Rust Lib Coverage
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: never
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+          components: llvm-tools-preview
+
+      - name: Install Rust coverage tools
+        uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: cargo-llvm-cov,nextest
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Run Rust lib coverage
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p ../coverage/rust-lib
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest \
+            --profile ci \
+            --lib \
+            --remap-path-prefix \
+            | tee ../coverage/rust-lib/summary.txt
+          cargo llvm-cov report --lcov --output-path ../coverage/rust-lib/lcov.info
+          cargo llvm-cov report --json --output-path ../coverage/rust-lib/coverage.json
+          cargo llvm-cov report --html --output-dir ../coverage/rust-lib/html
+
+      - name: Summarize Rust lib coverage
+        run: |
+          node scripts/summarize-coverage.mjs \
+            --format llvm \
+            --suite "Rust Lib Coverage" \
+            --input coverage/rust-lib/coverage.json \
+            --output coverage/rust-lib/coverage-summary.md
+
+      - name: Upload Rust lib coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-rust-lib
+          path: coverage/rust-lib/
+          if-no-files-found: warn
+          retention-days: 14
+
+  rust-ipc-coverage:
+    name: Rust IPC Coverage
+    needs: changes
+    if: needs.changes.outputs.run_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: never
+      RALPHX_TEST_MODE: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux system dependencies
+        shell: bash
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.91.0
+          components: llvm-tools-preview
+
+      - name: Install Rust coverage tools
+        uses: taiki-e/install-action@e537394e10461340f56469a03c3e73f1705074a9
+        with:
+          tool: cargo-llvm-cov,nextest
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Run Rust IPC contract coverage
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          mkdir -p ../coverage/rust-ipc
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest \
+            --profile ci \
+            --test task_commands \
+            --test api_key_commands \
+            --test project_commands \
+            --test harness_provider_commands \
+            --test release_notes_commands \
+            --test unified_chat_commands \
+            --test task_step_commands \
+            --remap-path-prefix \
+            ipc_contract \
+            | tee ../coverage/rust-ipc/summary.txt
+          cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
+          cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
+          cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
+
+      - name: Summarize Rust IPC coverage
+        run: |
+          node scripts/summarize-coverage.mjs \
+            --format llvm \
+            --suite "Rust IPC Coverage" \
+            --input coverage/rust-ipc/coverage.json \
+            --output coverage/rust-ipc/coverage-summary.md
+
+      - name: Upload Rust IPC coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-rust-ipc
+          path: coverage/rust-ipc/
+          if-no-files-found: warn
+          retention-days: 14
+
+  frontend-coverage:
+    name: Frontend Coverage
+    needs: changes
+    if: needs.changes.outputs.run_frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run frontend coverage
+        run: npm run test:coverage
+        working-directory: frontend
+
+      - name: Summarize frontend coverage
+        run: |
+          node scripts/summarize-coverage.mjs \
+            --format istanbul \
+            --suite "Frontend Coverage" \
+            --input frontend/coverage/coverage-summary.json \
+            --output frontend/coverage/coverage-summary.md
+
+      - name: Upload frontend coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-frontend
+          path: frontend/coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+  plugin-coverage:
+    name: Plugin Coverage (${{ matrix.package_name }})
+    needs: changes
+    if: needs.changes.outputs.run_plugins == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_name: External MCP
+            package_dir: plugins/app/ralphx-external-mcp
+            package_lock: plugins/app/ralphx-external-mcp/package-lock.json
+            artifact_name: coverage-plugin-external-mcp
+            codecov_flag: plugin-external-mcp
+          - package_name: Internal MCP
+            package_dir: plugins/app/ralphx-mcp-server
+            package_lock: plugins/app/ralphx-mcp-server/package-lock.json
+            artifact_name: coverage-plugin-internal-mcp
+            codecov_flag: plugin-internal-mcp
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.package_lock }}
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ${{ matrix.package_dir }}
+
+      - name: Run plugin coverage
+        run: npm run test:coverage
+        working-directory: ${{ matrix.package_dir }}
+
+      - name: Summarize plugin coverage
+        run: |
+          node scripts/summarize-coverage.mjs \
+            --format istanbul \
+            --suite "${{ matrix.package_name }} Coverage" \
+            --input "${{ matrix.package_dir }}/coverage/coverage-summary.json" \
+            --output "${{ matrix.package_dir }}/coverage/coverage-summary.md"
+
+      - name: Upload plugin coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.package_dir }}/coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+  publish-codecov:
+    name: Publish Codecov Coverage
+    needs:
+      - changes
+      - rust-lib-coverage
+      - rust-ipc-coverage
+      - frontend-coverage
+      - plugin-coverage
+    if: >
+      always() &&
+      needs.changes.result == 'success' &&
+      needs.rust-lib-coverage.result != 'failure' &&
+      needs.rust-lib-coverage.result != 'cancelled' &&
+      needs.rust-ipc-coverage.result != 'failure' &&
+      needs.rust-ipc-coverage.result != 'cancelled' &&
+      needs.frontend-coverage.result != 'failure' &&
+      needs.frontend-coverage.result != 'cancelled' &&
+      needs.plugin-coverage.result != 'failure' &&
+      needs.plugin-coverage.result != 'cancelled' &&
+      (
+        needs.rust-lib-coverage.result == 'success' ||
+        needs.rust-ipc-coverage.result == 'success' ||
+        needs.frontend-coverage.result == 'success' ||
+        needs.plugin-coverage.result == 'success'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: coverage-artifacts
+
+      - name: Report unavailable Codecov upload
+        if: env.CODECOV_TOKEN == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${IS_FORK_PR}" == "true" ]]; then
+            echo "::notice::Codecov upload skipped because fork pull_request runs do not receive repository secrets."
+          else
+            echo "::warning::Codecov upload skipped because CODECOV_TOKEN is unavailable."
+          fi
+
+      - name: Upload Rust lib coverage to Codecov
+        if: needs.rust-lib-coverage.result == 'success' && env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-artifacts/coverage-rust-lib/lcov.info
+          flags: rust-lib
+          name: rust-lib
+          fail_ci_if_error: true
+
+      - name: Upload Rust IPC coverage to Codecov
+        if: needs.rust-ipc-coverage.result == 'success' && env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-artifacts/coverage-rust-ipc/lcov.info
+          flags: rust-ipc
+          name: rust-ipc
+          fail_ci_if_error: true
+
+      - name: Upload frontend coverage to Codecov
+        if: needs.frontend-coverage.result == 'success' && env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-artifacts/coverage-frontend/lcov.info
+          flags: frontend
+          name: frontend
+          fail_ci_if_error: true
+
+      - name: Upload internal MCP coverage to Codecov
+        if: needs.plugin-coverage.result == 'success' && env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
+          flags: plugin-internal-mcp
+          name: plugin-internal-mcp
+          fail_ci_if_error: true
+
+      - name: Upload external MCP coverage to Codecov
+        if: needs.plugin-coverage.result == 'success' && env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage-artifacts/coverage-plugin-external-mcp/lcov.info
+          flags: plugin-external-mcp
+          name: plugin-external-mcp
+          fail_ci_if_error: true
+
+  coverage-gate:
+    name: Coverage Gate
+    needs:
+      - changes
+      - rust-lib-coverage
+      - rust-ipc-coverage
+      - frontend-coverage
+      - plugin-coverage
+      - publish-codecov
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Enforce Codecov patch status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "Coverage scope detection did not complete successfully."
+            exit 1
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            echo "Coverage gate only enforces patch coverage on pull requests."
+            exit 0
+          fi
+
+          coverage_required=false
+          if [[ "${{ needs.changes.outputs.run_rust }}" == "true" || "${{ needs.changes.outputs.run_frontend }}" == "true" || "${{ needs.changes.outputs.run_plugins }}" == "true" ]]; then
+            coverage_required=true
+          fi
+
+          if [[ "${coverage_required}" != "true" ]]; then
+            echo "No coverage-relevant files changed; skipping Codecov patch gate."
+            exit 0
+          fi
+
+          failures=()
+          if [[ "${{ needs.changes.outputs.run_rust }}" == "true" ]]; then
+            [[ "${{ needs.rust-lib-coverage.result }}" == "success" ]] || failures+=("Rust Lib Coverage: ${{ needs.rust-lib-coverage.result }}")
+            [[ "${{ needs.rust-ipc-coverage.result }}" == "success" ]] || failures+=("Rust IPC Coverage: ${{ needs.rust-ipc-coverage.result }}")
+          fi
+          if [[ "${{ needs.changes.outputs.run_frontend }}" == "true" ]]; then
+            [[ "${{ needs.frontend-coverage.result }}" == "success" ]] || failures+=("Frontend Coverage: ${{ needs.frontend-coverage.result }}")
+          fi
+          if [[ "${{ needs.changes.outputs.run_plugins }}" == "true" ]]; then
+            [[ "${{ needs.plugin-coverage.result }}" == "success" ]] || failures+=("Plugin Coverage: ${{ needs.plugin-coverage.result }}")
+          fi
+          [[ "${{ needs.publish-codecov.result }}" == "success" ]] || failures+=("Publish Codecov Coverage: ${{ needs.publish-codecov.result }}")
+
+          if (( ${#failures[@]} > 0 )); then
+            printf 'Coverage prerequisite failed: %s\n' "${failures[@]}"
+            exit 1
+          fi
+
+          if [[ "${IS_FORK_PR}" == "true" ]]; then
+            echo "Pull request comes from a fork."
+            echo "GitHub does not pass repository secrets to pull_request workflows from forks, so Codecov upload cannot publish codecov/patch."
+            echo "Coverage jobs completed successfully; skipping Codecov patch gate for this fork PR."
+            exit 0
+          fi
+
+          if [[ -z "${CODECOV_TOKEN}" ]]; then
+            echo "CODECOV_TOKEN is unavailable for a coverage-required PR; cannot upload coverage or receive codecov/patch."
+            echo "Configure CODECOV_TOKEN or adjust the coverage policy before requiring Codecov patch coverage."
+            exit 1
+          fi
+
+          echo "Waiting for Codecov patch status on ${COMMIT_SHA}."
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            status_state="$(
+              gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+                --jq 'map(select(.context == "codecov/patch"))[0].state // ""'
+            )"
+            check_state="$(
+              gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+                -f check_name="codecov/patch" \
+                --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] | if . == null then "" elif .status != "completed" then "pending" else .conclusion end'
+            )"
+
+            state=""
+            for candidate in "${status_state}" "${check_state}"; do
+              case "${candidate}" in
+                failure|error|timed_out|cancelled|action_required)
+                  state="${candidate}"
+                  break
+                  ;;
+              esac
+            done
+            if [[ -z "${state}" ]]; then
+              if [[ "${status_state}" == "success" || "${check_state}" == "success" ]]; then
+                state="success"
+              elif [[ "${status_state}" == "pending" || "${check_state}" == "pending" ]]; then
+                state="pending"
+              fi
+            fi
+
+            case "${state}" in
+              success)
+                echo "Codecov patch status passed."
+                exit 0
+                ;;
+              failure|error|timed_out|cancelled|action_required)
+                gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+                  --jq 'map(select(.context == "codecov/patch"))[0]'
+                gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+                  -f check_name="codecov/patch" \
+                  --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
+                echo "Codecov patch status failed."
+                exit 1
+                ;;
+              pending)
+                echo "Codecov patch status is pending; waiting."
+                ;;
+              "")
+                echo "Codecov patch status has not been posted yet; waiting."
+                ;;
+              *)
+                echo "Unexpected Codecov patch status: ${state}"
+                exit 1
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for Codecov patch status."
+          exit 1

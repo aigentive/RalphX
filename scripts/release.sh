@@ -8,13 +8,14 @@ COMMON_FILE="${SCRIPT_DIR}/release-analysis-common.sh"
 PROPOSE_SCRIPT="${SCRIPT_DIR}/propose-release.sh"
 BUMP_SCRIPT="${SCRIPT_DIR}/bump-version.sh"
 NOTES_SCRIPT="${SCRIPT_DIR}/generate-release-notes.sh"
+METADATA_SCRIPT="${SCRIPT_DIR}/append-github-release-metadata.sh"
 
 usage() {
   cat <<'EOF'
 Run the guided RalphX local release-prep flow.
 
 Usage:
-  ./scripts/release.sh [--current-version <version>] [--from <ref>] [--to <ref>] [--model <model>] [--reasoning-effort <low|medium|high|xhigh>] [--proposal-output <file>] [--notes-output <file>]
+  ./scripts/release.sh [--current-version <version>] [--from <ref>] [--to <ref>] [--model <model>] [--reasoning-effort <low|medium|high|xhigh>] [--proposal-output <file>] [--notes-output <file>] [--allow-major]
 
 Options:
   --current-version <version>
@@ -27,6 +28,7 @@ Options:
   --proposal-output <file>
                         Proposal markdown path (default: .artifacts/release-notes/proposal-from-v<current-version>.md)
   --notes-output <file> Release notes markdown path (default: release-notes/v<proposed-version>.md)
+  --allow-major         Allow accepting a proposed major version after explicit manual approval
   -h, --help            Show this help
 
 Flow:
@@ -34,7 +36,7 @@ Flow:
   2. Pause for proposal review and acceptance
   3. Persist the accepted version to .artifacts/release-notes/.version
   4. Bump app versions
-  5. Generate release notes
+  5. Generate release notes and append GitHub release metadata
   6. Pause for release-notes review, then print the next manual release steps
 EOF
 }
@@ -48,6 +50,7 @@ model=""
 reasoning_effort=""
 proposal_output=""
 notes_output=""
+allow_major="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -90,6 +93,9 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || release_analysis_die "--notes-output requires a path"
       notes_output="$1"
       ;;
+    --allow-major)
+      allow_major="true"
+      ;;
     *)
       release_analysis_die "Unknown option: $1"
       ;;
@@ -100,6 +106,7 @@ done
 [[ -x "${PROPOSE_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${PROPOSE_SCRIPT}"
 [[ -x "${BUMP_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${BUMP_SCRIPT}"
 [[ -x "${NOTES_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${NOTES_SCRIPT}"
+[[ -x "${METADATA_SCRIPT}" ]] || release_analysis_die "Missing executable script: ${METADATA_SCRIPT}"
 [[ -t 0 && -t 1 ]] || release_analysis_die "./scripts/release.sh is interactive. Run it in a terminal with stdin/stdout attached to a TTY."
 
 cd "${REPO_ROOT}"
@@ -136,6 +143,9 @@ if [[ -n "${model}" ]]; then
 fi
 if [[ -n "${reasoning_effort}" ]]; then
   proposal_args+=(--reasoning-effort "${reasoning_effort}")
+fi
+if [[ "${allow_major}" == "true" ]]; then
+  proposal_args+=(--allow-major)
 fi
 
 echo "Step 1/3: Generating release proposal..."
@@ -187,6 +197,18 @@ echo
 echo "Step 3/3: Generating release notes..."
 "${NOTES_SCRIPT}" "${notes_args[@]}"
 
+metadata_args=(
+  --tag "v${proposed_version}"
+  --target "${to_ref}"
+  --notes-file "${notes_output}"
+)
+previous_tag="${RELEASE_ANALYSIS_FROM_REF#refs/tags/}"
+if git rev-parse -q --verify "refs/tags/${previous_tag}" >/dev/null 2>&1; then
+  metadata_args+=(--previous-tag "${previous_tag}")
+fi
+
+"${METADATA_SCRIPT}" "${metadata_args[@]}"
+
 echo
 echo "Review the generated files:"
 echo "  - proposal: ${proposal_output}"
@@ -205,7 +227,7 @@ esac
 
 echo
 echo "Next manual steps:"
-echo "  git add frontend/package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json"
+echo "  git add frontend/package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json"
 echo "  git commit -m \"chore: bump version to ${proposed_version}\""
 echo "  git add ${notes_output}"
 echo "  git commit -m \"docs: add release notes for v${proposed_version}\""

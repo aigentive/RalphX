@@ -101,7 +101,7 @@ export function QuickActionRow({
           />
           <div className="flex-1 min-w-0">
             <div
-              className="text-[13px] font-medium leading-tight"
+              className="text-[0.8125rem] font-medium leading-tight"
               style={{ color: isHighlighted ? "var(--accent-primary)" : "var(--text-primary)" }}
             >
               {action.label}
@@ -182,7 +182,7 @@ export function QuickActionRow({
             style={{ color: "var(--accent-primary)" }}
           />
           <div
-            className="text-[13px] font-medium"
+            className="text-[0.8125rem] font-medium"
             style={{ color: "var(--text-primary)" }}
           >
             {action.creatingLabel}
@@ -206,7 +206,7 @@ export function QuickActionRow({
                 style={{ color: "var(--status-success)" }}
               />
               <div
-                className="text-[13px] font-medium"
+                className="text-[0.8125rem] font-medium"
                 style={{ color: "var(--text-primary)" }}
               >
                 {action.successLabel}

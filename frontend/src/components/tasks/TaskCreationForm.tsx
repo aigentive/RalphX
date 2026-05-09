@@ -174,13 +174,13 @@ export function TaskCreationForm({
                 }}
               >
                 <span
-                  className="text-[11px] font-medium w-5"
+                  className="text-[0.6875rem] font-medium w-5"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {index + 1}.
                 </span>
                 <span
-                  className="flex-1 text-[13px] truncate"
+                  className="flex-1 text-[0.8125rem] truncate"
                   style={{ color: "var(--text-secondary)" }}
                 >
                   {step}
@@ -242,7 +242,7 @@ export function TaskCreationForm({
             type="button"
             onClick={addStep}
             disabled={isSubmitting || !newStepTitle.trim()}
-            className="h-10 px-3 rounded-lg text-[13px] font-medium shrink-0 flex items-center justify-center gap-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="h-10 px-3 rounded-lg text-[0.8125rem] font-medium shrink-0 flex items-center justify-center gap-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{
               background: "transparent",
               border: "1px solid var(--overlay-moderate)",

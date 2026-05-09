@@ -98,12 +98,12 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
           <div className="mb-4">
             <h2
               id="finalize-dialog-title"
-              className="text-[15px] font-semibold mb-1"
+              className="text-[0.9375rem] font-semibold mb-1"
               style={{ color: "var(--text-primary)" }}
             >
               Plan Ready for Acceptance
             </h2>
-            <p className="text-[13px]" style={{ color: "var(--text-muted)" }}>
+            <p className="text-[0.8125rem]" style={{ color: "var(--text-muted)" }}>
               The agent has finalized proposals and is waiting for your confirmation.
             </p>
           </div>
@@ -111,7 +111,7 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
           {/* Session title */}
           {sessionTitle && (
             <div
-              className="mb-5 px-3 py-2.5 rounded-lg text-[13px] font-medium truncate"
+              className="mb-5 px-3 py-2.5 rounded-lg text-[0.8125rem] font-medium truncate"
               style={{
                 background: "var(--overlay-weak)",
                 border: "1px solid var(--overlay-weak)",
@@ -133,7 +133,7 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
             />
             <Label
               htmlFor="auto-accept-session"
-              className="text-[12px] cursor-pointer select-none"
+              className="text-[0.75rem] cursor-pointer select-none"
               style={{ color: "var(--text-secondary)" }}
             >
               Auto-accept plans for this session
@@ -146,7 +146,7 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
             <button
               onClick={handleViewPlan}
               disabled={isLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.75rem] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 color: "var(--text-secondary)",
                 border: "1px solid var(--overlay-moderate)",
@@ -171,7 +171,7 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
             <button
               onClick={handleReject}
               disabled={isLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.75rem] font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 color: "var(--status-error)",
                 border: "1px solid var(--status-error-border)",
@@ -198,7 +198,7 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
             <button
               onClick={handleAccept}
               disabled={isLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.75rem] font-semibold transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 color: "var(--text-on-accent)",
                 background: accept.isPending

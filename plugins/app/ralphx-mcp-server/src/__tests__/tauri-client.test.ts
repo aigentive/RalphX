@@ -173,6 +173,14 @@ describe("buildTauriApiUrl", () => {
     );
   });
 
+  it("accepts explicit local alternate backend ports", () => {
+    process.env.TAURI_API_URL = "http://127.0.0.1:3857";
+
+    expect(buildTauriApiUrl("question/request")).toBe(
+      "http://127.0.0.1:3857/api/question/request"
+    );
+  });
+
   it("rejects non-local TAURI_API_URL values", () => {
     process.env.TAURI_API_URL = "https://example.com";
 

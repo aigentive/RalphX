@@ -9,13 +9,14 @@ use tokio::sync::Mutex;
 
 use crate::domain::agents::{
     AgentConfig, AgentError, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
-    ClientCapabilities, ClientType, ResponseChunk,
+    ClientCapabilities, ClientType, ResponseChunk, CODEX_DEFAULT_APPROVAL_POLICY,
+    CODEX_DEFAULT_SANDBOX_MODE,
 };
 
 use super::{
     build_codex_mcp_overrides, build_spawnable_codex_exec_command, compose_codex_prompt,
-    find_codex_cli, normalize_codex_exec_output, probe_codex_cli, resolve_codex_cli,
-    CodexCliCapabilities, CodexExecCliConfig,
+    normalize_codex_exec_output, probe_codex_cli, resolve_codex_cli, CodexCliCapabilities,
+    CodexExecCliConfig,
 };
 
 lazy_static! {
@@ -30,9 +31,8 @@ pub struct CodexCliClient {
 
 impl CodexCliClient {
     pub fn new() -> Self {
-        let cli_path = find_codex_cli().unwrap_or_else(|| PathBuf::from("codex"));
         Self {
-            cli_path,
+            cli_path: PathBuf::from("codex"),
             capabilities: ClientCapabilities::codex(),
         }
     }
@@ -75,8 +75,8 @@ impl CodexCliClient {
         CodexExecCliConfig {
             model: config.model.clone(),
             reasoning_effort: config.logical_effort,
-            approval_policy: config.approval_policy.clone(),
-            sandbox_mode: config.sandbox_mode.clone(),
+            approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+            sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             config_overrides,
             cwd: Some(config.working_directory.clone()),
             add_dirs: Vec::new(),

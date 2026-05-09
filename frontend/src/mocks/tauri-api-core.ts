@@ -31,6 +31,7 @@ import { mockIdeationApi } from "@/api-mock/ideation";
 import { mockExecutionApi } from "@/api-mock/execution";
 import { mockPlanBranchApi, toSnakeCasePlanBranch } from "@/api-mock/plan-branch";
 import { mockPlanApi } from "@/api-mock/plan";
+import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
 import type { ChatMessageResponse } from "@/api/chat";
@@ -181,10 +182,83 @@ const commandHandlers: Record<
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
+  get_agent_provider_settings: async () => mockAgentProviderSettings,
+  update_agent_provider_settings: async (args) => {
+    const input = args.input as Partial<
+      (typeof mockAgentProviderSettings.providers)[number]
+    > & { provider?: string; isDefault?: boolean };
+    const provider = mockAgentProviderSettings.providers.find(
+      (entry) => entry.provider === input.provider,
+    );
+    if (provider) {
+      Object.assign(provider, input, { updatedAt: new Date(0).toISOString() });
+      if (input.isDefault) {
+        for (const entry of mockAgentProviderSettings.providers) {
+          entry.isDefault = entry.provider === provider.provider;
+        }
+        mockAgentProviderSettings.defaultProvider = provider.provider;
+        mockAgentProviderSettings.requiresOnboarding = false;
+      }
+    }
+    return mockAgentProviderSettings;
+  },
+  list_agent_models: async () => mockAgentModels,
+  get_agent_lane_settings: async (args) =>
+    mockAgentLaneSettings((args.projectId as string | null | undefined) ?? null),
+  get_agent_harness_availability: async (args) =>
+    mockAgentHarnessAvailability(
+      (args.projectId as string | null | undefined) ?? null,
+    ),
+  update_agent_lane_settings: async (args) => {
+    const input = args.input as {
+      projectId?: string | null;
+      lane: (typeof mockAgentLanes)[number];
+      harness: string;
+      model?: string | null;
+      effort?: string | null;
+      approvalPolicy?: string | null;
+      sandboxMode?: string | null;
+    };
+    return {
+      projectId: input.projectId ?? null,
+      lane: input.lane,
+      harness: input.harness,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+      approvalPolicy: input.approvalPolicy ?? null,
+      sandboxMode: input.sandboxMode ?? null,
+      updatedAt: "2026-05-08T00:00:00Z",
+    };
+  },
   get_project: async (args) => mockProjectsApi.get(args.projectId as string),
   get_git_branches: async (args) => mockGetGitBranches(args.workingDirectory as string),
   get_git_current_branch: async (args) => mockGetGitCurrentBranch(args.workingDirectory as string),
   get_git_default_branch: async (args) => mockGetGitDefaultBranch(args.workingDirectory as string),
+  get_git_remote_url: async () => mockGitAuthDiagnostics().fetchUrl,
+  get_git_auth_diagnostics: async () => mockGitAuthDiagnostics(),
+  switch_git_origin_to_ssh: async () => {
+    const current = mockGitAuthDiagnostics();
+    const sshUrl = current.suggestedSshUrl ?? "git@github.com:mock/project.git";
+    const updated: GitAuthDiagnostics = {
+      fetchUrl: sshUrl,
+      pushUrl: sshUrl,
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    };
+    window.__mockGitAuthDiagnostics = updated;
+    return updated;
+  },
+  check_gh_auth: async () => window.__mockGhAuthStatus ?? true,
+  login_gh_with_browser: async () => {
+    window.__mockGhAuthStatus = true;
+    return true;
+  },
+  setup_gh_git_auth: async () => true,
+  resume_deferred_git_startup: async () => true,
+  update_github_pr_enabled: async () => null,
 
   // Plan commands
   get_active_plan: async (args) => mockPlanApi.getActivePlan(args.projectId as string),
@@ -645,54 +719,18 @@ const commandHandlers: Record<
   // Ideation commands
   list_ideation_sessions: async (args) => {
     const sessions = await mockIdeationApi.sessions.list(args.projectId as string);
-    // Transform to snake_case as backend would return
-    return sessions.map((s) => ({
-      id: s.id,
-      project_id: s.projectId,
-      title: s.title,
-      status: s.status,
-      plan_artifact_id: s.planArtifactId,
-      seed_task_id: s.seedTaskId,
-      created_at: s.createdAt,
-      updated_at: s.updatedAt,
-      archived_at: s.archivedAt,
-      converted_at: s.convertedAt,
-    }));
+    return sessions.map(toSnakeIdeationSession);
   },
   get_ideation_session: async (args) => {
-    const session = await mockIdeationApi.sessions.get(args.sessionId as string);
+    const session = await mockIdeationApi.sessions.get(args.id as string);
     if (!session) return null;
-    // Transform to snake_case as backend would return
-    return {
-      id: session.id,
-      project_id: session.projectId,
-      title: session.title,
-      status: session.status,
-      plan_artifact_id: session.planArtifactId,
-      seed_task_id: session.seedTaskId,
-      created_at: session.createdAt,
-      updated_at: session.updatedAt,
-      archived_at: session.archivedAt,
-      converted_at: session.convertedAt,
-    };
+    return toSnakeIdeationSession(session);
   },
   get_ideation_session_with_data: async (args) => {
     const data = await mockIdeationApi.sessions.getWithData(args.id as string);
     if (!data) return null;
-    // Transform to snake_case as backend would return
     return {
-      session: {
-        id: data.session.id,
-        project_id: data.session.projectId,
-        title: data.session.title,
-        status: data.session.status,
-        plan_artifact_id: data.session.planArtifactId,
-        seed_task_id: data.session.seedTaskId,
-        created_at: data.session.createdAt,
-        updated_at: data.session.updatedAt,
-        archived_at: data.session.archivedAt,
-        converted_at: data.session.convertedAt,
-      },
+      session: toSnakeIdeationSession(data.session),
       proposals: data.proposals.map((p) => ({
         id: p.id,
         session_id: p.sessionId,
@@ -882,6 +920,49 @@ const commandHandlers: Record<
       global_ideation_max: settings.globalIdeationMax,
       allow_ideation_borrow_idle_execution: settings.allowIdeationBorrowIdleExecution,
     };
+  },
+  get_review_settings: async () => ({ ...mockReviewSettings }),
+  update_review_settings: async (args) => {
+    const input = args.input as {
+      requireHumanReview?: boolean;
+      maxFixAttempts?: number;
+      maxRevisionCycles?: number;
+    };
+    if (input.requireHumanReview !== undefined) {
+      mockReviewSettings.require_human_review = input.requireHumanReview;
+    }
+    if (input.maxFixAttempts !== undefined) {
+      mockReviewSettings.max_fix_attempts = input.maxFixAttempts;
+    }
+    if (input.maxRevisionCycles !== undefined) {
+      mockReviewSettings.max_revision_cycles = input.maxRevisionCycles;
+    }
+    return { ...mockReviewSettings };
+  },
+  get_external_mcp_config: async () => ({ ...mockExternalMcpConfig }),
+  update_external_mcp_config: async (args) => {
+    const input = args.input as {
+      enabled?: boolean;
+      port?: number;
+      host?: string;
+      authToken?: string;
+      nodePath?: string;
+    };
+    if (input.enabled !== undefined) {
+      mockExternalMcpConfig.enabled = input.enabled;
+    }
+    if (input.port !== undefined) {
+      mockExternalMcpConfig.port = input.port;
+    }
+    if (input.host !== undefined) {
+      mockExternalMcpConfig.host = input.host;
+    }
+    if (input.authToken !== undefined) {
+      mockExternalMcpConfig.authToken = input.authToken === "" ? null : input.authToken;
+    }
+    if (input.nodePath !== undefined) {
+      mockExternalMcpConfig.nodePath = input.nodePath === "" ? null : input.nodePath;
+    }
   },
 
   // Plan branch commands

@@ -169,6 +169,7 @@ pub struct WorkflowResponse {
 
 impl From<WorkflowSchema> for WorkflowResponse {
     fn from(workflow: WorkflowSchema) -> Self {
+        let workflow = normalize_builtin_workflow_for_response(workflow);
         Self {
             id: workflow.id.as_str().to_string(),
             name: workflow.name,
@@ -183,6 +184,17 @@ impl From<WorkflowSchema> for WorkflowResponse {
             reviewer_profile: workflow.defaults.reviewer_profile,
         }
     }
+}
+
+fn normalize_builtin_workflow_for_response(workflow: WorkflowSchema) -> WorkflowSchema {
+    if workflow.id.as_str() != "ralphx-default" {
+        return workflow;
+    }
+
+    let mut current = WorkflowSchema::default_ralphx();
+    current.is_default = workflow.is_default;
+    current.defaults = workflow.defaults;
+    current
 }
 
 /// List all workflows
@@ -384,11 +396,14 @@ pub async fn get_active_workflow_columns(
         .map_err(|e| e.to_string())?;
 
     match default_workflow {
-        Some(workflow) => Ok(workflow
-            .columns
-            .iter()
-            .map(WorkflowColumnResponse::from)
-            .collect()),
+        Some(workflow) => {
+            let workflow = normalize_builtin_workflow_for_response(workflow);
+            Ok(workflow
+                .columns
+                .iter()
+                .map(WorkflowColumnResponse::from)
+                .collect())
+        }
         None => {
             // Return the RalphX default columns if no workflow is set
             let default = WorkflowSchema::default_ralphx();

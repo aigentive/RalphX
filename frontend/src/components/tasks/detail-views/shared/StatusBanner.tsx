@@ -100,7 +100,7 @@ export function StatusBanner({
       {/* Content */}
       <div className="flex-1 min-w-0">
         <span
-          className="text-[14px] font-semibold tracking-tight block"
+          className="text-[0.875rem] font-semibold tracking-tight block"
           style={{ color: config.titleColor }}
         >
           {title}

@@ -31,6 +31,7 @@ interface GraphSelectionControllerParams {
   onToggleCollapse: (planArtifactId: string) => void;
   onToggleTierCollapse: (tierGroupId: string) => void;
   onToggleAllTiers: (planArtifactId: string, action: "expand" | "collapse") => void;
+  onTaskSelect?: (taskId: string) => void;
   centerOnPlanGroup: (planArtifactId: string, duration?: number, zoom?: number) => boolean;
   centerOnNode: (
     nodeId: string,
@@ -225,6 +226,7 @@ export function useGraphSelectionController({
   onToggleCollapse,
   onToggleTierCollapse,
   onToggleAllTiers,
+  onTaskSelect,
   centerOnPlanGroup,
   centerOnNode,
   centerOnNodeObject,
@@ -249,6 +251,17 @@ export function useGraphSelectionController({
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const groupClickTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const openTaskDetails = useCallback(
+    (taskId: string) => {
+      if (onTaskSelect) {
+        onTaskSelect(taskId);
+        return;
+      }
+      setSelectedTaskId(taskId);
+    },
+    [onTaskSelect, setSelectedTaskId]
+  );
 
   const planGroupsById = useMemo(() => {
     const map = new Map<string, PlanGroupInfo>();
@@ -550,9 +563,9 @@ export function useGraphSelectionController({
         return;
       }
 
-      setSelectedTaskId(node.id);
+      openTaskDetails(node.id);
     },
-    [onToggleCollapse, onToggleTierCollapse, setSelectedTaskId]
+    [onToggleCollapse, onToggleTierCollapse, openTaskDetails]
   );
 
   const handlePaneClick = useCallback(() => {
@@ -771,7 +784,7 @@ export function useGraphSelectionController({
         }
 
         if (activeSelection.kind === "task") {
-          setSelectedTaskId(activeSelection.id);
+          openTaskDetails(activeSelection.id);
         }
         return;
       }
@@ -934,6 +947,7 @@ export function useGraphSelectionController({
       onToggleAllTiers,
       onToggleCollapse,
       onToggleTierCollapse,
+      openTaskDetails,
       planGroupNodes,
       planGroupNodesSorted,
       selectedTaskId,

@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, ChevronRight, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -67,6 +67,13 @@ export interface PlanDisplayProps {
   onCreateProposals?: () => void;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
+  /**
+   * When true, drop the wrapper card (file-icon header + collapsible chrome)
+   * and render the markdown body directly. The leading H1 in the plan content
+   * already serves as the title in the body, so the wrapper card is
+   * redundant in hosts that always show one plan per session.
+   */
+  chromeless?: boolean;
 }
 
 // ============================================================================
@@ -100,7 +107,7 @@ const markdownComponents = {
       return (
         <code
           className={cn(
-            "block p-4 rounded-lg text-[12.5px] font-mono overflow-x-auto leading-[1.6]",
+            "block p-4 rounded-lg text-[0.7812rem] font-mono overflow-x-auto leading-[1.6]",
             className
           )}
           style={{
@@ -116,7 +123,7 @@ const markdownComponents = {
     }
     return (
       <code
-        className="px-[6px] py-[2px] rounded-[4px] text-[12px] font-mono"
+        className="px-[6px] py-[2px] rounded-[4px] text-[0.75rem] font-mono"
         style={{
           background: "var(--overlay-moderate)",
           color: "var(--text-primary)",
@@ -134,7 +141,7 @@ const markdownComponents = {
   ),
   p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
     <p
-      className="mb-3.5 last:mb-0 leading-[1.65] text-[13px]"
+      className="mb-3.5 last:mb-0 leading-[1.65] text-[0.8125rem]"
       style={{ color: "var(--text-secondary)" }}
       {...props}
     >
@@ -142,53 +149,36 @@ const markdownComponents = {
     </p>
   ),
   ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
-    <ul className="mb-4 last:mb-0 space-y-1.5 list-none pl-0" {...props}>
+    <ul
+      className="mb-4 last:mb-0 space-y-1.5 pl-5 list-disc marker:text-[var(--text-muted)]"
+      style={{ color: "var(--text-secondary)" }}
+      {...props}
+    >
       {children}
     </ul>
   ),
   ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
     <ol
-      className="mb-4 last:mb-0 space-y-1.5 pl-6 list-decimal marker:font-semibold marker:text-[12px]"
+      className="mb-4 last:mb-0 space-y-1.5 pl-6 list-decimal marker:font-semibold marker:text-[0.75rem]"
       style={{ color: "var(--text-secondary)" }}
       {...props}
     >
       {children}
     </ol>
   ),
-  li: ({ children, ordered: _ordered, ...props }: React.LiHTMLAttributes<HTMLLIElement> & { ordered?: boolean }) => {
-    // `ordered` is injected by react-markdown to distinguish ol/ul children.
-    // Unordered items get a custom accent dot; ordered items inherit marker
-    // styles from <ol> and only need text color + leading.
-    if (_ordered) {
-      return (
-        <li
-          className="leading-[1.65] text-[13px] pl-1"
-          style={{ color: "var(--text-secondary)" }}
-          {...props}
-        >
-          {children}
-        </li>
-      );
-    }
-    return (
-      <li
-        className="pl-5 leading-[1.65] text-[13px] relative"
-        style={{ color: "var(--text-secondary)" }}
-        {...props}
-      >
-        <span
-          aria-hidden="true"
-          className="absolute left-1 top-[9px] w-[5px] h-[5px] rounded-full"
-          style={{ background: "var(--text-muted)" }}
-        />
-        {children}
-      </li>
-    );
-  },
+  li: ({ children, ...props }: React.LiHTMLAttributes<HTMLLIElement>) => (
+    <li
+      className="leading-[1.65] text-[0.8125rem] pl-1"
+      style={{ color: "var(--text-secondary)" }}
+      {...props}
+    >
+      {children}
+    </li>
+  ),
   // H1 — plan title. Large, tight tracking, accent-tinted bottom divider.
   h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
     <h1
-      className="text-[20px] font-semibold tracking-[-0.02em] mt-0 mb-5 pb-3 first:mt-0"
+      className="text-[1.25rem] font-semibold tracking-[-0.02em] mt-0 mb-5 pb-3 first:mt-0"
       style={{
         color: "var(--text-primary)",
         borderBottom: "1px solid var(--border-subtle)",
@@ -198,43 +188,32 @@ const markdownComponents = {
       {children}
     </h1>
   ),
-  // H2 — major section. Accent bar on the left makes sections scannable.
+  // H2 — major section.
   h2: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
     <h2
-      className="text-[15px] font-semibold tracking-[-0.015em] mt-7 mb-3 first:mt-0 flex items-center gap-2.5"
+      className="text-[0.9375rem] font-semibold tracking-[-0.015em] mt-5 mb-2 first:mt-0"
       style={{ color: "var(--text-primary)" }}
       {...props}
     >
-      <span
-        aria-hidden="true"
-        className="inline-block w-[3px] h-[15px] rounded-full flex-shrink-0"
-        style={{ background: "var(--accent-primary)" }}
-      />
-      <span>{children}</span>
+      {children}
     </h2>
   ),
-  // H3 — subsection. Compact uppercase eyebrow in accent color with a
-  // leading chevron icon so it reads as a labelled child of the parent H2.
+  // H3 — subsection. Compact uppercase eyebrow in muted text color.
   h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
     <h3
-      className="text-[11px] font-semibold uppercase mt-5 mb-2 flex items-center gap-1.5"
+      className="text-[0.6875rem] font-semibold uppercase mt-5 mb-2"
       style={{
-        color: "var(--accent-primary)",
+        color: "var(--text-muted)",
         letterSpacing: "0.08em",
       }}
       {...props}
     >
-      <ChevronRight
-        aria-hidden="true"
-        className="w-[13px] h-[13px] flex-shrink-0"
-        style={{ color: "var(--accent-primary)" }}
-      />
-      <span>{children}</span>
+      {children}
     </h3>
   ),
   h4: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
     <h4
-      className="text-[13px] font-semibold mt-4 mb-1.5"
+      className="text-[0.8125rem] font-semibold mt-4 mb-1.5"
       style={{ color: "var(--text-primary)" }}
       {...props}
     >
@@ -243,9 +222,8 @@ const markdownComponents = {
   ),
   blockquote: ({ children, ...props }: React.HTMLAttributes<HTMLQuoteElement>) => (
     <blockquote
-      className="my-4 pl-4 pr-3 py-2 rounded-r-md"
+      className="my-4 px-3 py-2 rounded-md"
       style={{
-        borderLeft: "3px solid var(--accent-primary)",
         background: "var(--overlay-faint)",
         color: "var(--text-secondary)",
       }}
@@ -288,7 +266,7 @@ const markdownComponents = {
       className="my-4 overflow-x-auto rounded-lg"
       style={{ border: "1px solid var(--border-subtle)" }}
     >
-      <table className="w-full text-[12.5px] border-collapse" {...props}>
+      <table className="w-full text-[0.7812rem] border-collapse" {...props}>
         {children}
       </table>
     </div>
@@ -318,7 +296,7 @@ const markdownComponents = {
   ),
   th: ({ children, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
     <th
-      className="px-3.5 py-2.5 text-left text-[11px] font-semibold uppercase"
+      className="px-3.5 py-2.5 text-left text-[0.6875rem] font-semibold uppercase"
       style={{
         color: "var(--text-primary)",
         letterSpacing: "0.05em",
@@ -358,6 +336,7 @@ export function PlanDisplay({
   onVersionViewed,
   onCreateProposals,
   showOverflowActions = true,
+  chromeless = false,
 }: PlanDisplayProps) {
   // Use controlled state if isExpanded prop is provided, otherwise use internal state
   // Default to collapsed (false) for initial render
@@ -476,6 +455,284 @@ export function PlanDisplay({
     URL.revokeObjectURL(url);
   }, [planContent, plan.name, onExport]);
 
+  if (chromeless) {
+    // Extract the leading H1 from the plan body so we can render it on
+    // the same row as the action cluster instead of having the title
+    // and actions stack in awkwardly disconnected rows.
+    const headingMatch = displayContent
+      ? displayContent.match(/^[ \t]*#\s+(.+?)\s*\n/)
+      : null;
+    const headingTitle = headingMatch?.[1] ?? null;
+    const bodyAfterHeading = headingMatch
+      ? (displayContent ?? "").slice(headingMatch[0].length)
+      : displayContent;
+
+    return (
+      <div data-testid="plan-display-chromeless" className="group">
+        <div
+          className="flex items-center justify-between gap-3 pb-2 mb-3"
+          style={{ borderBottom: "1px solid var(--border-subtle)" }}
+        >
+          <h1
+            className="text-[1.125rem] font-semibold tracking-[-0.02em] flex-1 min-w-0 leading-tight"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {headingTitle ?? plan.name}
+          </h1>
+          {/* Slim action row — keeps every control the wrapper card had
+              (approve, create proposals, version history, overflow menu)
+              without the file-icon header chrome that duplicated the
+              in-content H1 title. */}
+          <div className="flex items-center gap-1 shrink-0">
+          {showApprove && !isApproved && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onApprove}
+              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+              style={{
+                color: "var(--accent-primary)",
+                background: withAlpha("var(--accent-primary)", 10),
+                border: "1px solid var(--accent-border)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
+              }}
+            >
+              <Sparkles className="w-3 h-3" />
+              Approve
+            </Button>
+          )}
+
+          {isApproved && (
+            <span
+              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1 rounded-lg"
+              style={{
+                background: "var(--status-success-muted)",
+                border: "1px solid var(--status-success-border)",
+                color: "var(--status-success)",
+              }}
+            >
+              <CheckCircle2 className="w-3 h-3" />
+              Approved
+            </span>
+          )}
+
+          {showCreateProposals && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onCreateProposals}
+              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+              style={{
+                color: "var(--accent-primary)",
+                background: withAlpha("var(--accent-primary)", 10),
+                border: "1px solid var(--accent-border)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
+              }}
+            >
+              <ListPlus className="w-3 h-3" />
+              Create Proposals
+            </Button>
+          )}
+
+          {showOverflowActions && plan.metadata.version > 1 && (
+            <DropdownMenu open={isVersionDropdownOpen} onOpenChange={setIsVersionDropdownOpen}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-[0.6875rem] gap-1 rounded-lg transition-colors duration-150"
+                  style={{ color: "var(--text-muted)" }}
+                  title="View version history"
+                >
+                  <History className="w-3 h-3" />
+                  v{selectedVersion}
+                  <ChevronDown className="w-3 h-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="w-72"
+                style={{
+                  background: "var(--bg-elevated)",
+                  backdropFilter: "blur(20px)",
+                  border: "1px solid var(--overlay-weak)",
+                  boxShadow: "var(--shadow-lg)",
+                }}
+              >
+                {Array.from({ length: plan.metadata.version }, (_, i) => plan.metadata.version - i).map((version) => {
+                  const isSelected = version === selectedVersion;
+                  const isLatest = version === plan.metadata.version;
+                  const versionSummary = versionHistory?.find((v) => v.version === version);
+                  const timestamp = versionSummary ? formatDateTime(versionSummary.created_at) : null;
+                  return (
+                    <DropdownMenuItem
+                      key={version}
+                      onClick={() => handleVersionSelect(version)}
+                      className="text-[0.75rem] cursor-pointer px-3 py-2"
+                      style={{
+                        background: isSelected ? withAlpha("var(--accent-primary)", 10) : "transparent",
+                        borderLeft: isSelected ? "2px solid var(--accent-primary)" : "2px solid transparent",
+                      }}
+                    >
+                      <span className="flex items-center gap-2 w-full">
+                        {isSelected && (
+                          <span
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{ background: "var(--accent-primary)" }}
+                          />
+                        )}
+                        <span>
+                          v{version}
+                          {timestamp && (
+                            <span style={{ color: "var(--text-muted)" }}> — {timestamp}</span>
+                          )}
+                        </span>
+                        {isLatest && (
+                          <span className="ml-auto" style={{ color: "var(--text-muted)" }}>
+                            (latest)
+                          </span>
+                        )}
+                      </span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
+          {showOverflowActions && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0 rounded-lg transition-colors duration-150"
+                  style={{ color: "var(--text-muted)" }}
+                  aria-label="Plan actions"
+                >
+                  <MoreHorizontal className="w-3.5 h-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="w-44"
+                style={{
+                  background: "var(--bg-elevated)",
+                  backdropFilter: "blur(20px)",
+                  border: "1px solid var(--overlay-weak)",
+                  boxShadow: "var(--shadow-lg)",
+                }}
+              >
+                <DropdownMenuItem
+                  onClick={() => {
+                    const content = plan.content.type === "inline" ? plan.content.text : "";
+                    navigator.clipboard.writeText(content).then(() => {
+                      toast.success("Copied to clipboard");
+                    }).catch(() => {
+                      toast.error("Failed to copy");
+                    });
+                  }}
+                  disabled={plan.content.type !== "inline" || !plan.content.text}
+                  className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Copy Markdown
+                </DropdownMenuItem>
+                {onEdit && (
+                  <DropdownMenuItem
+                    onClick={onEdit}
+                    className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                  >
+                    <FileEdit className="w-3.5 h-3.5" />
+                    Edit
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  onClick={handleExport}
+                  className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Export...
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          </div>
+        </div>
+
+        {/* Debate summary — shown for debate-mode plans */}
+        {teamMetadata?.teamIdeated && teamMetadata.teamMode === "debate" && teamMetadata.debateSummary && (
+          <div className="mb-4">
+            <DebateSummary data={teamMetadata.debateSummary} />
+          </div>
+        )}
+
+        {/* Version banner when viewing historical */}
+        {isViewingHistorical && (
+          <div
+            className="flex items-center justify-between mb-4 px-3 py-2.5 rounded-lg"
+            style={{
+              background: "var(--status-warning-muted)",
+              border: "1px solid var(--status-warning-border)",
+            }}
+          >
+            <span className="text-[0.75rem] font-medium" style={{ color: "var(--status-warning)" }}>
+              Viewing version {selectedVersion} of {plan.metadata.version}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleBackToLatest}
+              className="h-6 px-2.5 text-[0.6875rem] font-medium gap-1.5 rounded-md transition-colors duration-150"
+              style={{
+                background: "var(--status-warning-muted)",
+                color: "var(--status-warning)",
+              }}
+            >
+              <ArrowLeft className="w-3 h-3" />
+              Back to latest
+            </Button>
+          </div>
+        )}
+
+        {isLoadingVersion ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2
+              className="w-6 h-6 animate-spin"
+              style={{ color: "var(--accent-primary)" }}
+            />
+          </div>
+        ) : displayContent ? (
+          <div className="text-[0.8125rem] leading-relaxed">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={markdownComponents}
+            >
+              {bodyAfterHeading ?? ""}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          <p
+            className="text-[0.8125rem] italic py-8 text-center"
+            style={{ color: "var(--text-muted)" }}
+          >
+            No content available
+          </p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       className="group"
@@ -521,14 +778,14 @@ export function PlanDisplay({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span
-                      className="text-[13px] font-medium truncate tracking-[-0.01em]"
+                      className="text-[0.8125rem] font-medium truncate tracking-[-0.01em]"
                       style={{ color: "var(--text-primary)" }}
                     >
                       {plan.name}
                     </span>
 
                     <span
-                      className="text-[10px] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0"
+                      className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md flex-shrink-0"
                       style={{
                         background: "var(--overlay-faint)",
                         border: "1px solid var(--overlay-faint)",
@@ -540,7 +797,7 @@ export function PlanDisplay({
 
                     {teamMetadata?.teamIdeated && (
                       <span
-                        className="text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
+                        className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
                         style={{
                           background: withAlpha("var(--accent-primary)", 12),
                           border: "1px solid var(--accent-border)",
@@ -555,7 +812,7 @@ export function PlanDisplay({
 
                   {linkedProposalsCount > 0 && (
                     <span
-                      className="text-[11px] mt-0.5 block"
+                      className="text-[0.6875rem] mt-0.5 block"
                       style={{ color: "var(--text-muted)" }}
                     >
                       {linkedProposalsCount} linked proposal{linkedProposalsCount !== 1 ? "s" : ""}
@@ -584,7 +841,7 @@ export function PlanDisplay({
                   variant="ghost"
                   size="sm"
                   onClick={onApprove}
-                  className="h-7 px-2.5 text-[11px] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                   style={{
                     color: "var(--accent-primary)",
                     background: withAlpha("var(--accent-primary)", 10),
@@ -604,7 +861,7 @@ export function PlanDisplay({
 
               {isApproved && (
                 <span
-                  className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                  className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1 rounded-lg"
                   style={{
                     background: "var(--status-success-muted)",
                     border: "1px solid var(--status-success-border)",
@@ -621,7 +878,7 @@ export function PlanDisplay({
                   variant="ghost"
                   size="sm"
                   onClick={onCreateProposals}
-                  className="h-7 px-2.5 text-[11px] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                   style={{
                     color: "var(--accent-primary)",
                     background: withAlpha("var(--accent-primary)", 10),
@@ -645,7 +902,7 @@ export function PlanDisplay({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-[11px] gap-1 rounded-lg transition-colors duration-150"
+                      className="h-7 px-2 text-[0.6875rem] gap-1 rounded-lg transition-colors duration-150"
                       style={{ color: "var(--text-muted)" }}
                       title="View version history"
                       onMouseEnter={(e) => {
@@ -681,7 +938,7 @@ export function PlanDisplay({
                         <DropdownMenuItem
                           key={version}
                           onClick={() => handleVersionSelect(version)}
-                          className="text-[12px] cursor-pointer px-3 py-2"
+                          className="text-[0.75rem] cursor-pointer px-3 py-2"
                           style={{
                             background: isSelected ? withAlpha("var(--accent-primary)", 10) : "transparent",
                             borderLeft: isSelected ? "2px solid var(--accent-primary)" : "2px solid transparent",
@@ -753,7 +1010,7 @@ export function PlanDisplay({
                         });
                       }}
                       disabled={plan.content.type !== "inline" || !plan.content.text}
-                      className="text-[12px] cursor-pointer gap-2 px-3 py-2"
+                      className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
                     >
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
@@ -761,7 +1018,7 @@ export function PlanDisplay({
                     {onEdit && (
                       <DropdownMenuItem
                         onClick={onEdit}
-                        className="text-[12px] cursor-pointer gap-2 px-3 py-2"
+                        className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
                       >
                         <FileEdit className="w-3.5 h-3.5" />
                         Edit
@@ -769,7 +1026,7 @@ export function PlanDisplay({
                     )}
                     <DropdownMenuItem
                       onClick={handleExport}
-                      className="text-[12px] cursor-pointer gap-2 px-3 py-2"
+                      className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
                     >
                       <Download className="w-3.5 h-3.5" />
                       Export...
@@ -806,14 +1063,14 @@ export function PlanDisplay({
                   border: "1px solid var(--status-warning-border)",
                 }}
               >
-                <span className="text-[12px] font-medium" style={{ color: "var(--status-warning)" }}>
+                <span className="text-[0.75rem] font-medium" style={{ color: "var(--status-warning)" }}>
                   Viewing version {selectedVersion} of {plan.metadata.version}
                 </span>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={handleBackToLatest}
-                  className="h-6 px-2.5 text-[11px] font-medium gap-1.5 rounded-md transition-colors duration-150"
+                  className="h-6 px-2.5 text-[0.6875rem] font-medium gap-1.5 rounded-md transition-colors duration-150"
                   style={{
                     color: "var(--status-warning)",
                     background: "var(--status-warning-muted)",
@@ -836,20 +1093,20 @@ export function PlanDisplay({
                 <div className="flex items-center justify-center py-12">
                   <div className="flex flex-col items-center gap-3">
                     <Loader2 className="w-6 h-6 animate-spin" style={{ color: "var(--accent-primary)" }} />
-                    <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+                    <span className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
                       Loading version...
                     </span>
                   </div>
                 </div>
               ) : displayContent ? (
-                <div className="text-[13px] leading-relaxed">
+                <div className="text-[0.8125rem] leading-relaxed">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                     {displayContent}
                   </ReactMarkdown>
                 </div>
               ) : (
                 <p
-                  className="text-[13px] italic py-8 text-center"
+                  className="text-[0.8125rem] italic py-8 text-center"
                   style={{ color: "var(--text-muted)" }}
                 >
                   No content available

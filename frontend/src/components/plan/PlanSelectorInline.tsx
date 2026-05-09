@@ -9,7 +9,6 @@ import * as React from "react";
 import { FileText, AlertCircle, ChevronDown } from "lucide-react";
 import { usePlanStore } from "@/stores/planStore";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { SelectionSource } from "@/api/plan";
 
@@ -71,35 +70,49 @@ export function PlanSelectorInline({
       size="sm"
       onClick={handleOpenPalette}
       className={cn(
-        "gap-1.5",
+        "h-[30px] min-w-0 max-w-[380px] gap-2 rounded-[6px] px-2.5 text-[0.7812rem] font-medium shadow-none",
         !hasActivePlan && "text-muted-foreground"
       )}
+      style={{
+        backgroundColor: hasActivePlan ? "var(--bg-hover)" : "transparent",
+        borderColor: hasActivePlan ? "var(--border-default)" : "transparent",
+        borderStyle: "solid",
+        borderWidth: "1px",
+        color: hasActivePlan ? "var(--text-primary)" : "var(--text-muted)",
+      }}
       data-testid="plan-selector-inline-trigger"
     >
       {hasActivePlan ? (
         <>
-          <FileText className="h-4 w-4" />
+          <FileText className="h-[13px] w-[13px] shrink-0" />
           {!compact && (
             <>
-              <span className="truncate max-w-[200px]">
+              <span className="min-w-0 max-w-[260px] truncate">
                 {activePlan?.title || "Untitled Plan"}
               </span>
               {activePlan?.taskStats && (
-                <Badge variant="secondary" className="ml-1">
+                <span
+                  className="shrink-0 text-[0.6875rem] font-medium"
+                  style={{
+                    color: "var(--text-muted)",
+                    fontFamily:
+                      "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+                  }}
+                >
                   {activePlan.taskStats.incomplete}/{activePlan.taskStats.total}
-                </Badge>
+                </span>
               )}
             </>
           )}
           {compact && (
-            <ChevronDown className="h-4 w-4 opacity-50" />
+            <ChevronDown className="h-3.5 w-3.5 opacity-50" />
           )}
         </>
       ) : (
         <>
-          <AlertCircle className="h-4 w-4" />
+          <AlertCircle className="h-[13px] w-[13px] shrink-0" />
           {!compact && <span>Select plan</span>}
-          <ChevronDown className="h-4 w-4 opacity-50" />
+          <ChevronDown className="h-3.5 w-3.5 opacity-50" />
         </>
       )}
     </Button>

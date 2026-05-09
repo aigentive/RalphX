@@ -349,6 +349,33 @@ describe("useInfiniteTasksQuery plan guard", () => {
       expect.objectContaining({ executionPlanId: "exec-plan-xyz" })
     );
   });
+
+  it("should be enabled when ideationSessionId is provided even without executionPlanId", async () => {
+    vi.mocked(api.tasks.list).mockResolvedValue(emptyResponse);
+
+    usePlanStore.setState({
+      activePlanByProject: { "project-123": "session-abc" },
+    });
+
+    const { result } = renderHook(
+      () =>
+        useInfiniteTasksQuery({
+          projectId: "project-123",
+          ideationSessionId: "ideation-session-xyz",
+          executionPlanId: null,
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(api.tasks.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-123",
+        ideationSessionId: "ideation-session-xyz",
+      })
+    );
+  });
 });
 
 describe("flattenPages", () => {

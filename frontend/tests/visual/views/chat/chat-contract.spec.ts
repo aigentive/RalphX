@@ -177,6 +177,19 @@ async function seedIdeationConversation(
 
     queryClient.setQueryData(["chat", "conversations", "ideation", sessionId], conversations);
     queryClient.setQueryData(["chat", "conversations", conversation.id], conversationPayload);
+    queryClient.setQueryData(["chat", "conversations", conversation.id, "history"], {
+      pages: [
+        {
+          conversation: conversationPayload.conversation,
+          messages: conversationPayload.messages,
+          limit: 40,
+          offset: 0,
+          totalMessageCount: conversationPayload.messages.length,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
     chatStore.getState().setActiveConversation(`session:${sessionId}`, conversation.id);
   }, {
     conversation: baseConversation,
@@ -210,6 +223,19 @@ async function replaceConversationMessages(
     mockChatApi.replaceMessages(currentConversationId, seededMessages);
     const conversationPayload = await mockChatApi.getConversation(currentConversationId);
     queryClient.setQueryData(["chat", "conversations", currentConversationId], conversationPayload);
+    queryClient.setQueryData(["chat", "conversations", currentConversationId, "history"], {
+      pages: [
+        {
+          conversation: conversationPayload.conversation,
+          messages: conversationPayload.messages,
+          limit: 40,
+          offset: 0,
+          totalMessageCount: conversationPayload.messages.length,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
   }, {
     currentConversationId: conversationId,
     seededMessages: messages,
@@ -394,7 +420,7 @@ test.describe("Chat Contract", () => {
     await expect(statsButton).toBeVisible();
     await statsButton.click();
     await expect(page.getByText("Aggregated from none.")).toBeVisible();
-    await expect(page.getByText("Unavailable")).toBeVisible();
+    await expect(page.getByText("Unavailable", { exact: true })).toBeVisible();
 
     await replaceConversationMessages(page, [userMessage, liveProviderMessageWithUsage]);
     await emitChatEvent(page, "agent:usage_updated", {

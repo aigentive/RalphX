@@ -58,6 +58,7 @@ import { useProposalMutations } from "@/hooks/useProposals";
 import { useApplyProposals } from "@/hooks/useApplyProposals";
 import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
@@ -154,6 +155,7 @@ function AppContent() {
   const toggleGraphRightPanelCompactOpen = useUiStore(
     (s) => s.toggleGraphRightPanelCompactOpen
   );
+  const activeModal = useUiStore((s) => s.activeModal);
   const openModal = useUiStore((s) => s.openModal);
   const battleModeActive = useUiStore((s) => s.battleModeActive);
   const enterBattleMode = useUiStore((s) => s.enterBattleMode);
@@ -194,6 +196,11 @@ function AppContent() {
 
   // Fetch projects from backend
   const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const {
+    settings: providerSettings,
+    isLoading: isLoadingProviderSettings,
+    isPlaceholderData: isPlaceholderProviderSettings,
+  } = useHarnessProviders();
 
   // Project creation wizard state
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
@@ -237,8 +244,10 @@ function AppContent() {
   const [executionSettings, setExecutionSettings] = useState<ProjectSettings | null>(null);
 
   // Running processes data for popover
-  const { data: runningProcessesData } = useRunningProcesses(activeProjectId ?? undefined);
-  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+  const { data: runningProcessesData } = useRunningProcesses(activeProjectId ?? undefined, {
+    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  });
+  const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -248,6 +257,10 @@ function AppContent() {
   // can lag behind, causing a brief flash where store.projects is {} while
   // fetchedProjects already has data.
   const hasNoProjects = !isLoadingProjects && (!fetchedProjects || fetchedProjects.length === 0);
+  const providerSetupRequired =
+    !isLoadingProviderSettings &&
+    !isPlaceholderProviderSettings &&
+    providerSettings.requiresOnboarding;
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";
@@ -258,11 +271,18 @@ function AppContent() {
   useExecutionEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Pass currentProjectId for per-project execution status scoping
-  useExecutionStatus(currentProjectId || undefined);
+  useExecutionStatus(currentProjectId || undefined, {
+    enabled: shouldHydrateExecutionStatus && Boolean(currentProjectId),
+    refetchInterval: showsExecutionFooter ? 30000 : false,
+    refetchOnWindowFocus: showsExecutionFooter,
+    staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
+  });
   const { isApproving, isRequestingChanges } = useReviewMutations();
 
   // Merge pipeline data
-  const { data: mergePipelineData } = useMergePipeline(activeProjectId ?? undefined);
+  const { data: mergePipelineData } = useMergePipeline(activeProjectId ?? undefined, {
+    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  });
   const mergingCount = useMemo(() => {
     if (!mergePipelineData) return 0;
     return mergePipelineData.active.length + mergePipelineData.waiting.length;
@@ -281,8 +301,13 @@ function AppContent() {
   const pausedCount = pausedTasks.length;
 
   // Ideation hooks
-  const { data: sessionData, isLoading: isSessionLoading } = useIdeationSession(activeSession?.id ?? "");
-  const { data: allSessions = [] } = useIdeationSessions(currentProjectId);
+  const { data: sessionData, isLoading: isSessionLoading } = useIdeationSession(
+    activeSession?.id ?? "",
+    { enabled: shouldHydrateIdeationView }
+  );
+  const { data: allSessions = [] } = useIdeationSessions(currentProjectId, {
+    enabled: shouldHydrateIdeationView,
+  });
   const archiveSession = useArchiveIdeationSession();
   const { deleteProposal, reorder, updateProposal } = useProposalMutations();
   const { apply: applyProposalsMutation } = useApplyProposals();
@@ -296,11 +321,11 @@ function AppContent() {
 
   // Sync proposals from sessionData to the store
   useEffect(() => {
-    if (sessionData?.proposals) {
+    if (shouldHydrateIdeationView && sessionData?.proposals) {
       // Convert API response to store type using proper mapping function
       setProposals(sessionData.proposals.map(toTaskProposal));
     }
-  }, [sessionData?.proposals, setProposals]);
+  }, [sessionData?.proposals, setProposals, shouldHydrateIdeationView]);
 
 
   // Sync fetched projects to store and auto-select first project
@@ -358,12 +383,21 @@ function AppContent() {
 
   // Load execution settings from database when project changes
   useEffect(() => {
+    if (!shouldHydrateExecutionSettings) {
+      return;
+    }
+
+    let isCancelled = false;
+
     async function loadSettings() {
       try {
         setIsLoadingSettings(true);
         setSettingsError(null);
         // Phase 82: Pass currentProjectId for per-project settings
         const response = await executionApi.getSettings(currentProjectId || undefined);
+        if (isCancelled) {
+          return;
+        }
         // Map API response (camelCase) to settings type (snake_case)
         setExecutionSettings({
           ...DEFAULT_PROJECT_SETTINGS,
@@ -376,16 +410,24 @@ function AppContent() {
           },
         });
       } catch (err) {
+        if (isCancelled) {
+          return;
+        }
         console.error("Failed to load execution settings:", err);
         setSettingsError(err instanceof Error ? err.message : "Failed to load settings");
         // Fall back to defaults
         setExecutionSettings(DEFAULT_PROJECT_SETTINGS);
       } finally {
-        setIsLoadingSettings(false);
+        if (!isCancelled) {
+          setIsLoadingSettings(false);
+        }
       }
     }
     loadSettings();
-  }, [currentProjectId]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentProjectId, shouldHydrateExecutionSettings]);
 
   // Debounced handler for execution settings changes (300ms)
   const handleSettingsChange = useCallback((newSettings: ProjectSettings) => {
@@ -479,9 +521,13 @@ function AppContent() {
     }
   };
 
-  const handleOpenSettings = () => {
-    openModal("settings", { section: "execution" });
-  };
+  const handleOpenSettings = useCallback(() => {
+    openModal("settings");
+  }, [openModal]);
+
+  const handleOpenProviderSettings = useCallback(() => {
+    openModal("settings", { section: "providers" });
+  }, [openModal]);
 
   const handleBattleModeToggle = useCallback(() => {
     if (battleModeActive) {
@@ -911,21 +957,33 @@ function AppContent() {
         </header>
 
       {/* Spacer for fixed header */}
-      <div className="h-14 flex-shrink-0" />
+      <div className="h-12 flex-shrink-0" />
+
+      {/* App body: left nav rail + main content */}
+      <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
+        <LeftNavRail
+          currentView={currentView}
+          onViewChange={handleViewChange}
+          onOpenSettings={handleOpenSettings}
+          hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
+        />
 
       {/* Main content area - shows WelcomeScreen or normal content */}
-      {(hasNoProjects || showWelcomeOverlay) ? (
+      {(hasNoProjects || showWelcomeOverlay || providerSetupRequired) ? (
         /* Empty state or manual overlay: animated welcome screen */
         <WelcomeScreen
           onCreateProject={handleOpenProjectWizard}
-          onClose={showWelcomeOverlay ? handleCloseWelcomeOverlay : undefined}
+          onSetupProviders={handleOpenProviderSettings}
+          providerSetupRequired={providerSetupRequired}
+          hasProjects={!hasNoProjects}
+          onClose={showWelcomeOverlay && !providerSetupRequired ? handleCloseWelcomeOverlay : undefined}
         />
       ) : (
         /* Normal content with view-specific content and optional panels */
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
           {/* Main view area */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-auto h-full">
+          <div className="flex-1 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
+            <div className="flex-1 overflow-auto h-full" style={{ backgroundColor: "var(--app-content-bg)" }}>
               {currentView === "kanban" && (
                 <KanbanSplitLayout
                   projectId={currentProjectId}
@@ -1105,26 +1163,28 @@ function AppContent() {
             </div>
         </div>
 
-          {/* ReviewsPanel - floating overlay with Tahoe glass panel.
+          {/* ReviewsPanel - right sidebar surface.
               bottomOffset 76 when ExecutionControlBar is visible below this
               panel (kanban/graph/ideation), 0 elsewhere so the panel fills
               the viewport instead of leaving a ~84px void. */}
           {reviewsPanelOpen && (
             <div
-              className="fixed top-14 right-0 w-[400px] z-50 flex flex-col"
+              className="fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l"
+              data-testid="reviews-panel-shell"
               style={{
                 bottom: (currentView === "kanban" || currentView === "graph" || currentView === "ideation") ? "76px" : "0px",
-                background: "var(--bg-elevated)",
+                backgroundColor: "var(--app-sidebar-bg)",
+                borderLeftColor: "var(--app-sidebar-border)",
+                borderLeftStyle: "solid",
+                borderLeftWidth: "1px",
               }}
             >
-              {/* Floating panel inner container */}
               <div
-                className="flex flex-col flex-1 rounded-[10px] overflow-hidden"
+                className="flex flex-1 flex-col overflow-hidden"
+                data-testid="reviews-panel-frame"
                 style={{
-                  margin: "8px",
-                  background: "var(--bg-elevated)",
-                  border: "1px solid var(--border-subtle)",
-                  boxShadow: "var(--shadow-md)",
+                  backgroundColor: "var(--app-sidebar-bg)",
+                  boxShadow: "none",
                 }}
               >
                 <ReviewsPanel
@@ -1139,6 +1199,7 @@ function AppContent() {
 
         </div>
       )}
+      </div>
 
       {/* Project Creation Wizard */}
       <ProjectCreationWizard

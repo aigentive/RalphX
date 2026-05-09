@@ -48,6 +48,11 @@ export interface ContentBlockItem {
   name?: string;
   arguments?: unknown;
   result?: unknown;
+  resultPreviewTruncated?: boolean;
+  resultPreviewOriginalBytes?: number;
+  resultPreviewLineCount?: number;
+  resultPreviewOmittedLines?: number;
+  detailRef?: ToolCall["detailRef"];
   parentToolUseId?: string;
   /** Diff context for Edit/Write tool calls (old file content for computing diffs) */
   diffContext?: {
@@ -60,6 +65,8 @@ export interface MessageItemProps {
   role: string;
   content: string;
   createdAt: string;
+  /** Optional pre-rendered message body for live content that is not yet persisted as content blocks. */
+  children?: React.ReactNode | undefined;
   isLastInList?: boolean | undefined;
   /** Pre-parsed tool calls array (parsed at API layer) */
   toolCalls?: ToolCall[] | null;
@@ -84,6 +91,75 @@ export interface MessageItemProps {
   cacheCreationTokens?: number | null | undefined;
   cacheReadTokens?: number | null | undefined;
   estimatedUsd?: number | null | undefined;
+  showAssistantIcon?: boolean | undefined;
+  hideMeta?: boolean | undefined;
+}
+
+export interface MessageMetaProps {
+  createdAt: string;
+  copyableText?: string | undefined;
+  isUser?: boolean | undefined;
+}
+
+export function MessageMeta({
+  createdAt,
+  copyableText = "",
+  isUser = false,
+}: MessageMetaProps) {
+  const [copied, setCopied] = useState(false);
+  const showInlineCopy = copyableText.trim().length > 0;
+  const handleCopy = useCallback(async () => {
+    if (!showInlineCopy) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(copyableText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Silently fail
+    }
+  }, [copyableText, showInlineCopy]);
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 px-1 pb-[10px] text-[0.625rem] text-text-primary/40",
+        isUser ? "justify-end" : "justify-start"
+      )}
+      data-testid="message-meta"
+    >
+      <span title={formatTimestampTitle(createdAt) || undefined}>
+        {formatTimestamp(createdAt)}
+      </span>
+      {showInlineCopy && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void handleCopy()}
+              className="h-4 w-4 rounded-sm p-0 text-text-primary/40 hover:bg-[var(--overlay-moderate)] hover:text-text-primary/70"
+              aria-label={copied ? "Copied" : "Copy message"}
+              data-testid="message-copy-button"
+              data-theme-button-skip="true"
+            >
+              {copied ? (
+                <Check className="h-3 w-3 text-[var(--status-success)]" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs">
+            {copied ? "Copied" : "Copy message"}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
+  );
 }
 
 // ============================================================================
@@ -94,6 +170,7 @@ export const MessageItem = React.memo(function MessageItem({
   role,
   content,
   createdAt,
+  children,
   isLastInList = false,
   toolCalls,
   contentBlocks,
@@ -113,6 +190,8 @@ export const MessageItem = React.memo(function MessageItem({
   cacheCreationTokens,
   cacheReadTokens,
   estimatedUsd,
+  showAssistantIcon = true,
+  hideMeta = false,
 }: MessageItemProps) {
   const isUser = role === "user";
   const [copied, setCopied] = useState(false);
@@ -221,7 +300,7 @@ export const MessageItem = React.memo(function MessageItem({
       style={teammateColor ? { borderLeft: `2px solid ${teammateColor}`, paddingLeft: "8px" } : undefined}
     >
       {/* Agent indicator for assistant messages */}
-      {!isUser && !teammateName && (
+      {!isUser && !teammateName && showAssistantIcon && (
         <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", showProviderMeta ? "mt-0.5" : "mt-2")} />
       )}
       {/* Teammate name badge */}
@@ -230,7 +309,7 @@ export const MessageItem = React.memo(function MessageItem({
           {teammateColor && (
             <span className="w-2 h-2 rounded-full" style={{ backgroundColor: teammateColor }} />
           )}
-          <span className="text-[10px] font-medium" style={{ color: teammateColor ?? "var(--text-muted)" }}>
+          <span className="text-[0.625rem] font-medium" style={{ color: teammateColor ?? "var(--text-muted)" }}>
             {teammateName}
           </span>
         </div>
@@ -243,7 +322,7 @@ export const MessageItem = React.memo(function MessageItem({
             data-testid="message-provider-meta"
           >
             <span
-              className="rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em]"
+              className="rounded-full px-1.5 py-0.5 text-[0.5625rem] font-semibold uppercase tracking-[0.08em]"
               style={providerHarnessStyle}
               title={providerTooltip ?? undefined}
               aria-label={providerTooltip ?? providerHarnessLabel ?? undefined}
@@ -253,7 +332,7 @@ export const MessageItem = React.memo(function MessageItem({
             </span>
             {modelEffortLabel && (
               <span
-                className="text-[10px] min-w-0 truncate text-text-primary/50"
+                className="text-[0.625rem] min-w-0 truncate text-text-primary/50"
                 title={providerTooltip ?? undefined}
                 data-testid="message-model-effort"
               >
@@ -268,7 +347,9 @@ export const MessageItem = React.memo(function MessageItem({
           <MessageAttachments attachments={attachments} />
         )}
 
-        {hasContentBlocks ? (
+        {hasCustomBody ? (
+          children
+        ) : hasContentBlocks ? (
           // Render content blocks in order (interleaved text and tool calls)
           // Skip child tool calls that belong to Task subagents (they render inside TaskToolCallCard)
           parsedContentBlocks.map((block, index) => {
@@ -291,6 +372,21 @@ export const MessageItem = React.memo(function MessageItem({
                 arguments: block.arguments,
                 result: block.result,
               };
+              if (block.resultPreviewTruncated) {
+                toolCall.resultPreviewTruncated = block.resultPreviewTruncated;
+              }
+              if (block.resultPreviewOriginalBytes != null) {
+                toolCall.resultPreviewOriginalBytes = block.resultPreviewOriginalBytes;
+              }
+              if (block.resultPreviewLineCount != null) {
+                toolCall.resultPreviewLineCount = block.resultPreviewLineCount;
+              }
+              if (block.resultPreviewOmittedLines != null) {
+                toolCall.resultPreviewOmittedLines = block.resultPreviewOmittedLines;
+              }
+              if (block.detailRef) {
+                toolCall.detailRef = block.detailRef;
+              }
               if (block.diffContext) {
                 toolCall.diffContext = block.diffContext;
               }
@@ -363,6 +459,7 @@ export const MessageItem = React.memo(function MessageItem({
   return prev.role === next.role
     && prev.content === next.content
     && prev.createdAt === next.createdAt
+    && prev.children === next.children
     && prev.isLastInList === next.isLastInList
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks
@@ -381,5 +478,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.outputTokens === next.outputTokens
     && prev.cacheCreationTokens === next.cacheCreationTokens
     && prev.cacheReadTokens === next.cacheReadTokens
-    && prev.estimatedUsd === next.estimatedUsd;
+    && prev.estimatedUsd === next.estimatedUsd
+    && prev.showAssistantIcon === next.showAssistantIcon
+    && prev.hideMeta === next.hideMeta;
 });

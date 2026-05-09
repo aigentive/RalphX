@@ -12,7 +12,7 @@
 // - agent:error - Agent failed
 // - agent:queue_sent - Queued message sent
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -392,6 +392,7 @@ pub struct AgentConversationMessagesPageResponse {
 #[derive(Debug, Serialize)]
 pub struct AgentMessageResponse {
     pub id: String,
+    pub conversation_id: Option<String>,
     pub role: String,
     pub content: String,
     pub metadata: Option<String>,
@@ -412,6 +413,12 @@ pub struct AgentMessageResponse {
     pub cache_read_tokens: Option<u64>,
     pub estimated_usd: Option<f64>,
     pub created_at: String,
+}
+
+/// Response for a lazily loaded full tool-call detail.
+#[derive(Debug, Serialize)]
+pub struct AgentToolCallDetailResponse {
+    pub tool_call: serde_json::Value,
 }
 
 /// Response for agent run status
@@ -801,6 +808,114 @@ async fn reconcile_delegated_result_payloads(
     let tool_calls = reconcile_value_array(state, tool_calls, &mut snapshot_cache).await;
     let content_blocks = reconcile_value_array(state, content_blocks, &mut snapshot_cache).await;
     (tool_calls, content_blocks)
+}
+
+fn maybe_preview_tool_result(
+    object: &mut JsonMap<String, JsonValue>,
+    conversation_id: &str,
+    message_id: &str,
+    content_block_index: Option<usize>,
+) {
+    let tool_call_id = object
+        .get("id")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let detail_ref = tool_detail_ref(
+        conversation_id,
+        message_id,
+        tool_call_id.as_deref(),
+        content_block_index,
+    );
+    preview_tool_result_object(object, Some(detail_ref));
+}
+
+fn preview_tool_call_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
+    let Some(items) = value.as_array_mut() else {
+        return;
+    };
+    for item in items.iter_mut() {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        maybe_preview_tool_result(object, conversation_id, message_id, None);
+    }
+}
+
+fn preview_content_block_array(value: &mut JsonValue, conversation_id: &str, message_id: &str) {
+    let Some(items) = value.as_array_mut() else {
+        return;
+    };
+    for (index, item) in items.iter_mut().enumerate() {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        if object.get("type").and_then(JsonValue::as_str) != Some("tool_use") {
+            continue;
+        }
+        maybe_preview_tool_result(object, conversation_id, message_id, Some(index));
+    }
+}
+
+pub(crate) fn preview_tool_payloads_for_message(
+    conversation_id: &str,
+    message_id: &str,
+    mut tool_calls: Option<JsonValue>,
+    mut content_blocks: Option<JsonValue>,
+) -> (Option<JsonValue>, Option<JsonValue>) {
+    if let Some(value) = tool_calls.as_mut() {
+        preview_tool_call_array(value, conversation_id, message_id);
+    }
+    if let Some(value) = content_blocks.as_mut() {
+        preview_content_block_array(value, conversation_id, message_id);
+    }
+    (tool_calls, content_blocks)
+}
+
+fn find_tool_call_by_id(value: &JsonValue, tool_call_id: &str) -> Option<JsonValue> {
+    value.as_array()?.iter().find_map(|item| {
+        let object = item.as_object()?;
+        if object.get("id").and_then(JsonValue::as_str) == Some(tool_call_id) {
+            Some(item.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn find_content_block_by_index(value: &JsonValue, content_block_index: usize) -> Option<JsonValue> {
+    let item = value.as_array()?.get(content_block_index)?;
+    let object = item.as_object()?;
+    if object.get("type").and_then(JsonValue::as_str) == Some("tool_use") {
+        Some(item.clone())
+    } else {
+        None
+    }
+}
+
+fn find_tool_call_detail(
+    tool_calls: Option<&JsonValue>,
+    content_blocks: Option<&JsonValue>,
+    tool_call_id: Option<&str>,
+    content_block_index: Option<usize>,
+) -> Option<JsonValue> {
+    if let (Some(content_blocks), Some(index)) = (content_blocks, content_block_index) {
+        return find_content_block_by_index(content_blocks, index);
+    }
+
+    if let Some(tool_call_id) = tool_call_id {
+        if let Some(tool_call) =
+            tool_calls.and_then(|value| find_tool_call_by_id(value, tool_call_id))
+        {
+            return Some(tool_call);
+        }
+        if let Some(tool_call) =
+            content_blocks.and_then(|value| find_tool_call_by_id(value, tool_call_id))
+        {
+            return Some(tool_call);
+        }
+    }
+
+    None
 }
 
 // ============================================================================
@@ -1323,6 +1438,11 @@ pub async fn send_agent_message(
         "[SEND_MSG] send_agent_message command invoked"
     );
     let context_type = parse_context_type(&input.context_type)?;
+    let harness_override = input
+        .provider_harness
+        .as_deref()
+        .map(str::parse::<AgentHarnessKind>)
+        .transpose()?;
 
     let mut service = create_chat_service(
         &state,
@@ -1362,11 +1482,12 @@ pub async fn send_agent_message(
         }
     }
 
-    crate::application::validate_chat_runtime_for_context(
+    crate::application::validate_chat_runtime_for_context_with_override(
         &state,
         context_type,
         &input.context_id,
         "send_agent_message",
+        harness_override,
     )
     .await?;
 
@@ -2756,6 +2877,15 @@ pub async fn get_agent_conversation(
     let conversation_id = ChatConversationId::from_string(&conversation_id);
 
     let service = create_chat_service(&state, app, &execution_state, None);
+    if let Err(error) =
+        wake_agent_workspace_for_bridge_events(&state, &service, &conversation_id).await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to wake agent workspace for bridge events"
+        );
+    }
 
     let conversation = service
         .get_conversation_with_messages(&conversation_id)
@@ -2777,6 +2907,10 @@ pub async fn get_agent_conversation(
 
         messages.push(AgentMessageResponse {
             id: message.id.as_str().to_string(),
+            conversation_id: message
+                .conversation_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
             role: message.role.to_string(),
             content: message.content,
             metadata: message.metadata,
@@ -2814,13 +2948,33 @@ pub async fn get_agent_conversation_messages_page(
     limit: Option<u32>,
     offset: Option<u32>,
     state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle,
 ) -> Result<Option<AgentConversationMessagesPageResponse>, String> {
-    use crate::domain::entities::ChatConversationId;
-
     let conversation_id = ChatConversationId::from_string(&conversation_id);
     let limit = limit.unwrap_or(40).clamp(1, 200);
     let offset = offset.unwrap_or(0);
 
+    let service = create_chat_service(&state, app, &execution_state, None);
+    if let Err(error) =
+        wake_agent_workspace_for_bridge_events(&state, &service, &conversation_id).await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to wake agent workspace for bridge events"
+        );
+    }
+
+    get_agent_conversation_messages_page_for_app_state(&state, conversation_id, limit, offset).await
+}
+
+pub async fn get_agent_conversation_messages_page_for_app_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    limit: u32,
+    offset: u32,
+) -> Result<Option<AgentConversationMessagesPageResponse>, String> {
     let Some(conversation) = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
@@ -2844,9 +2998,19 @@ pub async fn get_agent_conversation_messages_page(
             message.content_blocks.clone(),
         )
         .await;
+        let (tool_calls, content_blocks) = preview_tool_payloads_for_message(
+            &conversation_id.as_str(),
+            &message.id.as_str(),
+            tool_calls,
+            content_blocks,
+        );
 
         messages.push(AgentMessageResponse {
             id: message.id.as_str().to_string(),
+            conversation_id: message
+                .conversation_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
             role: message.role.to_string(),
             content: message.content,
             metadata: message.metadata,
@@ -2882,6 +3046,47 @@ pub async fn get_agent_conversation_messages_page(
         total_message_count,
         has_older,
     }))
+}
+
+/// Get the full result payload for a previewed tool call in a persisted message.
+#[tauri::command]
+pub async fn get_agent_message_tool_call_detail(
+    conversation_id: String,
+    message_id: String,
+    tool_call_id: Option<String>,
+    content_block_index: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<Option<AgentToolCallDetailResponse>, String> {
+    let conversation_id = ChatConversationId::from_string(&conversation_id);
+    let message_id = ChatMessageId::from_string(&message_id);
+
+    let Some(message) = state
+        .chat_message_repo
+        .get_by_id(&message_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    if message.conversation_id.as_ref().map(|id| id.as_str()) != Some(conversation_id.as_str()) {
+        return Ok(None);
+    }
+
+    let (tool_calls, content_blocks) = reconcile_delegated_result_payloads(
+        &state,
+        message.tool_calls.clone(),
+        message.content_blocks.clone(),
+    )
+    .await;
+    let detail = find_tool_call_detail(
+        tool_calls.as_ref(),
+        content_blocks.as_ref(),
+        tool_call_id.as_deref(),
+        content_block_index.map(|index| index as usize),
+    );
+
+    Ok(detail.map(|tool_call| AgentToolCallDetailResponse { tool_call }))
 }
 
 /// Get the active agent run for a conversation
@@ -3090,12 +3295,1184 @@ pub async fn update_agent_conversation_title(
 #[cfg(test)]
 mod tests {
     use super::{
-        merge_delegated_snapshot_into_result, parse_wrapped_mcp_result_object,
-        AgentConversationResponse, DelegatedToolRuntimeSnapshot,
+        apply_base_resolution_to_publish_target,
+        build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
+        get_agent_conversation_workspace_freshness, merge_delegated_snapshot_into_result,
+        normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
+        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
+        persist_workspace_base_resolution_if_retargeted,
+        project_plan_branch_publication_into_workspace_response,
+        publication_event_status_for_push_status, publication_event_summary_for_push_status,
+        publish_agent_conversation_workspace_for_app_state,
+        retarget_existing_workspace_pr_base_if_needed,
+        send_agent_workspace_publish_repair_message_for_target,
+        switch_agent_conversation_mode_for_state,
+        update_agent_conversation_workspace_from_base_for_app_state, AgentConversationResponse,
+        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
+        AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
+        AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
+        SwitchAgentConversationModeInput,
     };
-    use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
-    use crate::domain::entities::{ChatConversation, ProjectId};
+    use crate::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
+    use crate::application::agent_conversation_workspace_base::{
+        BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
+    };
+    use crate::application::publish_resilience::PublishBranchFreshnessStatus;
+    use crate::application::{
+        chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
+    };
+    use crate::commands::ExecutionState;
+    use crate::domain::agents::{
+        AgentHarnessKind, AgentModelDefinition, LogicalEffort, ProviderSessionRef,
+    };
+    use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
+    use crate::domain::entities::{
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversation,
+        ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
+        PlanBranchId, PlanBranchStatus, Project, ProjectId,
+    };
+    use crate::domain::services::GithubServiceTrait;
+    use crate::error::AppError;
+    use crate::tests::mock_github_service::MockGithubService;
     use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::Arc;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    #[test]
+    fn normalized_effort_for_supported_keeps_supported_request_or_default() {
+        let supported = [
+            LogicalEffort::Low,
+            LogicalEffort::Medium,
+            LogicalEffort::High,
+        ];
+
+        assert_eq!(
+            normalized_effort_for_supported(
+                Some(LogicalEffort::High),
+                &supported,
+                LogicalEffort::Medium,
+            ),
+            LogicalEffort::High
+        );
+        assert_eq!(
+            normalized_effort_for_supported(
+                Some(LogicalEffort::Max),
+                &supported,
+                LogicalEffort::Medium,
+            ),
+            LogicalEffort::Medium
+        );
+        assert_eq!(
+            normalized_effort_for_supported(None, &supported, LogicalEffort::Low),
+            LogicalEffort::Low
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_agent_runtime_without_provider_preserves_overrides() {
+        let state = AppState::new_test();
+
+        let normalized = normalize_agent_runtime_selection(
+            &state,
+            None,
+            Some("manual-model".to_string()),
+            Some(LogicalEffort::Max),
+        )
+        .await
+        .expect("normalization should preserve providerless overrides");
+
+        assert_eq!(
+            normalized,
+            (Some("manual-model".to_string()), Some(LogicalEffort::Max))
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_agent_runtime_uses_known_model_compatibility() {
+        let state = AppState::new_test();
+
+        let normalized = normalize_agent_runtime_selection(
+            &state,
+            Some(AgentHarnessKind::Claude),
+            Some("haiku".to_string()),
+            Some(LogicalEffort::Max),
+        )
+        .await
+        .expect("known model should normalize");
+
+        assert_eq!(
+            normalized,
+            (Some("haiku".to_string()), Some(LogicalEffort::Medium))
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_agent_runtime_uses_provider_defaults_for_unknown_model() {
+        let state = AppState::new_test();
+
+        let normalized = normalize_agent_runtime_selection(
+            &state,
+            Some(AgentHarnessKind::Codex),
+            Some("gpt-5.6".to_string()),
+            Some(LogicalEffort::Max),
+        )
+        .await
+        .expect("unknown model should use provider defaults");
+
+        assert_eq!(
+            normalized,
+            (Some("gpt-5.6".to_string()), Some(LogicalEffort::XHigh))
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_agent_runtime_uses_registry_default_when_model_absent() {
+        let state = AppState::new_test();
+
+        let normalized = normalize_agent_runtime_selection(
+            &state,
+            Some(AgentHarnessKind::Codex),
+            None,
+            Some(LogicalEffort::Low),
+        )
+        .await
+        .expect("missing model should use registry defaults");
+
+        assert_eq!(normalized, (None, Some(LogicalEffort::Low)));
+    }
+
+    #[tokio::test]
+    async fn normalize_agent_runtime_falls_back_when_provider_models_disabled() {
+        let state = AppState::new_test();
+        for model_id in ["sonnet", "opus", "haiku"] {
+            state
+                .agent_model_registry_repo
+                .upsert_custom_model(&AgentModelDefinition::custom(
+                    AgentHarnessKind::Claude,
+                    model_id,
+                    model_id,
+                    model_id,
+                    None,
+                    vec![LogicalEffort::Low],
+                    LogicalEffort::Low,
+                    false,
+                ))
+                .await
+                .expect("disabled override should save");
+        }
+
+        let normalized = normalize_agent_runtime_selection(
+            &state,
+            Some(AgentHarnessKind::Claude),
+            None,
+            Some(LogicalEffort::Max),
+        )
+        .await
+        .expect("missing enabled default should use provider fallback");
+
+        assert_eq!(normalized, (None, Some(LogicalEffort::Medium)));
+    }
+
+    #[test]
+    fn linked_plan_branch_publication_is_projected_into_workspace_response() {
+        let mut response = AgentConversationWorkspaceResponse {
+            conversation_id: "conversation-1".to_string(),
+            project_id: "project-1".to_string(),
+            mode: AgentConversationWorkspaceMode::Ideation.to_string(),
+            base_ref_kind: "project_default".to_string(),
+            base_ref: "main".to_string(),
+            base_display_name: Some("Project default (main)".to_string()),
+            base_commit: None,
+            branch_name: "agent-d619a9fd".to_string(),
+            worktree_path: "/tmp/workspace".to_string(),
+            linked_ideation_session_id: Some("session-1".to_string()),
+            linked_plan_branch_id: Some("plan-branch-1".to_string()),
+            publication_pr_number: None,
+            publication_pr_url: None,
+            publication_pr_status: None,
+            publication_push_status: None,
+            status: "active".to_string(),
+            created_at: "2026-04-28T12:00:00+00:00".to_string(),
+            updated_at: "2026-04-28T12:00:00+00:00".to_string(),
+        };
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-1"),
+            IdeationSessionId::from_string("session-1"),
+            ProjectId::from_string("project-1".to_string()),
+            "agent-d619a9fd".to_string(),
+            "feature/agent-screen".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Active;
+        plan_branch.pr_number = Some(90);
+        plan_branch.pr_url = Some("https://github.com/mock/project/pull/90".to_string());
+        plan_branch.pr_status = Some(PrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+
+        project_plan_branch_publication_into_workspace_response(&mut response, &plan_branch);
+
+        assert_eq!(response.publication_pr_number, Some(90));
+        assert_eq!(
+            response.publication_pr_url.as_deref(),
+            Some("https://github.com/mock/project/pull/90")
+        );
+        assert_eq!(response.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(response.publication_push_status.as_deref(), Some("pushed"));
+
+        response.publication_pr_status = None;
+        plan_branch.status = PlanBranchStatus::Merged;
+        project_plan_branch_publication_into_workspace_response(&mut response, &plan_branch);
+
+        assert_eq!(response.publication_pr_status.as_deref(), Some("merged"));
+    }
+
+    #[test]
+    fn linked_plan_branch_publication_overrides_stale_workspace_publication_response() {
+        let mut response = AgentConversationWorkspaceResponse {
+            conversation_id: "conversation-1".to_string(),
+            project_id: "project-1".to_string(),
+            mode: AgentConversationWorkspaceMode::Ideation.to_string(),
+            base_ref_kind: "project_default".to_string(),
+            base_ref: "main".to_string(),
+            base_display_name: Some("Project default (main)".to_string()),
+            base_commit: None,
+            branch_name: "agent-shell-branch".to_string(),
+            worktree_path: "/tmp/workspace".to_string(),
+            linked_ideation_session_id: Some("session-1".to_string()),
+            linked_plan_branch_id: Some("plan-branch-1".to_string()),
+            publication_pr_number: Some(12),
+            publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
+            publication_pr_status: Some("open".to_string()),
+            publication_push_status: Some("needs_agent".to_string()),
+            status: "missing".to_string(),
+            created_at: "2026-04-28T12:00:00+00:00".to_string(),
+            updated_at: "2026-04-28T12:00:00+00:00".to_string(),
+        };
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-1"),
+            IdeationSessionId::from_string("session-1"),
+            ProjectId::from_string("project-1".to_string()),
+            "plan-branch".to_string(),
+            "feature/agent-screen".to_string(),
+        );
+        plan_branch.pr_number = Some(90);
+        plan_branch.pr_url = Some("https://github.com/mock/project/pull/90".to_string());
+        plan_branch.pr_status = Some(PrStatus::Closed);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+
+        project_plan_branch_publication_into_workspace_response(&mut response, &plan_branch);
+
+        assert_eq!(response.publication_pr_number, Some(90));
+        assert_eq!(
+            response.publication_pr_url.as_deref(),
+            Some("https://github.com/mock/project/pull/90")
+        );
+        assert_eq!(response.publication_pr_status.as_deref(), Some("closed"));
+        assert_eq!(response.publication_push_status.as_deref(), Some("pushed"));
+    }
+
+    #[test]
+    fn publish_repair_message_uses_effective_target_branch_and_base() {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1"),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "agent-shell-branch".to_string(),
+            "/tmp/agent-shell".to_string(),
+        );
+        workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-1"));
+        let target = AgentConversationWorkspaceRepairTarget {
+            branch_name: "plan-branch".to_string(),
+            base_ref: "feature/agent-screen".to_string(),
+            base_display_name: Some("Current branch (feature/agent-screen)".to_string()),
+            worktree_path: Some(PathBuf::from("/tmp/project-repo")),
+        };
+
+        let message = build_agent_workspace_publish_repair_message_for_target(
+            "merge conflict",
+            &workspace,
+            &target,
+        );
+
+        assert!(message.contains("Workspace branch: plan-branch"));
+        assert!(message.contains("Base: Current branch (feature/agent-screen)"));
+        assert!(message.contains("Base ref: feature/agent-screen"));
+        assert!(!message.contains("agent-shell-branch"));
+        assert!(!message.contains("Project default (main)"));
+    }
+
+    #[tokio::test]
+    async fn publish_repair_message_routes_spawn_to_effective_target_worktree() {
+        let service = MockChatService::new();
+        let workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1"),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "agent-shell-branch".to_string(),
+            "/tmp/agent-shell".to_string(),
+        );
+        let target = AgentConversationWorkspaceRepairTarget {
+            branch_name: "plan-branch".to_string(),
+            base_ref: "feature/agent-screen".to_string(),
+            base_display_name: Some("Current branch (feature/agent-screen)".to_string()),
+            worktree_path: Some(PathBuf::from("/tmp/project-repo")),
+        };
+
+        send_agent_workspace_publish_repair_message_for_target(
+            &service,
+            &workspace,
+            "merge conflict",
+            AgentWorkspaceRepairRuntimeOverrides::default(),
+            &target,
+        )
+        .await
+        .expect("repair message should send");
+
+        let options = service.get_sent_options().await;
+        assert_eq!(options.len(), 1);
+        assert_eq!(
+            options[0].working_directory_override.as_deref(),
+            Some(Path::new("/tmp/project-repo"))
+        );
+    }
+
+    fn retargeted_base_resolution() -> BaseResolutionResult {
+        BaseResolutionResult {
+            status: BaseStatus::Retargeted,
+            old_base_ref: "feature/deleted-base".to_string(),
+            effective_base_ref: Some("main".to_string()),
+            effective_checkout_ref: Some("origin/main".to_string()),
+            effective_base_commit: Some("main-sha".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            block_reason: None,
+        }
+    }
+
+    fn blocked_base_resolution(reason: &str) -> BaseResolutionResult {
+        BaseResolutionResult {
+            status: BaseStatus::Blocked,
+            old_base_ref: "feature/deleted-base".to_string(),
+            effective_base_ref: None,
+            effective_checkout_ref: None,
+            effective_base_commit: None,
+            display_name: None,
+            block_reason: Some(reason.to_string()),
+        }
+    }
+
+    #[test]
+    fn normalize_explicit_publish_base_selection_trims_defaults_and_rejects_prs() {
+        assert!(normalize_explicit_publish_base_selection(
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: Some("  ".to_string()),
+                display_name: Some("ignored".to_string()),
+            }
+        )
+        .expect("blank base ref should be allowed as no explicit selection")
+        .is_none());
+
+        let local =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: Some("  release/0.8  ".to_string()),
+                display_name: None,
+            })
+            .expect("local branch should normalize")
+            .expect("local branch should produce a selection");
+        assert_eq!(local.kind, IdeationAnalysisBaseRefKind::LocalBranch);
+        assert_eq!(local.base_ref, "release/0.8");
+        assert_eq!(local.display_name, "release/0.8");
+
+        let project =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: Some("  ".to_string()),
+            })
+            .expect("project default should normalize")
+            .expect("project default should produce a selection");
+        assert_eq!(project.display_name, "Project default (main)");
+
+        let current =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::CurrentBranch),
+                base_ref: Some("feature/base".to_string()),
+                display_name: None,
+            })
+            .expect("current branch should normalize")
+            .expect("current branch should produce a selection");
+        assert_eq!(current.display_name, "Current branch (feature/base)");
+
+        let error =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::PullRequest),
+                base_ref: Some("123".to_string()),
+                display_name: None,
+            })
+            .expect_err("pull-request bases should be rejected");
+        assert!(error.contains("Pull-request base refs are not supported"));
+    }
+
+    fn command_test_workspace() -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-command-base"),
+            ProjectId::from_string("project-command-base".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "feature/deleted-base".to_string(),
+            Some("Current branch (feature/deleted-base)".to_string()),
+            Some("old-base-sha".to_string()),
+            "ralphx/test/agent-command".to_string(),
+            "/tmp/agent-command-workspace".to_string(),
+        )
+    }
+
+    fn command_publish_target() -> AgentConversationWorkspacePublishTarget {
+        AgentConversationWorkspacePublishTarget {
+            worktree_path: PathBuf::from("/tmp/project-repo"),
+            branch_name: "ralphx/test/agent-command".to_string(),
+            base_ref: "feature/deleted-base".to_string(),
+            base_display_name: Some("Current branch (feature/deleted-base)".to_string()),
+            plan_branch: None,
+        }
+    }
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should spawn");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn setup_publish_repo(repo_path: &Path) -> String {
+        std::fs::create_dir_all(repo_path).expect("repo root should be created");
+        git(repo_path, &["init", "-b", "main"]);
+        git(repo_path, &["config", "user.email", "test@example.com"]);
+        git(repo_path, &["config", "user.name", "Test User"]);
+        std::fs::write(repo_path.join("README.md"), "base\n")
+            .expect("fixture file should be written");
+        git(repo_path, &["add", "README.md"]);
+        git(repo_path, &["commit", "-m", "base"]);
+        git(repo_path, &["rev-parse", "HEAD"])
+    }
+
+    async fn setup_publish_command_state(
+        suffix: &str,
+        capture_base_commit: bool,
+        publication_pr_number: Option<i64>,
+        github: Arc<MockGithubService>,
+    ) -> (
+        tempfile::TempDir,
+        AppState,
+        ChatConversationId,
+        Arc<MockGithubService>,
+    ) {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        let main_sha = setup_publish_repo(&repo_path);
+
+        let mut project = Project::new(
+            format!("Publish Base {suffix}"),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string(format!("conversation-publish-{suffix}"));
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+        workspace.base_ref = "feature/deleted-base".to_string();
+        workspace.base_display_name = Some("Current branch (feature/deleted-base)".to_string());
+        workspace.base_commit = capture_base_commit.then_some(main_sha);
+        workspace.publication_pr_number = publication_pr_number;
+        workspace.publication_pr_url = publication_pr_number
+            .map(|number| format!("https://github.com/mock/repo/pull/{number}"));
+        workspace.publication_pr_status = publication_pr_number.map(|_| "open".to_string());
+
+        let mut state = AppState::new_test();
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should be persisted");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        (temp, state, conversation_id, github)
+    }
+
+    #[test]
+    fn base_resolution_updates_publish_target_or_blocks_with_reason() {
+        let resolution = retargeted_base_resolution();
+        let mut target = command_publish_target();
+
+        apply_base_resolution_to_publish_target(&mut target, &resolution)
+            .expect("retargeted base should update publish target");
+
+        assert_eq!(target.base_ref, "main");
+        assert_eq!(
+            target.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+
+        let blocked = blocked_base_resolution("cannot verify base");
+        let error = apply_base_resolution_to_publish_target(&mut target, &blocked)
+            .expect_err("blocked base should stop publish target update");
+        assert_eq!(error, "cannot verify base");
+    }
+
+    #[tokio::test]
+    async fn persisting_retargeted_base_resolution_updates_workspace_metadata() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should be persisted");
+
+        persist_workspace_base_resolution_if_retargeted(
+            &state,
+            &mut workspace,
+            &retargeted_base_resolution(),
+        )
+        .await
+        .expect("retargeted workspace metadata should persist");
+
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(workspace.base_commit.as_deref(), Some("main-sha"));
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "main");
+        assert_eq!(
+            stored.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+    }
+
+    #[tokio::test]
+    async fn retargeting_existing_workspace_pr_updates_github_base() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(123);
+        let target = command_publish_target();
+
+        retarget_existing_workspace_pr_base_if_needed(
+            &state,
+            &target,
+            &workspace,
+            &retargeted_base_resolution(),
+        )
+        .await
+        .expect("existing PR should be retargeted");
+
+        let mock_state = github.state();
+        assert_eq!(mock_state.update_pr_base_calls, 1);
+        assert_eq!(
+            mock_state.last_update_pr_base_args,
+            Some((123, "main".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn retargeting_existing_workspace_pr_blocks_when_github_is_missing_or_fails() {
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(123);
+        let target = command_publish_target();
+        let resolution = retargeted_base_resolution();
+
+        let missing_error = retarget_existing_workspace_pr_base_if_needed(
+            &AppState::new_test(),
+            &target,
+            &workspace,
+            &resolution,
+        )
+        .await
+        .expect_err("missing GitHub service should block existing PR retarget");
+        assert_eq!(
+            missing_error,
+            existing_pr_retarget_block_reason(123, &resolution)
+        );
+
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        {
+            github.state().update_pr_base_result =
+                Some(Err(AppError::Infrastructure("denied".to_string())));
+        }
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let failure_error =
+            retarget_existing_workspace_pr_base_if_needed(&state, &target, &workspace, &resolution)
+                .await
+                .expect_err("GitHub retarget failure should block existing PR");
+        assert_eq!(
+            failure_error,
+            existing_pr_retarget_block_reason(123, &resolution)
+        );
+        assert_eq!(github.state().update_pr_base_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn retargeting_workspace_without_existing_pr_is_a_noop() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        let target = command_publish_target();
+
+        retarget_existing_workspace_pr_base_if_needed(
+            &state,
+            &target,
+            &workspace,
+            &retargeted_base_resolution(),
+        )
+        .await
+        .expect("workspace without PR should not require GitHub");
+    }
+
+    #[test]
+    fn freshness_response_includes_effective_and_blocked_base_state() {
+        let status = PublishBranchFreshnessStatus {
+            target_ref: "origin/main".to_string(),
+            captured_base_commit: Some("old-base-sha".to_string()),
+            target_base_commit: "main-sha".to_string(),
+            is_base_ahead: true,
+        };
+        let retargeted = retargeted_base_resolution();
+        let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            "conversation-command-base".to_string(),
+            "feature/deleted-base".to_string(),
+            Some("Current branch (feature/deleted-base)".to_string()),
+            Some(&retargeted),
+            status.clone(),
+            true,
+            Some(2),
+        );
+
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(response.base_block_reason, None);
+        assert!(response.has_uncommitted_changes);
+        assert_eq!(response.unpublished_commit_count, Some(2));
+
+        let fallback = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            "conversation-command-base".to_string(),
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            status,
+            false,
+            Some(0),
+        );
+        assert_eq!(fallback.base_status, "valid");
+        assert_eq!(fallback.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            fallback.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+
+        let workspace = command_test_workspace();
+        let blocked = blocked_base_resolution(BLOCK_REASON_MISSING_BASE_COMMIT);
+        let blocked_response = AgentConversationWorkspaceFreshnessResponse::blocked(
+            "conversation-command-base".to_string(),
+            &workspace,
+            &blocked,
+            true,
+            Some(1),
+        );
+        assert_eq!(blocked_response.base_status, "blocked");
+        assert_eq!(
+            blocked_response.base_block_reason.as_deref(),
+            Some(BLOCK_REASON_MISSING_BASE_COMMIT)
+        );
+        assert_eq!(blocked_response.effective_base_ref, None);
+        assert_eq!(blocked_response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn workspace_freshness_command_blocks_stale_base_without_commit() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-blocked",
+            false,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should return blocked state");
+
+        assert_eq!(response.base_status, "blocked");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref, None);
+        assert_eq!(
+            response.base_block_reason.as_deref(),
+            Some(BLOCK_REASON_MISSING_BASE_COMMIT)
+        );
+        assert_eq!(response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn workspace_freshness_command_reports_retargeted_base() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-retargeted",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should resolve retargeted base");
+
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(response.target_ref, "main");
+        assert!(!response.is_base_ahead);
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_explicit_base_recovers_blocked_base() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "explicit-base-recovery",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        git(&repo_path, &["checkout", "-b", "release/0.8"]);
+        std::fs::write(repo_path.join("release.txt"), "release\n")
+            .expect("release fixture should be written");
+        git(&repo_path, &["add", "release.txt"]);
+        git(&repo_path, &["commit", "-m", "release base"]);
+        let release_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", "main"]);
+        git(&repo_path, &["checkout", "--orphan", "rewritten-main"]);
+        git(&repo_path, &["rm", "-rf", "."]);
+        std::fs::write(repo_path.join("README.md"), "rewritten\n")
+            .expect("rewritten fixture should be written");
+        git(&repo_path, &["add", "README.md"]);
+        git(&repo_path, &["commit", "-m", "rewrite main"]);
+        git(&repo_path, &["branch", "-M", "main"]);
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(execution_state)
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let blocked =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should load");
+        assert_eq!(blocked.base_status, "blocked");
+
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            app.state::<AppState>().inner(),
+            app.state::<Arc<ExecutionState>>().inner(),
+            Some(app.state::<Arc<TeamService>>().inner().clone()),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("release/0.8".to_string()),
+                display_name: Some("release/0.8".to_string()),
+            },
+        )
+        .await
+        .expect("explicit base update should recover workspace");
+
+        assert!(response.updated);
+        assert_eq!(response.base_status, "valid");
+        assert_eq!(response.target_ref, "release/0.8");
+        assert_eq!(response.base_commit, release_sha);
+        assert_eq!(response.workspace.base_ref_kind, "local_branch");
+        assert_eq!(response.workspace.base_ref, "release/0.8");
+        assert_eq!(
+            response.workspace.base_display_name.as_deref(),
+            Some("release/0.8")
+        );
+        assert_eq!(
+            response.workspace.base_commit.as_deref(),
+            Some(release_sha.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_saved_base_retargets_to_project_default() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "saved-base-retarget",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(execution_state)
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let freshness =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should resolve retargeted base");
+        assert_eq!(freshness.base_status, "retargeted");
+
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            app.state::<AppState>().inner(),
+            app.state::<Arc<ExecutionState>>().inner(),
+            Some(app.state::<Arc<TeamService>>().inner().clone()),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+            },
+        )
+        .await
+        .expect("saved-base update should retarget workspace");
+
+        assert!(!response.updated);
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.target_ref, "main");
+        assert_eq!(response.workspace.base_ref_kind, "project_default");
+        assert_eq!(response.workspace.base_ref, "main");
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(
+            response.workspace.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_saved_base_blocks_when_base_commit_is_missing() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "update-missing-base",
+            false,
+            Some(987),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+            },
+        )
+        .await
+        .expect_err("missing saved base commit should block update");
+
+        assert_eq!(error, BLOCK_REASON_MISSING_BASE_COMMIT);
+        assert_eq!(github.state().update_pr_base_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_explicit_base_blocks_when_pr_retarget_fails() {
+        let github = Arc::new(MockGithubService::new());
+        {
+            github.state().update_pr_base_result =
+                Some(Err(AppError::Infrastructure("denied".to_string())));
+        }
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("update-explicit-retarget-fails", true, Some(988), github)
+                .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("release/0.8".to_string()),
+                display_name: Some("release/0.8".to_string()),
+            },
+        )
+        .await
+        .expect_err("failed explicit-base PR retarget should block update");
+
+        assert!(error.contains("Existing PR #988 targets the deleted branch"));
+        assert_eq!(
+            github.state().last_update_pr_base_args,
+            Some((988, "release/0.8".to_string()))
+        );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_blocks_before_pr_mutation_when_base_commit_is_missing() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "missing-base",
+            false,
+            Some(321),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("missing base commit should block publish");
+
+        assert_eq!(error, BLOCK_REASON_MISSING_BASE_COMMIT);
+        assert_eq!(github.state().update_pr_base_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_blocks_when_existing_pr_base_retarget_fails() {
+        let github = Arc::new(MockGithubService::new());
+        {
+            github.state().update_pr_base_result =
+                Some(Err(AppError::Infrastructure("denied".to_string())));
+        }
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("pr-retarget-fails", true, Some(654), github).await;
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("failed PR base retarget should block publish");
+
+        assert!(error.contains("Existing PR #654 targets the deleted branch"));
+        assert_eq!(
+            github.state().last_update_pr_base_args,
+            Some((654, "main".to_string()))
+        );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[test]
+    fn publication_event_status_helpers_include_description_states() {
+        assert_eq!(
+            publication_event_status_for_push_status("describing"),
+            "started"
+        );
+        assert_eq!(
+            publication_event_summary_for_push_status("describing"),
+            "Drafting pull request description"
+        );
+        assert_eq!(
+            publication_event_status_for_push_status("description_failed"),
+            "failed"
+        );
+        assert_eq!(
+            publication_event_summary_for_push_status("description_failed"),
+            "Pull request description failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_stops_before_push_when_pr_description_fails() {
+        let github = Arc::new(MockGithubService::new());
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("description-fails", true, None, github).await;
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "change that should be described\n",
+        )
+        .expect("workspace change should be written");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("missing generated PR description should block publish");
+
+        assert!(error.contains("completed without submitting a PR description"));
+        assert_eq!(github.state().push_branch_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some("description_failed")
+        );
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("publication events should load");
+        assert!(events.iter().any(|event| {
+            event.step == "describing"
+                && event.status == "started"
+                && event.summary == "Drafting pull request description"
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "description_failed"
+                && event.status == "failed"
+                && event.classification.as_deref() == Some("operational")
+        }));
+    }
 
     #[test]
     fn agent_conversation_response_derives_provider_metadata_from_legacy_claude_session() {
@@ -3154,6 +4531,82 @@ mod tests {
             Some("claude-session-456".to_string())
         );
         assert_eq!(response.provider_harness, Some("claude".to_string()));
+    }
+
+    #[tokio::test]
+    async fn switching_agent_mode_preserves_provider_session_for_native_resume() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-mode-switch".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("11111111-1111-4111-8111-111111111111");
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.id = conversation_id;
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: "codex-thread-existing".to_string(),
+        });
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "feature/agent-screen".to_string(),
+            Some("Current branch (feature/agent-screen)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-11111111".to_string(),
+            "/tmp/ralphx-agent-11111111".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "ideation".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await
+        .expect("mode switch succeeds");
+
+        assert_eq!(
+            response.conversation.agent_mode.as_deref(),
+            Some("ideation")
+        );
+        assert_eq!(
+            response.conversation.provider_session_id.as_deref(),
+            Some("codex-thread-existing")
+        );
+        assert_eq!(
+            response.conversation.provider_harness.as_deref(),
+            Some("codex")
+        );
+
+        let stored = state
+            .chat_conversation_repo
+            .get_by_id(&conversation_id)
+            .await
+            .expect("conversation load succeeds")
+            .expect("conversation exists");
+        assert_eq!(
+            stored
+                .provider_session_ref()
+                .map(|session_ref| session_ref.provider_session_id),
+            Some("codex-thread-existing".to_string())
+        );
     }
 
     #[test]

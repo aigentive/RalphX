@@ -359,6 +359,7 @@ export function MergeWorkflowDialog({
       <DialogContent
         data-testid="merge-workflow-dialog"
         className="max-w-lg p-0"
+        aria-describedby={undefined}
         onEscapeKeyDown={(e) => {
           if (isProcessing) {
             e.preventDefault();

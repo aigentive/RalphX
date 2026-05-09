@@ -33,7 +33,7 @@ fn test_merge_speed_defaults() {
     let git = GitRuntimeConfig::default();
 
     // Reconciliation — merge-speed targets
-    assert_eq!(recon.attempt_merge_deadline_secs, 60, "merge deadline: 600→60");
+    assert_eq!(recon.attempt_merge_deadline_secs, 120, "merge deadline: 600→120");
     assert_eq!(recon.merge_incomplete_retry_base_secs, 5, "retry base: 30→5");
 
     // Git — agent cleanup speed targets
@@ -41,6 +41,17 @@ fn test_merge_speed_defaults() {
     assert_eq!(git.agent_kill_settle_secs, 0, "kill settle: 1→0");
     assert_eq!(git.cleanup_worktree_timeout_secs, 15, "worktree cleanup: 5→15 for TOCTOU fix");
     assert_eq!(git.step_0b_kill_timeout_secs, 5, "step 0b kill: 20→5");
+}
+
+#[test]
+fn test_merge_attempt_deadline_exceeds_single_git_command_timeout() {
+    let recon = ReconciliationConfig::default();
+    let git = GitRuntimeConfig::default();
+
+    assert!(
+        recon.attempt_merge_deadline_secs > git.cmd_timeout_secs,
+        "outer merge attempt deadline must exceed one git command timeout; rebase-squash runs multiple git commands"
+    );
 }
 
 /// Verify env overrides still work for the changed merge-speed fields.
@@ -211,7 +222,7 @@ fn test_validation_deadline_env_override() {
 
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 900);
     // merge deadline should remain unchanged
-    assert_eq!(cfg.reconciliation.attempt_merge_deadline_secs, 60);
+    assert_eq!(cfg.reconciliation.attempt_merge_deadline_secs, 120);
 }
 
 #[test]
@@ -265,7 +276,7 @@ fn test_branch_freshness_timeout_env_override() {
 
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 120);
     // Other reconciliation fields should remain unchanged
-    assert_eq!(cfg.reconciliation.attempt_merge_deadline_secs, 60);
+    assert_eq!(cfg.reconciliation.attempt_merge_deadline_secs, 120);
 }
 
 // ── Execution recovery config defaults + validation (GAP M7) ──────────────────

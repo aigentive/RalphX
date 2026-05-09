@@ -22,8 +22,8 @@ use crate::domain::entities::{
 
 use super::ideation_commands_types::{
     ChatMessageResponse, CreateSessionInput, IdeationSessionResponse,
-    IdeationSessionWithProgressResponse, SessionGroupCountsResponse, SessionListResponse,
-    SessionWithDataResponse, TaskProposalResponse,
+    IdeationSessionWithProgressResponse, LatestChildSessionIdResponse,
+    SessionGroupCountsResponse, SessionListResponse, SessionWithDataResponse, TaskProposalResponse,
 };
 
 // ============================================================================
@@ -703,6 +703,39 @@ pub async fn get_child_sessions(
                 .collect()
         })
         .map_err(|e| e.to_string())
+}
+
+/// Get the latest child session ID for a parent session, with optional purpose filter.
+/// This is the lightweight alternative to `get_child_sessions` for UI chrome that only
+/// needs a target session ID.
+#[tauri::command]
+pub async fn get_latest_child_session_id(
+    session_id: String,
+    purpose: Option<String>,
+    include_archived: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<LatestChildSessionIdResponse, String> {
+    let parent_id = IdeationSessionId::from_string(session_id);
+    let parsed_purpose = purpose
+        .as_deref()
+        .map(str::parse::<SessionPurpose>)
+        .transpose()?;
+    let latest_child_session_id = state
+        .ideation_session_repo
+        .get_latest_child_session_id(
+            &parent_id,
+            parsed_purpose,
+            include_archived.unwrap_or(true),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|id| id.as_str().to_string());
+
+    Ok(LatestChildSessionIdResponse {
+        session_id: parent_id.as_str().to_string(),
+        purpose,
+        latest_child_session_id,
+    })
 }
 
 /// Get group counts for all 5 session display groups for a project

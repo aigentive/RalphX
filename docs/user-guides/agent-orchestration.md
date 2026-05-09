@@ -12,6 +12,7 @@ RalphX doesn't execute your tasks directly — it orchestrates a team of special
 | Who reviews my code? | A **reviewer** agent analyzes the diff and calls pass/fail. You then approve or request changes. |
 | What handles merge conflicts? | A **merger** agent resolves git conflicts programmatically. That lane is configured in **Settings → General → Execution Agents**. |
 | How do agents get their instructions? | Via the task context, plan artifact, and their built-in system prompts. You don't write agent prompts. |
+| Can RalphX give agents workflow-specific guidance? | Yes. RalphX can inject allowlisted [internal skills](internal-skills.md) for narrow product workflows. |
 | Can I talk to a running agent? | Yes — use the chat panel to send messages to active agents. They receive your messages mid-execution. |
 | What if the AI asks me a question? | An in-line **User Question** dialog appears — answer it before the agent continues. |
 | What if an agent asks to do something sensitive? | A **Permission Request** dialog appears — you approve or deny the specific action. |

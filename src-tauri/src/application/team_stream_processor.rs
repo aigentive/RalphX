@@ -17,6 +17,9 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
+use crate::application::chat_service::tool_result_preview::{
+    build_live_tool_result_preview_for_tool_id, LiveToolResultPreview,
+};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
@@ -545,19 +548,35 @@ pub fn start_teammate_stream<R: Runtime>(
                                     result,
                                     parent_tool_use_id,
                                 } => {
+                                    let result_preview = build_live_tool_result_preview_for_tool_id(
+                                        &processor.tool_calls,
+                                        conversation_id_str.as_deref(),
+                                        assistant_message_id.as_deref(),
+                                        &tool_use_id,
+                                        &result,
+                                    );
+                                    if result_preview.is_previewed() {
+                                        flush_teammate_message(
+                                            &chat_message_repo,
+                                            &assistant_message_id,
+                                            &processor.response_text,
+                                            &processor.tool_calls,
+                                            &processor.content_blocks,
+                                        )
+                                        .await;
+                                    }
+
                                     let _ = app_handle.emit(
                                         "agent:tool_call",
-                                        serde_json::json!({
-                                            "teammate_name": teammate_name,
-                                            "tool_name": format!("result:{}", tool_use_id),
-                                            "tool_id": tool_use_id,
-                                            "arguments": serde_json::Value::Null,
-                                            "result": result,
-                                            "context_type": context_type,
-                                            "context_id": context_id,
-                                            "parent_tool_use_id": parent_tool_use_id,
-                                            "conversation_id": conversation_id_str,
-                                        }),
+                                        teammate_tool_result_event_payload(
+                                            &teammate_name,
+                                            &tool_use_id,
+                                            &result_preview,
+                                            &context_type,
+                                            &context_id,
+                                            parent_tool_use_id,
+                                            conversation_id_str.as_deref(),
+                                        ),
                                     );
                                 }
                                 StreamEvent::SessionId(_) => {
@@ -1066,6 +1085,33 @@ fn extract_assistant_usage(
     } else {
         false
     }
+}
+
+fn teammate_tool_result_event_payload(
+    teammate_name: &str,
+    tool_use_id: &str,
+    result_preview: &LiveToolResultPreview,
+    context_type: &str,
+    context_id: &str,
+    parent_tool_use_id: Option<String>,
+    conversation_id: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "teammate_name": teammate_name,
+        "tool_name": format!("result:{tool_use_id}"),
+        "tool_id": tool_use_id,
+        "arguments": serde_json::Value::Null,
+        "result": result_preview.result,
+        "result_preview_truncated": result_preview.preview.as_ref().map(|_| true),
+        "result_preview_original_bytes": result_preview.preview.as_ref().map(|preview| preview.original_bytes),
+        "result_preview_line_count": result_preview.preview.as_ref().map(|preview| preview.line_count),
+        "result_preview_omitted_lines": result_preview.preview.as_ref().map(|preview| preview.omitted_lines),
+        "detail_ref": result_preview.preview.as_ref().and_then(|preview| preview.detail_ref.clone()),
+        "context_type": context_type,
+        "context_id": context_id,
+        "parent_tool_use_id": parent_tool_use_id,
+        "conversation_id": conversation_id,
+    })
 }
 
 /// Flush accumulated content to the assistant message in the DB.

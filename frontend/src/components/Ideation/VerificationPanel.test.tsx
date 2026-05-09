@@ -200,6 +200,71 @@ describe("VerificationPanel — page-load hydration", () => {
     expect(screen.getByTestId("verification-history")).toBeInTheDocument();
   });
 
+  it("renders the API-selected effective generation when the active generation is blank", async () => {
+    const { useQuery } = await import("@tanstack/react-query");
+    const currentVerificationData = {
+      sessionId: "session-1",
+      status: "verified",
+      inProgress: false,
+      generation: 2,
+      selectedGeneration: 1,
+      currentRound: 5,
+      maxRounds: 5,
+      gaps: [
+        {
+          severity: "medium",
+          category: "completeness",
+          description: "Historical verification gap",
+        },
+      ],
+      rounds: [{ round: 4, gapScore: 1, gapCount: 1 }],
+      roundDetails: [{ round: 4, gapScore: 1, gapCount: 1, gaps: [] }],
+      verificationChild: {
+        latestChildSessionId: "child-verifier-1",
+        latestChildArchived: true,
+      },
+      runHistory: [
+        {
+          generation: 1,
+          status: "verified",
+          inProgress: false,
+          currentRound: 5,
+          maxRounds: 5,
+          roundCount: 4,
+          gapCount: 1,
+          convergenceReason: "max_rounds",
+        },
+      ],
+    };
+    vi.mocked(useQuery)
+      .mockReturnValueOnce({ data: currentVerificationData } as ReturnType<typeof useQuery>)
+      .mockReturnValueOnce({ data: [] } as unknown as ReturnType<typeof useQuery>);
+
+    const { VerificationPanel } = await import("./VerificationPanel");
+    const onDisplayedVerificationChildChange = vi.fn();
+    const onDisplayedVerificationStatusChange = vi.fn();
+    render(
+      <VerificationPanel
+        session={baseSession}
+        onDisplayedVerificationChildChange={onDisplayedVerificationChildChange}
+        onDisplayedVerificationStatusChange={onDisplayedVerificationStatusChange}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("verification-empty-state")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("verification-panel-content")).toBeInTheDocument();
+    expect(screen.getByTestId("verification-run-picker-trigger")).toHaveTextContent("Previous verification");
+    // Terminal status banner is gone; the gap card + history cover that.
+    expect(screen.queryByTestId("verification-status-card")).not.toBeInTheDocument();
+    expect(screen.getByTestId("verification-history")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(onDisplayedVerificationChildChange).toHaveBeenCalledWith("child-verifier-1");
+    });
+    expect(onDisplayedVerificationStatusChange).toHaveBeenCalledWith("verified", false);
+  });
+
   it("uses verification query status and gaps even when the session cache still says unverified", async () => {
     const { useQuery } = await import("@tanstack/react-query");
     const verificationData = {

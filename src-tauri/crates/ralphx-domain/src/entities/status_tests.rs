@@ -944,3 +944,15 @@ fn test_is_dependency_satisfied_covers_all_variants() {
         assert!(!s.is_dependency_satisfied(), "{:?} should NOT satisfy", s);
     }
 }
+
+#[test]
+fn test_is_active_dependency_blocker_is_inverse_of_dependency_satisfied() {
+    for status in InternalStatus::all_variants() {
+        assert_eq!(
+            status.is_active_dependency_blocker(),
+            !status.is_dependency_satisfied(),
+            "{:?} must use the shared dependency-satisfied classifier",
+            status
+        );
+    }
+}

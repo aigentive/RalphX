@@ -86,7 +86,7 @@ export function VerificationResultCard({
           style={{ color: actionableForParent ? "var(--accent-primary)" : "var(--text-muted)" }}
         />
         <span
-          className="text-[11px] leading-none"
+          className="text-[0.6875rem] leading-none"
           style={{ color: "var(--text-muted)", fontFamily: "var(--font-body)" }}
         >
           Verification result
@@ -101,7 +101,7 @@ export function VerificationResultCard({
       </button>
       {expanded && (
         <div
-          className="mt-1 mx-4 w-full max-w-[560px] rounded-lg px-3 py-2 text-[11px] leading-relaxed space-y-2"
+          className="mt-1 mx-4 w-full max-w-[560px] rounded-lg px-3 py-2 text-[0.6875rem] leading-relaxed space-y-2"
           style={{
             background: "var(--bg-surface)",
             color: "var(--text-secondary)",
@@ -111,7 +111,7 @@ export function VerificationResultCard({
         >
           <div className="flex items-center gap-2 flex-wrap">
             <span
-              className="px-2 py-0.5 rounded-full text-[10px]"
+              className="px-2 py-0.5 rounded-full text-[0.625rem]"
               style={{
                 background: actionableForParent ? withAlpha("var(--accent-primary)", 18) : "var(--overlay-weak)",
                 color: actionableForParent ? "var(--accent-primary)" : "var(--text-muted)",
@@ -120,12 +120,12 @@ export function VerificationResultCard({
               {actionableForParent ? "Actionable for plan" : "Infra/runtime issue"}
             </span>
             {currentRound != null && maxRounds != null && (
-              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 Round {currentRound}/{maxRounds}
               </span>
             )}
             {reasonLabel && (
-              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 {reasonLabel}
               </span>
             )}
@@ -146,7 +146,7 @@ export function VerificationResultCard({
                     style={{ color: blocker.severity === "critical" ? "var(--accent-primary)" : "var(--text-muted)" }}
                   />
                   <div>
-                    <div className="text-[10px] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+                    <div className="text-[0.625rem] uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
                       {blocker.severity}
                     </div>
                     <div>{blocker.description}</div>
@@ -156,7 +156,7 @@ export function VerificationResultCard({
             </div>
           )}
 
-          <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+          <div className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
             Recommended next action: {actionLabel}
           </div>
         </div>

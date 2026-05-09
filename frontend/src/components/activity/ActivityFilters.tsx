@@ -121,7 +121,7 @@ export function StatusFilter({
         >
           Status
           {selectedStatuses.length > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[10px]">
+            <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[0.625rem]">
               {selectedStatuses.length}
             </span>
           )}
@@ -174,7 +174,7 @@ export function RoleFilter({
         >
           Role
           {selectedRoles.length > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[10px]">
+            <span className="px-1.5 py-0.5 rounded-full bg-[var(--accent-primary)] text-white text-[0.625rem]">
               {selectedRoles.length}
             </span>
           )}

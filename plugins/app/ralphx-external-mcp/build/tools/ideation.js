@@ -1,7 +1,7 @@
 /**
  * Ideation tool handlers — Flow 2 (Phase 4)
  *
- * 9 tools for starting/monitoring ideation sessions, proposals, and plans.
+ * Tools for starting/monitoring ideation sessions, proposals, plans, and accepted-plan follow-ups.
  * Delegates multi-step operations to composites.
  */
 import { getBackendClient, BackendError } from "../backend-client.js";
@@ -230,6 +230,48 @@ export async function handleGetSessionTasks(args, context) {
             qs.set("changed_since", args.changed_since);
         const query = qs.toString() ? `?${qs.toString()}` : "";
         const response = await getBackendClient().get(`/api/external/sessions/${encodeURIComponent(sessionId)}/tasks${query}`, context);
+        return JSON.stringify(response.body, null, 2);
+    }
+    catch (err) {
+        return handleError(err);
+    }
+}
+/**
+ * v1_append_task_to_plan — append a one-off task to an accepted active ideation plan.
+ * POST /api/external/sessions/:session_id/tasks
+ */
+export async function handleAppendTaskToPlan(args, context) {
+    const sessionId = args.session_id;
+    const title = args.title;
+    if (!sessionId) {
+        return JSON.stringify({ error: "missing_argument", message: "session_id is required" }, null, 2);
+    }
+    if (!title) {
+        return JSON.stringify({ error: "missing_argument", message: "title is required" }, null, 2);
+    }
+    try {
+        const body = {
+            title,
+        };
+        if (args.description !== undefined)
+            body.description = args.description;
+        if (args.steps !== undefined)
+            body.steps = args.steps;
+        if (args.acceptance_criteria !== undefined) {
+            body.acceptanceCriteria = args.acceptance_criteria;
+        }
+        if (args.depends_on_task_ids !== undefined) {
+            body.dependsOnTaskIds = args.depends_on_task_ids;
+        }
+        if (args.priority !== undefined)
+            body.priority = args.priority;
+        if (args.source_conversation_id !== undefined) {
+            body.sourceConversationId = args.source_conversation_id;
+        }
+        if (args.source_message_id !== undefined) {
+            body.sourceMessageId = args.source_message_id;
+        }
+        const response = await getBackendClient().post(`/api/external/sessions/${encodeURIComponent(sessionId)}/tasks`, context, body);
         return JSON.stringify(response.body, null, 2);
     }
     catch (err) {

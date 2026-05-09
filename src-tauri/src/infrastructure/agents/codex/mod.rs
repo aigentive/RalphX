@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::warn;
 
-use crate::domain::agents::LogicalEffort;
+use crate::domain::agents::{
+    LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+};
 use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::claude::{
     claude_runtime_config, external_mcp_config, filter_interactive_tools,
@@ -93,8 +95,8 @@ impl Default for CodexExecCliConfig {
         Self {
             model: None,
             reasoning_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
+            approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+            sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             config_overrides: Vec::new(),
             cwd: None,
             add_dirs: Vec::new(),
@@ -145,6 +147,8 @@ pub fn build_codex_mcp_overrides(
         mcp_server_path.to_string_lossy().into_owned(),
         "--agent-type".to_string(),
         short_name.to_string(),
+        "--tauri-api-url".to_string(),
+        crate::utils::backend_endpoint::backend_http_base_url(),
     ];
 
     if let Some(runtime_context) = runtime_context {
@@ -271,6 +275,22 @@ pub fn compose_codex_prompt(
     let Some(system_prompt) = system_prompt else {
         return prompt.to_string();
     };
+    let system_prompt = match inject_internal_skills_into_system_prompt(
+        &project_root,
+        agent_name,
+        &system_prompt,
+        prompt,
+    ) {
+        Ok(injection) => injection.system_prompt,
+        Err(error) => {
+            warn!(
+                agent = agent_name,
+                error = %error,
+                "Failed to inject internal skills into Codex prompt"
+            );
+            system_prompt
+        }
+    };
 
     format!(
         "<ralphx_agent_instructions>\n{system_prompt}\n</ralphx_agent_instructions>\n\n{prompt}"
@@ -394,7 +414,7 @@ pub fn parse_codex_cli_capabilities(
 pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> {
     let version_output = run_codex_command(cli_path, &["--version"])?;
     let root_help = run_codex_command(cli_path, &["--help"])?;
-    let exec_help = run_codex_command(cli_path, &["exec", "--help"])?;
+    let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
     Ok(parse_codex_cli_capabilities(
         &root_help,
         &exec_help,
@@ -403,9 +423,46 @@ pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> 
 }
 
 pub fn resolve_codex_cli() -> Result<ResolvedCodexCli, String> {
-    let path = find_codex_cli().ok_or_else(|| "Codex CLI not found".to_string())?;
-    let capabilities = probe_codex_cli(&path)?;
-    Ok(ResolvedCodexCli { path, capabilities })
+    resolve_codex_cli_from_candidates(
+        crate::infrastructure::tool_paths::find_codex_cli_candidates(),
+    )
+}
+
+fn resolve_codex_cli_from_candidates<I>(candidates: I) -> Result<ResolvedCodexCli, String>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut first_incompatible: Option<ResolvedCodexCli> = None;
+    let mut errors = Vec::new();
+
+    for path in candidates {
+        match probe_codex_cli(&path) {
+            Ok(capabilities) if capabilities.has_core_exec_support() => {
+                return Ok(ResolvedCodexCli { path, capabilities });
+            }
+            Ok(capabilities) => {
+                if first_incompatible.is_none() {
+                    first_incompatible = Some(ResolvedCodexCli { path, capabilities });
+                }
+            }
+            Err(error) => {
+                errors.push(format!("{}: {}", path.display(), error));
+            }
+        }
+    }
+
+    if let Some(resolved) = first_incompatible {
+        return Ok(resolved);
+    }
+
+    if errors.is_empty() {
+        Err("Codex CLI not found".to_string())
+    } else {
+        Err(format!(
+            "No launchable Codex CLI could be probed: {}",
+            errors.join("; ")
+        ))
+    }
 }
 
 pub fn build_codex_exec_args(
@@ -429,11 +486,9 @@ pub fn build_codex_exec_args(
         args.push(model.to_string());
     }
 
-    if let Some(sandbox_mode) = config.sandbox_mode.as_deref() {
-        require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
-        args.push("-s".to_string());
-        args.push(normalize_cli_token(sandbox_mode));
-    }
+    require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
+    args.push("-s".to_string());
+    args.push(normalize_cli_token(effective_codex_sandbox_mode(config)));
 
     if let Some(cwd) = config.cwd.as_ref() {
         args.push("-C".to_string());
@@ -467,14 +522,12 @@ pub fn build_codex_exec_args(
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
     }
 
-    if let Some(approval_policy) = config.approval_policy.as_deref() {
-        require_capability(capabilities.supports_config_override, "config_override")?;
-        args.push("-c".to_string());
-        args.push(format!(
-            "approval_policy=\"{}\"",
-            normalize_cli_token(approval_policy)
-        ));
-    }
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push(format!(
+        "approval_policy=\"{}\"",
+        normalize_cli_token(effective_codex_approval_policy(config))
+    ));
 
     Ok(args)
 }
@@ -521,23 +574,19 @@ pub fn build_codex_exec_resume_args(
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
     }
 
-    if let Some(approval_policy) = config.approval_policy.as_deref() {
-        require_capability(capabilities.supports_config_override, "config_override")?;
-        args.push("-c".to_string());
-        args.push(format!(
-            "approval_policy=\"{}\"",
-            normalize_cli_token(approval_policy)
-        ));
-    }
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push(format!(
+        "approval_policy=\"{}\"",
+        normalize_cli_token(effective_codex_approval_policy(config))
+    ));
 
-    if let Some(sandbox_mode) = config.sandbox_mode.as_deref() {
-        require_capability(capabilities.supports_config_override, "config_override")?;
-        args.push("-c".to_string());
-        args.push(format!(
-            "sandbox_mode=\"{}\"",
-            normalize_cli_token(sandbox_mode)
-        ));
-    }
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push(format!(
+        "sandbox_mode=\"{}\"",
+        normalize_cli_token(effective_codex_sandbox_mode(config))
+    ));
 
     Ok(args)
 }
@@ -627,8 +676,14 @@ fn write_codex_prompt_debug_artifact(
 }
 
 fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = StdCommand::new(cli_path)
-        .args(args)
+    let mut command = StdCommand::new(cli_path);
+    command.args(args);
+    command.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("Failed to run {} {:?}: {}", cli_path.display(), args, error))?;
 
@@ -645,13 +700,22 @@ fn run_codex_command(cli_path: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+fn run_codex_optional_command(cli_path: &Path, args: &[&str]) -> String {
+    run_codex_command(cli_path, args).unwrap_or_default()
+}
+
 fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
+    cmd.env(
+        "PATH",
+        crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());
+    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {

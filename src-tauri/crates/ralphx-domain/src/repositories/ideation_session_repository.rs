@@ -9,7 +9,7 @@ use rusqlite::Connection;
 
 use crate::domain::entities::{
     AcceptanceStatus, IdeationSession, IdeationSessionId, IdeationSessionStatus, ProjectId,
-    VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
+    SessionPurpose, VerificationConfirmationStatus, VerificationRunSnapshot, VerificationStatus,
 };
 use crate::error::AppResult;
 
@@ -113,6 +113,24 @@ pub trait IdeationSessionRepository: Send + Sync {
 
     /// Get all child sessions for a given parent session ID
     async fn get_children(&self, parent_id: &IdeationSessionId) -> AppResult<Vec<IdeationSession>>;
+
+    /// Get the latest child session ID for a given parent, optionally filtered by purpose.
+    async fn get_latest_child_session_id(
+        &self,
+        parent_id: &IdeationSessionId,
+        purpose: Option<SessionPurpose>,
+        include_archived: bool,
+    ) -> AppResult<Option<IdeationSessionId>> {
+        let mut children = self.get_children(parent_id).await?;
+        children.retain(|session| {
+            purpose.is_none_or(|expected| session.session_purpose == expected)
+                && (include_archived || session.status != IdeationSessionStatus::Archived)
+        });
+        Ok(children
+            .into_iter()
+            .max_by(|left, right| left.created_at.cmp(&right.created_at))
+            .map(|session| session.id))
+    }
 
     /// Get the ancestor chain for a session (parents, grandparents, etc.)
     /// Returns sessions in order from direct parent to root ancestor

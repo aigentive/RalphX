@@ -52,6 +52,7 @@ assets/raw/
 dist/
 dist-ssr/
 build/
+coverage/
 out/
 /target/
 /librust_out.rlib

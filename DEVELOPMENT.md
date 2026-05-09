@@ -6,11 +6,20 @@ Read with:
 - `CLAUDE.md`
 - `frontend/src/CLAUDE.md`
 - `src-tauri/CLAUDE.md`
+- `docs/development/build-from-source.md`
+- `docs/development/coverage.md`
 - `.claude/rules/code-quality-standards.md`
 - `.claude/rules/api-layer.md`
 - `.claude/rules/task-state-machine.md`
 - `.claude/rules/task-git-branching.md`
 - `docs/architecture/agent-chat-system.md`
+
+## Development Guides
+
+| Guide | Use |
+|---|---|
+| [Build from source](docs/development/build-from-source.md) | Local checkout setup, native dev start, ports, and runtime prerequisites |
+| [Code coverage](docs/development/coverage.md) | Coverage workflow behavior, Codecov flags, suite badges, and covered folders |
 
 ## Product Flows We Optimize For
 
@@ -402,14 +411,14 @@ cd plugins/app/ralphx-mcp-server
 npm i
 ```
 
-The MCP HTTP server starts automatically on `http://127.0.0.1:3847` when the Tauri app initializes.
+The MCP HTTP server starts automatically on the local backend port when the Tauri app initializes: production defaults to `http://127.0.0.1:3847`; source dev defaults to `http://127.0.0.1:3857` so it can run beside the installed app.
 
 ### Startup Modes
 
 | Mode | Command | Frontend Port | Backend | Use Case |
 |---|---|---|---|---|
-| Native | `cd frontend && npm run tauri dev` | 1420 | Real Rust/Tauri | Full-stack development |
-| Native (fresh clean) | `./dev-fresh` | 1420 | Real Rust/Tauri after `cargo clean`, with frontend install self-repair and Tauri version drift checks | Large-artifact fresh starts |
+| Native | `cd frontend && npm run tauri dev` | 1420 | Real Rust/Tauri on backend `3857` | Full-stack development beside installed app |
+| Native (fresh clean) | `./dev-fresh` | 1420 | Real Rust/Tauri on backend `3857` after `cargo clean`, with frontend install self-repair and Tauri version drift checks | Large-artifact fresh starts |
 | Web | `cd frontend && npm run dev:web` | 5173 | Mocked via `frontend/src/api-mock/` | UI-only work |
 
 Core commands:
@@ -515,7 +524,7 @@ RUST_LOG=ralphx::http_server=debug npm --prefix frontend run tauri dev
 
 What to check during startup failures:
 - database migration errors
-- HTTP server bind retries/failures on `:3847`
+- HTTP server bind retries/failures on the active backend port (`:3857` for source dev, `:3847` for production)
 - reconciliation and recovery logs
 - missing local env overrides
 

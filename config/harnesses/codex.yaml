@@ -11,7 +11,7 @@
 agent_harness_defaults:
   ideation_primary:
     harness: codex
-    model: gpt-5.4
+    model: gpt-5.5
     effort: xhigh
     approval_policy: never
     sandbox_mode: danger-full-access

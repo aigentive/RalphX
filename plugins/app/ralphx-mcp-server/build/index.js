@@ -23,6 +23,8 @@ import { handleAskUserQuestion } from "./question-handler.js";
 import { handleRequestTeamPlan } from "./team-plan-handler.js";
 import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { createVerificationRuntime } from "./verification-runtime.js";
+import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
+import { callCompleteAgentWorkspaceRepairTool, callSubmitAgentWorkspacePrDescriptionTool, } from "./agent-workspace-tools.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -203,6 +205,7 @@ function validateProjectScope(toolName, args) {
     const projectScopedTools = [
         "get_project_analysis",
         "save_project_analysis",
+        "append_task_to_ideation_plan",
         // Memory write tools (memory agents only)
         // Note: mark_memory_obsolete excluded - uses memory_id lookup for implicit project validation
         "upsert_memories",
@@ -862,6 +865,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // Alias for archive_task_proposal — no /api/delete_task_proposal route exists in backend
             const { proposal_id } = args;
             result = await callTauri("archive_task_proposal", { proposal_id });
+        }
+        else if (name === "append_task_to_ideation_plan") {
+            result = await callTauri(name, buildAppendTaskToIdeationPlanPayload(args || {}));
         }
         else {
             // Default: POST request

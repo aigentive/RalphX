@@ -112,14 +112,57 @@ pub(crate) async fn validate_chat_runtime_for_context(
     context_id: &str,
     surface_name: &str,
 ) -> Result<(), String> {
-    let availability = resolve_context_runtime_availability(state, context_type, context_id).await;
+    validate_chat_runtime_for_context_with_override(
+        state,
+        context_type,
+        context_id,
+        surface_name,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn validate_chat_runtime_for_context_with_override(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+    surface_name: &str,
+    harness_override: Option<AgentHarnessKind>,
+) -> Result<(), String> {
+    crate::application::resolve_enabled_default_provider(
+        &state.agent_provider_settings_repo,
+        surface_name,
+    )
+    .await?;
+
+    let availability =
+        resolve_context_runtime_availability(state, context_type, context_id, harness_override)
+            .await;
 
     if availability.available {
+        crate::application::ensure_provider_spawn_enabled(
+            &state.agent_provider_settings_repo,
+            availability.effective_harness,
+            surface_name,
+        )
+        .await?;
         Ok(())
     } else {
-        Err(availability.error.clone().unwrap_or_else(|| {
+        let error = availability.error.clone().unwrap_or_else(|| {
             format_harness_runtime_unavailable(surface_name, availability.effective_harness)
-        }))
+        });
+        tracing::warn!(
+            %surface_name,
+            context_type = %context_type,
+            context_id = %context_id,
+            harness = %availability.effective_harness,
+            binary_path = ?availability.binary_path,
+            probe_succeeded = availability.probe_succeeded,
+            missing_core_exec_features = ?availability.missing_core_exec_features,
+            error = %error,
+            "Chat runtime unavailable"
+        );
+        Err(error)
     }
 }
 
@@ -128,7 +171,8 @@ pub(crate) async fn team_mode_supported_for_context(
     context_type: ChatContextType,
     context_id: &str,
 ) -> bool {
-    let availability = resolve_context_runtime_availability(state, context_type, context_id).await;
+    let availability =
+        resolve_context_runtime_availability(state, context_type, context_id, None).await;
     harness_supports_team_mode(availability.effective_harness)
 }
 
@@ -136,9 +180,18 @@ async fn resolve_context_runtime_availability(
     state: &AppState,
     context_type: ChatContextType,
     context_id: &str,
+    harness_override: Option<AgentHarnessKind>,
 ) -> LaneHarnessAvailability {
+    if let Some(harness) = harness_override {
+        return build_harness_override_availability(
+            context_type,
+            harness,
+            &probe_supported_harnesses(),
+        );
+    }
+
     let Some(lane) = runtime_lane_for_context(context_type) else {
-        return build_default_harness_availability();
+        return build_default_harness_availability(state).await;
     };
 
     let project_id = project_id_for_context(state, context_type, context_id).await;
@@ -146,12 +199,39 @@ async fn resolve_context_runtime_availability(
         .await
 }
 
-fn build_default_harness_availability() -> LaneHarnessAvailability {
-    let probe = probe_default_harness();
+pub(crate) fn build_harness_override_availability(
+    context_type: ChatContextType,
+    harness: AgentHarnessKind,
+    probes: &HashMap<AgentHarnessKind, HarnessRuntimeProbe>,
+) -> LaneHarnessAvailability {
+    let lane = runtime_lane_for_context(context_type).unwrap_or(AgentLane::IdeationPrimary);
+    build_lane_harness_availability(
+        ResolvedLaneHarnessConfig {
+            lane,
+            configured_harness: Some(harness),
+        },
+        probes,
+    )
+}
+
+async fn build_default_harness_availability(state: &AppState) -> LaneHarnessAvailability {
+    let harness = crate::application::resolve_enabled_default_provider(
+        &state.agent_provider_settings_repo,
+        "default chat runtime",
+    )
+    .await
+    .map(|settings| settings.provider)
+    .unwrap_or(DEFAULT_AGENT_HARNESS);
+    let probe = if harness == DEFAULT_AGENT_HARNESS {
+        probe_default_harness()
+    } else {
+        let probes = probe_supported_harnesses();
+        probe_for_harness(&probes, harness)
+    };
     LaneHarnessAvailability {
         lane: AgentLane::IdeationPrimary,
         configured_harness: None,
-        effective_harness: DEFAULT_AGENT_HARNESS,
+        effective_harness: harness,
         binary_path: probe.binary_path.clone(),
         binary_found: probe.binary_found,
         probe_succeeded: probe.probe_succeeded,

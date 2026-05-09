@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
+import { chatApi } from "@/api/chat";
+import { ideationApi } from "@/api/ideation";
+import { chatKeys } from "@/hooks/useChat";
+import { getQueryClient } from "@/lib/queryClient";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
@@ -9,6 +14,18 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { useRunningProcesses } from "@/hooks/useRunningProcesses";
+import { useMergePipeline } from "@/hooks/useMergePipeline";
+import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  Toaster: () => null,
+  toast: {
+    error: vi.fn(),
+  },
+}));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -195,6 +212,19 @@ vi.mock("@/hooks/useMergePipeline", () => ({
   useMergePipeline: vi.fn().mockReturnValue({ data: undefined }),
 }));
 
+vi.mock("@/hooks/useHarnessProviders", () => ({
+  useHarnessProviders: vi.fn().mockReturnValue({
+    settings: {
+      providers: [],
+      defaultProvider: "codex",
+      requiresOnboarding: false,
+    },
+    providers: [],
+    isLoading: false,
+    isPlaceholderData: false,
+  }),
+}));
+
 // Mock other required hooks
 vi.mock("@/hooks/useReviews", () => ({
   reviewKeys: {
@@ -214,6 +244,11 @@ vi.mock("@/hooks/useReviews", () => ({
     isLoading: false,
   }),
   useTasksAwaitingReview: vi.fn().mockReturnValue({
+    allTasks: [],
+    aiTasks: [],
+    humanTasks: [],
+    aiCount: 0,
+    humanCount: 0,
     totalCount: 0,
     isLoading: false,
   }),
@@ -322,11 +357,24 @@ function resetStores() {
     projects: { "demo-project-1": { id: "demo-project-1", name: "Demo Project", workingDirectory: "/tmp/demo", createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" } as never },
     isInitialized: true,
   });
+
+  useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
+  getQueryClient().clear();
 }
 
 describe("App", () => {
   beforeEach(() => {
     resetStores();
+    vi.mocked(useHarnessProviders).mockReturnValue({
+      settings: {
+        providers: [],
+        defaultProvider: "codex",
+        requiresOnboarding: false,
+      },
+      providers: [],
+      isLoading: false,
+      isPlaceholderData: false,
+    } as never);
 
     // Setup default mock return values for execution hooks
     vi.mocked(useExecutionStatus).mockReturnValue({
@@ -354,15 +402,55 @@ describe("App", () => {
     expect(document.body).toBeDefined();
   });
 
-  it("should display RalphX title", () => {
+  it("should display the primary navigation shell", () => {
     render(<App />);
-    expect(screen.getByRole("heading", { name: /Ralph/i })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
   });
 
-  it("should display project selector", () => {
+  it("renders the v27 mini rail logo and flat active highlight", () => {
     render(<App />);
-    // ProjectSelector is mocked, check for the mock element
-    expect(screen.getByTestId("project-selector-mock")).toBeInTheDocument();
+
+    const brandSvg = screen.getByTestId("left-nav-brand").querySelector("svg");
+    expect(brandSvg).toHaveClass("h-[44px]", "w-[44px]");
+
+    const activeButton = screen.getByTestId("nav-agents");
+    expect(activeButton.className).toContain("h-[44px] w-[44px]");
+    expect(activeButton.className).not.toContain("focus-visible:ring");
+    expect(activeButton.className).toContain(
+      "focus-visible:[outline:2px_solid_var(--border-focus)]"
+    );
+    expect(activeButton).toHaveStyle({
+      backgroundColor: "var(--bg-hover)",
+      color: "var(--nav-rail-active-color)",
+      boxShadow: "var(--nav-rail-active-shadow)",
+    });
+    expect(activeButton.querySelector(".left-nav-rail__active-border")).toBeInTheDocument();
+
+    expect(screen.getByTestId("nav-kanban")).toHaveStyle({
+      color: "var(--nav-rail-inactive-color)",
+    });
+  });
+
+  it("should display theme selector", () => {
+    render(<App />);
+    expect(screen.getByTestId("theme-selector")).toBeInTheDocument();
+  });
+
+  it("keeps only one topbar dropdown open at a time", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.getByTestId("theme-option-dark")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("font-scale-selector-trigger"));
+    expect(screen.queryByTestId("theme-option-dark")).not.toBeInTheDocument();
+    expect(screen.getByTestId("font-scale-option-default")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("theme-selector-trigger"));
+    expect(screen.queryByTestId("font-scale-option-default")).not.toBeInTheDocument();
+    expect(screen.getByTestId("theme-option-dark")).toBeInTheDocument();
   });
 
   it("should display theme selector", () => {
@@ -377,11 +465,51 @@ describe("App", () => {
     expect(mainElement).toHaveClass("h-screen", "flex", "flex-col");
   });
 
-  it("should render header with RalphX branding", () => {
+  it("selecting a font-scale option closes the dropdown and updates the trigger label", async () => {
+    const user = userEvent.setup();
+    const { useThemeStore } = await import("@/stores/themeStore");
+    const initial = useThemeStore.getState().fontScale;
+    try {
+      render(<App />);
+
+      await user.click(screen.getByTestId("font-scale-selector-trigger"));
+      await user.click(screen.getByTestId("font-scale-option-lg"));
+      // Dropdown closed.
+      expect(screen.queryByTestId("font-scale-option-lg")).not.toBeInTheDocument();
+      // Trigger label reflects the new option (110%).
+      expect(screen.getByTestId("font-scale-selector").textContent).toMatch(/110%/);
+    } finally {
+      // Reset persisted fontScale so order-dependent v27 chrome tests still see 100%.
+      useThemeStore.getState().setFontScale(initial);
+    }
+  });
+
+  it("should render the v27 top navigation chrome", () => {
     render(<App />);
     const header = screen.getByRole("banner");
     expect(header).toBeInTheDocument();
-    expect(header).toHaveClass("flex", "items-center", "justify-between");
+    expect(header).toHaveAttribute("data-testid", "app-header");
+    expect(header.getAttribute("style")).toContain(
+      "background-color: var(--app-navbar-bg)"
+    );
+    expect(header.getAttribute("style")).toContain("border-bottom-color: var(--app-navbar-border)");
+    expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
+      "background-color: var(--app-rail-bg)"
+    );
+    expect(screen.getByTestId("left-nav-rail").getAttribute("style")).toContain(
+      "border-right-color: var(--app-rail-border)"
+    );
+    expect(screen.queryByTestId("window-traffic-lights")).not.toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/New run"
+    );
+    const commandSearch = screen.getByTestId("topbar-command-search");
+    expect(commandSearch).toBeInTheDocument();
+    expect(commandSearch).toHaveClass("h-8", "w-[320px]", "rounded-[6px]");
+    expect(commandSearch.getAttribute("style")).toContain("background-color: var(--bg-elevated)");
+    expect(commandSearch.getAttribute("style")).toContain("border-color: var(--border-default)");
+    expect(screen.getByTestId("font-scale-selector")).toHaveTextContent("100%");
+    expect(screen.queryByTestId("project-selector-mock")).not.toBeInTheDocument();
   });
 
   it("should render Agents view by default", () => {
@@ -606,6 +734,7 @@ describe("App", () => {
       fireEvent.keyDown(window, { key: "6", metaKey: true });
 
       expect(useUiStore.getState().activeModal).toBe("settings");
+      expect(useUiStore.getState().modalContext).toBeUndefined();
     });
 
     it("should work with Ctrl key (for non-Mac)", () => {
@@ -636,7 +765,10 @@ describe("App", () => {
       render(<App />);
 
       // useExecutionStatus should be called with undefined (no active project)
-      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(undefined);
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        undefined,
+        expect.objectContaining({ enabled: false, refetchInterval: false })
+      );
     });
 
     it("should call useExecutionStatus with project ID when project is active", () => {
@@ -646,7 +778,67 @@ describe("App", () => {
       render(<App />);
 
       // When a project is active, useExecutionStatus should be called with that project ID
-      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith("test-project-123");
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({
+          enabled: true,
+          refetchInterval: false,
+          refetchOnWindowFocus: false,
+          staleTime: 30_000,
+        })
+      );
+    });
+
+    it("does not hydrate footer-only execution data on the Agents view", () => {
+      useProjectStore.setState({ activeProjectId: "test-project-123" });
+
+      render(<App />);
+
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: false })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: false })
+      );
+    });
+
+    it("hydrates footer-only execution data when the execution footer is visible", () => {
+      useProjectStore.setState({ activeProjectId: "test-project-123" });
+      useUiStore.setState({ currentView: "kanban" });
+
+      render(<App />);
+
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "test-project-123",
+        expect.objectContaining({
+          enabled: true,
+          refetchInterval: 30000,
+          refetchOnWindowFocus: true,
+        })
+      );
+    });
+
+    it("does not hydrate ideation view data while the Agents view is active", () => {
+      render(<App />);
+
+      expect(vi.mocked(useIdeationSession)).toHaveBeenCalledWith(
+        "",
+        expect.objectContaining({ enabled: false })
+      );
+      expect(vi.mocked(useIdeationSessions)).toHaveBeenCalledWith(
+        "demo-project-1",
+        expect.objectContaining({ enabled: false })
+      );
     });
   });
 });

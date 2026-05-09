@@ -18,7 +18,7 @@ pub(crate) fn start_server_boot(
     http_execution_state: Arc<ExecutionState>,
     http_team_tracker: TeamStateTracker,
 ) {
-    // Start HTTP server for MCP proxy on port 3847
+    // Start HTTP server for MCP proxy on the configured local backend port.
     // Create a second AppState sharing the Tauri AppState's DB connection,
     // plus shared in-memory state (question_state, permission_state, message_queue)
     // so MCP handlers and Tauri commands operate on the same data.

@@ -21,15 +21,18 @@ pub mod ideation_effort_bootstrap;
 pub mod ideation_model_bootstrap;
 pub mod diff_service;
 pub mod git_service;
+pub(crate) mod git_artifact_cleanup;
 pub mod harness_runtime_registry;
 pub mod ideation_service;
 pub mod interactive_process_registry;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
+pub(crate) mod native_menu;
 pub mod pending_session_drain;
 pub mod permission_state;
 pub mod plan_ranking;
 pub mod priority_service;
+pub(crate) mod provider_onboarding_gate;
 pub mod pr_startup_recovery;
 pub mod prune_engine;
 pub mod publish_resilience;
@@ -46,6 +49,7 @@ pub mod services;
 pub mod review_issue_service;
 pub mod review_service;
 pub mod session_export_service;
+pub(crate) mod session_namer_agent;
 pub mod session_namer_prompt;
 pub mod session_reopen_service;
 pub mod setup_settings;
@@ -54,6 +58,7 @@ pub mod startup_jobs;
 pub mod startup_background;
 pub mod startup_bootstrap;
 pub mod startup_cleanup;
+pub mod startup_git_auth_preflight;
 pub mod startup_pipeline;
 pub mod startup_pipeline_launch;
 pub mod startup_runtime_builders;
@@ -80,7 +85,8 @@ pub use agent_lane_settings_bootstrap::{
 pub(crate) use ideation_harness_availability::{
     build_lane_harness_availability, resolve_lane_harness_config,
     resolve_primary_ideation_harness_availability, team_mode_supported_for_context,
-    validate_chat_runtime_for_context, AGENT_LANES, IDEATION_LANES,
+    validate_chat_runtime_for_context, validate_chat_runtime_for_context_with_override, AGENT_LANES,
+    IDEATION_LANES,
 };
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
@@ -110,6 +116,9 @@ pub use plan_ranking::{
     compute_interaction_score, compute_recency_score, ScoreBreakdown,
 };
 pub use priority_service::PriorityService;
+pub(crate) use provider_onboarding_gate::{
+    ensure_provider_spawn_enabled, resolve_enabled_default_provider,
+};
 pub use recovery_queue::{ProcessSummary, RecoveryItem, RecoveryPriority, RecoveryQueue};
 pub use ready_task_scheduler::spawn_ready_task_scheduler_if_needed;
 pub use prune_engine::PruneEngine;
@@ -139,6 +148,8 @@ pub use team_state_tracker::TeamStateTracker;
 pub use webhook_service::WebhookService;
 
 #[cfg(test)]
+mod agent_conversation_workspace_base_tests;
+#[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;
@@ -147,7 +158,11 @@ mod chat_service_output_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
 #[cfg(test)]
+mod pr_startup_recovery_tests;
+#[cfg(test)]
 mod recovery_queue_tests;
+#[cfg(test)]
+mod runtime_wiring_tests;
 #[cfg(test)]
 mod webhook_service_tests;
 #[cfg(test)]
@@ -156,6 +171,8 @@ mod prune_engine_tests;
 mod publish_resilience_tests;
 #[cfg(test)]
 mod session_export_service_tests;
+#[cfg(test)]
+mod session_namer_agent_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
 #[cfg(test)]

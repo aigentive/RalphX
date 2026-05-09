@@ -16,6 +16,8 @@ test.describe("Loading States", () => {
 
     // Navigate to kanban
     await page.goto("/");
+    await page.waitForSelector('[data-testid="app-header"]', { timeout: 10000 });
+    await page.click('[data-testid="nav-kanban"]');
 
     // Wait for skeleton to appear
     await kanban.skeleton.waitFor({ state: "visible", timeout: 5000 });
@@ -50,6 +52,8 @@ test.describe("Loading States", () => {
 
     // Navigate to kanban
     await page.goto("/");
+    await page.waitForSelector('[data-testid="app-header"]', { timeout: 10000 });
+    await page.click('[data-testid="nav-kanban"]');
 
     // Verify skeleton is visible
     await kanban.skeleton.waitFor({ state: "visible", timeout: 5000 });

@@ -1155,6 +1155,12 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
     let mut blocked_by: Vec<crate::domain::entities::TaskDependencySummary> = Vec::new();
     for blocker_id in &blocker_ids {
         if let Some(blocker_task) = state.task_repo.get_by_id(blocker_id).await? {
+            if !blocker_task
+                .internal_status
+                .is_active_dependency_blocker()
+            {
+                continue;
+            }
             blocked_by.push(crate::domain::entities::TaskDependencySummary {
                 id: blocker_task.id.clone(),
                 title: blocker_task.title.clone(),
@@ -1179,16 +1185,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
     let tier = if blocked_by.is_empty() {
         Some(1)
     } else {
-        let incomplete_blockers = blocked_by
-            .iter()
-            .filter(|b| {
-                !matches!(
-                    b.internal_status,
-                    crate::domain::entities::InternalStatus::Approved
-                )
-            })
-            .count();
-        Some((incomplete_blockers as u32) + 1)
+        Some((blocked_by.len() as u32) + 1)
     };
 
     // 9. Generate context hints
@@ -1198,12 +1195,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
     if !blocked_by.is_empty() {
         let incomplete: Vec<_> = blocked_by
             .iter()
-            .filter(|b| {
-                !matches!(
-                    b.internal_status,
-                    crate::domain::entities::InternalStatus::Approved
-                )
-            })
+            .filter(|b| b.internal_status.is_active_dependency_blocker())
             .collect();
         if !incomplete.is_empty() {
             let names: Vec<_> = incomplete.iter().map(|t| t.title.as_str()).collect();
@@ -1530,3 +1522,7 @@ async fn compute_validation_cache(
         hint_message,
     })
 }
+
+#[cfg(test)]
+#[path = "helpers_tests.rs"]
+mod helpers_tests;

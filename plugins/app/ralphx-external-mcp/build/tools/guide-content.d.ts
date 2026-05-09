@@ -10,7 +10,7 @@ export declare const GUIDE_SECTIONS: Record<GuideSection, string>;
 export declare const VALID_SECTIONS: GuideSection[];
 export declare const FULL_GUIDE: string;
 /**
- * Canonical list of all 34 MCP tools (33 existing + v1_get_agent_guide).
+ * Canonical list of all MCP tools.
  * Used by tests to verify guide completeness (bidirectional sync with TOOL_CATEGORIES in index.ts).
  *
  * When adding new tools: update TOOL_CATEGORIES in index.ts AND add here AND document in GUIDE_SECTIONS.

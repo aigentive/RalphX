@@ -1,6 +1,6 @@
 [package]
 name = "ralphx"
-version = "0.2.1"
+version = "0.10.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
@@ -19,10 +19,10 @@ name = "ralphx_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.6", features = [] }
+tauri-build = { version = "2.6.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.10.3", features = ["devtools", "test", "macos-private-api"] }
+tauri = { version = "2.11.0", features = ["devtools", "test", "macos-private-api"] }
 tauri-plugin-opener = "2.5.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -47,6 +47,7 @@ tauri-plugin-window-state = "2.4.1"
 axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.5", features = ["cors"] }
 tauri-plugin-fs = "2.5.0"
+tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
 sha2 = "0.10"
 tokio-util = "0.7"

@@ -13,4 +13,8 @@ pub trait AppStateRepository: Send + Sync {
         &self,
         halt_mode: ExecutionHaltMode,
     ) -> Result<(), Box<dyn std::error::Error>>;
+    async fn set_last_seen_release_notes_version(
+        &self,
+        version: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }

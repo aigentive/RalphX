@@ -135,6 +135,37 @@ impl<'a> TransitionHandler<'a> {
                             );
                         }
                     }
+                    if let Some(ref project_repo) = self.machine.context.services.project_repo {
+                        match project_repo.get_by_id(&pb.project_id).await {
+                            Ok(Some(project)) => {
+                                let mut cleanup_pb = pb.clone();
+                                cleanup_pb.status =
+                                    crate::domain::entities::PlanBranchStatus::Merged;
+                                match crate::application::git_artifact_cleanup::cleanup_merged_plan_branch_local_artifacts(
+                                    &project,
+                                    &cleanup_pb,
+                                )
+                                .await
+                                {
+                                    Ok(report) if report.branch_deleted => {
+                                        tracing::info!(task_id = task_id_str, branch = %pb.branch_name, "PR mode: deleted local plan branch after merge");
+                                    }
+                                    Ok(report) => {
+                                        tracing::debug!(task_id = task_id_str, branch = %pb.branch_name, skipped_reason = report.skipped_reason.as_deref(), "PR mode: skipped local plan branch cleanup");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(task_id = task_id_str, branch = %pb.branch_name, error = %e, "PR mode: failed local plan branch cleanup (non-fatal)");
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                tracing::debug!(task_id = task_id_str, project_id = pb.project_id.as_str(), "PR mode: skipped local plan branch cleanup because project was not found");
+                            }
+                            Err(e) => {
+                                tracing::warn!(task_id = task_id_str, project_id = pb.project_id.as_str(), error = %e, "PR mode: failed to load project for local plan branch cleanup");
+                            }
+                        }
+                    }
                 } else if let Err(e) = GitService::delete_feature_branch(repo_path, &pb.branch_name).await {
                     tracing::warn!(
                         error = %e,

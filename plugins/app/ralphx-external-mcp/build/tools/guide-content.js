@@ -76,7 +76,7 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 - \`v1_get_project_status\` includes: active tasks, queued tasks, running agents, last activity
 - \`v1_get_pipeline_overview\` groups tasks by stage: executing, pending_review, reviewing, pending_merge, merging, completed
 `,
-    ideation: `## Flow 2: Ideation & Planning (14 tools)
+    ideation: `## Flow 2: Ideation & Planning (15 tools)
 
 | Tool | Purpose | Required Args | Preconditions | Next Step |
 |------|---------|---------------|---------------|-----------|
@@ -86,6 +86,7 @@ RalphX is an autonomous software development platform. You are an engineer-agent
 | v1_get_ideation_messages | Read orchestrator replies | session_id | Session exists | v1_send_ideation_message |
 | v1_list_ideation_sessions | List sessions for a project | project_id | — | v1_get_ideation_status |
 | v1_get_session_tasks | List tasks created from a session | session_id | Session accepted | v1_get_task_detail |
+| v1_append_task_to_plan | Append one-off task to accepted active plan | session_id, title, steps, acceptance_criteria | Session accepted; plan still open, including open PR wait | v1_get_session_tasks |
 | v1_list_proposals | Proposals in session | session_id | Session has proposals | v1_get_proposal_detail |
 | v1_get_proposal_detail | Full proposal + steps + acceptance criteria | proposal_id | — | v1_modify_proposal |
 | v1_get_plan | Plan artifact content | session_id | Session has plan | v1_trigger_plan_verification |
@@ -156,6 +157,10 @@ After acceptance, track delivery via \`delivery_status\` (returned by both \`v1_
 ### v1_accept_plan_and_schedule Idempotency
 
 Calling \`v1_accept_plan_and_schedule\` on an already-accepted session is safe — it returns the existing task IDs instead of failing. Use this to recover task IDs if the original call response was lost.
+
+### Appending one-off tasks after acceptance
+
+Use \`v1_append_task_to_plan\` only for small follow-up work after a plan has been accepted while the plan branch is still active. Open PR / waiting-on-PR plans are still open and can receive appended tasks. The backend links the new task to the existing session/execution plan and blocks the plan merge on it. Once the PR/plan is closed, merged, terminal, or actively merging/repairing, start a new ideation continuation instead of appending.
 `,
     tasks: `## Flow 2b: Task Operations (2 tools)
 
@@ -388,7 +393,7 @@ The \`external_activity_phase\` field in \`v1_get_ideation_status\` tracks sessi
 
 | ❌ Don't | ✅ Do Instead |
 |------------|----------------|
-| Create tasks directly | Start with v1_start_ideation — all work goes through ideation |
+| Create loose project tasks directly | Start with v1_start_ideation; after acceptance, use v1_append_task_to_plan only for small follow-ups while the plan is still open |
 | Poll status in tight loop | Use v1_get_recent_events with cursor-based pagination (30s interval) |
 | Skip plan verification | Call v1_trigger_plan_verification before accepting |
 | Hardcode project_id | Always call v1_list_projects first |
@@ -401,6 +406,7 @@ The \`external_activity_phase\` field in \`v1_get_ideation_status\` tracks sessi
 - \`v1_start_ideation\` → must call before any session tools
 - \`v1_send_ideation_message\` → requires \`agent_status: "waiting_for_input"\`
 - \`v1_accept_plan_and_schedule\` → requires plan + proposals in session
+- \`v1_append_task_to_plan\` → requires an accepted session whose plan branch is active and whose PR/plan is still open; waiting-on-PR is allowed
 - \`v1_approve_review\` / \`v1_request_changes\` → requires task in \`review_passed\` or \`escalated\`, plus current authority
 - \`v1_trigger_plan_verification\` → requires plan artifact in session
 - \`v1_resolve_escalation\` → requires task in \`escalated\`, plus current authority
@@ -423,7 +429,7 @@ export const FULL_GUIDE = `# RalphX Agent Guide
 
 ${Object.values(GUIDE_SECTIONS).join("\n\n---\n\n")}`;
 /**
- * Canonical list of all 34 MCP tools (33 existing + v1_get_agent_guide).
+ * Canonical list of all MCP tools.
  * Used by tests to verify guide completeness (bidirectional sync with TOOL_CATEGORIES in index.ts).
  *
  * When adding new tools: update TOOL_CATEGORIES in index.ts AND add here AND document in GUIDE_SECTIONS.
@@ -437,13 +443,14 @@ export const ALL_TOOL_NAMES = [
     "v1_list_projects",
     "v1_get_project_status",
     "v1_get_pipeline_overview",
-    // Flow 2: Ideation (13)
+    // Flow 2: Ideation (15)
     "v1_start_ideation",
     "v1_get_ideation_status",
     "v1_send_ideation_message",
     "v1_get_ideation_messages",
     "v1_list_ideation_sessions",
     "v1_get_session_tasks",
+    "v1_append_task_to_plan",
     "v1_list_proposals",
     "v1_get_proposal_detail",
     "v1_get_plan",

@@ -8,7 +8,11 @@ use super::super::merge_helpers::{
     get_trigger_origin, has_merge_deferred_metadata, parse_metadata, set_trigger_origin,
 };
 use super::helpers::*;
-use crate::domain::entities::InternalStatus;
+use crate::domain::entities::task_metadata::{
+    MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
+    MergeRecoverySource, MergeRecoveryState,
+};
+use crate::domain::entities::{InternalStatus, TaskId};
 
 // ==================
 // extract_task_id_from_merge_path tests
@@ -105,6 +109,53 @@ fn has_merge_deferred_returns_true_when_flag_is_true() {
     let mut task = make_task(None, None);
     task.metadata = Some(r#"{"merge_deferred": true}"#.to_string());
     assert!(has_merge_deferred_metadata(&task));
+}
+
+#[test]
+fn has_merge_deferred_returns_true_for_typed_deferred_metadata() {
+    let mut task = make_task(None, None);
+    let mut recovery = MergeRecoveryMetadata::new();
+    recovery.append_event_with_state(
+        MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::Deferred,
+            MergeRecoverySource::System,
+            MergeRecoveryReasonCode::TargetBranchBusy,
+            "Task deferred behind another merge",
+        )
+        .with_blocking_task(TaskId::new()),
+        MergeRecoveryState::Deferred,
+    );
+    task.metadata = Some(recovery.update_task_metadata(None).unwrap());
+
+    assert!(has_merge_deferred_metadata(&task));
+}
+
+#[test]
+fn has_merge_deferred_returns_false_for_typed_retrying_metadata() {
+    let mut task = make_task(None, None);
+    let mut recovery = MergeRecoveryMetadata::new();
+    recovery.append_event_with_state(
+        MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::Deferred,
+            MergeRecoverySource::System,
+            MergeRecoveryReasonCode::TargetBranchBusy,
+            "Task deferred behind another merge",
+        )
+        .with_blocking_task(TaskId::new()),
+        MergeRecoveryState::Deferred,
+    );
+    recovery.append_event_with_state(
+        MergeRecoveryEvent::new(
+            MergeRecoveryEventKind::AttemptStarted,
+            MergeRecoverySource::Auto,
+            MergeRecoveryReasonCode::TargetBranchBusy,
+            "Retrying after deferral",
+        ),
+        MergeRecoveryState::Retrying,
+    );
+    task.metadata = Some(recovery.update_task_metadata(None).unwrap());
+
+    assert!(!has_merge_deferred_metadata(&task));
 }
 
 // ==================

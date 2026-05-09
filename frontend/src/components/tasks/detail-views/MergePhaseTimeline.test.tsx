@@ -190,4 +190,20 @@ describe("MergePhaseTimeline", () => {
     // Lint should show as pending (it's after the current phase in the list)
     expect(screen.queryByText("Lint")).not.toBeInTheDocument();
   });
+
+  it("renders skipped phase with the SkipForward icon and muted text colour", () => {
+    const skippedList: MergePhaseInfo[] = [
+      { id: "worktree_setup", label: "Worktree Setup" },
+      { id: "programmatic_merge", label: "Merge" },
+    ];
+    const phases = [
+      makePhase({ phase: "worktree_setup", status: "passed" }),
+      makePhase({ phase: "programmatic_merge", status: "skipped" }),
+    ];
+    const { container } = render(
+      <MergePhaseTimeline phases={phases} phaseList={skippedList} />,
+    );
+    // The lucide SkipForward icon is rendered when status === skipped.
+    expect(container.querySelector(".lucide-skip-forward")).toBeInTheDocument();
+  });
 });

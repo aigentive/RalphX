@@ -277,7 +277,7 @@ function PriorityBadge({ priority }: { priority: number }) {
   return (
     <span
       data-testid="task-detail-priority"
-      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-mono font-medium"
       style={{ backgroundColor: colors.bg, color: colors.text }}
     >
       P{priority}
@@ -291,7 +291,7 @@ function StatusBadge({ status }: { status: InternalStatus }) {
     <Badge
       data-testid="task-detail-status"
       data-status={status}
-      className="rounded px-1.5 py-0.5 text-[10px] font-medium border-0"
+      className="rounded px-1.5 py-0.5 text-[0.625rem] font-medium border-0"
       style={{ backgroundColor: config.bg, color: config.text }}
     >
       {config.label}
@@ -336,12 +336,12 @@ function ReviewCard({
     >
       <div className="flex items-center gap-2">
         <Icon className="w-3.5 h-3.5 text-text-primary/50" />
-        <span className="text-[13px] font-medium text-text-primary/80">
+        <span className="text-[0.8125rem] font-medium text-text-primary/80">
           {label}
         </span>
       </div>
       <Badge
-        className="rounded px-1.5 py-0.5 text-[10px] font-medium border-0 capitalize"
+        className="rounded px-1.5 py-0.5 text-[0.625rem] font-medium border-0 capitalize"
         style={{ backgroundColor: statusColor.bg, color: statusColor.text }}
       >
         {status.replace("_", " ")}
@@ -352,7 +352,7 @@ function ReviewCard({
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <h3 className="text-[13px] font-medium mb-2.5 text-text-primary/80">
+    <h3 className="text-[0.8125rem] font-medium mb-2.5 text-text-primary/80">
       {children}
     </h3>
   );
@@ -491,7 +491,7 @@ export function TaskDetailPanel({
       {task.description ? (
         <div
           data-testid="task-detail-description"
-          className="text-[13px] text-text-primary/60"
+          className="text-[0.8125rem] text-text-primary/60"
           style={{
             lineHeight: "1.6",
             wordBreak: "break-word",
@@ -502,7 +502,7 @@ export function TaskDetailPanel({
           </ReactMarkdown>
         </div>
       ) : (
-        <p className="text-[13px] italic text-text-primary/35">
+        <p className="text-[0.8125rem] italic text-text-primary/35">
           No description provided
         </p>
       )}

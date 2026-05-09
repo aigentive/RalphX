@@ -45,20 +45,22 @@ For signed builds, verify there are no Gatekeeper warnings when opening the app.
 
 RalphX.app is just starting formal public release management after an internal-only phase. The repo has very high development velocity and high code churn, so release versions follow the shipped product surface, not raw repository activity.
 
-Current policy while RalphX.app remains on `0.x`:
+Current policy while RalphX.app remains on `0.x.y`:
 
 | Bump | Use It When | Do Not Use It Just Because |
 |---|---|---|
 | `patch` | Fixes, polish, dependency churn, release/build/CI work, and internal changes that do not materially expand the shipped product surface | There were many commits, many changed files, a large diff stat, or a lot of release automation churn |
 | `minor` | A release delivers a meaningful new user-visible capability or a meaningful expansion of an existing workflow | The product is still volatile or the team shipped a lot of internal work quickly |
-| `major` | An explicit `1.0.0` milestone or a deliberate compatibility reset that deserves a public stability-contract change | Early-stage churn, broad refactors, or high release pressure |
+| `major` | An explicit manually approved `1.0.0` milestone or a deliberate compatibility reset that deserves a public stability-contract change | Early-stage churn, broad refactors, large `0.x.y` numbers, or high release pressure |
 
 Practical rules:
 
 1. Public versioning tracks shipped behavior, install/update surface, and workflow shape.
 2. Raw commit count, file count, diff size, dependency bump volume, and CI churn are supporting context only.
 3. Frequent `minor` releases are acceptable in `0.x` if each release moves the visible product forward in a meaningful way.
-4. `1.0.0` is a deliberate product milestone, not an automatic consequence of high velocity.
+4. `0.x.y` minor and patch numbers are unbounded integers; `0.42.0`, `0.100.0`, and `0.100.42` are valid pre-1.0 releases.
+5. `1.0.0` is a deliberate product milestone, not an automatic consequence of high velocity, large minor numbers, or release pressure.
+6. Automated Codex proposals must not advance the major version; a major bump requires explicit manual `release_bump=major` or `release_version=<major>` approval in `Daily Release`, or an equally explicit local release-owner action.
 
 ---
 
@@ -80,18 +82,41 @@ What the scheduled workflow does:
 3. Skips the run when there are no commits after that tag.
 4. Installs Codex CLI with `npm i -g @openai/codex`.
 5. Runs `./scripts/propose-release.sh --accept` for the version recommendation.
-6. Runs `./scripts/bump-version.sh` and `./scripts/generate-release-notes.sh`.
+6. Runs `./scripts/bump-version.sh`, `./scripts/generate-release-notes.sh`, and `./scripts/append-github-release-metadata.sh`.
 7. Commits the version bump and `release-notes/vX.Y.Z.md` to `main`.
 8. Tags that release-prep commit.
 9. Dispatches `Release Build`, which still feeds the existing `Release Publish` workflow.
+
+The committed release note keeps the curated RalphX summary first, then appends a managed GitHub metadata block with pull-request attribution, new contributors when present, and the full changelog link. The public GitHub Release uses the full note. The app updater metadata strips that managed block so in-app update notes stay concise.
 
 Manual testing:
 
 1. Go to `aigentive/ralphx.app` -> Actions -> `Daily Release`.
 2. Click **Run workflow** from `main`.
 3. Use `dry_run=true` to verify Codex proposal, version bump, and note generation without committing, tagging, pushing, or dispatching the build.
+4. Optionally set `release_bump` to force `patch`, `minor`, or `major`; `major` is the required approval path for a normal `1.0.0` jump.
+5. Optionally set `release_version` to force an exact version such as `0.42.0`, `0.100.42`, or `v1.0.0`; do not combine it with `release_bump`.
+6. Optionally set `linux_runner` to choose `blacksmith`, `depot`, `github-hosted`, or `self-hosted` for the Daily Release prep job and the dispatched Release Build metadata job.
+7. Optionally set `arm_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS ARM build job.
+8. Optionally set `intel_runner` to choose `blacksmith`, `depot`, `self-hosted`, or `github-hosted` for the macOS Intel build job. Blacksmith and Depot use Apple Silicon and cross-build the Intel artifact with the `x86_64-apple-darwin` target.
+9. Optionally set `macos_runner_size=larger` to dispatch `Release Build` with paid larger GitHub-hosted macOS runners; the default `standard` uses standard runners.
 
-Scheduled runs use `draft=false`, `prerelease=false`, and the self-hosted ARM release runner by default. Manual dispatch can override those values.
+Skipping scheduled release for maintenance-only commits:
+
+- Add `[skip daily-release]`, `[skip release]`, `[no daily-release]`, or `[no release]` to every commit message after the latest release tag that should not produce a daily release.
+- The scheduled workflow skips only when all commits after the latest reachable release tag carry one of those markers.
+- Pushing to `main` can still run CI/CodeQL; this marker only affects the `Daily Release` workflow.
+
+Scheduled runs use `gpt-5.5`, `draft=false`, `prerelease=false`, the Blacksmith Linux release runner, the Blacksmith macOS release runner, and standard GitHub-hosted macOS runner size by default. Manual dispatch can override those values.
+If Codex proposes a major version without a manual bump/version override, the workflow fails before version bump, tag creation, build dispatch, or publish.
+
+Runner labels:
+
+- `linux_runner=blacksmith` → `blacksmith-32vcpu-ubuntu-2404`; `depot` → `depot-ubuntu-24.04`; `github-hosted` → `ubuntu-latest`; `self-hosted` → `["self-hosted","Linux","X64","ralphx-release"]`.
+- `arm_runner=blacksmith` → `blacksmith-12vcpu-macos-15`; `depot` → `depot-macos-15`; `github-hosted` → `macos-15` or `macos-15-xlarge`; `self-hosted` → `["self-hosted","macOS","ARM64","ralphx-release"]`.
+- `intel_runner=blacksmith` → `blacksmith-12vcpu-macos-15` with target `x86_64-apple-darwin`; `depot` → `depot-macos-15` with target `x86_64-apple-darwin`; `github-hosted` → `macos-15-intel` or `macos-15-large`; `self-hosted` → `["self-hosted","macOS","X64","ralphx-release"]`.
+- Auto-triggered `Release Publish` runs on `blacksmith-32vcpu-ubuntu-2404`; manual publish dispatch can choose `blacksmith`, `depot`, `github-hosted`, or `self-hosted`.
+- Blacksmith and Depot macOS runners are Apple Silicon, so Intel builds on those providers are cross-builds. GitHub-hosted and self-hosted Intel paths are native x86_64 runner paths.
 
 ---
 
@@ -109,7 +134,7 @@ What it does:
 2. Pauses so you can review the proposal and accept or reject the suggested version
 3. Stores the accepted version in `.artifacts/release-notes/.version`
 4. Runs `./scripts/bump-version.sh`
-5. Runs `./scripts/generate-release-notes.sh`
+5. Runs `./scripts/generate-release-notes.sh` and `./scripts/append-github-release-metadata.sh`
 6. Pauses again so you can review and edit the generated artifacts before continuing to the manual git/tag/workflow steps
 
 Primary review artifacts:
@@ -120,6 +145,7 @@ Primary review artifacts:
 - Codex logs: `.artifacts/release-notes/logs/`
 
 Use `--from`, `--to`, `--current-version`, `--model`, or `--reasoning-effort` when you need to customize the compare range or Codex run.
+Use `--allow-major` only when the release owner has explicitly approved accepting a proposed major version.
 
 ### Manual Flow
 
@@ -133,7 +159,7 @@ Use this when you want finer control than the wrapper gives you.
 
 Then:
 
-1. Review the proposed bump (`patch` / `minor` / `major`) and the recommended version.
+1. Review the proposed bump (`patch` / `minor` / `major`) and the recommended version. Major proposals require explicit manual approval before they can be accepted.
 2. Accept the proposal at the prompt if you want RalphX.app to store that version in `.artifacts/release-notes/.version`.
 3. If you do not want the prompt, use:
    - `./scripts/propose-release.sh --accept`
@@ -154,6 +180,8 @@ Or pass an explicit version if you are overriding:
 ```bash
 ./scripts/bump-version.sh 0.2.0
 ```
+
+Explicit pre-1.0 versions can use multi-digit minor and patch numbers, for example `0.42.0` or `0.100.42`.
 
 This updates version in:
 - `frontend/package.json`
@@ -185,16 +213,29 @@ Or pass an explicit version:
 ./scripts/generate-release-notes.sh 0.2.0
 ```
 
+Append GitHub pull-request and contributor metadata before reviewing the final public note:
+
+```bash
+./scripts/append-github-release-metadata.sh \
+  --tag v0.2.0 \
+  --previous-tag v0.1.0 \
+  --target HEAD \
+  --notes-file release-notes/v0.2.0.md
+```
+
 Then:
 
 1. Review and edit the draft from:
    - `release-notes/v0.2.0.md`
-2. If draft generation fails or you want to inspect the Codex run, check the logs in:
+2. Keep user-facing sections first and move developer, CI, docs, config, release automation, and scaffolding work into `Developer And Maintainer Changes` near the bottom.
+3. If draft generation fails or you want to inspect the Codex run, check the logs in:
    - `.artifacts/release-notes/logs/`
-3. Commit that curated notes file before tagging if you want the workflow-created draft GitHub release to use it automatically:
+4. Generated drafts include Markdown commit links for traceability; keep them clickable when editing notes.
+5. Keep the managed GitHub metadata block at the end unless you intentionally rerun `./scripts/append-github-release-metadata.sh`.
+6. Commit that curated notes file before tagging if you want the workflow-created draft GitHub release to use it automatically:
    - `git add release-notes/v0.2.0.md`
    - `git commit -m "docs: add release notes for v0.2.0"`
-4. If you decide not to keep the draft in git, leave it uncommitted or remove it locally:
+7. If you decide not to keep the draft in git, leave it uncommitted or remove it locally:
    - `rm -f release-notes/v0.2.0.md`
 
 ### Step 5: Create And Push The Release Tag
@@ -215,7 +256,12 @@ After the tag is on `origin`, trigger `Release Build` manually from `main`:
    - `version`: `0.2.0`
    - `draft`: choose whether the public release should stay a draft
    - `prerelease`: choose whether the release should be marked as a prerelease
-   - `arm_runner`: `self-hosted` or `github-hosted`
+   - `linux_runner`: `blacksmith`, `depot`, `github-hosted`, or `self-hosted`
+   - `arm_runner`: `blacksmith`, `depot`, `self-hosted`, or `github-hosted`
+   - `intel_runner`: `blacksmith`, `depot`, `self-hosted`, or `github-hosted`
+   - `macos_runner_size`: `standard` or `larger`; `larger` uses paid GitHub-hosted macOS larger runners for GitHub-hosted macOS release builds
+
+Release Build passes an explicit Tauri target for each macOS artifact and collects bundles from the target-specific directory, for example `src-tauri/target/x86_64-apple-darwin/release`. Use `macos_runner_size=larger` when GitHub-hosted macOS jobs should use `macos-15-xlarge` for ARM or `macos-15-large` for Intel.
 
 What `Release Build` does:
 
@@ -232,9 +278,10 @@ What `Release Build` does:
 
 1. Go to `aigentive/ralphx.app` → Actions → `Release Publish`
 2. Confirm the auto-triggered run finished successfully
-3. Then go to `aigentive/ralphx.app` → Releases
-4. Find the release created or updated by the workflow
-5. Review the artifacts:
+3. For manual publish reruns, optionally set `linux_runner` to `depot`, `github-hosted`, or `self-hosted`; auto-triggered publish runs use Depot.
+4. Then go to `aigentive/ralphx.app` → Releases
+5. Find the release created or updated by the workflow
+6. Review the artifacts:
    - `RalphX_x.x.x_aarch64.dmg` - Apple Silicon
    - `RalphX_x.x.x_x86_64.dmg` - Intel
    - `RalphX_x.x.x_aarch64.app.tar.gz` - Apple Silicon updater bundle
@@ -367,6 +414,7 @@ cargo tauri build
 | `scripts/release-analysis-common.sh` | Shared release evidence and Codex logging helper used by the proposal and notes scripts |
 | `scripts/bump-version.sh` | Version management script |
 | `scripts/generate-release-notes.sh` | Codex-assisted release notes draft generator |
+| `scripts/append-github-release-metadata.sh` | Appends managed GitHub pull-request, contributor, and changelog metadata to release notes |
 | `release-notes/` | Curated release notes consumed automatically by the release workflow when present |
 | `src-tauri/tauri.conf.json` | Bundle config, updater config |
 | `src-tauri/Cargo.toml` | Release profile, updater dependency |

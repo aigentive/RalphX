@@ -52,10 +52,10 @@ function StatRow({
         <Icon className="w-3.5 h-3.5 text-text-primary/40" />
       </div>
       <div className="flex-1 min-w-0">
-        <span className="text-[11px] uppercase tracking-wider text-text-primary/40 block">
+        <span className="text-[0.6875rem] uppercase tracking-wider text-text-primary/40 block">
           {label}
         </span>
-        <span className="text-[13px] text-text-primary/70 font-medium">{value}</span>
+        <span className="text-[0.8125rem] text-text-primary/70 font-medium">{value}</span>
       </div>
     </div>
   );

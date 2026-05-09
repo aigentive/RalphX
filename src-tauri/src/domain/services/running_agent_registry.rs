@@ -14,6 +14,13 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
+use crate::infrastructure::tool_paths::{
+    resolve_lsof_cli_path, resolve_pgrep_cli_path, resolve_pkill_cli_path,
+};
+#[cfg(windows)]
+use crate::infrastructure::tool_paths::{resolve_taskkill_cli_path, resolve_tasklist_cli_path};
+
+#[cfg(unix)]
 use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
@@ -224,7 +231,7 @@ pub fn is_process_alive(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        let output = std::process::Command::new("tasklist")
+        let output = std::process::Command::new(resolve_tasklist_cli_path())
             .args(["/FI", &format!("PID eq {}", pid), "/NH"])
             .output();
         matches!(output, Ok(result) if result.status.success()
@@ -248,7 +255,7 @@ pub fn kill_process(pid: u32) {
         // pkill is still needed because nix can't enumerate children by parent PID.
         // Uses .spawn() instead of .output() to avoid blocking the tokio runtime —
         // .output() waits synchronously for pkill to finish, starving async timeouts.
-        let _ = std::process::Command::new("pkill")
+        let _ = std::process::Command::new(resolve_pkill_cli_path())
             .args(["-TERM", "-P", &pid.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -270,7 +277,7 @@ pub fn kill_process(pid: u32) {
     #[cfg(windows)]
     {
         // /T flag kills the process tree on Windows
-        let _ = std::process::Command::new("taskkill")
+        let _ = std::process::Command::new(resolve_taskkill_cli_path())
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
@@ -296,7 +303,7 @@ pub fn kill_process_immediate(pid: u32) {
     {
         // Kill children first via pkill (SIGKILL)
         // Uses .spawn() instead of .output() — see kill_process() comment.
-        let _ = std::process::Command::new("pkill")
+        let _ = std::process::Command::new(resolve_pkill_cli_path())
             .args(["-KILL", "-P", &pid.to_string()])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -322,7 +329,7 @@ pub fn kill_process_immediate(pid: u32) {
 
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let _ = std::process::Command::new(resolve_taskkill_cli_path())
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
@@ -331,7 +338,7 @@ pub fn kill_process_immediate(pid: u32) {
 fn collect_pids_in_worktree(path: &Path) -> Result<Vec<u32>, String> {
     #[cfg(unix)]
     {
-        let output = std::process::Command::new("lsof")
+        let output = std::process::Command::new(resolve_lsof_cli_path())
             .args(["-t", "+d", path.to_str().unwrap_or("")])
             .output()
             .map_err(|e| format!("lsof failure: {}", e))?;
@@ -369,7 +376,7 @@ fn collect_pids_in_worktree(path: &Path) -> Result<Vec<u32>, String> {
 async fn collect_pids_in_worktree_async(path: &Path) -> Result<Vec<u32>, String> {
     #[cfg(unix)]
     {
-        let child = tokio::process::Command::new("lsof")
+        let child = tokio::process::Command::new(resolve_lsof_cli_path())
             .args(["-t", "+d", path.to_str().unwrap_or("")])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -662,7 +669,7 @@ pub fn kill_orphaned_mcp_servers() -> u32 {
     #[cfg(unix)]
     {
         // Find node processes running our MCP server
-        let output = std::process::Command::new("pgrep")
+        let output = std::process::Command::new(resolve_pgrep_cli_path())
             .args(["-f", "ralphx-mcp-server/build/index.js"])
             .output();
 

@@ -20,6 +20,7 @@ import {
   TypingIndicator,
   FailedRunBanner,
 } from "./IntegratedChatPanel.components";
+import { TextBubble } from "./TextBubble";
 import { ToolCallIndicator } from "./ToolCallIndicator";
 import type { ToolCall } from "./ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
@@ -187,7 +188,8 @@ export interface ChatMessageData {
 type TimelineItem =
   | { kind: "message"; data: ChatMessageData; sortTime: number }
   | { kind: "hook"; data: HookEvent | HookStartedEvent; sortTime: number }
-  | { kind: "team_event"; data: TeamMessage; sortTime: number };
+  | { kind: "team_event"; data: TeamMessage; sortTime: number }
+  | { kind: "streaming"; sortTime: number };
 
 function parseMessageMetadata(metadata: string | null | undefined): Record<string, unknown> | null {
   if (!metadata) return null;
@@ -240,6 +242,102 @@ function renderSystemCard(
   }
 
   return null;
+}
+
+function isMessageAtOrAfter(candidate: ChatMessageData, marker: ChatMessageData) {
+  const candidateTime = new Date(candidate.createdAt).getTime();
+  const markerTime = new Date(marker.createdAt).getTime();
+  return candidateTime > markerTime || (candidateTime === markerTime && candidate.id >= marker.id);
+}
+
+function latestMessageByCreatedAt(
+  messages: ChatMessageData[],
+  predicate: (message: ChatMessageData) => boolean,
+) {
+  let latest: ChatMessageData | null = null;
+  let latestTime = -Infinity;
+
+  for (const message of messages) {
+    if (!predicate(message)) {
+      continue;
+    }
+    const time = new Date(message.createdAt).getTime();
+    if (
+      latest === null ||
+      time > latestTime ||
+      (time === latestTime && message.id > latest.id)
+    ) {
+      latest = message;
+      latestTime = time;
+    }
+  }
+
+  return latest;
+}
+
+function hasRenderablePersistedContent(message: ChatMessageData) {
+  if (message.content.trim().length > 0) {
+    return true;
+  }
+  if ((message.toolCalls?.length ?? 0) > 0) {
+    return true;
+  }
+  return (message.contentBlocks?.length ?? 0) > 0;
+}
+
+function getCurrentTurnProviderMessageId(
+  messages: ChatMessageData[],
+  {
+    hasActiveStreaming,
+    isAgentRunning,
+    isFinalizing,
+  }: {
+    hasActiveStreaming: boolean;
+    isAgentRunning: boolean;
+    isFinalizing: boolean;
+  },
+) {
+  const shouldSuppressActiveTurnSnapshot = hasActiveStreaming || isFinalizing;
+  const shouldSuppressEmptyCurrentTurnSnapshot = isAgentRunning;
+  if (!shouldSuppressActiveTurnSnapshot && !shouldSuppressEmptyCurrentTurnSnapshot) {
+    return null;
+  }
+
+  const latestUserMessage = latestMessageByCreatedAt(
+    messages,
+    (message) => message.role === "user",
+  );
+  const latestProviderMessage = latestMessageByCreatedAt(
+    messages,
+    (message) => {
+      if (!isProviderRole(message.role)) {
+        return false;
+      }
+      if (!latestUserMessage) {
+        return true;
+      }
+      return isMessageAtOrAfter(message, latestUserMessage);
+    },
+  );
+
+  if (!latestProviderMessage) {
+    return null;
+  }
+
+  const isEmptySnapshot = !hasRenderablePersistedContent(latestProviderMessage);
+  const belongsToCurrentTurn = latestUserMessage
+    ? isMessageAtOrAfter(latestProviderMessage, latestUserMessage)
+    : isEmptySnapshot;
+
+  if (!belongsToCurrentTurn) {
+    return null;
+  }
+
+  if (shouldSuppressActiveTurnSnapshot) {
+    return latestProviderMessage.id;
+  }
+
+  return isEmptySnapshot ? latestProviderMessage.id : null;
 }
 
 interface ChatMessageListProps {
@@ -501,9 +599,38 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }),
       [normalizedStreamingContentBlocks, streamingTasks],
     );
+    const hasRenderableStreamingWidgets = useMemo(
+      () =>
+        normalizedStreamingContentBlocks.some((block) => {
+          if (block.type === "text") {
+            return false;
+          }
+          if (block.type === "task") {
+            return Boolean(streamingTasks?.get(block.toolUseId));
+          }
+          return !shouldHideCompletedProjectOrchestrationToolCall(block.toolCall);
+        }),
+      [normalizedStreamingContentBlocks, streamingTasks],
+    );
 
+    const shouldShowActiveTypingIndicator = isSending || isAgentRunning;
     const shouldShowFooterFallback = (isSending || isAgentRunning) && !hasRenderableStreamingBlocks;
     const hasFooterStreamingContent = hasRenderableStreamingBlocks || shouldShowFooterFallback;
+    const hasVisiblePendingToolFallback =
+      shouldShowFooterFallback &&
+      streamingToolCalls.some((tc) => !shouldHideCompletedProjectOrchestrationToolCall(tc));
+    const shouldShowStreamingAssistantIcon =
+      hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
+    const hasRenderableStreamingText =
+      normalizedStreamingContentBlocks.some(
+        (block) => block.type === "text" && block.text.trim().length > 0
+      );
+    const shouldRenderStreamingContentGroup =
+      hasRenderableStreamingText || hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
+    const streamingMessageCreatedAt = useMemo(
+      () => hasFooterStreamingContent ? new Date().toISOString() : "",
+      [hasFooterStreamingContent],
+    );
 
     useEffect(() => {
       hasFooterStreamingContentRef.current = hasFooterStreamingContent;
@@ -877,8 +1004,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const hasHookEvents = hookEvents.length > 0 || activeHooks.length > 0;
 
     // Filter logic: during active streaming OR when conversation is finalizing (between
-    // message_created clearing state and query refetch completing), exclude the last
-    // assistant message from DB to prevent duplication with streamingContentBlocks.
+    // message_created clearing state and query refetch completing), exclude only the
+    // provider snapshot for the current turn to prevent duplication with live content.
     //
     // isFinalizing is set to true (in the same React batch as clearing streaming state)
     // by useChatEvents on agent:message_created, and reset to false after 500ms. This
@@ -889,8 +1016,16 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // between DB empty-message creation and the first streaming event), filter the last
     // assistant message if its content is empty/whitespace — prevents the empty "pill" flash.
     const hasActiveStreaming = normalizedStreamingContentBlocks.length > 0 ||
-                              (streamingTasks && streamingTasks.size > 0);
-    const shouldFilterLastProviderMessage = hasActiveStreaming || isFinalizing;
+                              Boolean(streamingTasks && streamingTasks.size > 0);
+    const suppressedProviderMessageId = useMemo(
+      () => getCurrentTurnProviderMessageId(messages, {
+        hasActiveStreaming,
+        isAgentRunning,
+        isFinalizing,
+      }),
+      [hasActiveStreaming, isAgentRunning, isFinalizing, messages],
+    );
+    const shouldFilterCurrentProviderMessage = suppressedProviderMessageId !== null;
 
     // When filter clears (streaming/finalizing ends), scroll to bottom so the newly
     // revealed finalized assistant message is visible.
@@ -905,35 +1040,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const timeline = useMemo((): TimelineItem[] => {
       const items: TimelineItem[] = [];
 
-      // Exclude the streaming assistant message from DB when active streaming/finalizing —
-      // it's being rendered live in streamingContentBlocks. Do NOT filter based solely on
-      // isAgentRunning: during team sessions the lead runs for extended periods, and filtering
-      // without active streaming blocks hides historical assistant messages between turns.
-      //
-      // Use ID-based filtering: find the assistant message with the most recent createdAt
-      // (with id as tiebreaker) so filtering is stable regardless of array order.
-      const filteredMessages = shouldFilterLastProviderMessage
-        ? (() => {
-            // Find the most recently created provider message by timestamp (stable, not index)
-            let latestProviderMessageId: string | null = null;
-            let latestProviderMessageTime = -Infinity;
-            for (const msg of messages) {
-              if (isProviderRole(msg.role)) {
-                const t = new Date(msg.createdAt).getTime();
-                if (
-                  t > latestProviderMessageTime ||
-                  (t === latestProviderMessageTime && msg.id > (latestProviderMessageId ?? ""))
-                ) {
-                  latestProviderMessageTime = t;
-                  latestProviderMessageId = msg.id;
-                }
-              }
-            }
-            if (latestProviderMessageId !== null) {
-              return messages.filter((msg) => msg.id !== latestProviderMessageId);
-            }
-            return messages;
-          })()
+      const filteredMessages = suppressedProviderMessageId
+        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
         : messages;
 
       // Team filter: each tab (lead/teammate) loads its own conversation's messages via
@@ -985,13 +1093,20 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
       }
 
+      if (hasFooterStreamingContent) {
+        items.push({
+          kind: "streaming",
+          sortTime: Number.MAX_SAFE_INTEGER,
+        });
+      }
+
       // Sort if we interleaved any non-message items
-      if (hasHookEvents || teamMessages.length > 0) {
+      if (hasHookEvents || teamMessages.length > 0 || hasFooterStreamingContent) {
         items.sort((a, b) => a.sortTime - b.sortTime);
       }
 
       return items;
-    }, [messages, hookEvents, activeHooks, hasHookEvents, shouldFilterLastProviderMessage, attachmentsMap, teamFilter, teamMessages]);
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
 
     const lastItemIndex = firstItemIndex + timeline.length - 1;
     const startReachedHandler =
@@ -1061,6 +1176,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         return;
       }
 
+      const verifyTimers: ReturnType<typeof setTimeout>[] = [];
+
       const doScroll = () => {
         if (hasScrolledRef.current === targetScrollKey) return;
         virtuosoRef.current?.scrollToIndex({
@@ -1070,13 +1187,31 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         });
         scheduleBottomPin("initial conversation load", "auto");
         hasScrolledRef.current = targetScrollKey;
+
+        // Content (markdown, code blocks, tool results) can keep rendering after
+        // the initial scroll. Verify we're actually at bottom and retry if not.
+        const verifyAtBottom = () => {
+          const el = scrollerElRef.current;
+          if (!el) return;
+          const delta = el.scrollHeight - el.clientHeight - el.scrollTop;
+          if (delta > AT_BOTTOM_THRESHOLD) {
+            scrollToTrueBottom("auto");
+          }
+        };
+        verifyTimers.push(
+          setTimeout(verifyAtBottom, 500),
+          setTimeout(verifyAtBottom, 1000),
+        );
       };
 
       const scroller = scrollerElRef.current;
       if (!scroller) {
         // Fallback: scroller not yet mounted, use fixed delay
         const timer = setTimeout(doScroll, MARKDOWN_RENDER_DELAY_MS);
-        return () => clearTimeout(timer);
+        return () => {
+          clearTimeout(timer);
+          verifyTimers.forEach(clearTimeout);
+        };
       }
 
       let debounceTimer: ReturnType<typeof setTimeout>;
@@ -1100,6 +1235,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         observer.disconnect();
         clearTimeout(debounceTimer);
         clearTimeout(safetyTimer);
+        verifyTimers.forEach(clearTimeout);
       };
     }, [conversationId, lastItemIndex, scheduleBottomPin, timeline.length]);
 
@@ -1125,7 +1261,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (!hasFooterStreamingContent) {
         return null;
       }
-
+      if (!shouldRenderStreamingContentGroup && !shouldShowActiveTypingIndicator) {
+        return null;
+      }
       return (
         <>
           {normalizedStreamingContentBlocks.map((block, idx) => {
@@ -1202,17 +1340,21 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       );
     }, [
       hasFooterStreamingContent,
+      shouldRenderStreamingContentGroup,
+      shouldShowStreamingAssistantIcon,
       normalizedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
+      shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
+      streamingMessageCreatedAt,
       streamingTasks,
       streamingToolCalls,
     ]);
 
     // Memoize Virtuoso components to prevent infinite re-render loop.
     // Inline object literals create new references every render, causing Virtuoso
-    // to re-mount Header/Footer → layout change → atBottomStateChange → re-render → loop.
+    // to re-mount Header → layout change → atBottomStateChange → re-render → loop.
     const virtuosoComponents = useMemo(() => ({
       Header: () => (
         <div className="px-3 pt-3 w-full" style={contentContainerStyle}>
@@ -1242,7 +1384,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
-      footerContent, handleFooterRef,
+      topInsetClassName,
     ]);
 
     // Detect when a teammate tab filter produces zero timeline items but messages exist.
@@ -1516,7 +1658,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         {isFetchingOlderMessages && (
           <div className="absolute top-2 left-0 right-0 flex justify-center pointer-events-none">
             <span
-              className="rounded-full px-3 py-1 text-[11px]"
+              className="rounded-full px-3 py-1 text-[0.6875rem]"
               style={{
                 backgroundColor: "color-mix(in srgb, var(--bg-surface) 94%, transparent)",
                 border: "1px solid var(--border-subtle)",

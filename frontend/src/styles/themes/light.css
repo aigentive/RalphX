@@ -7,27 +7,54 @@
  * Spec: specs/design/styleguide.md, specs/design/themes/light.md (TBD)
  */
 
+html[data-theme="light"],
+html[data-theme="light"] body,
+html[data-theme="light"] main {
+  background-color: #FFFFFF !important;
+}
+
+html[data-theme="light"] body {
+  color: #18181D !important;
+}
+
 [data-theme="light"] {
   /* Backgrounds — warm off-white hierarchy. Cool gray-50 reads as "blank"
      on large empty canvases (Activity, Graph, Kanban, Reviews). Slight
      warm hue shift (35°, 5% sat) gives the shell a deliberate feel while
      staying well above 97% lightness. */
-  --bg-base:          hsl(35 12% 97%);     /* shell canvas — slight warm cast */
-  --bg-surface:       hsl(35 12% 95%);     /* rails, nested panels — one notch down */
-  --bg-elevated:      var(--color-white);  /* cards / modal body — cleanest white */
-  --bg-hover:         hsl(220 10% 90%);    /* hover pills, segmented bg */
-  --bg-surface-hover: hsl(220 10% 90%);
+  --bg-base:          #FFFFFF;
+  --bg-surface:       #F4F4F6;
+  --bg-elevated:      #FFFFFF;
+  --bg-hover:         #F1F1F4;
+  --bg-sunken:        #EBEBED;
+  --bg-surface-hover: #F1F1F4;
+  --topbar-bg:        #F4F4F6;
+  --nav-rail-bg:      #F4F4F6;
+  --app-navbar-bg:    #F4F4F6;
+  --app-rail-bg:      #F4F4F6;
+  --app-sidebar-bg:   #F8F8FA;
+  --app-content-bg:   #FFFFFF;
+  --brand-tile:       #DEDEE2;
+  --brand-pill-from:  #F0F0F2;
+  --brand-pill-to:    #EDEDEF;
+  --brand-x:          #FA4F19;
 
-  /* Text — dark enough to meet WCAG AA on the above */
-  --text-primary:   var(--gray-990);
-  --text-secondary: var(--gray-700);
-  --text-muted:     var(--gray-600);
-  --text-inverse:   var(--color-white);
+  /* Text — dark enough to meet WCAG AA on the above. Muted nudges
+     darker than the gray-600 primitive (a value between gray-600 and
+     gray-700) so 11px uppercase labels read confidently against the
+     warm off-white canvas without colliding with text-secondary's
+     gray-700. */
+  --text-primary:   #18181D;
+  --text-secondary: #404048;
+  --text-muted:     #6A6A72;
+  --text-subtle:    #93939B;
+  --text-inverse:   #1A0E07;
+  --text-on-accent: #1A0E07;
 
   /* Accent — darker orange that meets 4.5:1 on white */
-  --accent-primary:   var(--orange-700);
-  --accent-secondary: var(--amber-600);
-  --accent-hover:     var(--orange-800);
+  --accent-primary:   #FF6A35;
+  --accent-secondary: #FF8050;
+  --accent-hover:     #E0521E;
   /* Bumped muted/border densities so empty-state icon blocks and badge
      tints feel opaque and confident on near-white canvases instead of
      peach-pale. Still well below the full accent token for hierarchy. */
@@ -42,23 +69,34 @@
   /* Base status values shift to AA-on-white darker Okabe-Ito variants.
    * Muted/border/strong inherit from semantic.css (color-mix formulae)
    * and pick up the new base automatically — no hand-tuned alphas needed. */
-  --status-success: var(--cvd-bluish-green-dark);
-  --status-warning: var(--cvd-yellow-dark);
-  --status-error:   var(--cvd-vermillion-dark);
-  --status-info:    var(--cvd-blue-dark);
+  --status-success: #2B9F65;
+  --status-warning: #B98318;
+  --status-error:   #B24800;
+  --status-info:    #2B70D6;
   /* Accent strong auto-derives via color-mix against --accent-primary */
 
   /* Borders — darkened one notch so controls read precise against the
      large white canvases (form fields, tab underlines, dividers). The
      contrast-bump helps without looking heavy because the bg shift is
-     also deeper (warm off-white instead of pure near-white). */
-  --border-subtle:  var(--gray-400);   /* was gray-300 */
-  --border-default: var(--gray-500);   /* was gray-400 */
-  --border-focus:   var(--blue-600);
+     also deeper (warm off-white instead of pure near-white). Subtle
+     sits between gray-400 and gray-500 so card boundaries (gap card,
+     lineage rail, composer) are visible while still reading as
+     "subtle" rather than the heavier border-default. */
+  --border-subtle:  #E5E5E8;
+  --border-default: #D9D9DD;
+  --border-strong:  #C8C8CD;
+  --border-focus:   #2B70D6;
+  --app-navbar-border:  #E5E5E8;
+  --app-rail-border:    #E5E5E8;
+  --app-sidebar-border: #E5E5E8;
+  --app-content-border: #E5E5E8;
   --border-width-default: 1px;
   --border-width-focus:   2px;
 
-  --focus-ring: var(--blue-600);
+  --focus-ring: #2B70D6;
+  --nav-rail-active-color: #18181D;
+  --nav-rail-inactive-color: #6A6A72;
+  --nav-rail-active-shadow: inset 0 0 0 1px #D9D9DD;
 
   /* Overlay surfaces — in light theme, translucent whites disappear against
    * near-white backgrounds. Use translucent BLACKS instead. */
@@ -103,6 +141,32 @@
   --selection-bg:   hsla(14 100% 50% / 0.20);
   --selection-text: var(--gray-990);
 
+  /* Form / composer borders — match the same boundary tone as panel
+     cards (gap card, ideation-session card) so the composer reads as
+     a defined input rather than blending into the canvas. */
+  --form-border: var(--border-subtle);
+
+  --sidebar-edge-shadow: none;
+
+  /* Kanban board — v29a light component chrome */
+  --kanban-toolbar-bg:             #F8F8FA;
+  --kanban-toolbar-border:         #E5E5E8;
+  --kanban-board-divider:          #E5E5E8;
+  --kanban-column-bg:              rgba(0,0,0,.012);
+  --kanban-card-bg:                #FFFFFF;
+  --kanban-card-border:            #E0E0E4;
+  --kanban-card-selected-bg:       rgba(43,112,214,.10);
+  --kanban-card-selected-border:   rgba(43,112,214,.30);
+  --kanban-card-warning-bg:        rgba(185,131,24,.09);
+  --kanban-card-warning-border:    rgba(185,131,24,.32);
+  --kanban-card-success-bg:        rgba(43,159,101,.08);
+  --kanban-card-success-border:    rgba(43,159,101,.30);
+  --kanban-tray-bg:                #EBEBED;
+  --kanban-tray-ink:               #93939B;
+  --kanban-empty-ink:              #93939B;
+  --kanban-group-divider:          rgba(0,0,0,.07);
+  --kanban-progress-track:         rgba(0,0,0,.08);
+
   /* Nav active on light bg — orange accent with white text */
   --nav-active-bg:   var(--orange-700);
   --nav-active-text: var(--color-white);
@@ -119,31 +183,337 @@
   --syntax-punctuation: var(--text-secondary);
 
   /* shadcn bridging */
-  --background:         var(--bg-base);
+  --background:         #FFFFFF;
   --foreground:         var(--text-primary);
-  --card:               var(--bg-elevated);
+  --card:               #FFFFFF;
   --card-foreground:    var(--text-primary);
-  --popover:            var(--bg-elevated);
+  --popover:            #FFFFFF;
   --popover-foreground: var(--text-primary);
-  --primary:            var(--accent-primary);
-  --primary-foreground: var(--text-inverse);
-  --secondary:            var(--bg-surface);
+  --primary:            #FF6A35;
+  --primary-foreground: #1A0E07;
+  --secondary:            #F8F8FA;
   --secondary-foreground: var(--text-primary);
-  --muted:            var(--bg-surface);
+  --muted:            #F8F8FA;
   --muted-foreground: var(--text-muted);
-  --accent:            var(--bg-hover);
+  --accent:            #F1F1F4;
   --accent-foreground: var(--text-primary);
   --destructive:            var(--status-error);
   --destructive-foreground: var(--text-inverse);
-  --border: var(--border-default);
-  --input:  var(--border-default);
-  --ring:   var(--accent-primary);
-  --sidebar:                    var(--bg-surface);
+  --border: #D9D9DD;
+  --input:  #D9D9DD;
+  --ring:   #FF6A35;
+  --sidebar:                    #F4F4F6;
   --sidebar-foreground:         var(--text-primary);
-  --sidebar-primary:            var(--accent-primary);
-  --sidebar-primary-foreground: var(--text-inverse);
-  --sidebar-accent:             var(--bg-hover);
+  --sidebar-primary:            #FF6A35;
+  --sidebar-primary-foreground: #1A0E07;
+  --sidebar-accent:             #F1F1F4;
   --sidebar-accent-foreground:  var(--text-primary);
-  --sidebar-border:             var(--border-subtle);
-  --sidebar-ring:               var(--accent-primary);
+  --sidebar-border:             #E5E5E8;
+  --sidebar-ring:               #FF6A35;
+
+  /* Settings modal — v30 literal tokens for WKWebView parity */
+  --dialog-overlay-bg: rgba(0,0,0,.18);
+  --dialog-bg: #F8F8FA;
+  --dialog-rail-bg: #F8F8FA;
+  --dialog-pane-bg: #FAFAFB;
+  --dialog-pane-head-bg: #FFFFFF;
+  --dialog-pane-head-icon-bg: #F1F1F4;
+  --dialog-border-color: #D9D9DD;
+  --dialog-divider-color: #E5E5E8;
+  --dialog-control-bg: #FFFFFF;
+  --dialog-control-border: #D9D9DD;
+  --dialog-control-border-hover: #C8C8CD;
+  --dialog-nav-active-bg: #F1F1F4;
+  --dialog-nav-active-border: #D9D9DD;
+  --dialog-toggle-off-bg: #C8C8CD;
+  --dialog-warn: #A66F00;
+  --dialog-warn-bg: rgba(166,111,0,.08);
+  --dialog-warn-card-bg: rgba(201,150,46,.06);
+  --dialog-warn-border: rgba(166,111,0,.32);
+  --dialog-shadow: 0 30px 80px -20px rgba(0,0,0,.20), 0 8px 24px rgba(0,0,0,.10);
+  --tooltip-bg: #FFFFFF;
+  --tooltip-border: #D9D9DD;
+  --tooltip-text: #18181D;
+  --tooltip-shadow: 0 10px 24px rgba(76,82,95,.16), 0 2px 6px rgba(76,82,95,.10);
+  --notice-title-text: #404048;
+  --notice-ok-bg: #FFFFFF;
+  --notice-ok-border: #D9D9DD;
+  --notice-ok-icon: #2B9F65;
+  --notice-ok-text: #6A6A72;
+  --notice-info-bg: #FFFFFF;
+  --notice-info-border: #D9D9DD;
+  --notice-info-icon: #6A6A72;
+  --notice-info-text: #6A6A72;
+  --notice-warn-bg: rgba(166,111,0,.08);
+  --notice-warn-border: rgba(166,111,0,.28);
+  --notice-warn-icon: #A66F00;
+  --notice-warn-text: #6A5320;
 }
+
+[data-theme="light"] [data-testid="kanban-toolbar"] {
+  border-bottom-color: #E5E5E8 !important;
+}
+
+[data-theme="light"] [data-testid="execution-control-shell"] {
+  border-top-color: #E5E5E8 !important;
+}
+
+[data-theme="light"] [data-testid="app-header"] {
+  background-color: #F4F4F6 !important;
+  border-bottom-color: #E5E5E8 !important;
+}
+
+[data-theme="light"] [data-testid="topbar-command-search"],
+[data-theme="light"] [data-testid="theme-selector-trigger"],
+[data-theme="light"] [data-testid="theme-selector-menu"],
+[data-theme="light"] [data-testid="font-scale-selector-trigger"],
+[data-theme="light"] [data-testid="font-scale-selector-menu"] {
+  background-color: #FFFFFF !important;
+  border-color: #D9D9DD !important;
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] [data-testid="topbar-command-search"] kbd,
+[data-theme="light"] [data-testid="theme-selector-trigger"] svg,
+[data-theme="light"] [data-testid="font-scale-selector-trigger"] svg {
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] [data-testid="left-nav-rail"] {
+  background-color: #F4F4F6 !important;
+  border-right-color: #E5E5E8 !important;
+}
+
+[data-theme="light"] .left-nav-rail__active-border {
+  background-color: #FF6A35 !important;
+}
+
+[data-theme="light"] [data-testid="agents-sidebar"] {
+  background-color: #F8F8FA !important;
+  border-right-color: #E5E5E8 !important;
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] [data-testid="agents-new-agent"] {
+  background-color: #FFFFFF !important;
+  border-color: #D9D9DD !important;
+  color: #18181D !important;
+}
+
+[data-theme="light"] [data-testid="agents-new-agent"] svg,
+[data-theme="light"] [data-testid="agents-search-toggle"],
+[data-theme="light"] [data-testid="agents-sidebar-collapse-button"] {
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] .agents-project-row {
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] .agents-project-chevron,
+[data-theme="light"] .agents-project-icon {
+  color: #93939B !important;
+}
+
+[data-theme="light"] .agents-project-row[aria-current="true"] {
+  background-color: rgba(255,106,53,.14) !important;
+  background-image: linear-gradient(180deg, rgba(255,106,53,.18), rgba(255,106,53,.10)) !important;
+  color: #18181D !important;
+}
+
+[data-theme="light"] .agents-project-row[aria-current="true"] .agents-project-chevron {
+  color: #404048 !important;
+}
+
+[data-theme="light"] .agents-project-row[aria-current="true"] .agents-project-icon {
+  color: #FF6A35 !important;
+}
+
+[data-theme="light"] .agents-project-count {
+  border-color: #D9D9DD !important;
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] .agents-project-row[aria-current="true"] .agents-project-count {
+  background-color: #FF6A35 !important;
+  border-color: #E0521E !important;
+  color: #1A0E07 !important;
+}
+
+[data-theme="light"] .agents-session-row {
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] .agents-session-row[aria-current="true"] {
+  background-color: rgba(255,106,53,.10) !important;
+  color: #18181D !important;
+}
+
+[data-theme="light"] .agents-session-meta {
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] .agents-session-runtime-label {
+  color: #FF6A35 !important;
+}
+
+[data-theme="light"] [data-sonner-toaster] {
+  --normal-bg: #FFFFFF;
+  --normal-border: #D9D9DD;
+  --normal-text: #18181D;
+  font-family: var(--font-body) !important;
+}
+
+[data-theme="light"] [data-sonner-toast][data-styled="true"] {
+  background-color: #FFFFFF !important;
+  border-color: #D9D9DD !important;
+  color: #18181D !important;
+  box-shadow: 0 2px 4px rgba(76,82,95,.09), 0 8px 16px rgba(76,82,95,.06) !important;
+}
+
+[data-theme="light"] [data-sonner-toast][data-styled="true"] [data-description] {
+  color: #404048 !important;
+}
+
+[data-theme="light"] [data-sonner-toast][data-styled="true"] [data-title],
+[data-theme="light"] [data-sonner-toast][data-styled="true"] [data-content] {
+  color: #18181D !important;
+}
+
+[data-theme="light"] [data-sonner-toast][data-styled="true"] [data-button] {
+  background-color: #FF6A35 !important;
+  border: 1px solid #E0521E !important;
+  color: #1A0E07 !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="light"] [data-sonner-toast][data-styled="true"] [data-cancel] {
+  background-color: #F1F1F4 !important;
+  border-color: #D9D9DD !important;
+  color: #404048 !important;
+}
+
+[data-theme="light"] .git-auth-startup-toast {
+  background-color: #FFFFFF !important;
+  border-color: #D9D9DD !important;
+  color: #18181D !important;
+  box-shadow: 0 2px 4px rgba(76,82,95,.09), 0 8px 16px rgba(76,82,95,.06) !important;
+}
+
+[data-theme="light"] .git-auth-startup-toast-action {
+  background-color: #FF6A35 !important;
+  border-color: #E0521E !important;
+  color: #1A0E07 !important;
+}
+
+[data-theme="light"] .git-auth-startup-toast-action:hover {
+  background-color: #FF8050 !important;
+  border-color: #E0521E !important;
+  color: #1A0E07 !important;
+}
+
+[data-theme="light"] [data-testid="reviews-panel-shell"] {
+  background-color: #F4F4F6 !important;
+  border-left-color: #E5E5E8 !important;
+}
+
+[data-theme="light"] [data-testid="reviews-panel-frame"] {
+  background-color: #F4F4F6 !important;
+}
+
+[data-theme="light"] [data-testid="settings-dialog"] .settings-nav {
+  background-color: #F8F8FA !important;
+}
+
+[data-theme="light"] [data-testid="settings-dialog"] .settings-pane {
+  background-color: #FAFAFB !important;
+}
+
+[data-theme="light"] [data-testid="settings-dialog"] .settings-modal__crumbs .cur,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-pane-head__title,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-row__label,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-diag-card__title,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-nav__item[aria-current="page"],
+[data-theme="light"] [data-testid="settings-dialog"] .settings-nav__item[aria-current="true"] {
+  color: #18181D !important;
+}
+
+[data-theme="light"] [data-testid="settings-dialog"] .settings-nav__item,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-readonly-value,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-diag-card__body,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-btn-ghost {
+  color: #404048 !important;
+}
+
+[data-theme="light"] [data-testid="settings-dialog"] .settings-modal__crumbs .lbl,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-nav__label,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-pane-head__sub,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-section__label,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-row__help,
+[data-theme="light"] [data-testid="settings-dialog"] .settings-diag-card__sub {
+  color: #6A6A72 !important;
+}
+
+[data-theme="light"] [data-testid="settings-dialog"] .settings-btn-primary {
+  background-color: #FF6A35 !important;
+  border-color: #E0521E !important;
+  color: #1A0E07 !important;
+}
+
+[data-theme="light"] [data-testid^="theme-option-"],
+[data-theme="light"] [data-testid^="font-scale-option-"] {
+  color: #404048 !important;
+}
+
+[data-theme="light"] [data-testid^="theme-option-"][aria-checked="true"],
+[data-theme="light"] [data-testid^="font-scale-option-"][aria-checked="true"] {
+  color: #18181D !important;
+}
+
+[data-theme="light"] [data-testid="agents-view"],
+[data-theme="light"] [data-testid="agents-split-container"] {
+  background-color: #FFFFFF !important;
+}
+
+[data-theme="light"] [data-testid="kanban-split-layout"],
+[data-theme="light"] [data-testid="kanban-split-left"],
+[data-theme="light"] [data-testid="task-board-root"],
+[data-theme="light"] [data-testid="graph-split-layout"],
+[data-theme="light"] [data-testid="graph-split-left"] {
+  background-color: #FFFFFF !important;
+}
+
+[data-theme="light"] .task-board > [data-testid^="column-"] {
+  background-color: #FFFFFF !important;
+}
+
+[data-theme="light"] [data-testid="task-overlay-backdrop"] {
+  background-color: #FFFFFF !important;
+}
+
+/* Ideation plan-browser sidebar — match AgentsSidebar chrome literally
+   so WKWebView always paints the right tint even if the inline `var()`
+   gets dropped. Mirrors the [data-theme="light"] [data-testid="agents-sidebar"]
+   block. */
+[data-theme="light"] [data-testid="plan-browser"] > div {
+  background-color: #F8F8FA !important;
+  border-right-color: #E5E5E8 !important;
+  border-right-style: solid !important;
+  border-right-width: 1px !important;
+}
+
+/* Git & GitHub access ghost buttons — fill with white on light theme so
+   they don't disappear into the warning-tinted card behind. */
+[data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost {
+  background-color: #FFFFFF !important;
+  border-color: #D9D9DD !important;
+  color: #18181D !important;
+}
+[data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost:hover {
+  background-color: #F4F4F6 !important;
+  border-color: #C8C8CD !important;
+}
+[data-theme="light"] [data-testid="git-auth-repair-panel"] .settings-btn-ghost svg {
+  color: #18181D !important;
+}
+

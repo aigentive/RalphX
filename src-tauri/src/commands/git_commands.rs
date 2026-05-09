@@ -357,6 +357,16 @@ pub async fn retry_merge(
     .await
 }
 
+#[doc(hidden)]
+pub async fn retry_merge_for_test(
+    task_id: TaskId,
+    skip_validation: Option<bool>,
+    app_state: &AppState,
+    execution_state: Arc<ExecutionState>,
+) -> Result<(), String> {
+    retry_merge_inner(task_id, skip_validation, app_state, execution_state).await
+}
+
 async fn retry_merge_inner(
     task_id_parsed: TaskId,
     skip_validation: Option<bool>,
@@ -603,6 +613,10 @@ async fn execute_merge_retry_background(
         execution_plan_repo: None,
         execution_settings_repo: Some(Arc::clone(&execution_settings_repo)),
         agent_lane_settings_repo: Some(Arc::clone(&agent_lane_settings_repo)),
+        agent_provider_settings_repo: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
         review_repo: app_handle_opt
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
@@ -627,7 +641,8 @@ async fn execute_merge_retry_background(
         Arc::clone(&execution_state),
         &deps,
     )
-    .with_task_scheduler(task_scheduler);
+    .with_task_scheduler(task_scheduler)
+    .into_arc();
 
     let result = transition_service
         .transition_task(&task_id, InternalStatus::PendingMerge)

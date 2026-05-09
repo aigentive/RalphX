@@ -343,6 +343,10 @@ fn build_runtime_factory_deps<R: Runtime>(
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo)),
+        app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo)),
         plan_branch_repo,
         interactive_process_registry,
     )
@@ -736,10 +740,10 @@ async fn persist_shutdown_interrupted_metadata(
         }
     }
 
-    let mut updated_task = task.clone();
-    updated_task.metadata = Some(serde_json::to_string(&metadata_obj).unwrap_or_default());
-    updated_task.touch();
-    let _ = task_repo.update(&updated_task).await;
+    let updated_metadata = serde_json::to_string(&metadata_obj).unwrap_or_default();
+    let _ = task_repo
+        .update_metadata(&task.id, Some(updated_metadata))
+        .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -909,8 +913,24 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             );
                         }
                     } else {
+                        let Some(current_task) = load_current_task_execution_attempt(
+                            &task_id,
+                            agent_run_id,
+                            task_repo,
+                            agent_run_repo,
+                        )
+                        .await
+                        else {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                agent_run_id,
+                                "Skipping stale incomplete execution finalizer; task is no longer in the same execution attempt"
+                            );
+                            return;
+                        };
+
                         // Store last_agent_error for empty-output failure
-                        let mut metadata_obj = task
+                        let mut metadata_obj = current_task
                             .metadata
                             .as_deref()
                             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
@@ -929,11 +949,11 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
                             );
                         }
-                        let mut updated_task = task.clone();
-                        updated_task.metadata =
-                            Some(serde_json::to_string(&metadata_obj).unwrap_or_default());
-                        updated_task.touch();
-                        let _ = task_repo.update(&updated_task).await;
+                        let updated_metadata =
+                            serde_json::to_string(&metadata_obj).unwrap_or_default();
+                        let _ = task_repo
+                            .update_metadata(&task_id, Some(updated_metadata))
+                            .await;
 
                         if let Err(e) = transition_service
                             .transition_task(&task_id, InternalStatus::Failed)
@@ -1262,6 +1282,49 @@ async fn task_execution_attempt_matches_current_status(
     };
 
     agent_run.started_at + chrono::Duration::seconds(1) >= status_entered_at
+}
+
+async fn load_current_task_execution_attempt(
+    task_id: &TaskId,
+    agent_run_id: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+) -> Option<crate::domain::entities::Task> {
+    let task = match task_repo.get_by_id(task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) | Err(_) => return None,
+    };
+
+    if !matches!(
+        task.internal_status,
+        InternalStatus::Executing | InternalStatus::ReExecuting
+    ) {
+        return None;
+    }
+
+    let Some(status_entered_at) = task_repo
+        .get_status_entered_at(task_id, task.internal_status)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return Some(task);
+    };
+
+    let Some(agent_run) = agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id))
+        .await
+        .ok()
+        .flatten()
+    else {
+        return Some(task);
+    };
+
+    if agent_run.started_at + chrono::Duration::seconds(1) >= status_entered_at {
+        Some(task)
+    } else {
+        None
+    }
 }
 
 /// Handle stream error: classify error, attempt stale session recovery,
@@ -2008,9 +2071,25 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         return false;
                     }
 
+                    let Some(current_task) = load_current_task_execution_attempt(
+                        &task_id,
+                        agent_run_id,
+                        task_repo,
+                        agent_run_repo,
+                    )
+                    .await
+                    else {
+                        tracing::info!(
+                            task_id = task_id.as_str(),
+                            agent_run_id,
+                            "Skipping stale task-execution failure; task is no longer in the same execution attempt"
+                        );
+                        return false;
+                    };
+
                     // Store last_agent_error in metadata (mirrors review pattern)
                     {
-                        let mut metadata_obj = task
+                        let mut metadata_obj = current_task
                             .metadata
                             .as_deref()
                             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
@@ -2071,7 +2150,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     .with_failure_source(failure_source);
                                     let mut recovery =
                                         ExecutionRecoveryMetadata::from_task_metadata(
-                                            task.metadata.as_deref(),
+                                            current_task.metadata.as_deref(),
                                         )
                                         .unwrap_or(None)
                                         .unwrap_or_default();
@@ -2088,23 +2167,24 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 }
                             }
                         }
-                        let mut updated_task = task.clone();
-                        updated_task.metadata =
-                            Some(serde_json::to_string(&metadata_obj).unwrap_or_default());
-                        updated_task.touch();
-                        let _ = task_repo.update(&updated_task).await;
+                        let updated_metadata =
+                            serde_json::to_string(&metadata_obj).unwrap_or_default();
+                        let _ = task_repo
+                            .update_metadata(&task_id, Some(updated_metadata))
+                            .await;
                     }
 
                     // If this is a provider error → store metadata before pausing
                     if let Some(se) = stream_error {
                         if se.is_provider_error() {
-                            if let Some(mut meta) = se.provider_error_metadata(task.internal_status)
+                            if let Some(mut meta) =
+                                se.provider_error_metadata(current_task.internal_status)
                             {
                                 // Carry forward resume_attempts from existing metadata
                                 // so the MAX_RESUME_ATTEMPTS limit works across re-pause cycles
-                                if let Some(existing) =
-                                    super::PauseReason::from_task_metadata(task.metadata.as_deref())
-                                {
+                                if let Some(existing) = super::PauseReason::from_task_metadata(
+                                    current_task.metadata.as_deref(),
+                                ) {
                                     if let super::PauseReason::ProviderError {
                                         resume_attempts,
                                         ..
@@ -2114,7 +2194,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     }
                                 } else if let Some(existing) =
                                     super::ProviderErrorMetadata::from_task_metadata(
-                                        task.metadata.as_deref(),
+                                        current_task.metadata.as_deref(),
                                     )
                                 {
                                     meta.resume_attempts = existing.resume_attempts;
@@ -2133,13 +2213,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                     auto_resumable: meta.auto_resumable,
                                     resume_attempts: meta.resume_attempts,
                                 };
-                                let mut updated_task = task.clone();
                                 let with_legacy =
-                                    meta.write_to_task_metadata(updated_task.metadata.as_deref());
-                                updated_task.metadata =
-                                    Some(pause_reason.write_to_task_metadata(Some(&with_legacy)));
-                                updated_task.touch();
-                                if let Err(e) = task_repo.update(&updated_task).await {
+                                    meta.write_to_task_metadata(current_task.metadata.as_deref());
+                                let updated_metadata =
+                                    pause_reason.write_to_task_metadata(Some(&with_legacy));
+                                if let Err(e) = task_repo
+                                    .update_metadata(&task_id, Some(updated_metadata))
+                                    .await
+                                {
                                     tracing::error!(
                                         task_id = task_id.as_str(),
                                         error = %e,

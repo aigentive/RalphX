@@ -10,11 +10,18 @@
 
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { useChatStore } from "@/stores/chatStore";
 import { chatApi, stopAgent } from "@/api/chat";
 import { recoverTaskExecution } from "@/api/recovery";
-import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
+import {
+  addOptimisticUserMessageToConversationCache,
+  chatKeys,
+  invalidateConversationDataQueries,
+  removeOptimisticMessageFromConversationCache,
+} from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
+import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
 import type { SendAgentMessageResult } from "@/api/chat";
@@ -41,6 +48,8 @@ interface UseChatActionsProps {
     isPending: boolean;
     mutateAsync: (params: { content: string; attachmentIds?: string[]; target?: string }) => Promise<SendAgentMessageResult>;
   };
+  /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
+  activeConversationId?: string | null | undefined;
   /** Current message count (for first-message detection in ideation) */
   messageCount?: number;
   /** Explicit send options used by externally-owned session lists. */
@@ -68,6 +77,7 @@ export function useChatActions({
   selectedTaskId,
   ideationSessionId,
   sendMessage,
+  activeConversationId,
   messageCount = 0,
   sendOptions,
   onUserMessageSent,
@@ -98,6 +108,17 @@ export function useChatActions({
           const agentContextId = selectedTaskId ?? contextId;
           setSending(storeContextKey, true);
           try {
+            if (activeConversationId && !target) {
+              const message = addOptimisticUserMessageToConversationCache(
+                queryClient,
+                activeConversationId,
+                content
+              );
+              optimisticMessage = {
+                conversationId: activeConversationId,
+                messageId: message.id,
+              };
+            }
             const result = await chatApi.sendAgentMessage(contextType, agentContextId, content, attachmentIds, target);
             sentResult = result;
 
@@ -110,7 +131,9 @@ export function useChatActions({
             }
 
             if (result.conversationId) {
-              invalidateConversationDataQueries(queryClient, result.conversationId);
+              if (!optimisticMessage) {
+                invalidateConversationDataQueries(queryClient, result.conversationId);
+              }
               if (result.isNewConversation) {
                 setActiveConversation(storeContextKey, result.conversationId);
               }
@@ -246,8 +269,8 @@ export function useChatActions({
         if (result.wasQueued && result.queuedMessageId != null) {
           queueMessage(storeContextKey, newContent, result.queuedMessageId);
         }
-      } catch {
-        // Silently ignore — local state already updated
+      } catch (err) {
+        reportSendFailure(err);
       } finally {
         setSending(storeContextKey, false);
       }

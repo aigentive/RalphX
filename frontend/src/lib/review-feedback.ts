@@ -15,11 +15,17 @@ export function buildReviewFeedbackPreview(
   text: string,
   previewCharLimit = 900
 ): string {
-  const condensed = sanitizeReviewFeedbackText(text).replace(/\s+/g, " ").trim();
-  if (condensed.length <= previewCharLimit) {
-    return condensed;
+  const sanitized = sanitizeReviewFeedbackText(text);
+  if (sanitized.length <= previewCharLimit) {
+    return sanitized;
   }
-  return `${condensed.slice(0, previewCharLimit).trimEnd()}...`;
+  // Slice at the last whitespace before the limit so we don't cut mid-word
+  // or mid-markdown-token. Preserve the original newlines so markdown
+  // (lists, paragraphs, code fences) keeps its structure.
+  const cut = sanitized.slice(0, previewCharLimit);
+  const lastWs = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(" "));
+  const safeEnd = lastWs > previewCharLimit * 0.7 ? lastWs : previewCharLimit;
+  return `${sanitized.slice(0, safeEnd).trimEnd()}…`;
 }
 
 export function getReviewFeedbackHeading(

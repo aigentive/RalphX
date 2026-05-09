@@ -30,6 +30,10 @@ vi.mock("@/api/ideation", () => ({
   },
 }));
 
+vi.mock("@/api/backend", () => ({
+  backendApiUrl: (endpoint: string) => `http://backend.test/api/${endpoint}`,
+}));
+
 // Mock useIdeationStore — selector-based pattern used in the hook
 const mockUpdateSession = vi.fn();
 vi.mock("@/stores/ideationStore", () => ({
@@ -89,6 +93,32 @@ describe("useIdeationHandlers — in-flight guard", () => {
   // ---------------------------------------------------------------------------
 
   describe("handleFileDrop guard", () => {
+    it("imports through the configured backend API URL", async () => {
+      const fetchPlanArtifact = vi.fn().mockResolvedValue(undefined);
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+
+      const { result } = renderHook(() => useIdeationHandlers(...buildProps(fetchPlanArtifact)));
+      const file = makeFileWithText("# imported", "imported_plan.md");
+
+      await act(async () => {
+        await result.current.handleFileDrop(file, "# imported");
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://backend.test/api/create_plan_artifact",
+        expect.objectContaining({
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: "session-123",
+            title: "imported plan",
+            content: "# imported",
+          }),
+        })
+      );
+      expect(fetchPlanArtifact).toHaveBeenCalledWith("art-1");
+    });
+
     it("blocks a concurrent call when already importing", async () => {
       let resolveFetch!: (value: Response) => void;
       mockFetch.mockReturnValueOnce(

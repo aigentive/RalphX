@@ -7,6 +7,11 @@ import type { ContextType } from "@/types/chat-conversation";
 // Mocks
 // ============================================================================
 
+const mockToastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args) },
+}));
+
 const mockInvalidateQueries = vi.fn();
 const mockSetQueryData = vi.fn();
 vi.mock("@tanstack/react-query", () => ({
@@ -54,6 +59,11 @@ vi.mock("@/api/ideation", () => ({
   },
 }));
 
+const mockAddOptimisticUserMessageToConversationCache = vi.fn(() => ({
+  id: "optimistic:conv-1:test",
+}));
+const mockRemoveOptimisticMessageFromConversationCache = vi.fn();
+
 vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     all: ["chat"] as const,
@@ -67,6 +77,12 @@ vi.mock("@/hooks/useChat", () => ({
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId] });
     mockInvalidateQueries({ queryKey: ["chat", "conversations", conversationId, "history"] });
   },
+  addOptimisticUserMessageToConversationCache: (
+    ...args: unknown[]
+  ) => mockAddOptimisticUserMessageToConversationCache(...args),
+  removeOptimisticMessageFromConversationCache: (
+    ...args: unknown[]
+  ) => mockRemoveOptimisticMessageFromConversationCache(...args),
 }));
 
 // ============================================================================
@@ -81,6 +97,7 @@ interface SetupOptions {
   ideationSessionId?: string | undefined;
   isPending?: boolean;
   messageCount?: number;
+  activeConversationId?: string | null | undefined;
 }
 
 function setup(opts: SetupOptions = {}) {
@@ -92,6 +109,7 @@ function setup(opts: SetupOptions = {}) {
     ideationSessionId = undefined,
     isPending = false,
     messageCount = 5,
+    activeConversationId = undefined,
   } = opts;
 
   const mutateAsync = vi.fn().mockResolvedValue({
@@ -110,6 +128,7 @@ function setup(opts: SetupOptions = {}) {
       selectedTaskId,
       ideationSessionId,
       sendMessage: { isPending, mutateAsync },
+      activeConversationId,
       messageCount,
     })
   );
@@ -213,6 +232,47 @@ describe("useChatActions", () => {
       expect(mockActions.setActiveConversation).toHaveBeenCalledWith("review:task-42", "new-conv");
     });
 
+    it("review mode optimistically adds the user message to the active conversation", async () => {
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this");
+      });
+
+      expect(mockAddOptimisticUserMessageToConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        "conv-review",
+        "review this"
+      );
+    });
+
+    it("review mode rolls back the optimistic user message when send fails", async () => {
+      mockSendAgentMessage.mockRejectedValue(new Error("review send failed"));
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this");
+      });
+
+      expect(mockRemoveOptimisticMessageFromConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        "conv-review",
+        "optimistic:conv-1:test"
+      );
+    });
+
     it("ideation first message triggers auto-naming", async () => {
       const { result } = setup({
         contextType: "ideation",
@@ -280,6 +340,34 @@ describe("useChatActions", () => {
           lastEffectiveModel: null,
         },
       );
+    });
+
+    it("shows a toast when the backend rejects a send before agent spawn", async () => {
+      const { result, mutateAsync } = setup({
+        contextType: "project",
+        contextId: "project-1",
+        storeContextKey: "project:conv-1",
+      });
+      mutateAsync.mockRejectedValue(
+        new Error(
+          'Command /Users/example/.nvm/versions/node/v22.16.0/bin/codex ["--version"] exited with status 127: env: node: No such file or directory',
+        ),
+      );
+
+      await act(async () => {
+        await result.current.handleSend("start agent");
+      });
+
+      expect(mockActions.setAgentRunning).toHaveBeenCalledWith(
+        "project:conv-1",
+        false,
+      );
+      expect(mockToastError).toHaveBeenCalledWith("Failed to send message", {
+        description: expect.stringContaining(
+          "env: node: No such file or directory",
+        ),
+        duration: 10000,
+      });
     });
   });
 

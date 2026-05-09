@@ -206,7 +206,7 @@ function PriorityBadge({ priority }: { priority: number }) {
   return (
     <span
       data-testid="task-overlay-priority"
-      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium"
+      className="inline-flex items-center px-1.5 py-0.5 rounded text-[0.625rem] font-mono font-medium"
       style={{ backgroundColor: colors.bg, color: colors.text }}
     >
       P{priority}
@@ -220,7 +220,7 @@ function StatusBadge({ status }: { status: InternalStatus }) {
     <Badge
       data-testid="task-overlay-status"
       data-status={status}
-      className="rounded px-1.5 py-0.5 text-[10px] font-medium border-0"
+      className="rounded px-1.5 py-0.5 text-[0.625rem] font-medium border-0"
       style={{ backgroundColor: config.bg, color: config.text }}
     >
       {config.label}
@@ -311,6 +311,19 @@ export function TaskDetailOverlay({
   const [isEditing, setIsEditing] = useState(false);
   const [showAuditTrail, setShowAuditTrail] = useState(false);
 
+  const closeSelectedTask = useCallback(() => {
+    if (onCloseOverride) {
+      onCloseOverride();
+      return;
+    }
+    setGlobalSelectedTaskId(null);
+  }, [onCloseOverride, setGlobalSelectedTaskId]);
+
+  const handleClose = useCallback(() => {
+    closeSelectedTask();
+    setIsEditing(false);
+  }, [closeSelectedTask]);
+
   // Derived values for history mode (historyState from store)
   const isHistoryMode = historyState !== null;
   const viewStatus = (historyState?.status as InternalStatus | undefined) ?? task?.internalStatus;
@@ -337,14 +350,14 @@ export function TaskDetailOverlay({
           setIsEditing(false);
         } else {
           // If viewing, close the overlay
-          setSelectedTaskId(null);
+          closeSelectedTask();
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setSelectedTaskId, isEditing]);
+  }, [closeSelectedTask, isEditing]);
 
   // Reset editing and history state when task changes
   useEffect(() => {
@@ -357,18 +370,11 @@ export function TaskDetailOverlay({
     (event: React.MouseEvent<HTMLDivElement>) => {
       // Only close if clicking the backdrop itself, not its children
       if (event.target === event.currentTarget) {
-        setSelectedTaskId(null);
-        setIsEditing(false);
+        handleClose();
       }
     },
-    [setSelectedTaskId]
+    [handleClose]
   );
-
-  // Handle close
-  const handleClose = useCallback(() => {
-    setSelectedTaskId(null);
-    setIsEditing(false);
-  }, [setSelectedTaskId]);
 
   // Handle edit save
   const handleSave = (updateData: Parameters<typeof updateMutation.mutate>[0]['input']) => {
@@ -512,7 +518,7 @@ export function TaskDetailOverlay({
                 }}
               >
                 <Archive className="w-3.5 h-3.5" style={{ color: "var(--accent-primary)" }} />
-                <span className="text-[12px] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
+                <span className="text-[0.75rem] font-medium" style={{ color: "var(--accent-primary)" }}>Archived</span>
               </div>
             )}
             <div className="pr-28">
@@ -666,10 +672,10 @@ export function TaskDetailOverlay({
               className="px-4 py-1.5 flex items-center gap-2 shrink-0"
             >
               <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
-              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                 Viewing: {STATUS_CONFIG[historyState.status]?.label ?? historyState.status}
               </span>
-              <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 {new Date(historyState.timestamp).toLocaleString()}
               </span>
             </div>

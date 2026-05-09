@@ -15,6 +15,7 @@ use crate::application::publish_resilience::{
 };
 use crate::application::GitService;
 use crate::domain::entities::plan_branch::{PlanBranchId, PrPushStatus, PrStatus};
+use crate::domain::entities::task_metadata::{MergeRecoveryMetadata, MergeRecoveryState};
 use crate::domain::entities::InternalStatus;
 use crate::domain::entities::{
     IdeationSessionId, PlanBranch, PlanBranchStatus, Project, Task, TaskCategory, TaskId,
@@ -657,10 +658,19 @@ pub fn parse_metadata(task: &Task) -> Option<serde_json::Value> {
         .and_then(|m| serde_json::from_str(m).ok())
 }
 
-/// Check if a task has the `merge_deferred` flag set in its metadata.
+/// Check if a task is currently deferred from merging.
 pub(crate) fn has_merge_deferred_metadata(task: &Task) -> bool {
-    parse_metadata(task)
+    let legacy_deferred = parse_metadata(task)
         .and_then(|v| v.get("merge_deferred")?.as_bool())
+        .unwrap_or(false);
+    if legacy_deferred {
+        return true;
+    }
+
+    MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+        .ok()
+        .flatten()
+        .map(|metadata| metadata.last_state == MergeRecoveryState::Deferred)
         .unwrap_or(false)
 }
 

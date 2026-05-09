@@ -100,6 +100,10 @@ pub trait GithubServiceTrait: Send + Sync {
         body_file: &Path,
     ) -> AppResult<()>;
 
+    /// Update an existing pull request's base branch.
+    async fn update_pr_base(&self, working_dir: &Path, pr_number: i64, base: &str)
+        -> AppResult<()>;
+
     /// Check the current status of a PR.
     async fn check_pr_status(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrStatus>;
 

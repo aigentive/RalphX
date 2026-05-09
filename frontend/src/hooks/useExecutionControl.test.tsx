@@ -102,6 +102,18 @@ describe("useExecutionStatus", () => {
     expect(result.current.data).toEqual(mockStatus);
   });
 
+  it("does not fetch execution status when disabled", async () => {
+    vi.mocked(api.execution.getStatus).mockResolvedValue(mockStatus);
+
+    const { result } = renderHook(
+      () => useExecutionStatus("project-1", { enabled: false }),
+      { wrapper: createWrapper() }
+    );
+
+    expect(api.execution.getStatus).not.toHaveBeenCalled();
+    expect(result.current.isPaused).toBe(false);
+  });
+
   it("updates uiStore on successful fetch", async () => {
     const pausedStatus: ExecutionStatusResponse = {
       isPaused: true,

@@ -127,8 +127,11 @@ export function useChatPanelContext({
     chatContext,
   ]);
 
-  // Active conversation ID scoped to this panel's storeContextKey
-  const activeConversationId = useChatStore((s) => s.activeConversationIds[storeContextKey] ?? null);
+  // Active conversation ID scoped to this panel's storeContextKey. When the
+  // caller owns a specific conversation, the override is authoritative on the
+  // first render instead of waiting for the store sync effect.
+  const storedActiveConversationId = useChatStore((s) => s.activeConversationIds[storeContextKey] ?? null);
+  const activeConversationId = overrideConversationId ?? storedActiveConversationId;
 
   // Context key for tracking changes
   const contextKey = ideationSessionId

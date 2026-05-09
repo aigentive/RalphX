@@ -59,10 +59,12 @@ vi.mock("@/providers/EventProvider", () => ({
 }));
 
 const mockInvalidateQueries = vi.fn().mockResolvedValue(undefined);
+const mockSetQueryData = vi.fn();
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({
     invalidateQueries: mockInvalidateQueries,
+    setQueryData: mockSetQueryData,
   }),
 }));
 
@@ -122,6 +124,7 @@ describe("useIdeationEvents — ideation:session_created", () => {
   beforeEach(() => {
     subscriptions.clear();
     mockInvalidateQueries.mockClear();
+    mockSetQueryData.mockClear();
   });
 
   it("(1) valid payload triggers invalidateQueries with ideationKeys.sessions()", () => {
@@ -206,6 +209,7 @@ describe("useIdeationEvents — parent synthetic status during verification", ()
   beforeEach(() => {
     subscriptions.clear();
     mockInvalidateQueries.mockClear();
+    mockSetQueryData.mockClear();
     chatStoreMocks.setAgentStatus.mockClear();
     chatStoreMocks.updateLastAgentEvent.mockClear();
     ideationStoreMocks.updateSession.mockClear();
@@ -237,6 +241,20 @@ describe("useIdeationEvents — parent synthetic status during verification", ()
     expect(ideationStoreMocks.setLastVerificationChildId).toHaveBeenCalledWith(
       "parent-session-456",
       "child-session-123"
+    );
+    expect(mockSetQueryData).toHaveBeenCalledWith(
+      [
+        "agents",
+        "chat-focus",
+        "latest-child-session-id",
+        "parent-session-456",
+        "verification",
+      ],
+      {
+        sessionId: "parent-session-456",
+        purpose: "verification",
+        latestChildSessionId: "child-session-123",
+      }
     );
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["childSessions", "parent-session-456", "verification"],
@@ -271,6 +289,20 @@ describe("useIdeationEvents — parent synthetic status during verification", ()
     expect(ideationStoreMocks.setLastVerificationChildId).toHaveBeenCalledWith(
       "parent-session-456",
       "verification-child-queued"
+    );
+    expect(mockSetQueryData).toHaveBeenCalledWith(
+      [
+        "agents",
+        "chat-focus",
+        "latest-child-session-id",
+        "parent-session-456",
+        "verification",
+      ],
+      {
+        sessionId: "parent-session-456",
+        purpose: "verification",
+        latestChildSessionId: "verification-child-queued",
+      }
     );
     expect(ideationStoreMocks.updateSession).toHaveBeenCalledWith("parent-session-456", {
       verificationInProgress: false,

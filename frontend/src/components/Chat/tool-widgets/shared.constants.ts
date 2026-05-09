@@ -19,6 +19,13 @@ export interface ToolCallStats {
   durationMs?: number;
 }
 
+export interface ToolCallDetailRef {
+  conversationId: string;
+  messageId: string;
+  toolCallId?: string | null;
+  contentBlockIndex?: number | null;
+}
+
 /**
  * Tool call structure from Claude CLI stream-json output
  */
@@ -31,6 +38,16 @@ export interface ToolCall {
   arguments: unknown;
   /** Result returned from the tool (can be any JSON value) */
   result?: unknown;
+  /** True when result contains only a lightweight preview and full output must be lazy-loaded */
+  resultPreviewTruncated?: boolean;
+  /** Original result byte size when previewed */
+  resultPreviewOriginalBytes?: number;
+  /** Original result line count when previewed */
+  resultPreviewLineCount?: number;
+  /** Number of lines omitted from the preview */
+  resultPreviewOmittedLines?: number;
+  /** Backend locator for lazily loading a full previewed result */
+  detailRef?: ToolCallDetailRef;
   /** Parent tool_use id when this call belongs to a delegated/child task transcript */
   parentToolUseId?: string;
   /** Error message if tool call failed */

@@ -14,6 +14,9 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getTaskFileChanges: vi.fn(),
     getFileDiff: vi.fn(),
+    getTaskCommits: vi.fn(),
+    getCommitFileChanges: vi.fn(),
+    getCommitFileDiff: vi.fn(),
   },
 }));
 
@@ -47,11 +50,44 @@ const mockFileDiff = {
   language: "typescript",
 };
 
+const staleBaseCommits = [
+  {
+    sha: "base-ahead-commit",
+    shortSha: "base123",
+    message: "fix: unrelated base branch work",
+    author: "Base Author",
+    date: "2026-04-29T10:00:00+00:00",
+  },
+];
+
+const taskScopedCommits = [
+  {
+    sha: "task-commit",
+    shortSha: "task123",
+    message: "feat: selected task work",
+    author: "Task Author",
+    date: "2026-04-29T11:00:00+00:00",
+  },
+];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("useGitDiff", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(diffApi.getTaskFileChanges).mockResolvedValue(mockFileChanges);
     vi.mocked(diffApi.getFileDiff).mockResolvedValue(mockFileDiff);
+    vi.mocked(diffApi.getTaskCommits).mockResolvedValue([]);
+    vi.mocked(diffApi.getCommitFileChanges).mockResolvedValue([]);
+    vi.mocked(diffApi.getCommitFileDiff).mockResolvedValue(mockFileDiff);
   });
 
   describe("initialization", () => {
@@ -115,17 +151,19 @@ describe("useGitDiff", () => {
       expect(result.current.changes[0]).toHaveProperty("deletions");
     });
 
-    it("returns empty commits (not yet implemented)", async () => {
+    it("loads commit history", async () => {
+      vi.mocked(diffApi.getTaskCommits).mockResolvedValue(taskScopedCommits);
+
       const { result } = renderHook(() =>
         useGitDiff({ taskId: "task-1", enabled: true })
       );
 
       await waitFor(() => {
-        expect(result.current.isLoadingChanges).toBe(false);
+        expect(result.current.isLoadingHistory).toBe(false);
       });
 
-      expect(result.current.commits).toEqual([]);
-      expect(result.current.isLoadingHistory).toBe(false);
+      expect(diffApi.getTaskCommits).toHaveBeenCalledWith("task-1");
+      expect(result.current.commits).toEqual(taskScopedCommits);
     });
 
     it("sets error to null on successful load", async () => {
@@ -243,17 +281,26 @@ describe("useGitDiff", () => {
       });
 
       vi.mocked(diffApi.getTaskFileChanges).mockClear();
+      const refreshChanges = deferred<typeof mockFileChanges>();
+      vi.mocked(diffApi.getTaskFileChanges).mockReturnValueOnce(
+        refreshChanges.promise
+      );
 
+      let refreshPromise: Promise<void> = Promise.resolve();
       act(() => {
-        result.current.refresh();
+        refreshPromise = result.current.refresh();
       });
-
-      expect(result.current.isLoadingChanges).toBe(true);
 
       await waitFor(() => {
-        expect(result.current.isLoadingChanges).toBe(false);
+        expect(result.current.isLoadingChanges).toBe(true);
       });
 
+      await act(async () => {
+        refreshChanges.resolve(mockFileChanges);
+        await refreshPromise;
+      });
+
+      expect(result.current.isLoadingChanges).toBe(false);
       expect(diffApi.getTaskFileChanges).toHaveBeenCalledTimes(1);
     });
 
@@ -310,6 +357,49 @@ describe("useGitDiff", () => {
       });
 
       expect(diffApi.getTaskFileChanges).toHaveBeenCalledWith("task-2");
+    });
+
+    it("ignores stale commit history when an earlier task request resolves late", async () => {
+      const task1Commits = deferred<typeof staleBaseCommits>();
+      const task2Commits = deferred<typeof taskScopedCommits>();
+
+      vi.mocked(diffApi.getTaskCommits).mockImplementation((taskId) => {
+        if (taskId === "task-1") return task1Commits.promise;
+        if (taskId === "task-2") return task2Commits.promise;
+        return Promise.resolve([]);
+      });
+
+      const { result, rerender } = renderHook(
+        ({ taskId }) => useGitDiff({ taskId, enabled: true }),
+        { initialProps: { taskId: "task-1" } }
+      );
+
+      await waitFor(() => {
+        expect(diffApi.getTaskCommits).toHaveBeenCalledWith("task-1");
+      });
+
+      rerender({ taskId: "task-2" });
+
+      await waitFor(() => {
+        expect(diffApi.getTaskCommits).toHaveBeenCalledWith("task-2");
+      });
+
+      await act(async () => {
+        task2Commits.resolve(taskScopedCommits);
+        await task2Commits.promise;
+      });
+
+      await waitFor(() => {
+        expect(result.current.commits).toEqual(taskScopedCommits);
+      });
+
+      await act(async () => {
+        task1Commits.resolve(staleBaseCommits);
+        await task1Commits.promise;
+      });
+
+      expect(result.current.commits).toEqual(taskScopedCommits);
+      expect(result.current.commits).not.toEqual(staleBaseCommits);
     });
   });
 });

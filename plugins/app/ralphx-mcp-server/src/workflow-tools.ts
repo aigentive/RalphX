@@ -461,6 +461,62 @@ export const WORKFLOW_TOOLS: Tool[] = [
     },
   },
   {
+    name: "append_task_to_ideation_plan",
+    description:
+      "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
+      "Use this instead of starting a new ideation when the user asks for a small follow-up on an accepted, still-open plan. " +
+      "The backend links the task to the existing session/execution plan, creates steps, and blocks the plan merge on the new task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_id: {
+          type: "string",
+          description: "The project ID (provided in context). Must match this agent's project scope.",
+        },
+        session_id: {
+          type: "string",
+          description: "Accepted ideation session ID to extend.",
+        },
+        title: {
+          type: "string",
+          description: "Short task title.",
+        },
+        description: {
+          type: "string",
+          description: "Task description and implementation intent.",
+        },
+        steps: {
+          type: "array",
+          items: { type: "string" },
+          description: "Concrete execution steps for the appended task.",
+        },
+        acceptance_criteria: {
+          type: "array",
+          items: { type: "string" },
+          description: "Acceptance criteria the task must satisfy.",
+        },
+        depends_on_task_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional existing tasks that must complete before this one starts.",
+        },
+        priority: {
+          type: "number",
+          description: "Optional numeric priority. Defaults to the backend task default.",
+        },
+        source_conversation_id: {
+          type: "string",
+          description: "Optional source conversation ID for traceability.",
+        },
+        source_message_id: {
+          type: "string",
+          description: "Optional source message ID for traceability.",
+        },
+      },
+      required: ["project_id", "session_id", "title", "steps", "acceptance_criteria"],
+    },
+  },
+  {
     name: "search_memories",
     description:
       "Search project memories by optional text query and bucket filter. " +

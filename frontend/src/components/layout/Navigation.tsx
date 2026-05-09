@@ -24,7 +24,7 @@ import { useTeamStore, selectHasAnyActiveTeam, selectTotalTeammateCount } from "
 import { useProjectStore } from "@/stores/projectStore";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import type { FeatureFlags } from "@/types/feature-flags";
+import { ALL_NAV_ITEMS } from "./nav-items";
 import type { ViewType } from "@/types/chat";
 
 interface NavItemConfig {
@@ -91,6 +91,9 @@ interface NavigationProps {
   currentView: ViewType;
   onViewChange: (view: ViewType) => void;
   onOpenSettings?: () => void;
+  /** When true, hide view tabs + team indicator and only render Settings.
+   *  Used during the first-run welcome screen. */
+  hideViews?: boolean;
 }
 
 function NavItem({
@@ -147,7 +150,7 @@ function NavItem({
   );
 }
 
-export function Navigation({ currentView, onViewChange, onOpenSettings }: NavigationProps) {
+export function Navigation({ currentView, onViewChange, onOpenSettings, hideViews = false }: NavigationProps) {
   const hasActiveTeam = useTeamStore(selectHasAnyActiveTeam);
   const teammateCount = useTeamStore(selectTotalTeammateCount);
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -155,7 +158,9 @@ export function Navigation({ currentView, onViewChange, onOpenSettings }: Naviga
   const { data: featureFlags } = useFeatureFlags();
 
   const taskCount = stats?.taskCount ?? 0;
-  const visibleItems = ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+  const visibleItems = hideViews
+    ? []
+    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
 
   return (
     <nav
@@ -201,7 +206,7 @@ export function Navigation({ currentView, onViewChange, onOpenSettings }: Naviga
       </Tooltip>
 
       {/* Team active indicator */}
-      {hasActiveTeam && (
+      {hasActiveTeam && !hideViews && (
         <div
           className="flex items-center gap-1.5 h-7 px-2.5 rounded-full ml-1"
           style={{

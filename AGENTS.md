@@ -14,6 +14,7 @@ Primary project docs:
 - `.claude/rules/ideation-verification-architecture.md` for the ideation verification feature map: parent-vs-child ownership, runtime flow, UI surfaces, debugging, and tests
 - `.claude/rules/delegation-topology.md` for canonical non-team delegation allowlists, auto-injected delegation guidance, and MCP visibility/enforcement rules
 - `.claude/rules/runtime-root-vs-target-project.md` for the contract between RalphX-owned runtime/plugin/log roots and the user’s active target project checkout
+- `.claude/rules/production-cli-resolution.md` for Finder/Homebrew-safe CLI binary resolution in installed app runtime paths
 - `.claude/rules/codeql-path-safety.md` for CodeQL-safe filesystem sink validation when paths are influenced by env vars, settings, HTTP/MCP payloads, DB state, agent metadata, or repo contents
 - `.claude/rules/multi-harness.md` for provider-neutral runtime/config/event rules and documentation sync requirements
 - `.claude/rules/agent-mcp-tools.md` for multi-layer agent MCP/tool alignment across prompt frontmatter, `config/ralphx.yaml`, and MCP allowlists
@@ -30,6 +31,7 @@ Primary project docs:
 - For GPT-5.4/Codex prompt work, check `.claude/rules/openai-gpt-5.4-prompting.md` and `docs/ai-docs/openai/gpt-5.4-prompting.md` before substantial prompt edits.
 - When touching ideation verification, read `.claude/rules/ideation-verification-architecture.md` first.
 - When touching plugin/root resolution, canonical agent loading, generated plugin bundles, or runtime log placement, read `.claude/rules/runtime-root-vs-target-project.md` first.
+- When touching production subprocess launches or CLI discovery, read `.claude/rules/production-cli-resolution.md` first.
 - When touching filesystem sinks or any path influenced by external/runtime state, read `.claude/rules/codeql-path-safety.md` first.
 - CodeQL path findings block PRs: tests are scanned too; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 - When touching merge failure recovery, merge retry/resolve actions, merge reconciliation, or startup merge remediation, read `.claude/rules/merge-recovery-consistency.md` first.
@@ -38,6 +40,7 @@ Primary project docs:
 - PR branch freshness (NON-NEGOTIABLE): before opening, updating, or handing off a PR, fetch the base branch, rebase onto the latest `origin/<base>`, and push the rebased branch so GitHub does not show it as behind.
 - Existing PR fixes (NON-NEGOTIABLE): when patching an open PR, land the fix on that PR branch, then rebase it onto current `origin/<base>` before asking for checks or review.
 - PR/commit naming (NON-NEGOTIABLE): do not prefix PR titles or commit subjects with `[codex]`.
+- PR descriptions: follow `.claude/rules/pr-descriptions.md`; lead with context, user impact, decisions, and risks instead of local validation transcripts.
 - Legacy harness compatibility (NON-NEGOTIABLE): provider-neutral changes stay additive/derivable from legacy Claude-only persisted data until an explicit migration removes that requirement.
 - Minimal diffs: avoid formatter churn and opportunistic refactors.
 - Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md` so findings and decisions survive context compaction.
@@ -63,6 +66,7 @@ Primary project docs:
 - Worktree safety (NON-NEGOTIABLE): worktree-mode flows must never silently fall back to the main checkout.
 - Verify before commit: review `git diff` against `HEAD` for every touched file.
 - Frontend Playwright visual runs (NON-NEGOTIABLE): run them from `frontend/`, not repo root.
+- UI design/theme changes (NON-NEGOTIABLE): verify native Tauri/WKWebView in addition to Chromium, and use explicit WebKit-safe bg/border longhands for themed surfaces. Source: `.claude/rules/wkwebview-css-vars.md`.
 - Icon-only buttons: use an accessible name plus the app tooltip component; native `title` alone is not enough. Source: `.claude/rules/icon-only-buttons.md`.
 - Frontend interaction performance (NON-NEGOTIABLE): user-triggered panels/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Source: `.claude/rules/frontend-interaction-performance.md`.
 - Refactor tracker hygiene: when a turn exposes real architectural debt, update `## High-Value Refactor Targets` in the same slice.
@@ -80,6 +84,7 @@ When working in `src-tauri/`, also follow:
 - `.claude/rules/rust-test-execution.md`
 - `.claude/rules/task-git-branching.md`
 - `.claude/rules/code-quality-standards.md`
+- `.claude/rules/production-cli-resolution.md`
 - `.claude/rules/codeql-path-safety.md`
 - `.claude/rules/agent-mcp-tools.md`
 
@@ -152,7 +157,7 @@ When working in `src-tauri/`, also follow:
 | P0 | Cross-session source of truth | Started | Keep this tracker, `specs/codex-cli.md`, `docs/ai-docs/codex-cli/`, `docs/ai-docs/reefagent-codex-cli.md`, and `docs/ai-docs/reefagent-codex-responses.md` updated together so Codex parity research survives across sessions |
 | P0 | Vendor doc snapshot | Started | Maintain a local Codex CLI doc index under `docs/ai-docs/codex-cli/` covering CLI, config, approvals/security, sandboxing, AGENTS/rules/hooks, MCP, skills, subagents, models, auth, and non-interactive mode; note version skew between installed CLI help and current official docs |
 | P0 | Harness abstraction | In progress | Landed provider-neutral spawn metadata, Codex exec/resume builders, MCP config override injection, lane-aware queue resume branching, Codex JSONL stream parsing, and canonical provider-session reads in the Claude builder/runtime paths; next complete unified startup/reconciliation and consumer normalization |
-| P0 | Core milestone | In progress | Ideation lane resolution now permits Codex, send/resume paths branch to Codex `exec` / `exec resume`, Codex runs operate in explicit solo mode, and sparse Codex lane rows now fall back to phase-1 `gpt-5.4` / `gpt-5.4-mini` defaults instead of leaking legacy Claude model names; next validate end-to-end ideation + verification execution and recovery |
+| P0 | Core milestone | In progress | Ideation lane resolution now permits Codex, send/resume paths branch to Codex `exec` / `exec resume`, Codex runs operate in explicit solo mode, and sparse Codex lane rows now fall back to current `gpt-5.5` / `gpt-5.4-mini` defaults instead of leaking legacy Claude model names; next validate end-to-end ideation + verification execution and recovery |
 | P0 | Config/settings matrix | In progress | Backend lane settings storage plus the ideation harness settings UI now support global/project harness selection for the four ideation lanes; next add lane-level model/effort/policy controls and extend the same contract into execution-lane settings |
 | P0 | Prompt / agent source of truth | In progress | Evaluate replacing Claude-only prompt/plugin layout with centralized agent metadata that can generate Claude plugin assets and Codex-compatible spawn config from one source; landed recent slice: non-team Task/Agent/Explore delegated spawn targets now have explicit Codex prompt variants instead of silently staying Claude-only, and the next enforcement slice uses canonical `agents/*/agent.yaml` `delegation.allowed_targets` as the single source of truth for caller identity injection, auto-generated delegation system instructions, `delegate_start` allowlist enforcement, and MCP delegation-tool visibility |
 | P0 | Event normalization | In progress | Raw Codex `thread.started`, `agent_message`, `mcp_tool_call`, `command_execution`, error, and usage events now parse into the backend stream path, chat run/conversation payloads expose additive `provider_harness` / `provider_session_id` fields, core frontend lifecycle hooks now consume typed provider-aware run payloads, and provider-session compatibility normalization now lives in the shared domain conversation helper instead of being reimplemented in SQLite repos/payload helpers/transport response shaping; next migrate the remaining UI/render/settings surfaces off legacy Claude-only names |
@@ -166,7 +171,7 @@ When working in `src-tauri/`, also follow:
 | P0 | Schema / compatibility migration | In progress | Provider-neutral DB/session metadata is landed and backend/frontend chat contracts now expose additive provider fields with Claude aliases preserved; next move recovery, UI renderers, and settings/profile contracts off Claude-only shapes |
 | P0 | Lane settings matrix | Investigating | Define per-lane `harness + model + effort + approval + sandbox` settings for ideation, verifier, ideation subagents, verifier subagents, execution, review, re-execution, and merge-conflict handling across YAML, env, DB, and UI; current smoke follow-up: verifier-subagent lane settings are visible in the Ideation Agents UI but the live Codex verifier/delegation path still leaks stale `gpt-5.4-mini` guidance instead of resolving `verifier_subagent_model` canonically into delegated child runs, the same parity must hold for main ideation delegates using the ideation-subagent lane rather than fallback/default settings, and delegated Codex child launches must pass explicit approval/sandbox policy at process spawn rather than relying on implicit defaults or UI-only state; newest concrete bug: the delegation coordinator currently resolves runtime policy using the delegated target agent name, which has no ideation lane mapping, instead of the caller agent’s subagent lane |
 | P0 | Execution backlog | In progress | Execution/review/merge Codex support is required before merge, not future work; next execute the explicit `## Codex Merge Tracker` below in order and keep status current each turn |
-| P1 | Model / effort defaults | Investigating | Default Codex to `gpt-5.4` with `xhigh` reasoning where supported; map Claude effort semantics vs Codex reasoning config and define per-phase overrides and downgrade rules |
+| P1 | Model / effort defaults | Investigating | Default primary Codex lanes to `gpt-5.5` with `xhigh` reasoning where supported, keep verifier/subagent lanes on `gpt-5.4-mini` + `medium`, and preserve explicit model/effort overrides; map Claude effort semantics vs Codex reasoning config and define per-phase downgrade rules |
 | P0 | Execution pipeline compatibility | In progress | Audit and remove remaining Claude-only spawn/bootstrap/consumer assumptions for worker/reviewer/merger/runtime recovery flows before merge |
 | P1 | Logging / auditability | Investigating | Standardize per-harness prompt capture, raw event logs, parsed event traces, provider session ids, and spawn metadata so failures remain debuggable across Claude and Codex |
 | P1 | Regression coverage | Planned | Build compatibility tests that replay Codex/Claude raw events through the shared parser contract and cover settings, availability, recovery, queueing, UI payload transforms, and compatibility migrations |

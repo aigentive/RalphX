@@ -32,6 +32,10 @@ vi.mock("@/hooks/useFreshnessBlockedNotification", () => ({
   useFreshnessBlockedNotification: vi.fn(),
 }));
 
+vi.mock("@/hooks/useGitAuthStartupNotification", () => ({
+  useGitAuthStartupNotification: vi.fn(),
+}));
+
 vi.mock("@/hooks/useGlobalAgentLifecycle", () => ({
   useGlobalAgentLifecycle: vi.fn(),
 }));

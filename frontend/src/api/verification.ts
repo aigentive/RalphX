@@ -1,9 +1,11 @@
 /**
  * verification.ts — HTTP API wrappers for verification confirmation flow.
  *
- * Endpoints at :3847 backend. Follows same fetch pattern as ideation.ts acceptance section.
+ * Endpoints use the configured local backend. Follows same fetch pattern as
+ * ideation.ts acceptance section.
  */
 
+import { backendApiUrl } from "@/api/backend";
 import { SpecialistsResponseSchema, PendingVerificationConfirmationsResponseSchema } from "@/types/verification-config";
 import type { SpecialistsResponse, PendingVerificationConfirmationsResponse } from "@/types/verification-config";
 
@@ -28,7 +30,7 @@ export const verificationApi = {
    */
   confirm: async (sessionId: string, disabledSpecialists: string[]): Promise<{ status: string }> => {
     return verificationFetch(
-      `http://localhost:3847/api/verification/confirm`,
+      backendApiUrl("verification/confirm"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -44,7 +46,7 @@ export const verificationApi = {
    */
   dismiss: async (sessionId: string): Promise<{ status: string }> => {
     return verificationFetch(
-      `http://localhost:3847/api/verification/dismiss`,
+      backendApiUrl("verification/dismiss"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -60,7 +62,7 @@ export const verificationApi = {
    */
   setAutoAccept: async (sessionId: string, enabled: boolean): Promise<{ status: string }> => {
     return verificationFetch(
-      `http://localhost:3847/api/verification/auto-accept`,
+      backendApiUrl("verification/auto-accept"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -75,7 +77,7 @@ export const verificationApi = {
    * Returns specialists configured in ralphx.yaml verification.specialists.
    */
   getSpecialists: async (): Promise<SpecialistsResponse> => {
-    const res = await fetch(`http://localhost:3847/api/verification/specialists`);
+    const res = await fetch(backendApiUrl("verification/specialists"));
     if (!res.ok) {
       throw new Error(`Failed to get specialists: ${res.status}`);
     }
@@ -89,7 +91,9 @@ export const verificationApi = {
    */
   getPendingVerificationConfirmations: async (projectId: string): Promise<PendingVerificationConfirmationsResponse> => {
     const data = await verificationFetch<unknown>(
-      `http://localhost:3847/api/verification/pending-confirmations?project_id=${encodeURIComponent(projectId)}`,
+      backendApiUrl(
+        `verification/pending-confirmations?project_id=${encodeURIComponent(projectId)}`
+      ),
       {},
       "Failed to get pending confirmations"
     );

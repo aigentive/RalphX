@@ -41,6 +41,8 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         "project-456",
         "--working-directory",
         "/tmp/workspace",
+        "--tauri-api-url",
+        "http://127.0.0.1:3857",
       ],
       env
     );
@@ -50,10 +52,12 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
     expect(runtimeContext.contextId).toBe("session-123");
     expect(runtimeContext.projectId).toBe("project-456");
     expect(runtimeContext.workingDirectory).toBe("/tmp/workspace");
+    expect(runtimeContext.tauriApiUrl).toBe("http://127.0.0.1:3857");
     expect(env.RALPHX_AGENT_TYPE).toBe("ralphx-plan-verifier");
     expect(env.RALPHX_CONTEXT_TYPE).toBe("ideation");
     expect(env.RALPHX_CONTEXT_ID).toBe("session-123");
     expect(env.RALPHX_PROJECT_ID).toBe("project-456");
     expect(env.RALPHX_WORKING_DIRECTORY).toBe("/tmp/workspace");
+    expect(env.TAURI_API_URL).toBe("http://127.0.0.1:3857");
   });
 });

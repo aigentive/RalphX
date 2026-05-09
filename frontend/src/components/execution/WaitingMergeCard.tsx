@@ -65,7 +65,7 @@ export function WaitingMergeCard({ task, runningCount, onViewDetails }: WaitingM
       </button>
       {task.isMainMergeDeferred && (
         <span
-          className="text-[10px] shrink-0 px-1.5 py-0.5 rounded-full"
+          className="text-[0.625rem] shrink-0 px-1.5 py-0.5 rounded-full"
           style={{
             color: "var(--accent-primary)",
             backgroundColor: "var(--accent-muted)",

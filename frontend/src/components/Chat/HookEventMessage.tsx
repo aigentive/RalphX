@@ -21,7 +21,7 @@ function HookStarted({ event }: { event: HookStartedEvent }) {
       <div className="flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
         <Settings className="w-[11px] h-[11px]" />
         <span
-          className="text-[11px] leading-none"
+          className="text-[0.6875rem] leading-none"
           style={{ fontFamily: "var(--font-body)" }}
         >
           Running {event.hookEvent} hook…
@@ -66,7 +66,7 @@ function HookCompleted({ event }: { event: HookCompletedEvent }) {
             style={{ color: "var(--status-success)" }}
           />
           <span
-            className="text-[11px] leading-none"
+            className="text-[0.6875rem] leading-none"
             style={{
               color: "var(--text-muted)",
               fontFamily: "var(--font-mono)",
@@ -75,7 +75,7 @@ function HookCompleted({ event }: { event: HookCompletedEvent }) {
             {event.hookEvent}: {event.hookName}
           </span>
           <span
-            className="text-[9.5px] font-medium px-[5px] py-[1px] rounded-md leading-none"
+            className="text-[0.5938rem] font-medium px-[5px] py-[1px] rounded-md leading-none"
             style={
               isSuccess
                 ? {
@@ -107,7 +107,7 @@ function HookCompleted({ event }: { event: HookCompletedEvent }) {
           style={{
             background: "var(--bg-surface)",
             fontFamily: "var(--font-mono)",
-            fontSize: "11px",
+            fontSize: "0.6875rem",
             lineHeight: 1.5,
             color: "var(--text-secondary)",
             maxHeight: "120px",
@@ -139,14 +139,14 @@ function HookBlock({ event }: { event: HookBlockEvent }) {
           style={{ color: "var(--status-warning)" }}
         />
         <span
-          className="text-[11.5px] font-semibold"
+          className="text-[0.7188rem] font-semibold"
           style={{ color: "var(--status-warning)" }}
         >
           Stop hook blocked{event.hookName ? `: ${event.hookName}` : ""}
         </span>
       </div>
       <div
-        className="text-[12px] leading-[1.45]"
+        className="text-[0.75rem] leading-[1.45]"
         style={{ color: "var(--text-secondary)" }}
         dangerouslySetInnerHTML={{
           __html: escapeAndStyleCode(event.reason),
@@ -165,7 +165,7 @@ function escapeAndStyleCode(text: string): string {
 
   return escaped.replace(
     /`([^`]+)`/g,
-    '<code style="font-family: var(--font-mono); font-size: 11px; background: var(--status-warning-muted); padding: 1px 4px; border-radius: 3px; color: var(--status-warning);">$1</code>'
+    '<code style="font-family: var(--font-mono); font-size: 0.6875rem; background: var(--status-warning-muted); padding: 1px 4px; border-radius: 3px; color: var(--status-warning);">$1</code>'
   );
 }
 

@@ -43,18 +43,18 @@ function safeSet(key: string, value: string | null): void {
   }
 }
 
-function loadTheme(): ThemeName {
-  const raw = safeGet(THEME_KEY);
-  // Explicit user choice wins.
+export function migrateThemePreference(raw: string | null): ThemeName | null {
   if (raw === "high-contrast") return "high-contrast";
   if (raw === "light") return "light";
   if (raw === "dark") return "dark";
-  // First run (no stored value) — mirror the bootstrap script's OS-derived
-  // default so React state matches the DOM attribute set before hydration.
-  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-    if (window.matchMedia("(prefers-contrast: more)").matches) return "high-contrast";
-    if (window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
-  }
+  return null;
+}
+
+function loadTheme(): ThemeName {
+  const raw = safeGet(THEME_KEY);
+  const migrated = migrateThemePreference(raw);
+  if (migrated) return migrated;
+  if (raw !== null) safeSet(THEME_KEY, null);
   return "dark";
 }
 

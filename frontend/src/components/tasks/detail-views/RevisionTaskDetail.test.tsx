@@ -94,7 +94,7 @@ describe("RevisionTaskDetail", () => {
         "Full hook output:",
         "```text",
         "\u001b[31m[pre-commit]\u001b[0m design-token guards failed",
-        ...Array.from({ length: 70 }, (_, index) => `TS2307 Cannot find module 'zod' (${index})`),
+        ...Array.from({ length: 240 }, (_, index) => `TS2307 Cannot find module 'zod' — extended diagnostic ${index}`),
         "```",
       ].join("\n"),
       created_at: "2026-01-28T11:00:00+00:00",

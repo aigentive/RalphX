@@ -7,6 +7,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::infrastructure::tool_paths::{resolve_git_cli_path, resolve_rm_cli_path};
+
 /// Returned when an [`os_thread_timeout`] expires.
 #[derive(Debug)]
 pub(crate) struct OsTimeoutElapsed;
@@ -125,7 +127,7 @@ pub(crate) async fn remove_worktree_fast(
 ) -> Result<(), String> {
     // Unlock first (ignore errors — worktree may not be locked, or path may be gone).
     // This allows `git worktree prune` to clean up stale locked metadata entries.
-    let _ = tokio::process::Command::new("git")
+    let _ = tokio::process::Command::new(resolve_git_cli_path())
         .args(["worktree", "unlock", worktree_path.to_str().unwrap_or_default()])
         .current_dir(repo_path)
         .output()
@@ -134,7 +136,7 @@ pub(crate) async fn remove_worktree_fast(
     // Try scoped git worktree remove with double-force (cleans git metadata atomically).
     // -f -f overrides locks (git 2.17+); single --force only bypasses dirty-tree checks.
     // Ignore errors — path may already be gone.
-    let _ = tokio::process::Command::new("git")
+    let _ = tokio::process::Command::new(resolve_git_cli_path())
         .args(["worktree", "remove", "-f", "-f", worktree_path.to_str().unwrap_or_default()])
         .current_dir(repo_path)
         .output()
@@ -170,7 +172,7 @@ pub(crate) async fn remove_worktree_dir(worktree_path: &Path) -> Result<(), Stri
             "remove_worktree_dir: tokio::fs::remove_dir_all failed, trying rm -rf fallback"
         );
         // Fallback: shell rm -rf for permission issues (e.g., read-only .git dirs)
-        let output = tokio::process::Command::new("rm")
+        let output = tokio::process::Command::new(resolve_rm_cli_path())
             .args(["-rf", worktree_path.to_str().unwrap_or_default()])
             .output()
             .await
@@ -194,7 +196,7 @@ pub(crate) async fn remove_worktree_dir(worktree_path: &Path) -> Result<(), Stri
 /// Call this once after removing worktree directories (not per-worktree)
 /// to avoid concurrent git index.lock contention.
 pub(crate) async fn git_worktree_prune(repo_path: &Path) {
-    match tokio::process::Command::new("git")
+    match tokio::process::Command::new(resolve_git_cli_path())
         .args(["worktree", "prune"])
         .current_dir(repo_path)
         .output()

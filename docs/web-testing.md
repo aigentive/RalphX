@@ -383,6 +383,9 @@ Vite aliases Tauri plugins to mocks in `frontend/src/mocks/` when in web mode:
 | `@tauri-apps/plugin-updater` | `frontend/src/mocks/tauri-plugin-updater.ts` |
 | `@tauri-apps/plugin-global-shortcut` | `frontend/src/mocks/tauri-plugin-global-shortcut.ts` |
 
+The updater mock returns no update by default. To preview the update UI in web mode, open
+`/?mockUpdate=available` or set `localStorage.ralphx-mock-update=available`.
+
 ---
 
 ## Troubleshooting

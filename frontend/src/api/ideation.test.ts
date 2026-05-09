@@ -308,6 +308,33 @@ describe("ideationApi.sessions", () => {
     });
   });
 
+  describe("getLatestChildSessionId", () => {
+    it("should call get_latest_child_session_id with purpose and archive options", async () => {
+      mockInvoke.mockResolvedValue({
+        session_id: "session-1",
+        purpose: "verification",
+        latest_child_session_id: "child-1",
+      });
+
+      const result = await ideationApi.sessions.getLatestChildSessionId(
+        "session-1",
+        "verification",
+        { includeArchived: true },
+      );
+
+      expect(mockInvoke).toHaveBeenCalledWith("get_latest_child_session_id", {
+        sessionId: "session-1",
+        purpose: "verification",
+        includeArchived: true,
+      });
+      expect(result).toEqual({
+        sessionId: "session-1",
+        purpose: "verification",
+        latestChildSessionId: "child-1",
+      });
+    });
+  });
+
   describe("list", () => {
     it("should call list_ideation_sessions with project_id", async () => {
       mockInvoke.mockResolvedValue([createMockSessionRaw()]);

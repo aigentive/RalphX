@@ -172,7 +172,7 @@ const FeatureBranchBadge = memo(function FeatureBranchBadge({
 
   return (
     <div
-      className="flex items-center gap-0.5 px-1 py-px rounded text-[9px] font-mono bg-[var(--bg-surface)]"
+      className="flex items-center gap-0.5 px-1 py-px rounded text-[0.5625rem] font-mono whitespace-nowrap flex-shrink-0 bg-[var(--bg-surface)]"
       style={{ color: statusColor }}
       title={`Feature branch: ${branchName} (${status})`}
     >
@@ -388,7 +388,7 @@ export const PlanGroupHeader = memo(function PlanGroupHeader({
         )}
         {planBranch && planBranch.baseBranchOverride && (
           <div
-            className="flex items-center gap-0.5 px-1 py-px rounded text-[9px] font-mono bg-[var(--bg-surface)] text-[var(--text-muted)]"
+            className="flex items-center gap-0.5 px-1 py-px rounded text-[0.5625rem] font-mono whitespace-nowrap flex-shrink-0 bg-[var(--bg-surface)] text-[var(--text-muted)]"
             title={`Merging into: ${planBranch.baseBranchOverride}`}
           >
             <span style={{ opacity: 0.5 }}>→</span>

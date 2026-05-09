@@ -79,16 +79,26 @@ export async function setupReviewsPanel(page: Page) {
 export async function setupEmptyKanban(page: Page) {
   await setupApp(page);
   // Clear all tasks from the mock store to create an empty state
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const testWindow = window as Window & {
       __mockStore?: {
         tasks: Map<string, unknown>;
         taskSteps: Map<string, unknown>;
       };
+      __planStore?: { getState(): { loadActivePlan(projectId: string): Promise<void> } };
       __queryClient?: { invalidateQueries(): Promise<unknown> | unknown };
     };
+    const { useProjectStore } = await import("/src/stores/projectStore");
+    const { planApi } = await import("/src/api/plan");
     const mockStore = testWindow.__mockStore;
+    const planStore = testWindow.__planStore;
     const queryClient = testWindow.__queryClient;
+    const projectId = "project-mock-1";
+    const planId = "plan-empty-kanban";
+
+    useProjectStore.getState().selectProject(projectId);
+    await planApi.setActivePlan(projectId, planId, "kanban_inline");
+    await planStore?.getState().loadActivePlan(projectId);
 
     if (mockStore) {
       // Clear only tasks, keep the project
@@ -101,6 +111,7 @@ export async function setupEmptyKanban(page: Page) {
       void queryClient.invalidateQueries();
     }
   });
+  await page.click('[data-testid="nav-kanban"]');
   // Wait for queries to refetch and render empty state
   await page.waitForTimeout(500);
   // Wait for the board to be visible (even if empty)

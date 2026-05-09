@@ -6,7 +6,7 @@
  * Used primarily in the ReviewsPanel with integrated DiffViewer.
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { diffApi } from "@/api/diff";
 import type { CommitInfo } from "@/api/diff";
 import { getLanguageFromPath } from "@/components/diff/DiffViewer.types";
@@ -75,52 +75,82 @@ export function useGitDiff({
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const latestTaskIdRef = useRef(taskId);
+
+  useEffect(() => {
+    latestTaskIdRef.current = taskId;
+  }, [taskId]);
+
+  const isCurrentTask = useCallback(
+    (requestTaskId: string) => latestTaskIdRef.current === requestTaskId,
+    [],
+  );
 
   // Fetch file changes on mount/enable
   useEffect(() => {
     if (!enabled || !taskId) return;
+    let isCancelled = false;
+    const requestTaskId = taskId;
 
     const fetchData = async () => {
       setIsLoadingChanges(true);
       setError(null);
 
       try {
-        const fileChanges = await diffApi.getTaskFileChanges(taskId);
+        const fileChanges = await diffApi.getTaskFileChanges(requestTaskId);
+        if (isCancelled || !isCurrentTask(requestTaskId)) return;
         setChanges(fileChanges);
       } catch (err) {
+        if (isCancelled || !isCurrentTask(requestTaskId)) return;
         setError(
-          err instanceof Error ? err : new Error("Failed to fetch git data")
+          err instanceof Error ? err : new Error("Failed to fetch git data"),
         );
         setChanges([]);
       } finally {
-        setIsLoadingChanges(false);
+        if (!isCancelled && isCurrentTask(requestTaskId)) {
+          setIsLoadingChanges(false);
+        }
       }
     };
 
     fetchData();
-  }, [enabled, taskId]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [enabled, isCurrentTask, taskId]);
 
   // Fetch commit history on mount/enable (only requires taskId)
   useEffect(() => {
     if (!enabled || !taskId) return;
+    let isCancelled = false;
+    const requestTaskId = taskId;
 
     const fetchCommits = async () => {
       setIsLoadingHistory(true);
 
       try {
-        const commitInfos = await diffApi.getTaskCommits(taskId);
+        const commitInfos = await diffApi.getTaskCommits(requestTaskId);
+        if (isCancelled || !isCurrentTask(requestTaskId)) return;
         // Reverse to show chronological order (oldest first)
         setCommits(commitInfos.map(toCommit).reverse());
       } catch {
+        if (isCancelled || !isCurrentTask(requestTaskId)) return;
         // Silently fail for commits - not critical and task may not have a branch yet
         setCommits([]);
       } finally {
-        setIsLoadingHistory(false);
+        if (!isCancelled && isCurrentTask(requestTaskId)) {
+          setIsLoadingHistory(false);
+        }
       }
     };
 
     fetchCommits();
-  }, [enabled, taskId]);
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [enabled, isCurrentTask, taskId]);
 
   // Fetch diff for a specific file (optionally for a specific commit)
   const fetchDiff = useCallback(
@@ -147,61 +177,80 @@ export function useGitDiff({
         return null;
       }
     },
-    [enabled, taskId]
+    [enabled, taskId],
   );
 
   // Fetch files changed in a specific commit
   const fetchCommitFiles = useCallback(
     async (commitSha: string): Promise<void> => {
       if (!enabled || !taskId) return;
+      const requestTaskId = taskId;
 
       setIsLoadingCommitFiles(true);
       try {
-        const files = await diffApi.getCommitFileChanges(taskId, commitSha);
+        const files = await diffApi.getCommitFileChanges(
+          requestTaskId,
+          commitSha,
+        );
+        if (!isCurrentTask(requestTaskId)) return;
         setCommitFiles(files);
       } catch (err) {
+        if (!isCurrentTask(requestTaskId)) return;
         setError(
-          err instanceof Error ? err : new Error("Failed to fetch commit files")
+          err instanceof Error
+            ? err
+            : new Error("Failed to fetch commit files"),
         );
         setCommitFiles([]);
       } finally {
-        setIsLoadingCommitFiles(false);
+        if (isCurrentTask(requestTaskId)) {
+          setIsLoadingCommitFiles(false);
+        }
       }
     },
-    [enabled, taskId]
+    [enabled, isCurrentTask, taskId],
   );
 
   // Refresh all data
   const refresh = useCallback(async () => {
     if (!enabled || !taskId) return;
+    const requestTaskId = taskId;
 
     setError(null);
 
     // Refresh commits
     setIsLoadingHistory(true);
     try {
-      const commitInfos = await diffApi.getTaskCommits(taskId);
+      const commitInfos = await diffApi.getTaskCommits(requestTaskId);
+      if (!isCurrentTask(requestTaskId)) return;
       // Reverse to show chronological order (oldest first)
       setCommits(commitInfos.map(toCommit).reverse());
     } catch {
+      if (!isCurrentTask(requestTaskId)) return;
       setCommits([]);
     } finally {
-      setIsLoadingHistory(false);
+      if (isCurrentTask(requestTaskId)) {
+        setIsLoadingHistory(false);
+      }
     }
 
     // Refresh file changes
     setIsLoadingChanges(true);
     try {
-      const fileChanges = await diffApi.getTaskFileChanges(taskId);
+      const fileChanges = await diffApi.getTaskFileChanges(requestTaskId);
+      if (!isCurrentTask(requestTaskId)) return;
       setChanges(fileChanges);
     } catch (err) {
+      if (!isCurrentTask(requestTaskId)) return;
       setError(
-        err instanceof Error ? err : new Error("Failed to refresh git data")
+        err instanceof Error ? err : new Error("Failed to refresh git data"),
       );
     } finally {
-      setIsLoadingChanges(false);
+      if (isCurrentTask(requestTaskId)) {
+        setIsLoadingChanges(false);
+      }
     }
-  }, [enabled, taskId]);
+  }, [enabled, isCurrentTask, taskId]);
 
   return {
     changes,

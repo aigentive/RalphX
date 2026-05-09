@@ -3,13 +3,17 @@ use ralphx_lib::commands::diff_commands::{
     get_file_diff_for_state, get_task_file_changes_for_state,
 };
 use ralphx_lib::commands::git_commands::{
-    get_task_commits_for_state, CommitInfoResponse, TaskDiffStatsResponse,
+    get_task_commits_for_state, retry_merge_for_test, CommitInfoResponse, TaskDiffStatsResponse,
 };
+use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    ArtifactId, IdeationSessionId, InternalStatus, PlanBranch, Project, Task, TaskCategory,
+    ArtifactId, IdeationSessionId, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranch,
+    Project, ReviewScopeMetadata, Task, TaskCategory, TaskId,
 };
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -114,6 +118,174 @@ async fn setup_branchless_plan_merge_state(repo: &Path) -> (AppState, Task) {
     (app_state, task)
 }
 
+fn setup_regular_task_merge_repo_with_advanced_base() -> (tempfile::TempDir, String) {
+    let dir = setup_plan_branch_repo();
+    let repo = dir.path();
+
+    run_git(repo, &["checkout", "plan/test"]);
+    run_git(repo, &["checkout", "-b", "task/test"]);
+    std::fs::write(repo.join("task.txt"), "task work\n").expect("write task");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "feat: selected task work"]);
+
+    run_git(repo, &["checkout", "plan/test"]);
+    run_git(repo, &["merge", "--squash", "task/test"]);
+    run_git(repo, &["commit", "-m", "feat: selected task work"]);
+    let merge_sha = run_git_output(repo, &["rev-parse", "HEAD"]);
+
+    run_git(repo, &["checkout", "main"]);
+    std::fs::write(repo.join("base.txt"), "base moved ahead\n").expect("write base");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "fix: unrelated base work"]);
+
+    (dir, merge_sha)
+}
+
+fn setup_scope_drift_repo() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().expect("create temp dir");
+    let repo = dir.path();
+
+    run_git(repo, &["init", "-b", "main"]);
+    run_git(repo, &["config", "user.email", "test@test.com"]);
+    run_git(repo, &["config", "user.name", "Test"]);
+
+    std::fs::write(repo.join("README.md"), "# test repo\n").expect("write readme");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "initial commit"]);
+
+    run_git(repo, &["checkout", "-b", "task/scope-drift"]);
+    std::fs::create_dir_all(repo.join("backend/app/services")).expect("create services dir");
+    std::fs::write(
+        repo.join("backend/app/services/applicability_evaluator.rb"),
+        "class ApplicabilityEvaluator\nend\n",
+    )
+    .expect("write drift file");
+    run_git(repo, &["add", "."]);
+    run_git(repo, &["commit", "-m", "feat: out of scope drift"]);
+    run_git(repo, &["checkout", "main"]);
+
+    dir
+}
+
+async fn wait_for_status_without_retry_guard(
+    app_state: &AppState,
+    task_id: &TaskId,
+    expected: InternalStatus,
+) -> Task {
+    let mut last = None;
+    for _ in 0..50 {
+        let task = app_state
+            .task_repo
+            .get_by_id(task_id)
+            .await
+            .expect("get task")
+            .expect("task exists");
+        let metadata: serde_json::Value =
+            serde_json::from_str(task.metadata.as_deref().unwrap_or("{}"))
+                .expect("task metadata is JSON");
+        if task.internal_status == expected && metadata.get("merge_retry_in_progress").is_none() {
+            return task;
+        }
+        last = Some((
+            task.internal_status,
+            metadata.get("merge_retry_in_progress").cloned(),
+        ));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "task did not reach expected status {:?} with retry guard cleared; last state was {:?}",
+        expected, last
+    );
+}
+
+async fn setup_regular_merged_task_state(repo: &Path, merge_sha: String) -> (AppState, Task) {
+    let app_state = AppState::new_test();
+
+    let mut project = Project::new(
+        "Test Project".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let mut task = Task::new(project.id.clone(), "Selected task".to_string());
+    task.internal_status = InternalStatus::Merged;
+    task.task_branch = Some("task/test".to_string());
+    task.worktree_path = None;
+    task.merge_commit_sha = Some(merge_sha);
+    app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .expect("create task");
+
+    (app_state, task)
+}
+
+#[tokio::test]
+async fn retry_merge_scope_backstop_routes_to_reexecution() {
+    let repo = setup_scope_drift_repo();
+    let repo_path = repo.path();
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_max_concurrent(10);
+
+    let mut project = Project::new(
+        "Scope Drift Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.merge_strategy = MergeStrategy::Merge;
+    project.merge_validation_mode = MergeValidationMode::Off;
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let mut task = Task::new(
+        project.id.clone(),
+        "Scope drift retry should revise".to_string(),
+    );
+    task.internal_status = InternalStatus::MergeIncomplete;
+    task.task_branch = Some("task/scope-drift".to_string());
+    task.worktree_path = Some(repo_path.to_string_lossy().to_string());
+    task.metadata = Some(
+        ReviewScopeMetadata::new(
+            vec!["frontend/src".to_string()],
+            Vec::new(),
+            Some("unrelated_drift".to_string()),
+            Some("backend service file was never classified during review".to_string()),
+        )
+        .update_task_metadata(None)
+        .expect("scope metadata"),
+    );
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.expect("create task");
+
+    retry_merge_for_test(
+        task_id.clone(),
+        None,
+        &app_state,
+        Arc::clone(&execution_state),
+    )
+    .await
+    .expect("retry merge");
+
+    let updated =
+        wait_for_status_without_retry_guard(&app_state, &task_id, InternalStatus::ReExecuting)
+            .await;
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap_or("{}"))
+            .expect("task metadata is JSON");
+    assert_eq!(metadata["error_code"], "merge_scope_drift_guard");
+}
+
 #[test]
 fn test_commit_info_response_conversion() {
     let info = CommitInfo {
@@ -146,6 +318,34 @@ fn test_diff_stats_response_conversion() {
 }
 
 #[tokio::test]
+async fn test_regular_squash_merged_task_uses_recorded_commit_parent_when_base_is_ahead() {
+    let (repo, merge_sha) = setup_regular_task_merge_repo_with_advanced_base();
+    let (app_state, task) = setup_regular_merged_task_state(repo.path(), merge_sha).await;
+
+    let response = get_task_commits_for_state(task.id.clone(), &app_state)
+        .await
+        .expect("get commits");
+    let messages: Vec<_> = response
+        .commits
+        .iter()
+        .map(|commit| commit.message.as_str())
+        .collect();
+    assert_eq!(messages, vec!["feat: selected task work"]);
+
+    let changes = get_task_file_changes_for_state(&app_state, task.id.clone())
+        .await
+        .expect("get file changes");
+    let paths: Vec<_> = changes.iter().map(|change| change.path.as_str()).collect();
+    assert_eq!(paths, vec!["task.txt"]);
+
+    let diff = get_file_diff_for_state(&app_state, task.id.clone(), "task.txt".to_string())
+        .await
+        .expect("get file diff");
+    assert_eq!(diff.old_content, "");
+    assert_eq!(diff.new_content, "task work\n");
+}
+
+#[tokio::test]
 async fn test_get_task_commits_uses_plan_branch_for_branchless_plan_merge_task() {
     let repo = setup_plan_branch_repo();
     let (app_state, task) = setup_branchless_plan_merge_state(repo.path()).await;
@@ -163,6 +363,40 @@ async fn test_get_task_commits_uses_plan_branch_for_branchless_plan_merge_task()
         messages,
         vec!["feat: second plan change", "feat: first plan change"]
     );
+}
+
+#[tokio::test]
+async fn test_branchless_plan_merge_diff_uses_merge_base_when_base_is_ahead() {
+    let repo = setup_plan_branch_repo();
+    std::fs::write(repo.path().join("base.txt"), "base moved ahead\n").expect("write base");
+    run_git(repo.path(), &["add", "."]);
+    run_git(repo.path(), &["commit", "-m", "fix: unrelated base work"]);
+    let (app_state, task) = setup_branchless_plan_merge_state(repo.path()).await;
+
+    let response = get_task_commits_for_state(task.id.clone(), &app_state)
+        .await
+        .expect("get commits");
+    let messages: Vec<_> = response
+        .commits
+        .iter()
+        .map(|commit| commit.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        vec!["feat: second plan change", "feat: first plan change"]
+    );
+
+    let changes = get_task_file_changes_for_state(&app_state, task.id.clone())
+        .await
+        .expect("get file changes");
+    let paths: Vec<_> = changes.iter().map(|change| change.path.as_str()).collect();
+    assert_eq!(paths, vec!["plan.txt"]);
+
+    let diff = get_file_diff_for_state(&app_state, task.id.clone(), "plan.txt".to_string())
+        .await
+        .expect("get file diff");
+    assert_eq!(diff.old_content, "");
+    assert_eq!(diff.new_content, "first\nsecond\n");
 }
 
 #[tokio::test]
@@ -268,7 +502,10 @@ async fn test_diff_commands_use_plan_branch_merge_sha_for_merged_plan_merge_task
 async fn test_diff_commands_use_parent_for_squash_merged_plan_merge_task() {
     let repo = setup_plan_branch_repo();
     run_git(repo.path(), &["merge", "--squash", "plan/test"]);
-    run_git(repo.path(), &["commit", "-m", "Squash merge pull request #68"]);
+    run_git(
+        repo.path(),
+        &["commit", "-m", "Squash merge pull request #68"],
+    );
     let merge_sha = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
     run_git(repo.path(), &["branch", "-D", "plan/test"]);
     let (app_state, mut task) = setup_branchless_plan_merge_state(repo.path()).await;

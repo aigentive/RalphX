@@ -1,6 +1,8 @@
 use super::*;
-use crate::domain::entities::{VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot};
-use crate::domain::entities::VerificationStatus;
+use crate::domain::entities::{
+    SessionPurpose, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
+    VerificationStatus,
+};
 
 #[tokio::test]
 async fn test_create_and_get() {
@@ -87,6 +89,48 @@ async fn test_get_children_returns_empty_for_sessions_without_children() {
 
     let children = repo.get_children(&session.id).await.unwrap();
     assert!(children.is_empty());
+}
+
+#[tokio::test]
+async fn test_get_latest_child_session_id_filters_by_purpose_and_archive_state() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+
+    let parent = IdeationSession::new(project_id.clone());
+    let mut general_child = IdeationSession::new(project_id.clone());
+    general_child.parent_session_id = Some(parent.id.clone());
+    general_child.created_at = parent.created_at + chrono::Duration::minutes(1);
+
+    let mut verification_child = IdeationSession::new(project_id.clone());
+    verification_child.parent_session_id = Some(parent.id.clone());
+    verification_child.session_purpose = SessionPurpose::Verification;
+    verification_child.created_at = parent.created_at + chrono::Duration::minutes(2);
+
+    let mut archived_verification_child = IdeationSession::new(project_id.clone());
+    archived_verification_child.parent_session_id = Some(parent.id.clone());
+    archived_verification_child.session_purpose = SessionPurpose::Verification;
+    archived_verification_child.status = IdeationSessionStatus::Archived;
+    archived_verification_child.created_at = parent.created_at + chrono::Duration::minutes(3);
+
+    repo.create(parent.clone()).await.unwrap();
+    repo.create(general_child).await.unwrap();
+    repo.create(verification_child.clone()).await.unwrap();
+    repo.create(archived_verification_child.clone()).await.unwrap();
+
+    let latest_including_archived = repo
+        .get_latest_child_session_id(&parent.id, Some(SessionPurpose::Verification), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        latest_including_archived,
+        Some(archived_verification_child.id.clone())
+    );
+
+    let latest_active = repo
+        .get_latest_child_session_id(&parent.id, Some(SessionPurpose::Verification), false)
+        .await
+        .unwrap();
+    assert_eq!(latest_active, Some(verification_child.id));
 }
 
 #[tokio::test]

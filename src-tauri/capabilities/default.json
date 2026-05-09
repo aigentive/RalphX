@@ -10,6 +10,8 @@
     "dialog:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
+    "process:allow-restart",
+    "updater:default",
     "window-state:default",
     "fs:allow-read-text-file",
     "fs:allow-stat",

@@ -69,7 +69,10 @@ fn test_send_agent_message_response_queued() {
     assert_eq!(response.agent_run_id, "run-existing");
     assert!(!response.is_new_conversation);
     assert!(response.was_queued);
-    assert_eq!(response.queued_message_id.as_deref(), Some("queued-msg-123"));
+    assert_eq!(
+        response.queued_message_id.as_deref(),
+        Some("queued-msg-123")
+    );
     assert!(!response.queued_as_pending);
 }
 
@@ -308,16 +311,487 @@ mod ipc_contract {
         StartAgentConversationInput, SwitchAgentConversationModeInput,
         UpdateAgentConversationTitleInput,
     };
+    use ralphx_lib::commands::unified_chat_commands::{
+        get_agent_conversation_messages_page_for_app_state, get_agent_conversation_workspace,
+        get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
+        publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
+        QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
+        SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
+    };
+    use ralphx_lib::domain::agents::{
+        built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,
+        default_model_for_provider, lightweight_model_for_provider, AgentHarnessKind,
+        AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource, LogicalEffort,
+    };
+    use ralphx_lib::domain::entities::{
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspaceStatus, AgentRun, ChatConversation, ChatConversationId,
+        ChatMessage, IdeationAnalysisBaseRefKind, MessageRole, ProjectId,
+    };
+    use ralphx_lib::domain::repositories::{
+        AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
+    };
+    use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
+    use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
+    use ralphx_lib::testing::SqliteTestDb;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    fn agent_model_command_app() -> tauri::App<tauri::test::MockRuntime> {
+        mock_builder()
+            .manage(AppState::new_test())
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build")
+    }
+
+    fn sqlite_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            conversation_id,
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/agent-ipc".to_string(),
+            "/tmp/ralphx/agent-ipc".to_string(),
+        )
+    }
+
+    fn seed_sqlite_workspace_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO chat_conversations (
+                    id, context_type, context_id, title, message_count, created_at, updated_at
+                 ) VALUES (
+                    ?1, 'project', 'project-1', 'Workspace chat', 0,
+                    '2026-04-26T09:00:00Z', '2026-04-26T09:00:00Z'
+                 )",
+                rusqlite::params![conversation_id.as_str()],
+            )
+            .expect("conversation should seed");
+        });
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_blocks_stale_base_without_commit() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "freshness-blocked",
+            false,
+            None,
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should return blocked state");
+
+        assert_eq!(response.base_status, "blocked");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref, None);
+        assert_eq!(
+            response.base_block_reason.as_deref(),
+            Some(
+                "Saved base branch is unavailable and the workspace is missing its captured base commit"
+            )
+        );
+        assert_eq!(response.target_ref, "");
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_reports_retargeted_base() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "freshness-retargeted",
+            true,
+            None,
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should resolve retargeted base");
+
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.base_ref, "feature/deleted-base");
+        assert_eq!(response.effective_base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(response.target_ref, "main");
+        assert!(!response.is_base_ahead);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_response_recovers_stale_needs_agent_publish_lock() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "workspace-stale-repair-response",
+            true,
+            Some(765),
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace update should persist");
+        let run = state
+            .agent_run_repo
+            .create(AgentRun::new(conversation_id))
+            .await
+            .expect("agent run should seed");
+        state
+            .agent_run_repo
+            .fail(&run.id, "repair agent exited")
+            .await
+            .expect("agent run should fail");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_agent_conversation_workspace(conversation_id.as_str(), app.state())
+            .await
+            .expect("workspace response should load")
+            .expect("workspace response should exist");
+
+        assert_eq!(response.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_workspace_freshness_recovers_stale_needs_agent_publish_lock() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "workspace-stale-repair-freshness",
+            true,
+            Some(766),
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace update should persist");
+        let run = state
+            .agent_run_repo
+            .create(AgentRun::new(conversation_id))
+            .await
+            .expect("agent run should seed");
+        state
+            .agent_run_repo
+            .fail(&run.id, "repair agent exited")
+            .await
+            .expect("agent run should fail");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+            .await
+            .expect("freshness should load");
+        let refreshed = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+
+        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_startup_publish_recovery_clears_stale_lock() {
+        let (_temp, state, conversation_id, _github) = super::setup_ipc_workspace_state(
+            "workspace-stale-repair-startup",
+            true,
+            Some(767),
+            std::sync::Arc::new(super::common::MockGithubService::new()),
+        )
+        .await;
+
+        recover_stale_agent_workspace_publish_repairs_on_startup(
+            std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
+            std::sync::Arc::clone(&state.agent_run_repo),
+        )
+        .await;
+
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_pr_status = Some("failed".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace update should persist");
+        let run = state
+            .agent_run_repo
+            .create(AgentRun::new(conversation_id))
+            .await
+            .expect("agent run should seed");
+        state
+            .agent_run_repo
+            .fail(&run.id, "repair agent exited")
+            .await
+            .expect("agent run should fail");
+
+        recover_stale_agent_workspace_publish_repairs_on_startup(
+            std::sync::Arc::clone(&state.agent_conversation_workspace_repo),
+            std::sync::Arc::clone(&state.agent_run_repo),
+        )
+        .await;
+        let refreshed = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+
+        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_sqlite_needs_agent_workspace_filter_round_trips() {
+        let db = SqliteTestDb::new("ipc-contract-needs-agent-workspace-filter");
+        let repo = SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn());
+
+        let needs_agent_id =
+            ChatConversationId::from_string("10101010-1010-1010-1010-101010101010");
+        seed_sqlite_workspace_conversation(&db, &needs_agent_id);
+        let mut needs_agent = sqlite_workspace(needs_agent_id);
+        needs_agent.publication_pr_number = Some(91);
+        needs_agent.publication_pr_status = Some("failed".to_string());
+        needs_agent.publication_push_status = Some("needs_agent".to_string());
+        repo.create_or_update(needs_agent.clone())
+            .await
+            .expect("needs-agent workspace should persist");
+
+        let merged_id = ChatConversationId::from_string("20202020-2020-2020-2020-202020202020");
+        seed_sqlite_workspace_conversation(&db, &merged_id);
+        let mut merged = sqlite_workspace(merged_id);
+        merged.publication_pr_number = Some(92);
+        merged.publication_pr_status = Some("merged".to_string());
+        merged.publication_push_status = Some("needs_agent".to_string());
+        repo.create_or_update(merged)
+            .await
+            .expect("merged workspace should persist");
+
+        let archived_id = ChatConversationId::from_string("30303030-3030-3030-3030-303030303030");
+        seed_sqlite_workspace_conversation(&db, &archived_id);
+        let mut archived = sqlite_workspace(archived_id);
+        archived.status = AgentConversationWorkspaceStatus::Archived;
+        archived.publication_pr_number = Some(93);
+        archived.publication_pr_status = Some("failed".to_string());
+        archived.publication_push_status = Some("needs_agent".to_string());
+        repo.create_or_update(archived)
+            .await
+            .expect("archived workspace should persist");
+
+        let workspaces = repo
+            .list_active_needs_agent_workspaces()
+            .await
+            .expect("needs-agent workspaces should list");
+
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].conversation_id, needs_agent.conversation_id);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_publish_blocks_when_existing_pr_base_retarget_fails() {
+        let github = std::sync::Arc::new(super::common::MockGithubService::new());
+        github.will_fail_update_pr_base("denied");
+        let (_temp, state, conversation_id, github) =
+            super::setup_ipc_workspace_state("publish-retarget-fails", true, Some(654), github)
+                .await;
+        let execution_state = std::sync::Arc::new(super::ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("failed PR base retarget should block publish");
+
+        assert!(error.contains("Existing PR #654 targets the deleted branch"));
+        assert_eq!(github.update_pr_base_calls(), 1);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_agent_message_tool_preview_round_trips_full_detail() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-preview-ipc".to_string());
+        let conversation = ChatConversation::new_project(project_id.clone());
+        let conversation_id = conversation.id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let long_result = (1..=14)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut message = ChatMessage::user_in_project(project_id, "assistant preview");
+        message.role = MessageRole::Orchestrator;
+        message.conversation_id = Some(conversation_id.clone());
+        message.tool_calls = Some(
+            serde_json::json!([
+                {
+                    "id": "tool-ipc-1",
+                    "name": "bash",
+                    "arguments": { "command": "printf" },
+                    "result": long_result,
+                },
+                {
+                    "id": "task-ipc-1",
+                    "name": "Task",
+                    "arguments": { "description": "inspect" },
+                    "result": {
+                        "subagent_type": "Explore",
+                        "content": (1..=14).map(|index| format!("task line {index}")).collect::<Vec<_>>().join("\n")
+                    }
+                }
+            ])
+            .to_string(),
+        );
+        message.content_blocks = Some(
+            serde_json::json!([
+                { "type": "text", "text": "before" },
+                {
+                    "type": "tool_use",
+                    "id": "tool-block-ipc-1",
+                    "name": "read",
+                    "arguments": { "file_path": "big.txt" },
+                    "result": (1..=12).map(|index| format!("block line {index}")).collect::<Vec<_>>().join("\n")
+                }
+            ])
+            .to_string(),
+        );
+        let message_id = message.id.as_str().to_string();
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should persist");
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let page = get_agent_conversation_messages_page_for_app_state(
+            app.state::<AppState>().inner(),
+            conversation_id.clone(),
+            10,
+            0,
+        )
+        .await
+        .expect("page helper should succeed")
+        .expect("conversation should exist");
+
+        let message = page.messages.first().expect("message should be returned");
+        let tool_calls = message.tool_calls.as_ref().expect("tool calls");
+        let previewed_tool = &tool_calls[0];
+        assert_eq!(previewed_tool["result_preview_truncated"], true);
+        assert_eq!(
+            previewed_tool["result"].as_str().unwrap().lines().count(),
+            10
+        );
+        assert_eq!(previewed_tool["detail_ref"]["tool_call_id"], "tool-ipc-1");
+        assert!(tool_calls[1]["result"].is_object(), "Task stays structured");
+
+        let content_blocks = message.content_blocks.as_ref().expect("content blocks");
+        assert_eq!(content_blocks[1]["result_preview_truncated"], true);
+        assert_eq!(content_blocks[1]["detail_ref"]["content_block_index"], 1);
+
+        let detail = get_agent_message_tool_call_detail(
+            conversation_id.as_str().to_string(),
+            message_id.clone(),
+            Some("tool-ipc-1".to_string()),
+            None,
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("detail command should succeed")
+        .expect("tool detail should exist");
+        assert!(detail.tool_call["result"]
+            .as_str()
+            .unwrap()
+            .contains("line 14"));
+
+        let block_detail = get_agent_message_tool_call_detail(
+            conversation_id.as_str().to_string(),
+            message_id,
+            None,
+            Some(1),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("block detail command should succeed")
+        .expect("content block detail should exist");
+        assert!(block_detail.tool_call["result"]
+            .as_str()
+            .unwrap()
+            .contains("block line 12"));
+    }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────
 
     #[test]
     fn send_agent_message_input_deserializes_camel_case() {
-        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","target":null}"#;
+        let json = r#"{"contextType":"task_execution","contextId":"task-123","content":"Hello agent","modelOverride":"gpt-5.5","logicalEffort":"xhigh","target":null}"#;
         let input: SendAgentMessageInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.context_type, "task_execution");
         assert_eq!(input.context_id, "task-123");
         assert_eq!(input.content, "Hello agent");
+        assert_eq!(input.model_override.as_deref(), Some("gpt-5.5"));
+        assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
         assert!(input.target.is_none());
     }
 

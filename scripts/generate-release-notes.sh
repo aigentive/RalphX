@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/prompts/release-notes-codex-prompt.md"
 COMMON_FILE="${SCRIPT_DIR}/release-analysis-common.sh"
-DEFAULT_MODEL="${RELEASE_NOTES_MODEL:-gpt-5.4}"
+DEFAULT_MODEL="${RELEASE_NOTES_MODEL:-gpt-5.5}"
 DEFAULT_REASONING_EFFORT="${RELEASE_NOTES_REASONING_EFFORT:-xhigh}"
 
 usage() {
@@ -22,7 +22,7 @@ Arguments:
 Options:
   --from <ref>          Explicit start ref/tag/commit for the compare range
   --to <ref>            End ref/tag/commit for the compare range (default: HEAD)
-  --model <model>       Codex model to use (default: RELEASE_NOTES_MODEL or gpt-5.4)
+  --model <model>       Codex model to use (default: RELEASE_NOTES_MODEL or gpt-5.5)
   --reasoning-effort <level>
                         Codex reasoning effort to use (default: RELEASE_NOTES_REASONING_EFFORT or xhigh)
   --output <file>       Output markdown path (default: release-notes/v<version>.md)
@@ -120,7 +120,7 @@ fi
 mkdir -p "$(dirname "${output_path}")"
 mkdir -p "${RELEASE_ANALYSIS_LOGS_DIR}"
 
-reader_guidance=$'- Target multiple audiences at once: public readers, active users, contributors, and maintainers.\n- Favor runtime, UI, workflow, installation, and release outcomes.\n- Keep the tone precise and engineering-literate without drifting into repo-internal maintenance detail.\n- Keep internal config, docs, and scaffolding work out of Highlights unless the commit bodies make the shipped impact explicit.'
+reader_guidance=$'- Target multiple audiences at once: public readers, active users, contributors, and maintainers.\n- Prioritize what changes for someone who downloads, installs, opens, or uses RalphX.app.\n- Keep user-facing runtime, UI, workflow, installation, and release outcomes above developer-only changes.\n- Put developer, CI, release automation, docs, config, and scaffolding work in a separate Developer And Maintainer Changes section near the bottom when it is worth mentioning.\n- Keep the tone precise and engineering-literate without drifting into repo-internal maintenance detail.'
 
 tmp_context="$(mktemp)"
 tmp_final_input="$(mktemp)"
@@ -138,7 +138,8 @@ trap 'rm -f "${tmp_context}" "${tmp_final_input}"' EXIT
   printf -- '- Group related bullets into coherent product areas instead of echoing commit subjects line by line.\n'
   printf -- '- Use commit subjects and diff stat only to fill gaps when the raw bodies are sparse.\n'
   printf -- '- Do not assume every `feat:` bullet means a net-new surface; many are expansions of existing behavior.\n'
-  printf -- '- Keep internal-only work out of the main Highlights unless the shipped impact is explicit in the commit bodies.\n'
+  printf -- '- Keep internal-only work out of User-Facing Changes and Fixes And Polish unless the shipped impact is explicit in the commit bodies.\n'
+  printf -- '- Clearly separate developer-facing work under Developer And Maintainer Changes after the user-facing sections.\n'
 } > "${tmp_context}"
 
 if [[ "${context_only}" == "true" ]]; then

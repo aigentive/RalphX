@@ -10,15 +10,17 @@ use crate::application::TeamStateTracker;
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::AppState;
 use tauri::Manager;
-use tracing::{info, warn};
+use tracing::warn;
 
 const BUNDLED_PLUGIN_DIR_REL: &str = "plugins/app";
 const BUNDLED_AGENTS_DIR_REL: &str = "agents";
+const BUNDLED_CONFIG_DIR_REL: &str = "config";
 const GENERATED_CLAUDE_PLUGIN_DIR_REL: &str = "generated/claude-plugin";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BundledRuntimePaths {
     plugin_dir: PathBuf,
+    config_dir: Option<PathBuf>,
     generated_plugin_dir: PathBuf,
 }
 
@@ -28,6 +30,7 @@ fn resolve_bundled_runtime_paths(
 ) -> Option<BundledRuntimePaths> {
     let plugin_dir = resource_dir.join(BUNDLED_PLUGIN_DIR_REL);
     let agents_dir = resource_dir.join(BUNDLED_AGENTS_DIR_REL);
+    let config_dir = resource_dir.join(BUNDLED_CONFIG_DIR_REL);
 
     if !plugin_dir.is_dir() || !agents_dir.is_dir() {
         return None;
@@ -35,8 +38,23 @@ fn resolve_bundled_runtime_paths(
 
     Some(BundledRuntimePaths {
         plugin_dir,
+        config_dir: config_dir.is_dir().then_some(config_dir),
         generated_plugin_dir: app_data_dir.join(GENERATED_CLAUDE_PLUGIN_DIR_REL),
     })
+}
+
+fn configure_bundled_runtime_paths(
+    paths: BundledRuntimePaths,
+    configure_plugin_dirs: impl FnOnce(PathBuf, PathBuf),
+    configure_config_dir: impl FnOnce(PathBuf),
+) -> bool {
+    configure_plugin_dirs(paths.plugin_dir, paths.generated_plugin_dir);
+    if let Some(config_dir) = paths.config_dir {
+        configure_config_dir(config_dir);
+        true
+    } else {
+        false
+    }
 }
 
 fn configure_bundled_runtime_env(app: &tauri::App<tauri::Wry>) {
@@ -120,7 +138,9 @@ pub(crate) fn run_app_setup(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_bundled_runtime_paths;
+    use super::{
+        configure_bundled_runtime_paths, resolve_bundled_runtime_paths, BundledRuntimePaths,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -140,9 +160,59 @@ mod tests {
             .expect("bundled runtime paths");
 
         assert_eq!(paths.plugin_dir, resource_dir.join("plugins/app"));
+        assert_eq!(paths.config_dir, None);
         assert_eq!(
             paths.generated_plugin_dir,
             app_data_dir.join("generated/claude-plugin")
         );
+
+        std::fs::create_dir_all(resource_dir.join("config")).expect("config dir");
+        let paths = resolve_bundled_runtime_paths(&resource_dir, &app_data_dir)
+            .expect("bundled runtime paths with config");
+        assert_eq!(paths.config_dir, Some(resource_dir.join("config")));
+    }
+
+    #[test]
+    fn bundled_runtime_path_configuration_forwards_optional_config_dir() {
+        let temp = tempdir().expect("tempdir");
+        let paths = BundledRuntimePaths {
+            plugin_dir: temp.path().join("Resources/plugins/app"),
+            config_dir: Some(temp.path().join("Resources/config")),
+            generated_plugin_dir: temp.path().join("AppData/generated/claude-plugin"),
+        };
+
+        let mut configured_plugin_dirs = None;
+        let mut configured_config_dir = None;
+        let did_configure_config_dir = configure_bundled_runtime_paths(
+            paths.clone(),
+            |plugin_dir, generated_plugin_dir| {
+                configured_plugin_dirs = Some((plugin_dir, generated_plugin_dir));
+            },
+            |config_dir| {
+                configured_config_dir = Some(config_dir);
+            },
+        );
+
+        assert!(did_configure_config_dir);
+        assert_eq!(
+            configured_plugin_dirs,
+            Some((paths.plugin_dir, paths.generated_plugin_dir))
+        );
+        assert_eq!(configured_config_dir, paths.config_dir);
+    }
+
+    #[test]
+    fn bundled_runtime_path_configuration_skips_missing_config_dir() {
+        let temp = tempdir().expect("tempdir");
+        let paths = BundledRuntimePaths {
+            plugin_dir: temp.path().join("Resources/plugins/app"),
+            config_dir: None,
+            generated_plugin_dir: temp.path().join("AppData/generated/claude-plugin"),
+        };
+
+        let configured_config_dir =
+            configure_bundled_runtime_paths(paths, |_plugin_dir, _generated_plugin_dir| {}, drop);
+
+        assert!(!configured_config_dir);
     }
 }

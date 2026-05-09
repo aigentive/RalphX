@@ -120,15 +120,37 @@ export async function setupIdeationChatScenario(
 
     const conversations = await mockChatApi.listConversations(contextType, contextId);
     const conversation = await mockChatApi.getConversation(conversationId);
+    const seedConversationCache = (
+      conversationsPayload: unknown,
+      conversationPayload: typeof conversation,
+    ) => {
+      queryClient.setQueryData(
+        ["chat", "conversations", contextType, contextId],
+        conversationsPayload,
+      );
+      queryClient.setQueryData(
+        ["chat", "conversations", conversationId],
+        conversationPayload,
+      );
+      queryClient.setQueryData(
+        ["chat", "conversations", conversationId, "history"],
+        {
+          pages: [
+            {
+              conversation: conversationPayload.conversation,
+              messages: conversationPayload.messages,
+              limit: 40,
+              offset: 0,
+              totalMessageCount: conversationPayload.messages.length,
+              hasOlder: false,
+            },
+          ],
+          pageParams: [0],
+        },
+      );
+    };
 
-    queryClient.setQueryData(
-      ["chat", "conversations", contextType, contextId],
-      conversations,
-    );
-    queryClient.setQueryData(
-      ["chat", "conversations", conversationId],
-      conversation,
-    );
+    seedConversationCache(conversations, conversation);
 
     chatStore?.getState().setActiveConversation(`session:${contextId}`, conversationId);
   }, replayContext);
@@ -141,7 +163,7 @@ export async function setupIdeationChatScenario(
   }, replayContext);
   await expect(page.locator('[data-testid="conversation-panel"]')).toBeVisible();
   await expect(page.locator('[data-testid="integrated-chat-messages"]')).toBeVisible();
-  await expect(page.locator('[data-testid="chat-session-provider-context"]')).toBeVisible();
+  await expect(page.locator('[data-testid="chat-session-chips"]')).toBeVisible();
 }
 
 export async function setupTaskChatScenario(page: Page, scenario: TaskChatScenarioName) {
@@ -184,15 +206,37 @@ export async function setupTaskChatScenario(page: Page, scenario: TaskChatScenar
       currentContextId,
     );
     const conversation = await mockChatApi.getConversation(currentConversationId);
+    const seedConversationCache = (
+      conversationsPayload: unknown,
+      conversationPayload: typeof conversation,
+    ) => {
+      queryClient.setQueryData(
+        ["chat", "conversations", currentContextType, currentContextId],
+        conversationsPayload,
+      );
+      queryClient.setQueryData(
+        ["chat", "conversations", currentConversationId],
+        conversationPayload,
+      );
+      queryClient.setQueryData(
+        ["chat", "conversations", currentConversationId, "history"],
+        {
+          pages: [
+            {
+              conversation: conversationPayload.conversation,
+              messages: conversationPayload.messages,
+              limit: 40,
+              offset: 0,
+              totalMessageCount: conversationPayload.messages.length,
+              hasOlder: false,
+            },
+          ],
+          pageParams: [0],
+        },
+      );
+    };
 
-    queryClient.setQueryData(
-      ["chat", "conversations", currentContextType, currentContextId],
-      conversations,
-    );
-    queryClient.setQueryData(
-      ["chat", "conversations", currentConversationId],
-      conversation,
-    );
+    seedConversationCache(conversations, conversation);
 
     chatStore?.getState().setActiveConversation(
       `${currentContextType}:${currentContextId}`,
@@ -213,5 +257,5 @@ export async function setupTaskChatScenario(page: Page, scenario: TaskChatScenar
   });
 
   await expect(page.locator('[data-testid="integrated-chat-panel"]')).toBeVisible();
-  await expect(page.locator('[data-testid="chat-session-provider-context"]')).toBeVisible();
+  await expect(page.locator('[data-testid="chat-session-chips"]')).toBeVisible();
 }

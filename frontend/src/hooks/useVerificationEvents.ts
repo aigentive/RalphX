@@ -29,6 +29,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { navigateToIdeationSession } from "@/lib/navigation";
+import { latestVerificationChildSessionIdQueryKey } from "@/components/agents/agentChatFocus";
 import { ideationKeys } from "./useIdeation";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { logger } from "@/lib/logger";

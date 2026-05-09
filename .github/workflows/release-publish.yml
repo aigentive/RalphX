@@ -22,6 +22,16 @@ on:
         required: true
         type: boolean
         default: false
+      linux_runner:
+        description: "Runner to use for publish jobs"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - github-hosted
+          - self-hosted
   workflow_run:
     workflows:
       - Release Build
@@ -45,7 +55,7 @@ jobs:
   metadata:
     name: Resolve publish metadata
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     outputs:
       source_run_id: ${{ steps.run_id.outputs.source_run_id }}
       version: ${{ steps.meta.outputs.version }}
@@ -151,7 +161,7 @@ jobs:
   publish-release:
     name: Publish public release assets
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
@@ -195,9 +205,20 @@ jobs:
             exit 1
           fi
           cp release-metadata/release-notes.md release-assets/release-notes.md
+          if [[ -f release-metadata/github-release-notes.md ]]; then
+            cp release-metadata/github-release-notes.md release-assets/github-release-notes.md
+          else
+            cp release-assets/release-notes.md release-assets/github-release-notes.md
+          fi
 
-          first_nonempty="$(awk 'NF { print; exit }' release-assets/release-notes.md)"
-          if [[ "${first_nonempty}" == "# ${release_name}" || "${first_nonempty}" == "# ${tag}" ]]; then
+          strip_release_heading() {
+            local notes_path="$1"
+            local first_nonempty
+            first_nonempty="$(awk 'NF { print; exit }' "${notes_path}")"
+            if [[ "${first_nonempty}" != "# ${release_name}" && "${first_nonempty}" != "# ${tag}" ]]; then
+              return 0
+            fi
+
             tmp_notes="$(mktemp)"
             EXPECTED_RELEASE_HEADING="# ${release_name}" EXPECTED_TAG_HEADING="# ${tag}" \
               awk '
@@ -206,9 +227,12 @@ jobs:
                 dropping && !heading_removed && ($0 == ENVIRON["EXPECTED_RELEASE_HEADING"] || $0 == ENVIRON["EXPECTED_TAG_HEADING"]) {heading_removed=1; next}
                 dropping && heading_removed && $0 ~ /^[[:space:]]*$/ {next}
                 {dropping=0; print}
-              ' release-assets/release-notes.md > "${tmp_notes}"
-            mv "${tmp_notes}" release-assets/release-notes.md
-          fi
+              ' "${notes_path}" > "${tmp_notes}"
+            mv "${tmp_notes}" "${notes_path}"
+          }
+
+          strip_release_heading release-assets/release-notes.md
+          strip_release_heading release-assets/github-release-notes.md
 
           aarch64_updater="release-assets/release-aarch64/RalphX_${version}_aarch64.app.tar.gz"
           aarch64_sig="${aarch64_updater}.sig"
@@ -279,7 +303,7 @@ jobs:
             gh release edit "${tag}" \
               --repo "${PUBLIC_RELEASES_REPO}" \
               --title "${release_name}" \
-              --notes-file release-assets/release-notes.md \
+              --notes-file release-assets/github-release-notes.md \
               --draft="${draft}" \
               --prerelease="${prerelease}" \
               --latest="$([[ "${draft}" == "true" || "${prerelease}" == "true" ]] && echo false || echo true)"
@@ -295,7 +319,7 @@ jobs:
             gh release create "${tag}"
             --repo "${PUBLIC_RELEASES_REPO}"
             --title "${release_name}"
-            --notes-file release-assets/release-notes.md
+            --notes-file release-assets/github-release-notes.md
             --latest="$([[ "${draft}" == "true" || "${prerelease}" == "true" ]] && echo false || echo true)"
           )
 
@@ -316,7 +340,7 @@ jobs:
     needs:
       - metadata
       - publish-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || github.event_name == 'workflow_dispatch' && inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     timeout-minutes: 15
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

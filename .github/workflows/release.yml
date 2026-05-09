@@ -19,14 +19,44 @@ on:
         required: true
         type: boolean
         default: false
+      linux_runner:
+        description: "Runner to use for release metadata jobs"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - github-hosted
+          - self-hosted
       arm_runner:
         description: "Runner to use for the macOS ARM release build"
         required: true
         type: choice
-        default: self-hosted
+        default: blacksmith
         options:
+          - blacksmith
+          - depot
           - self-hosted
           - github-hosted
+      intel_runner:
+        description: "Runner to use for the macOS Intel release build"
+        required: true
+        type: choice
+        default: blacksmith
+        options:
+          - blacksmith
+          - depot
+          - self-hosted
+          - github-hosted
+      macos_runner_size:
+        description: "GitHub-hosted macOS runner size for release builds"
+        required: true
+        type: choice
+        default: standard
+        options:
+          - standard
+          - larger
 
 permissions:
   contents: read
@@ -38,7 +68,7 @@ concurrency:
 jobs:
   metadata:
     name: Resolve release metadata
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.linux_runner == 'depot' && '"depot-ubuntu-24.04"' || inputs.linux_runner == 'self-hosted' && '["self-hosted","Linux","X64","ralphx-release"]' || inputs.linux_runner == 'github-hosted' && '"ubuntu-latest"' || '"blacksmith-32vcpu-ubuntu-2404"') }}
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
@@ -59,6 +89,8 @@ jobs:
           raw_draft="${{ github.event.inputs.draft }}"
           raw_prerelease="${{ github.event.inputs.prerelease }}"
           raw_arm_runner="${{ github.event.inputs.arm_runner }}"
+          raw_intel_runner="${{ github.event.inputs.intel_runner }}"
+          raw_macos_runner_size="${{ github.event.inputs.macos_runner_size }}"
 
           version="${raw_version#v}"
           if [[ -z "${version}" ]]; then
@@ -75,29 +107,80 @@ jobs:
             exit 1
           fi
 
-          arm_runs_on='"macos-15"'
-          if [[ "${raw_arm_runner}" == "self-hosted" ]]; then
-            arm_runs_on='["self-hosted","macOS","ARM64","ralphx-release"]'
-          fi
+          resolve_macos_runner() {
+            local arch="$1"
+            local provider="$2"
+            local runs_on
+            local runner_kind
+
+            case "${provider}" in
+              blacksmith)
+                runs_on='"blacksmith-12vcpu-macos-15"'
+                runner_kind="blacksmith"
+                ;;
+              depot)
+                runs_on='"depot-macos-15"'
+                runner_kind="depot"
+                ;;
+              github-hosted)
+                if [[ "${arch}" == "aarch64" ]]; then
+                  if [[ "${raw_macos_runner_size}" == "larger" ]]; then
+                    runs_on='"macos-15-xlarge"'
+                    runner_kind="github-hosted-larger"
+                  else
+                    runs_on='"macos-15"'
+                    runner_kind="github-hosted"
+                  fi
+                elif [[ "${raw_macos_runner_size}" == "larger" ]]; then
+                  runs_on='"macos-15-large"'
+                  runner_kind="github-hosted-larger"
+                else
+                  runs_on='"macos-15-intel"'
+                  runner_kind="github-hosted"
+                fi
+                ;;
+              self-hosted)
+                if [[ "${arch}" == "aarch64" ]]; then
+                  runs_on='["self-hosted","macOS","ARM64","ralphx-release"]'
+                else
+                  runs_on='["self-hosted","macOS","X64","ralphx-release"]'
+                fi
+                runner_kind="self-hosted"
+                ;;
+              *)
+                echo "Invalid macOS runner provider for ${arch}: ${provider}" >&2
+                exit 1
+                ;;
+            esac
+
+            printf '%s\t%s\n' "${runs_on}" "${runner_kind}"
+          }
+
+          IFS=$'\t' read -r arm_runs_on arm_runner_kind < <(resolve_macos_runner "aarch64" "${raw_arm_runner}")
+          IFS=$'\t' read -r intel_runs_on intel_runner_kind < <(resolve_macos_runner "x86_64" "${raw_intel_runner}")
 
           build_matrix="$(
             jq -cn \
               --arg arm_arch "aarch64" \
               --arg arm_runs_on "${arm_runs_on}" \
-              --arg arm_runner_kind "${raw_arm_runner}" \
+              --arg arm_runner_kind "${arm_runner_kind}" \
+              --arg arm_rust_target "aarch64-apple-darwin" \
               --arg intel_arch "x86_64" \
-              --arg intel_runs_on '"macos-15-intel"' \
-              --arg intel_runner_kind "github-hosted" \
+              --arg intel_runs_on "${intel_runs_on}" \
+              --arg intel_runner_kind "${intel_runner_kind}" \
+              --arg intel_rust_target "x86_64-apple-darwin" \
               '{include: [
                 {
                   arch: $arm_arch,
                   runs_on: $arm_runs_on,
-                  runner_kind: $arm_runner_kind
+                  runner_kind: $arm_runner_kind,
+                  rust_target: $arm_rust_target
                 },
                 {
                   arch: $intel_arch,
                   runs_on: $intel_runs_on,
-                  runner_kind: $intel_runner_kind
+                  runner_kind: $intel_runner_kind,
+                  rust_target: $intel_rust_target
                 }
               ]}'
           )"
@@ -125,7 +208,7 @@ jobs:
             -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/contents/${notes_file}?ref=${{ steps.meta.outputs.tag }}" \
             --jq '.content' 2>/dev/null)"; then
-            printf '%s' "${notes_content}" | tr -d '\n' | base64 --decode > release-metadata/release-notes.md
+            printf '%s' "${notes_content}" | tr -d '\n' | base64 --decode > release-metadata/github-release-notes.md
           else
             {
               printf 'Release artifacts for %s.\n\n' "${{ steps.meta.outputs.tag }}"
@@ -137,8 +220,25 @@ jobs:
                 '- macOS Intel updater bundle' \
                 '- latest.json' \
                 '- checksums.txt'
-            } > release-metadata/release-notes.md
+            } > release-metadata/github-release-notes.md
           fi
+
+          awk '
+            $0 == "<!-- github-release-metadata:start -->" { dropping = 1; next }
+            $0 == "<!-- github-release-metadata:end -->" { dropping = 0; next }
+            !dropping { print }
+          ' release-metadata/github-release-notes.md | awk '
+            { lines[NR] = $0 }
+            END {
+              last = NR
+              while (last > 0 && lines[last] == "") {
+                last--
+              }
+              for (i = 1; i <= last; i++) {
+                print lines[i]
+              }
+            }
+          ' > release-metadata/release-notes.md
 
       - name: Write release metadata artifact
         shell: bash
@@ -166,6 +266,7 @@ jobs:
           name: release-metadata
           path: |
             release-metadata/release-metadata.json
+            release-metadata/github-release-notes.md
             release-metadata/release-notes.md
           if-no-files-found: error
 
@@ -233,9 +334,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "password=$(openssl rand -base64 24 | tr -d '\n')" >> "${GITHUB_OUTPUT}"
-          echo "path=${RUNNER_TEMP}/ralphx-release-${{ matrix.arch }}.keychain-db" >> "${GITHUB_OUTPUT}"
-          echo "search_list_path=${RUNNER_TEMP}/ralphx-release-${{ matrix.arch }}-keychains.txt" >> "${GITHUB_OUTPUT}"
+          {
+            echo "password=$(openssl rand -base64 24 | tr -d '\n')"
+            echo "path=${RUNNER_TEMP}/ralphx-release-${{ matrix.arch }}.keychain-db"
+            echo "search_list_path=${RUNNER_TEMP}/ralphx-release-${{ matrix.arch }}-keychains.txt"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -354,6 +457,7 @@ jobs:
               printf '[release-heartbeat] %s build step still running for %s\n' \
                 "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
                 "${{ matrix.arch }}" | tee -a "${heartbeat_log}"
+              # shellcheck disable=SC2009
               ps -axo pid,ppid,etime,stat,command \
                 | grep -E 'codesign|notarytool|xcrun|cargo-tauri|cargo tauri|cargo build|node .*tauri|ralphx' \
                 | grep -v 'grep -E' \
@@ -380,7 +484,7 @@ jobs:
           }} using pre-imported build.keychain; clearing APPLE_CERTIFICATE env to avoid duplicate Tauri keychain import" | tee -a "${heartbeat_log}"
           unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
 
-          ./scripts/build-prod-release.sh 2>&1 | tee -a "${build_log}"
+          ./scripts/build-prod-release.sh --target "${{ matrix.rust_target }}" 2>&1 | tee -a "${build_log}"
 
           printf '[release-heartbeat] %s build script completed for %s\n' \
             "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
@@ -404,16 +508,17 @@ jobs:
           dist_dir="release-dist/${arch}"
           mkdir -p "${dist_dir}"
 
-          dmg_path="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
-          updater_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -type f -name '*.app.tar.gz' | head -n 1)"
+          release_target_dir="src-tauri/target/${{ matrix.rust_target }}/release"
+          dmg_path="$(find "${release_target_dir}/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
+          updater_path="$(find "${release_target_dir}/bundle/macos" -maxdepth 1 -type f -name '*.app.tar.gz' | head -n 1)"
 
           if [[ -z "${dmg_path}" ]]; then
-            echo "No DMG artifact found under src-tauri/target/release/bundle/dmg" >&2
+            echo "No DMG artifact found under ${release_target_dir}/bundle/dmg" >&2
             exit 1
           fi
 
           if [[ -z "${updater_path}" ]]; then
-            echo "No updater artifact found under src-tauri/target/release/bundle/macos" >&2
+            echo "No updater artifact found under ${release_target_dir}/bundle/macos" >&2
             exit 1
           fi
 

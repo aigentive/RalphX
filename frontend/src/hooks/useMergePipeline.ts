@@ -17,10 +17,22 @@ export const mergePipelineKeys = {
 /**
  * Hook to fetch the merge pipeline (active, waiting, needs attention)
  */
-export function useMergePipeline(projectId?: string) {
+interface UseMergePipelineOptions {
+  enabled?: boolean;
+  refetchInterval?: number | false;
+  refetchOnWindowFocus?: boolean;
+}
+
+export function useMergePipeline(
+  projectId?: string,
+  options: UseMergePipelineOptions = {}
+) {
+  const enabled = options.enabled ?? true;
   return useQuery({
     queryKey: mergePipelineKeys.pipeline(projectId),
     queryFn: () => mergePipelineApi.getMergePipeline(projectId),
-    refetchInterval: 5000, // Poll every 5 seconds for real-time updates
+    enabled,
+    refetchInterval: enabled ? options.refetchInterval ?? 5000 : false,
+    refetchOnWindowFocus: options.refetchOnWindowFocus ?? enabled,
   });
 }

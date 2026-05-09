@@ -38,8 +38,19 @@ export const executionKeys = {
  * return <ExecutionControlBar isPaused={isPaused} running={runningCount} />;
  * ```
  */
-export function useExecutionStatus(projectId?: string) {
+interface UseExecutionStatusOptions {
+  enabled?: boolean;
+  refetchInterval?: number | false;
+  refetchOnWindowFocus?: boolean;
+  staleTime?: number;
+}
+
+export function useExecutionStatus(
+  projectId?: string,
+  options: UseExecutionStatusOptions = {}
+) {
   const setExecutionStatus = useUiStore((state) => state.setExecutionStatus);
+  const enabled = options.enabled ?? true;
 
   const query = useQuery<ExecutionStatusResponse, Error>({
     queryKey: executionKeys.status(projectId),
@@ -49,10 +60,12 @@ export function useExecutionStatus(projectId?: string) {
       setExecutionStatus(status);
       return status;
     },
+    enabled,
     // Fallback poll every 30s - real-time updates come via useExecutionEvents
-    refetchInterval: 30000,
+    refetchInterval: enabled ? options.refetchInterval ?? 30000 : false,
     // Also refetch on window focus
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: options.refetchOnWindowFocus ?? enabled,
+    ...(options.staleTime !== undefined ? { staleTime: options.staleTime } : {}),
   });
 
   return {

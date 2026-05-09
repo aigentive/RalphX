@@ -21,6 +21,22 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use crate::infrastructure::agents::claude::ExternalMcpConfig;
+use crate::infrastructure::tool_paths::resolve_ps_cli_path;
+use crate::utils::backend_endpoint::backend_http_base_url;
+
+pub const TAURI_MCP_BYPASS_TOKEN_ENV: &str = "RALPHX_TAURI_MCP_BYPASS_TOKEN";
+
+pub fn ensure_tauri_mcp_bypass_token() -> String {
+    if let Ok(token) = std::env::var(TAURI_MCP_BYPASS_TOKEN_ENV) {
+        if !token.trim().is_empty() {
+            return token;
+        }
+    }
+
+    let token = format!("rx_tauri_{}", uuid::Uuid::new_v4().simple());
+    std::env::set_var(TAURI_MCP_BYPASS_TOKEN_ENV, &token);
+    token
+}
 
 pub const TAURI_MCP_BYPASS_TOKEN_ENV: &str = "RALPHX_TAURI_MCP_BYPASS_TOKEN";
 
@@ -64,6 +80,12 @@ enum HealthCheckResult {
     Ready,
     Degraded,
     Failed,
+}
+
+pub(crate) fn stderr_indicates_address_in_use(lines: &[String]) -> bool {
+    lines.iter().any(|line| {
+        line.contains("EADDRINUSE") || line.to_ascii_lowercase().contains("address already in use")
+    })
 }
 
 /// Frontend event emitted on `external-mcp:status`.
@@ -257,7 +279,18 @@ impl ExternalMcpSupervisor {
         *self.child.lock().await = Some(child);
 
         // Health check
-        match self.health_check().await {
+        let health_check = self.health_check().await;
+        if matches!(
+            health_check,
+            HealthCheckResult::Ready | HealthCheckResult::Degraded
+        ) && self
+            .detect_startup_bind_conflict(&stderr_lines, spawn_start, attempts)
+            .await
+        {
+            return;
+        }
+
+        match health_check {
             HealthCheckResult::Ready => {
                 tracing::info!("External MCP server is ready on port {}", self.config.port);
                 self.emit_event("started", None);
@@ -331,8 +364,84 @@ impl ExternalMcpSupervisor {
             return;
         }
 
-        let runtime = spawn_start.elapsed();
+        if self.stderr_has_address_in_use(&stderr_lines).await {
+            self.fail_port_in_use().await;
+            return;
+        }
+
         let exit_code = exit_status.and_then(|s| s.code());
+        self.handle_process_exit(spawn_start, exit_code, attempts)
+            .await;
+    }
+
+    async fn detect_startup_bind_conflict(
+        &self,
+        stderr_lines: &Arc<Mutex<Vec<String>>>,
+        spawn_start: std::time::Instant,
+        attempts: &mut u32,
+    ) -> bool {
+        tokio::time::sleep(Duration::from_millis(350)).await;
+
+        if self.stderr_has_address_in_use(stderr_lines).await {
+            self.fail_port_in_use().await;
+            return true;
+        }
+
+        let exit_status = {
+            let mut guard = self.child.lock().await;
+            let status = if let Some(ref mut child) = *guard {
+                child.try_wait().ok().flatten()
+            } else {
+                None
+            };
+            if status.is_some() {
+                *guard = None;
+            }
+            status
+        };
+
+        if let Some(status) = exit_status {
+            self.remove_pid_file();
+            if self.stderr_has_address_in_use(stderr_lines).await {
+                self.fail_port_in_use().await;
+                return true;
+            }
+            self.handle_process_exit(spawn_start, status.code(), attempts)
+                .await;
+            return true;
+        }
+
+        false
+    }
+
+    async fn stderr_has_address_in_use(&self, stderr_lines: &Arc<Mutex<Vec<String>>>) -> bool {
+        let lines = stderr_lines.lock().await;
+        stderr_indicates_address_in_use(&lines)
+    }
+
+    async fn fail_port_in_use(&self) {
+        tracing::error!(
+            "External MCP port {} already in use; stop the conflicting process",
+            self.config.port
+        );
+        self.emit_event(
+            "failed",
+            Some(format!(
+                "Port {} already in use; stop the conflicting process first",
+                self.config.port
+            )),
+        );
+        self.kill_current().await;
+        self.cancel.cancel();
+    }
+
+    async fn handle_process_exit(
+        &self,
+        spawn_start: std::time::Instant,
+        exit_code: Option<i32>,
+        attempts: &mut u32,
+    ) {
+        let runtime = spawn_start.elapsed();
         tracing::warn!(
             "External MCP process exited after {:?} (code: {:?})",
             runtime,
@@ -533,9 +642,11 @@ impl ExternalMcpSupervisor {
                     tracing::warn!("Found orphaned external MCP process (PID {}), killing", pid);
                     let pgid = Pid::from_raw(pid);
                     let _ = killpg(pgid, Signal::SIGTERM);
+                    let _ = nix::sys::signal::kill(Pid::from_raw(pid), Signal::SIGTERM);
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     if process_exists(pid) {
                         let _ = killpg(pgid, Signal::SIGKILL);
+                        let _ = nix::sys::signal::kill(Pid::from_raw(pid), Signal::SIGKILL);
                     }
                 }
             }

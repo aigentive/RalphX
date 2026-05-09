@@ -183,3 +183,34 @@ v1_get_execution_capacity(project_id)
 ```
 
 **Rule:** Capacity is managed by RalphX scheduler. Agents observe; they do not force-start tasks.
+
+---
+
+## 7. One-Off Follow-Up After Plan Acceptance
+
+Trigger: user asks for a small additional change after an ideation session was accepted.
+
+```
+user asks for follow-up on accepted ideation plan
+│
+├─ v1_get_session_tasks(session_id)
+│
+├─ Is delivery_status = delivered OR is the PR/plan closed, terminal, or actively merging/repairing?
+│    ├─ YES → Start a new ideation continuation
+│    │        ❌ DO NOT append to a closed / merged / terminal / conflicting / actively merging plan
+│    │
+│    └─ NO  → v1_append_task_to_plan(
+│              session_id,
+│              title,
+│              steps,
+│              acceptance_criteria,
+│              depends_on_task_ids? )
+│              ✅ Open PR / waiting-on-PR is still appendable
+│
+└─ If append returns validation conflict
+     → Explain the existing plan can no longer accept tasks
+     → Start or suggest a new ideation continuation
+```
+
+**Rule:** `v1_append_task_to_plan` is for small follow-ups only. Use normal ideation for broad new
+scope, ambiguous requirements, cross-project planning, or anything that needs proposal debate.

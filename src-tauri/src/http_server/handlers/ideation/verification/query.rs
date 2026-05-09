@@ -73,38 +73,7 @@ pub async fn get_plan_verification(
     let summary_in_progress = resolved_session.verification_in_progress;
 
     let active_generation = resolved_session.verification_generation;
-    let selected_generation = params.generation.unwrap_or(active_generation);
-
-    let snapshot = match state
-        .app_state
-        .ideation_session_repo
-        .get_verification_run_snapshot(&session_id_obj, selected_generation)
-        .await
-    {
-        Ok(Some(snapshot)) => Some(snapshot),
-        Ok(None) => None,
-        Err(error) => {
-            error!(
-                "Failed to load native verification snapshot for {}: {}",
-                session_id, error
-            );
-            return Err(json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to load verification snapshot",
-            ));
-        }
-    };
-
-    if params.generation.is_some() && snapshot.is_none() {
-        return Err(json_error(
-            StatusCode::NOT_FOUND,
-            format!(
-                "Verification generation {} not found for session {}",
-                selected_generation, session_id
-            ),
-        ));
-    }
-
+    let requested_generation = params.generation;
     let child_state = match load_verification_child_state(
         &state.app_state.ideation_session_repo,
         &session_id_obj,
@@ -121,15 +90,77 @@ pub async fn get_plan_verification(
         }
     };
 
+    let active_snapshot = load_verification_snapshot(
+        state.app_state.ideation_session_repo.as_ref(),
+        &session_id_obj,
+        active_generation,
+        &session_id,
+    )
+    .await?;
+
     let stale_blank_active_generation = child_state.as_ref().is_some_and(|child_state| {
-        selected_generation == active_generation
-            && is_blank_orphaned_active_generation(
-                summary_in_progress,
-                snapshot.as_ref(),
-                child_state,
-            )
+        is_blank_orphaned_active_generation(
+            summary_in_progress,
+            active_snapshot.as_ref(),
+            child_state,
+        )
     });
-    let effective_snapshot = if stale_blank_active_generation {
+
+    let run_history_snapshots = collect_verification_run_history(
+        state.app_state.ideation_session_repo.as_ref(),
+        &session_id_obj,
+        active_generation,
+        10,
+    )
+    .await
+    .map_err(|error| {
+        error!(
+            "Failed to load verification run history for {}: {}",
+            session_id, error
+        );
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to load verification run history",
+        )
+    })?
+    .into_iter()
+    .filter(|run| {
+        should_include_verification_run(run, active_generation, stale_blank_active_generation)
+    })
+    .collect::<Vec<_>>();
+
+    let selected_generation = requested_generation.unwrap_or_else(|| {
+        run_history_snapshots
+            .first()
+            .map(|run| run.generation)
+            .unwrap_or(active_generation)
+    });
+
+    let snapshot = if selected_generation == active_generation {
+        active_snapshot
+    } else {
+        load_verification_snapshot(
+            state.app_state.ideation_session_repo.as_ref(),
+            &session_id_obj,
+            selected_generation,
+            &session_id,
+        )
+        .await?
+    };
+
+    if requested_generation.is_some() && snapshot.is_none() {
+        return Err(json_error(
+            StatusCode::NOT_FOUND,
+            format!(
+                "Verification generation {} not found for session {}",
+                selected_generation, session_id
+            ),
+        ));
+    }
+
+    let selected_stale_blank_active_generation =
+        selected_generation == active_generation && stale_blank_active_generation;
+    let effective_snapshot = if selected_stale_blank_active_generation {
         None
     } else {
         snapshot.as_ref()
@@ -225,47 +256,20 @@ pub async fn get_plan_verification(
         })
         .unwrap_or_default();
 
-    let run_history = collect_verification_run_history(
-        state.app_state.ideation_session_repo.as_ref(),
-        &session_id_obj,
-        active_generation,
-        10,
-    )
-    .await
-    .map_err(|error| {
-        error!(
-            "Failed to load verification run history for {}: {}",
-            session_id, error
-        );
-        json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to load verification run history",
-        )
-    })?
-    .into_iter()
-    .filter(|run| {
-        if !is_blank_in_progress_snapshot(run) {
-            return true;
-        }
-
-        if run.generation != active_generation {
-            return false;
-        }
-
-        !stale_blank_active_generation
-    })
-    .map(|run| VerificationRunHistoryEntryResponse {
-        generation: run.generation,
-        status: run.status.to_string(),
-        in_progress: run.in_progress,
-        current_round: (run.current_round > 0).then_some(run.current_round),
-        max_rounds: (run.max_rounds > 0).then_some(run.max_rounds),
-        round_count: run.rounds.len() as u32,
-        gap_count: run.current_gaps.len() as u32,
-        gap_score: Some(gap_score(&run.current_gaps)),
-        convergence_reason: run.convergence_reason,
-    })
-    .collect::<Vec<_>>();
+    let run_history = run_history_snapshots
+        .into_iter()
+        .map(|run| VerificationRunHistoryEntryResponse {
+            generation: run.generation,
+            status: run.status.to_string(),
+            in_progress: run.in_progress,
+            current_round: (run.current_round > 0).then_some(run.current_round),
+            max_rounds: (run.max_rounds > 0).then_some(run.max_rounds),
+            round_count: run.rounds.len() as u32,
+            gap_count: run.current_gaps.len() as u32,
+            gap_score: Some(gap_score(&run.current_gaps)),
+            convergence_reason: run.convergence_reason,
+        })
+        .collect::<Vec<_>>();
 
     let verification_generation = active_generation;
     let plan_version = if let Some(ref artifact_id) = resolved_session.plan_artifact_id {
@@ -281,12 +285,34 @@ pub async fn get_plan_verification(
         None
     };
 
+    let selected_verification_child = match load_verification_child_for_generation(
+        state.app_state.ideation_session_repo.as_ref(),
+        &session_id_obj,
+        selected_generation,
+        child_state
+            .as_ref()
+            .and_then(|state| state.latest_child.clone()),
+    )
+    .await
+    {
+        Ok(child) => child,
+        Err(error) => {
+            error!(
+                "Failed to load verification child for generation {} on {}: {}",
+                selected_generation, session_id, error
+            );
+            child_state
+                .as_ref()
+                .and_then(|state| state.latest_child.clone())
+        }
+    };
+
     // Step 5: Fetch verification child continuity data
     let verification_child = {
         use crate::http_server::types::VerificationChildInfo;
         use crate::infrastructure::agents::claude::ideation_activity_threshold_secs;
 
-        match child_state.and_then(|state| state.latest_child) {
+        match selected_verification_child {
             Some(child) => {
                 let child_id_str = child.id.as_str().to_string();
                 let child_session_id = IdeationSessionId::from_string(child_id_str.clone());
@@ -378,6 +404,87 @@ pub async fn get_plan_verification(
         run_history,
         verification_child,
     }))
+}
+
+async fn load_verification_snapshot(
+    repo: &dyn crate::domain::repositories::IdeationSessionRepository,
+    session_id: &IdeationSessionId,
+    generation: i32,
+    session_id_for_log: &str,
+) -> Result<Option<crate::domain::entities::VerificationRunSnapshot>, JsonError> {
+    match repo
+        .get_verification_run_snapshot(session_id, generation)
+        .await
+    {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => {
+            error!(
+                "Failed to load native verification snapshot for {}: {}",
+                session_id_for_log, error
+            );
+            Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load verification snapshot",
+            ))
+        }
+    }
+}
+
+fn verification_run_has_display_evidence(
+    run: &crate::domain::entities::VerificationRunSnapshot,
+) -> bool {
+    run.in_progress
+        || run.status != VerificationStatus::Unverified
+        || run.current_round > 0
+        || run.max_rounds > 0
+        || run.best_round_index.is_some()
+        || run.convergence_reason.is_some()
+        || !run.current_gaps.is_empty()
+        || !run.rounds.is_empty()
+}
+
+fn should_include_verification_run(
+    run: &crate::domain::entities::VerificationRunSnapshot,
+    active_generation: i32,
+    stale_blank_active_generation: bool,
+) -> bool {
+    if is_blank_in_progress_snapshot(run) && run.generation != active_generation {
+        return false;
+    }
+
+    if stale_blank_active_generation
+        && run.generation == active_generation
+        && is_blank_in_progress_snapshot(run)
+    {
+        return false;
+    }
+
+    verification_run_has_display_evidence(run)
+}
+
+async fn load_verification_child_for_generation(
+    repo: &dyn crate::domain::repositories::IdeationSessionRepository,
+    session_id: &IdeationSessionId,
+    generation: i32,
+    fallback_latest: Option<IdeationSession>,
+) -> crate::error::AppResult<Option<IdeationSession>> {
+    let children = repo.get_children(session_id).await?;
+    let title_marker = format!("(gen {generation})");
+    let prompt_marker = format!("generation: {generation}");
+
+    let matching_child = children.into_iter().find(|child| {
+        child.session_purpose == crate::domain::entities::SessionPurpose::Verification
+            && (child
+                .title
+                .as_deref()
+                .is_some_and(|title| title.contains(&title_marker))
+                || child
+                    .pending_initial_prompt
+                    .as_deref()
+                    .is_some_and(|prompt| prompt.contains(&prompt_marker)))
+    });
+
+    Ok(matching_child.or(fallback_latest))
 }
 
 async fn collect_verification_run_history(

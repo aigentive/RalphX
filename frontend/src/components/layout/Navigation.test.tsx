@@ -212,3 +212,55 @@ describe("Navigation — feature flag filtering", () => {
     expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
   });
 });
+
+describe("Navigation — hideViews (welcome mode)", () => {
+  const defaultProps = {
+    currentView: "agents" as const,
+    onViewChange: vi.fn(),
+    onOpenSettings: vi.fn(),
+  };
+
+  beforeEach(() => {
+    mockState = { activeTeams: {} };
+    mockFeatureFlags = { activityPage: true, extensibilityPage: true };
+    mockTaskCount = 10;
+  });
+
+  it("hides every view nav item when hideViews is true", () => {
+    render(<Navigation {...defaultProps} hideViews />);
+
+    expect(screen.queryByTestId("nav-agents")).toBeNull();
+    expect(screen.queryByTestId("nav-ideation")).toBeNull();
+    expect(screen.queryByTestId("nav-graph")).toBeNull();
+    expect(screen.queryByTestId("nav-kanban")).toBeNull();
+    expect(screen.queryByTestId("nav-insights")).toBeNull();
+    expect(screen.queryByTestId("nav-activity")).toBeNull();
+    expect(screen.queryByTestId("nav-extensibility")).toBeNull();
+  });
+
+  it("still renders the Settings button when hideViews is true", () => {
+    render(<Navigation {...defaultProps} hideViews />);
+
+    expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
+  });
+
+  it("hides the active team pill even when teams are active", () => {
+    mockState = {
+      activeTeams: {
+        "ctx-1": { teammates: { "t-1": {}, "t-2": {} } },
+      },
+    };
+
+    render(<Navigation {...defaultProps} hideViews />);
+
+    // Team count chip should not render
+    expect(screen.queryByText("2")).toBeNull();
+  });
+
+  it("renders all view items when hideViews is false (default)", () => {
+    render(<Navigation {...defaultProps} />);
+
+    expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
+  });
+});

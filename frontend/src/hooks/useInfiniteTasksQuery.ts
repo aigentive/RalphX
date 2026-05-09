@@ -122,7 +122,8 @@ export function useInfiniteTasksQuery({
     initialPageParam: 0,
     // Disable query during the plan loading gap: activePlanId is set (optimistic) but
     // executionPlanId hasn't been fetched yet → would fetch all tasks without a plan filter.
-    enabled: Boolean(projectId) && !(activePlanId && !executionPlanId),
+    // Allow when ideationSessionId is provided (Agents context filters by session, not execution plan).
+    enabled: Boolean(projectId) && !(activePlanId && !executionPlanId && !ideationSessionId),
     // Local-first app with event-driven updates: longer cache is safe and performant
     staleTime: 10 * 60 * 1000, // 10 minutes
     gcTime: 30 * 60 * 1000, // 30 minutes cache retention

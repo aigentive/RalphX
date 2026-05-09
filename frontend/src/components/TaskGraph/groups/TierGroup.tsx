@@ -49,7 +49,7 @@ export const TierGroup = memo(function TierGroup({ data, selected }: TierGroupPr
     <div
       className={cn(
         "rounded-md overflow-hidden",
-        "bg-[color-mix(in_srgb,_var(--bg-elevated)_45%,_transparent)]",
+        "bg-[var(--bg-elevated)]",
         "transition-all duration-200"
       )}
       style={{

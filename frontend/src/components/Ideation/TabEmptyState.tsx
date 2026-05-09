@@ -65,7 +65,7 @@ export function TabEmptyState({ icon, heading, description, onBrowse }: TabEmpty
               />
             </svg>
             <span
-              className="text-[10px] uppercase tracking-wider"
+              className="text-[0.625rem] uppercase tracking-wider"
               style={{ color: "var(--text-muted)" }}
             >
               From chat
@@ -82,7 +82,7 @@ export function TabEmptyState({ icon, heading, description, onBrowse }: TabEmpty
                 style={{ background: "var(--overlay-moderate)" }}
               />
               <span
-                className="text-[10px] uppercase tracking-wider"
+                className="text-[0.625rem] uppercase tracking-wider"
                 style={{ color: "var(--text-muted)" }}
               >
                 or

@@ -35,6 +35,10 @@ use common::MockGithubService;
 // Shared helpers
 // ============================================================================
 
+fn empty_startup_blocked_projects() -> Arc<HashSet<ProjectId>> {
+    Arc::new(HashSet::new())
+}
+
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,

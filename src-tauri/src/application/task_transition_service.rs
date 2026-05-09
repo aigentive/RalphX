@@ -34,11 +34,11 @@ use crate::domain::entities::{
     InternalStatus, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -448,7 +448,7 @@ impl Notifier for LoggingNotifier {
 
 /// Repository-backed DependencyManager for automatic task blocking/unblocking
 ///
-/// When a task completes (enters Approved state), this manager:
+/// When a task completes (enters Merged state), this manager:
 /// 1. Finds all tasks that were blocked by the completed task
 /// 2. For each blocked task, checks if ALL its blockers are now complete
 /// 3. If all blockers complete, transitions the task from Blocked to Ready
@@ -473,11 +473,11 @@ impl<R: Runtime> RepoBackedDependencyManager<R> {
     }
 
     /// Check if a blocking task satisfies the dependency (no longer blocking dependents).
-    /// Delegates to InternalStatus::is_dependency_satisfied() as the single source of truth.
+    /// Delegates to the shared dependency blocker classifier.
     /// If task doesn't exist (deleted), consider it satisfied (not blocking).
     async fn is_blocker_complete(&self, blocker_id: &TaskId) -> bool {
         if let Ok(Some(task)) = self.task_repo.get_by_id(blocker_id).await {
-            task.internal_status.is_dependency_satisfied()
+            !task.internal_status.is_active_dependency_blocker()
         } else {
             // If task doesn't exist, consider it "complete" (not blocking)
             true
@@ -496,19 +496,14 @@ impl<R: Runtime> RepoBackedDependencyManager<R> {
         let mut failed_names = Vec::new();
         for blocker_id in blockers {
             if let Ok(Some(task)) = self.task_repo.get_by_id(&blocker_id).await {
-                match task.internal_status {
-                    InternalStatus::Merged
-                    | InternalStatus::Cancelled
-                    | InternalStatus::Stopped
-                    | InternalStatus::MergeIncomplete => {
-                        // complete — not included
-                    }
-                    InternalStatus::Failed => {
-                        failed_names.push(task.title);
-                    }
-                    _ => {
-                        waiting_names.push(task.title);
-                    }
+                if !task.internal_status.is_active_dependency_blocker() {
+                    continue;
+                }
+
+                if task.internal_status == InternalStatus::Failed {
+                    failed_names.push(task.title);
+                } else {
+                    waiting_names.push(task.title);
                 }
             }
         }
@@ -869,6 +864,7 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     artifact_repo: Option<Arc<dyn ArtifactRepository>>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
 
     /// Activity event repository for emitting merge pipeline audit events.
@@ -951,6 +947,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             Arc::clone(&self.execution_state),
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
+            self.agent_provider_settings_repo.as_ref().map(Arc::clone),
             Arc::clone(
                 self.ideation_session_repo
                     .as_ref()
@@ -967,6 +964,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         execution_state: Arc<ExecutionState>,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
     ) -> Arc<dyn AgentSpawner> {
@@ -977,6 +975,11 @@ impl<R: Runtime> TaskTransitionService<R> {
             .with_harness_clients(agent_clients.iter_explicit_harness_clients())
             .with_repos(Arc::clone(&task_repo), Arc::clone(&project_repo))
             .with_execution_state(Arc::clone(&execution_state));
+        let spawner = if let Some(provider_repo) = agent_provider_settings_repo {
+            spawner.with_agent_provider_settings_repo(provider_repo)
+        } else {
+            spawner
+        };
         let spawner = if let (Some(execution_repo), Some(agent_lane_repo)) =
             (execution_settings_repo, agent_lane_settings_repo)
         {
@@ -1057,6 +1060,9 @@ impl<R: Runtime> TaskTransitionService<R> {
         if let Some(repo) = self.agent_lane_settings_repo.as_ref() {
             service = service.with_agent_lane_settings_repo(Arc::clone(repo));
         }
+        if let Some(repo) = self.agent_provider_settings_repo.as_ref() {
+            service = service.with_agent_provider_settings_repo(Arc::clone(repo));
+        }
         if let Some(repo) = self.plan_branch_repo.as_ref() {
             service = service.with_plan_branch_repo(Arc::clone(repo));
         }
@@ -1101,6 +1107,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             Arc::clone(&task_repo),
             Arc::clone(&project_repo),
             Arc::clone(&execution_state),
+            None,
             None,
             None,
             Arc::clone(&ideation_session_repo),
@@ -1207,6 +1214,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             artifact_repo: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             review_repo: None,
             activity_event_repo: activity_event_repo_for_services,
             team_mode: None,
@@ -1293,8 +1301,16 @@ impl<R: Runtime> TaskTransitionService<R> {
             .as_ref()
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo));
+        let app_agent_provider_settings_repo = self
+            ._app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo));
         if let Some(agent_lane_settings_repo) = app_agent_lane_settings_repo.as_ref() {
             self.agent_lane_settings_repo = Some(Arc::clone(agent_lane_settings_repo));
+        }
+        if let Some(agent_provider_settings_repo) = app_agent_provider_settings_repo.as_ref() {
+            self.agent_provider_settings_repo = Some(Arc::clone(agent_provider_settings_repo));
         }
 
         self.execution_settings_repo = Some(Arc::clone(&repo));
@@ -1310,6 +1326,16 @@ impl<R: Runtime> TaskTransitionService<R> {
         repo: Arc<dyn AgentLaneSettingsRepository>,
     ) -> Self {
         self.agent_lane_settings_repo = Some(Arc::clone(&repo));
+        self.rebuild_chat_service();
+        self.rebuild_agent_spawner();
+        self
+    }
+
+    pub fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(Arc::clone(&repo));
         self.rebuild_chat_service();
         self.rebuild_agent_spawner();
         self
@@ -2296,6 +2322,64 @@ impl<R: Runtime> TaskTransitionService<R> {
                     "merge_hook_failure_repeat_count": 0,
                     "merge_hook_reexecution_requested": true,
                 }),
+            );
+            task.touch();
+            self.task_repo.update(&task).await?;
+
+            let updated = if task.internal_status == InternalStatus::RevisionNeeded {
+                task
+            } else {
+                self.transition_task_corrective_with_exit(
+                    task_id,
+                    InternalStatus::RevisionNeeded,
+                    None,
+                    history_actor,
+                )
+                .await?
+            };
+
+            if execute_now {
+                self.execute_entry_actions(task_id, &updated, InternalStatus::RevisionNeeded)
+                    .await;
+                return self
+                    .task_repo
+                    .get_by_id(task_id)
+                    .await?
+                    .ok_or_else(|| AppError::TaskNotFound(task_id.as_str().to_string()));
+            }
+
+            Ok(updated)
+        }
+    }
+
+    /// Reroute merge scope-drift guard failures back into revision flow.
+    ///
+    /// This is the shared repair path for merge entry actions that detect
+    /// unclassified out-of-scope files after review. It intentionally uses a
+    /// corrective transition because `PendingMerge -> RevisionNeeded` is not a
+    /// normal user workflow transition.
+    #[track_caller]
+    #[allow(clippy::manual_async_fn)]
+    pub fn reroute_merge_scope_drift_to_revision<'a>(
+        &'a self,
+        task_id: &'a TaskId,
+        metadata: serde_json::Value,
+        execute_now: bool,
+        history_actor: &'a str,
+    ) -> impl Future<Output = AppResult<Task>> + 'a {
+        async move {
+            let mut task = self
+                .task_repo
+                .get_by_id(task_id)
+                .await?
+                .ok_or_else(|| AppError::TaskNotFound(task_id.as_str().to_string()))?;
+
+            if task.internal_status == InternalStatus::ReExecuting {
+                return Ok(task);
+            }
+
+            crate::domain::state_machine::transition_handler::merge_metadata_into(
+                &mut task, &metadata,
             );
             task.touch();
             self.task_repo.update(&task).await?;

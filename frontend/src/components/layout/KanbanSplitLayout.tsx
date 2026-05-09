@@ -83,7 +83,7 @@ export function KanbanSplitLayout({ children, projectId, footer }: KanbanSplitLa
       ref={containerRef}
       data-testid="kanban-split-layout"
       className="flex h-full overflow-hidden"
-      style={{ backgroundColor: "var(--bg-base)" }}
+      style={{ backgroundColor: "var(--app-content-bg)" }}
     >
       {/* Left Section - Kanban board */}
       <div
@@ -132,6 +132,7 @@ export function KanbanSplitLayout({ children, projectId, footer }: KanbanSplitLa
           className="flex flex-col overflow-hidden shrink-0 border-l border-[var(--border-subtle)]"
           style={{
             width: `${chatPanelWidth}px`,
+            borderColor: "var(--app-content-border)",
             transition: isResizing ? "none" : "width 150ms ease-out",
           }}
         >

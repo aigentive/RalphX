@@ -258,7 +258,7 @@ fn test_generate_task_context_hints_prioritizes_dependency_and_branch_context() 
         TaskDependencySummary {
             id: TaskId::new(),
             title: "Prepare API".to_string(),
-            internal_status: InternalStatus::Approved,
+            internal_status: InternalStatus::Merged,
         },
         TaskDependencySummary {
             id: TaskId::new(),

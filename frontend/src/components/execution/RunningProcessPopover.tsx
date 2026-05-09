@@ -206,7 +206,7 @@ export function RunningProcessPopover({
               data-testid="open-settings-button"
               onClick={onOpenSettings}
               className={cn(
-                "flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px]",
+                "flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.6875rem]",
                 "transition-colors hover:bg-white/[0.05]"
               )}
               style={{ color: "var(--text-muted)" }}
@@ -224,7 +224,7 @@ export function RunningProcessPopover({
                 aria-selected={activeTab === "execution"}
                 onClick={() => setActiveTab("execution")}
                 className={cn(
-                  "px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-colors"
+                  "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
                 )}
                 style={
                   activeTab === "execution"
@@ -239,7 +239,7 @@ export function RunningProcessPopover({
                 aria-selected={activeTab === "ideation"}
                 onClick={() => setActiveTab("ideation")}
                 className={cn(
-                  "px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-colors"
+                  "px-2.5 py-0.5 rounded-full text-[0.6875rem] font-medium transition-colors"
                 )}
                 style={
                   activeTab === "ideation"
@@ -271,7 +271,7 @@ export function RunningProcessPopover({
 
         {/* Footer — tab-aware capacity text */}
         <div
-          className="flex items-center justify-between px-3 py-2 text-[11px]"
+          className="flex items-center justify-between px-3 py-2 text-[0.6875rem]"
           style={{
             borderTop: "1px solid var(--overlay-weak)",
             color: "var(--text-muted)",

@@ -7,7 +7,7 @@
  */
 import { ListToolsRequestSchema, CallToolRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 import { handleListProjects, handleGetProjectStatus, handleGetPipelineOverview, } from "./discovery.js";
-import { handleStartIdeation, handleGetIdeationStatus, handleSendIdeationMessage, handleGetIdeationMessages, handleListProposals, handleGetProposalDetail, handleGetPlan, handleAcceptPlanAndSchedule, handleModifyProposal, handleAnalyzeDependencies, handleTriggerPlanVerification, handleGetPlanVerification, handleListIdeationSessions, handleGetSessionTasks, } from "./ideation.js";
+import { handleStartIdeation, handleGetIdeationStatus, handleSendIdeationMessage, handleGetIdeationMessages, handleListProposals, handleGetProposalDetail, handleGetPlan, handleAcceptPlanAndSchedule, handleModifyProposal, handleAnalyzeDependencies, handleTriggerPlanVerification, handleGetPlanVerification, handleListIdeationSessions, handleGetSessionTasks, handleAppendTaskToPlan, } from "./ideation.js";
 import { handleGetTaskDetail, handleGetTaskDiff, handleGetReviewSummary, handleApproveReview, handleRequestChanges, handleGetMergePipeline, handleResolveEscalation, handlePauseTask, handleCancelTask, handleRetryTask, handleResumeScheduling, handleCreateTaskNote, } from "./pipeline.js";
 import { handleGetRecentEvents, handleSubscribeEvents, handleGetAttentionItems, handleGetExecutionCapacity, handleRegisterWebhook, handleUnregisterWebhook, handleListWebhooks, handleGetWebhookHealth, } from "./events.js";
 import { handleBatchTaskStatus, handleGetTaskSteps } from "./tasks.js";
@@ -33,6 +33,7 @@ export const TOOL_CATEGORIES = {
         "v1_get_plan_verification",
         "v1_list_ideation_sessions",
         "v1_get_session_tasks",
+        "v1_append_task_to_plan",
     ],
     tasks: ["v1_get_task_steps", "v1_batch_task_status"],
     pipeline: [
@@ -315,6 +316,36 @@ export function registerTools(server, getKeyContext) {
                         changed_since: { type: "string", description: "ISO 8601 / RFC3339 timestamp — only return tasks updated after this time" },
                     },
                     required: ["session_id"],
+                },
+            },
+            {
+                name: "v1_append_task_to_plan",
+                description: "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
+                    "Use this for small follow-ups after plan acceptance; start a new ideation instead once the PR/plan is closed, merged, terminal, or actively merging.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        session_id: { type: "string", description: "Accepted ideation session ID" },
+                        title: { type: "string", description: "Short task title" },
+                        description: { type: "string", description: "Task description and implementation intent" },
+                        steps: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "Concrete execution steps for the appended task",
+                        },
+                        acceptance_criteria: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "Acceptance criteria the task must satisfy",
+                        },
+                        depends_on_task_ids: {
+                            type: "array",
+                            items: { type: "string" },
+                            description: "Optional existing task IDs that must complete first",
+                        },
+                        priority: { type: "number", description: "Optional numeric priority" },
+                    },
+                    required: ["session_id", "title", "steps", "acceptance_criteria"],
                 },
             },
             // Task Steps
@@ -687,6 +718,9 @@ export function registerTools(server, getKeyContext) {
                 break;
             case "v1_get_session_tasks":
                 text = await handleGetSessionTasks(args, context);
+                break;
+            case "v1_append_task_to_plan":
+                text = await handleAppendTaskToPlan(args, context);
                 break;
             // --- Task Steps ---
             case "v1_get_task_steps":

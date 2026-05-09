@@ -1002,7 +1002,7 @@ impl<'a> super::TransitionHandler<'a> {
         .with_source_branch(task.task_branch.as_deref().unwrap_or("unknown"))
         .with_attempt(attempt_count);
 
-        recovery.append_event(event);
+        recovery.append_event_with_state(event, MergeRecoveryState::Retrying);
 
         match recovery.update_task_metadata(task.metadata.as_deref()) {
             Ok(updated_json) => {

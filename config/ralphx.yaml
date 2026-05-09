@@ -109,7 +109,7 @@ reconciliation:
   # reconciliation.rs — total wall-clock limit for QA state (minutes)
   qa_max_wall_clock_minutes: 15 # Env: RALPHX_RECONCILIATION_QA_MAX_WALL_CLOCK_MINUTES
   # side_effects.rs — max wall-clock seconds for programmatic merge attempt (cleanup + strategy dispatch)
-  attempt_merge_deadline_secs: 60 # Env: RALPHX_RECONCILIATION_ATTEMPT_MERGE_DEADLINE_SECS
+  attempt_merge_deadline_secs: 120 # Env: RALPHX_RECONCILIATION_ATTEMPT_MERGE_DEADLINE_SECS
   # merge_outcome_handler.rs — max wall-clock seconds for post-merge validation commands (separate from git deadline)
   validation_deadline_secs: 1200 # Env: RALPHX_RECONCILIATION_VALIDATION_DEADLINE_SECS
   # handlers/merge.rs — grace period after merger agent run created before checking run-state vs registry (covers agent startup)

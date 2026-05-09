@@ -3,14 +3,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::application::agent_workspace_bridge::{
+    dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
+};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
+use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
+use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
     TaskRepository,
 };
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
+use crate::utils::backend_endpoint::backend_http_port;
 use tauri::Manager;
+use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
+
+const AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub async fn recover_memory_archive_jobs_on_startup(
     memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
@@ -117,6 +126,48 @@ pub fn spawn_cleanup_loops(
     });
 }
 
+pub(crate) fn spawn_agent_workspace_bridge_dispatcher(
+    bridge_deps: AgentWorkspaceBridgeDeps,
+    chat_deps: ChatRuntimeFactoryDeps,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            let chat_service = build_chat_service_from_deps(
+                Some(app_handle.clone()),
+                Some(Arc::clone(&execution_state)),
+                &chat_deps,
+            );
+            match dispatch_agent_workspace_bridge_events_once_with_deps(&bridge_deps, &chat_service)
+                .await
+            {
+                Ok(summary) if summary.wake_up_count > 0 || summary.error_count > 0 => {
+                    tracing::info!(
+                        projects = summary.project_count,
+                        workspaces = summary.workspace_count,
+                        wakeups = summary.wake_up_count,
+                        queued = summary.queued_wake_up_count,
+                        errors = summary.error_count,
+                        "Agent workspace bridge dispatcher tick completed"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Agent workspace bridge dispatcher tick failed"
+                    );
+                }
+            }
+        }
+    });
+}
+
 pub async fn maybe_start_external_mcp(
     app_handle: tauri::AppHandle,
     wait_for_backend_ready: impl Fn(
@@ -136,12 +187,16 @@ pub async fn maybe_start_external_mcp(
         }
     };
 
-    match wait_for_backend_ready(3847, Duration::from_secs(30)).await {
+    let backend_port = backend_http_port();
+    match wait_for_backend_ready(backend_port, Duration::from_secs(30)).await {
         Err(e) => {
             warn!("Backend not ready, skipping external MCP start: {}", e);
         }
         Ok(()) => {
-            info!("Backend :3847 ready, starting external MCP server");
+            info!(
+                port = backend_port,
+                "Backend ready, starting external MCP server"
+            );
             let app_data_dir = app_handle
                 .path()
                 .app_data_dir()

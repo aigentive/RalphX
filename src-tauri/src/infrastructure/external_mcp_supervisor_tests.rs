@@ -4,7 +4,7 @@ mod tests {
 
     use crate::infrastructure::agents::claude::ExternalMcpConfig;
     use crate::infrastructure::external_mcp_supervisor::{
-        is_test_environment_for_test, ExternalMcpHandle,
+        is_test_environment_for_test, stderr_indicates_address_in_use, ExternalMcpHandle,
     };
 
     // ── Helper ────────────────────────────────────────────────────────────
@@ -41,8 +41,14 @@ mod tests {
         let first = Arc::new(1u32);
         let second = Arc::new(2u32);
 
-        assert!(lock.set(Arc::clone(&first)).is_ok(), "First set must succeed");
-        assert!(lock.set(Arc::clone(&second)).is_err(), "Second set must fail");
+        assert!(
+            lock.set(Arc::clone(&first)).is_ok(),
+            "First set must succeed"
+        );
+        assert!(
+            lock.set(Arc::clone(&second)).is_err(),
+            "Second set must fail"
+        );
         assert_eq!(*lock.get().unwrap(), first, "Lock must retain first value");
     }
 
@@ -87,7 +93,10 @@ mod tests {
 
         // Double remove should not panic
         let result = std::fs::remove_file(&pid_path);
-        assert!(result.is_err(), "Second remove must return error (already gone)");
+        assert!(
+            result.is_err(),
+            "Second remove must return error (already gone)"
+        );
     }
 
     // ── Test 4: cleanup_orphan removes stale PID file when process is gone ─
@@ -112,35 +121,51 @@ mod tests {
         }
         let _ = std::fs::remove_file(&pid_path);
 
-        assert!(!pid_path.exists(), "Stale PID file must be removed by cleanup");
+        assert!(
+            !pid_path.exists(),
+            "Stale PID file must be removed by cleanup"
+        );
     }
 
     // ── Test 5: EADDRINUSE detection logic ────────────────────────────────
 
     #[test]
     fn test_eaddrinuse_detection_patterns() {
-        let lines = vec![
-            "Error: listen EADDRINUSE: address already in use :::3848".to_string(),
-        ];
-        let detected = lines.iter().any(|l| {
-            l.contains("EADDRINUSE") || l.contains("address already in use")
-        });
-        assert!(detected, "Should detect EADDRINUSE pattern");
+        let lines = vec!["Error: listen EADDRINUSE: address already in use :::3848".to_string()];
+        assert!(
+            stderr_indicates_address_in_use(&lines),
+            "Should detect EADDRINUSE pattern"
+        );
 
         let lines_other = vec!["Some random error".to_string()];
-        let not_detected = lines_other.iter().any(|l| {
-            l.contains("EADDRINUSE") || l.contains("address already in use")
-        });
-        assert!(!not_detected, "Should NOT detect EADDRINUSE for unrelated errors");
+        assert!(
+            !stderr_indicates_address_in_use(&lines_other),
+            "Should NOT detect EADDRINUSE for unrelated errors"
+        );
     }
 
     #[test]
     fn test_eaddrinuse_detection_variant() {
         let lines = vec!["address already in use".to_string()];
-        let detected = lines.iter().any(|l| {
-            l.contains("EADDRINUSE") || l.contains("address already in use")
-        });
-        assert!(detected, "Should detect 'address already in use' variant");
+        assert!(
+            stderr_indicates_address_in_use(&lines),
+            "Should detect 'address already in use' variant"
+        );
+    }
+
+    #[test]
+    fn test_eaddrinuse_detection_from_node_bind_error() {
+        let lines = vec![
+            "[ralphx-external-mcp] Fatal startup error: Error: listen EADDRINUSE: address already in use 127.0.0.1:3858".to_string(),
+            "    at Server.setupListenHandle [as _listen2] (node:net:1940:16)".to_string(),
+            "  code: 'EADDRINUSE',".to_string(),
+            "  port: 3858".to_string(),
+        ];
+
+        assert!(
+            stderr_indicates_address_in_use(&lines),
+            "Should detect Node bind conflicts after a stale server answers health checks"
+        );
     }
 
     // ── Test 6: Health check phase logic (unit) ────────────────────────────

@@ -18,7 +18,9 @@ use super::has_meaningful_output;
 use crate::application::question_state::QuestionState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
-use crate::domain::entities::{ChatContextType, ChatConversationId, InternalStatus, TaskId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
+};
 use crate::domain::repositories::{
     ActivityEventRepository, ArtifactRepository, ChatMessageRepository,
     IdeationSessionRepository, TaskRepository,
@@ -26,6 +28,9 @@ use crate::domain::repositories::{
 use crate::domain::services::MessageQueue;
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
+
+const HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT: &str =
+    "RalphX hidden resume-in-place message was delivered.";
 
 pub(super) fn queue_processing_blocked_by_pause(
     context_type: ChatContextType,
@@ -50,6 +55,54 @@ fn with_resume_in_place_metadata(metadata_override: Option<String>) -> Option<St
         obj.insert("resume_in_place".to_string(), serde_json::json!(true));
     }
     Some(value.to_string())
+}
+
+fn hidden_resume_in_place_marker_metadata(metadata_override: Option<&str>) -> Option<String> {
+    let raw = metadata_override?;
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return None;
+    };
+    let obj = value.as_object_mut()?;
+    if obj
+        .get("persist_hidden_marker")
+        .and_then(|value| value.as_bool())
+        != Some(true)
+    {
+        return None;
+    }
+    obj.remove("resume_in_place");
+    obj.remove("persist_hidden_marker");
+    obj.insert("hidden_from_ui".to_string(), serde_json::json!(true));
+    obj.insert("recovery_context".to_string(), serde_json::json!(true));
+    Some(value.to_string())
+}
+
+async fn persist_hidden_resume_in_place_marker(
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: ChatConversationId,
+    metadata_override: Option<&str>,
+) {
+    let Some(marker_metadata) = hidden_resume_in_place_marker_metadata(metadata_override) else {
+        return;
+    };
+    let mut marker = chat_service_context::create_user_message(
+        context_type,
+        context_id,
+        HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT,
+        conversation_id,
+        Some(marker_metadata),
+        None,
+    );
+    marker.role = MessageRole::System;
+    if let Err(error) = chat_message_repo.create(marker).await {
+        tracing::warn!(
+            error = %error,
+            %conversation_id,
+            "failed to persist hidden resume-in-place marker"
+        );
+    }
 }
 
 /// Process all queued messages for a context with retry loop.
@@ -452,6 +505,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                             let blocks = outcome.content_blocks;
                             let provider_session_id = outcome.session_id;
                             let queue_stderr = outcome.stderr_text;
+                            if resume_in_place {
+                                persist_hidden_resume_in_place_marker(
+                                    chat_message_repo,
+                                    context_type,
+                                    context_id,
+                                    conversation_id.clone(),
+                                    queued_msg.metadata_override.as_deref(),
+                                )
+                                .await;
+                            }
                             if let Some(ref provider_session_id) = provider_session_id {
                                 let _ = chat_message_repo
                                     .update_provider_session_ref(

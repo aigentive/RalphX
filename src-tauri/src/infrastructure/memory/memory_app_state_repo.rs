@@ -63,6 +63,15 @@ impl AppStateRepository for MemoryAppStateRepository {
         settings.execution_halt_mode = halt_mode;
         Ok(())
     }
+
+    async fn set_last_seen_release_notes_version(
+        &self,
+        version: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut settings = self.settings.write().await;
+        settings.last_seen_release_notes_version = version.map(str::to_string);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

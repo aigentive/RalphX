@@ -1,7 +1,7 @@
 // Client capabilities
 // Information about what features an agentic client supports
 
-use super::types::ClientType;
+use super::{harness::AgentHarnessKind, model_registry::built_in_agent_models, types::ClientType};
 
 /// Information about a model available to a client
 #[derive(Debug, Clone)]
@@ -70,11 +70,12 @@ impl ClientCapabilities {
             supports_filesystem: true,
             supports_streaming: true,
             supports_mcp: true,
-            max_context_tokens: 200_000,
-            models: vec![
-                ModelInfo::new("gpt-5.4", "GPT-5.4", 128_000),
-                ModelInfo::new("gpt-5.4-mini", "GPT-5.4 Mini", 128_000),
-            ],
+            max_context_tokens: 1_000_000,
+            models: built_in_agent_models()
+                .into_iter()
+                .filter(|model| model.provider == AgentHarnessKind::Codex)
+                .map(|model| ModelInfo::new(model.model_id, model.menu_label, 128_000))
+                .collect(),
         }
     }
 

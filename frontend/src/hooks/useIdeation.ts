@@ -65,11 +65,18 @@ export const ideationKeys = {
  * );
  * ```
  */
-export function useIdeationSession(sessionId: string) {
+interface IdeationQueryOptions {
+  enabled?: boolean;
+}
+
+export function useIdeationSession(
+  sessionId: string,
+  options: IdeationQueryOptions = {}
+) {
   return useQuery<SessionWithDataResponse | null, Error>({
     queryKey: ideationKeys.sessionWithData(sessionId),
     queryFn: () => ideationApi.sessions.getWithData(sessionId),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && (options.enabled ?? true),
     /**
      * Explicitly return null instead of using global placeholderData.
      *
@@ -97,11 +104,14 @@ export function useIdeationSession(sessionId: string) {
  * return <SessionList sessions={sessions ?? []} />;
  * ```
  */
-export function useIdeationSessions(projectId: string) {
+export function useIdeationSessions(
+  projectId: string,
+  options: IdeationQueryOptions = {}
+) {
   return useQuery<IdeationSessionResponse[], Error>({
     queryKey: ideationKeys.sessionList(projectId),
     queryFn: () => ideationApi.sessions.list(projectId),
-    enabled: Boolean(projectId),
+    enabled: Boolean(projectId) && (options.enabled ?? true),
   });
 }
 

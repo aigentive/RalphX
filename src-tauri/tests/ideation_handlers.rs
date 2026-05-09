@@ -4200,6 +4200,126 @@ async fn test_get_plan_verification_filters_stale_blank_historical_generation_fr
 }
 
 #[tokio::test]
+async fn test_get_plan_verification_defaults_to_latest_displayable_generation() {
+    let state = setup_test_state().await;
+    let project_id = ProjectId::new();
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(project_id.clone())
+        .verification_generation(2)
+        .verification_status(VerificationStatus::Unverified)
+        .build();
+    let session_id = session.id.clone();
+    let session_id_str = session.id.as_str().to_string();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_session_repo
+        .save_verification_run_snapshot(
+            &session_id,
+            &make_snapshot(
+                1,
+                VerificationStatus::Verified,
+                false,
+                4,
+                5,
+                vec![make_gap("medium", "completeness", "Historical gap")],
+                vec![make_round(vec!["fp-a"], 1)],
+                Some("max_rounds"),
+                Some(0),
+            ),
+        )
+        .await
+        .unwrap();
+
+    state
+        .app_state
+        .ideation_session_repo
+        .save_verification_run_snapshot(
+            &session_id,
+            &make_snapshot(
+                2,
+                VerificationStatus::Unverified,
+                false,
+                0,
+                0,
+                vec![],
+                vec![],
+                None,
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+
+    let historical_child = IdeationSessionBuilder::new()
+        .project_id(project_id.clone())
+        .parent_session_id(session_id.clone())
+        .session_purpose(SessionPurpose::Verification)
+        .title("Auto-verification (gen 1)")
+        .status(IdeationSessionStatus::Archived)
+        .build();
+    let historical_child_id = historical_child.id.as_str().to_string();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(historical_child)
+        .await
+        .unwrap();
+
+    let blank_child = IdeationSessionBuilder::new()
+        .project_id(project_id)
+        .parent_session_id(session_id.clone())
+        .session_purpose(SessionPurpose::Verification)
+        .title("Auto-verification (gen 2)")
+        .status(IdeationSessionStatus::Archived)
+        .build();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(blank_child)
+        .await
+        .unwrap();
+
+    let current = get_plan_verification(
+        State(state),
+        unrestricted_scope(),
+        Path(session_id_str),
+        default_verification_query(),
+    )
+    .await
+    .expect("default query must fall back to the latest displayable verification")
+    .0;
+
+    assert_eq!(current.verification_generation, 2);
+    assert_eq!(current.selected_generation, 1);
+    assert_eq!(current.status, "verified");
+    assert_eq!(current.current_round, Some(4));
+    assert_eq!(current.round_details.len(), 1);
+    assert_eq!(
+        current
+            .run_history
+            .iter()
+            .map(|entry| entry.generation)
+            .collect::<Vec<_>>(),
+        vec![1],
+        "blank generation 2 should not be exposed as a selectable run"
+    );
+    let child = current
+        .verification_child
+        .expect("selected historical generation should expose its verifier child");
+    assert_eq!(child.latest_child_session_id, historical_child_id);
+    assert!(child.latest_child_archived);
+    assert_eq!(child.active_child_session_id, None);
+}
+
+#[tokio::test]
 async fn test_mark_verification_infra_failure_remaps_child_and_resets_parent_to_unverified() {
     let state = setup_test_state().await;
     let project_id = ProjectId::new();

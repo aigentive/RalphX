@@ -167,17 +167,25 @@ pub(crate) async fn resolve_agent_spawn_settings(
         model,
         logical_effort,
         claude_effort: logical_effort.map(|effort| effort.to_legacy_claude_effort().to_string()),
-        approval_policy: configured_primary_settings
-            .as_ref()
-            .and_then(|settings| settings.approval_policy.clone())
+        approval_policy: default_approval_policy_for_harness(effective_harness)
+            .map(str::to_string)
+            .or_else(|| {
+                configured_primary_settings
+                    .as_ref()
+                    .and_then(|settings| settings.approval_policy.clone())
+            })
             .or_else(|| {
                 harness_primary_defaults
                     .as_ref()
                     .and_then(|settings| settings.approval_policy.clone())
             }),
-        sandbox_mode: configured_primary_settings
-            .as_ref()
-            .and_then(|settings| settings.sandbox_mode.clone())
+        sandbox_mode: default_sandbox_mode_for_harness(effective_harness)
+            .map(str::to_string)
+            .or_else(|| {
+                configured_primary_settings
+                    .as_ref()
+                    .and_then(|settings| settings.sandbox_mode.clone())
+            })
             .or_else(|| {
                 harness_primary_defaults
                     .as_ref()

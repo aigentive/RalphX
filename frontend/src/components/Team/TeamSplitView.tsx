@@ -36,7 +36,7 @@ export const TeamSplitView = React.memo(function TeamSplitView({
         className="flex items-center justify-center h-full"
         style={{ backgroundColor: "var(--bg-base)" }}
       >
-        <span className="text-[13px]" style={{ color: "var(--text-muted)" }}>
+        <span className="text-[0.8125rem]" style={{ color: "var(--text-muted)" }}>
           No active team
         </span>
       </div>

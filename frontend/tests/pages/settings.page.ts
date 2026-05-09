@@ -1,4 +1,4 @@
-import { Page, Locator } from "@playwright/test";
+import { expect, Page, Locator } from "@playwright/test";
 import { BasePage } from "./base.page";
 
 export class SettingsPage extends BasePage {
@@ -12,28 +12,25 @@ export class SettingsPage extends BasePage {
   // Execution Section
   readonly executionSection: Locator;
   readonly maxConcurrentTasksInput: Locator;
-  readonly autoCommitToggle: Locator;
-  readonly pauseOnFailureToggle: Locator;
-  readonly reviewBeforeDestructiveToggle: Locator;
-
-  // Model Section
-  readonly modelSection: Locator;
-  readonly modelSelect: Locator;
-  readonly allowOpusUpgradeToggle: Locator;
+  readonly projectIdeationMaxInput: Locator;
+  readonly globalMaxConcurrentInput: Locator;
+  readonly globalIdeationMaxInput: Locator;
+  readonly allowIdeationBorrowIdleExecutionToggle: Locator;
 
   // Review Section
   readonly reviewSection: Locator;
-  readonly aiReviewEnabledToggle: Locator;
-  readonly aiReviewAutoFixToggle: Locator;
-  readonly requireFixApprovalToggle: Locator;
   readonly requireHumanReviewToggle: Locator;
   readonly maxFixAttemptsInput: Locator;
+  readonly maxRevisionCyclesInput: Locator;
 
-  // Supervisor Section
-  readonly supervisorSection: Locator;
-  readonly supervisorEnabledToggle: Locator;
-  readonly loopThresholdInput: Locator;
-  readonly stuckTimeoutInput: Locator;
+  // External MCP Section
+  readonly externalMcpSection: Locator;
+  readonly externalMcpEnabledToggle: Locator;
+  readonly externalMcpHostInput: Locator;
+  readonly externalMcpPortInput: Locator;
+  readonly externalMcpAuthTokenInput: Locator;
+  readonly externalMcpNodePathInput: Locator;
+  readonly externalMcpSaveButton: Locator;
 
   constructor(page: Page) {
     super(page);
@@ -48,28 +45,25 @@ export class SettingsPage extends BasePage {
     // Execution Section
     this.executionSection = page.locator("text=Control task execution behavior and concurrency").locator("..");
     this.maxConcurrentTasksInput = page.locator('[data-testid="max-concurrent-tasks"]');
-    this.autoCommitToggle = page.locator('[data-testid="auto-commit"]');
-    this.pauseOnFailureToggle = page.locator('[data-testid="pause-on-failure"]');
-    this.reviewBeforeDestructiveToggle = page.locator('[data-testid="review-before-destructive"]');
-
-    // Model Section
-    this.modelSection = page.locator("text=Configure AI model selection").locator("..");
-    this.modelSelect = page.locator('[data-testid="model-selection"]');
-    this.allowOpusUpgradeToggle = page.locator('[data-testid="allow-opus-upgrade"]');
+    this.projectIdeationMaxInput = page.locator('[data-testid="project-ideation-max"]');
+    this.globalMaxConcurrentInput = page.locator('[data-testid="global-max-concurrent"]');
+    this.globalIdeationMaxInput = page.locator('[data-testid="global-ideation-max"]');
+    this.allowIdeationBorrowIdleExecutionToggle = page.locator('[data-testid="allow-ideation-borrow-idle-execution"]');
 
     // Review Section
-    this.reviewSection = page.locator("text=Configure code review automation").locator("..");
-    this.aiReviewEnabledToggle = page.locator('[data-testid="ai-review-enabled"]');
-    this.aiReviewAutoFixToggle = page.locator('[data-testid="ai-review-auto-fix"]');
-    this.requireFixApprovalToggle = page.locator('[data-testid="require-fix-approval"]');
+    this.reviewSection = page.locator("text=Configure global review policy for all projects").locator("..");
     this.requireHumanReviewToggle = page.locator('[data-testid="require-human-review"]');
     this.maxFixAttemptsInput = page.locator('[data-testid="max-fix-attempts"]');
+    this.maxRevisionCyclesInput = page.locator('[data-testid="max-revision-cycles"]');
 
-    // Supervisor Section
-    this.supervisorSection = page.locator("text=Configure watchdog monitoring for stuck or looping agents").locator("..");
-    this.supervisorEnabledToggle = page.locator('[data-testid="supervisor-enabled"]');
-    this.loopThresholdInput = page.locator('[data-testid="loop-threshold"]');
-    this.stuckTimeoutInput = page.locator('[data-testid="stuck-timeout"]');
+    // External MCP Section
+    this.externalMcpSection = page.locator("text=Configure external MCP server access").locator("..");
+    this.externalMcpEnabledToggle = page.locator('[data-testid="ext-mcp-enabled"]');
+    this.externalMcpHostInput = page.locator('[data-testid="ext-mcp-host"]');
+    this.externalMcpPortInput = page.locator('[data-testid="ext-mcp-port"]');
+    this.externalMcpAuthTokenInput = page.locator('[data-testid="ext-mcp-auth-token"]');
+    this.externalMcpNodePathInput = page.locator('[data-testid="ext-mcp-node-path"]');
+    this.externalMcpSaveButton = page.locator('[data-testid="ext-mcp-save"]');
   }
 
   /** Open settings dialog by clicking the nav button */
@@ -97,14 +91,29 @@ export class SettingsPage extends BasePage {
 
   /** Select a section by its ID using the left-rail navigation */
   async selectSection(sectionId: string) {
-    // Find the left-rail nav button whose data-section matches, or fall back to text-based nav
-    const sectionButton = this.settingsDialog.getByRole("button", { name: new RegExp(`^${sectionId}$`, "i") });
+    const sectionButton = this.settingsDialog.locator(
+      `[data-testid="settings-section-${sectionId}"]`,
+    );
     if (await sectionButton.isVisible()) {
       await sectionButton.click();
     } else {
-      // Fallback: open via store with section deep-link
       await this.openViaStore(sectionId);
     }
+  }
+
+  async waitForSection(sectionId: string, heading: string) {
+    const sectionButton = this.settingsDialog.locator(
+      `[data-testid="settings-section-${sectionId}"]`,
+    );
+    await expect(sectionButton).toHaveAttribute("aria-current", "page", {
+      timeout: 10000,
+    });
+    await expect(this.page.getByTestId("settings-section-loading")).toBeHidden({
+      timeout: 10000,
+    });
+    await expect(
+      this.settingsDialog.getByRole("heading", { name: heading, exact: true }),
+    ).toBeVisible({ timeout: 10000 });
   }
 
   /** Close the settings dialog via the close button */

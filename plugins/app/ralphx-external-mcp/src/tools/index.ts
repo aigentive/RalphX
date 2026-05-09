@@ -32,6 +32,7 @@ import {
   handleGetPlanVerification,
   handleListIdeationSessions,
   handleGetSessionTasks,
+  handleAppendTaskToPlan,
 } from "./ideation.js";
 import {
   handleGetTaskDetail,
@@ -81,6 +82,7 @@ export const TOOL_CATEGORIES = {
     "v1_get_plan_verification",
     "v1_list_ideation_sessions",
     "v1_get_session_tasks",
+    "v1_append_task_to_plan",
   ],
   tasks: ["v1_get_task_steps", "v1_batch_task_status"],
   pipeline: [
@@ -376,6 +378,37 @@ export function registerTools(
             changed_since: { type: "string", description: "ISO 8601 / RFC3339 timestamp — only return tasks updated after this time" },
           },
           required: ["session_id"],
+        },
+      },
+      {
+        name: "v1_append_task_to_plan",
+        description:
+          "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
+          "Use this for small follow-ups after plan acceptance; start a new ideation instead once the PR/plan is closed, merged, terminal, or actively merging.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            session_id: { type: "string", description: "Accepted ideation session ID" },
+            title: { type: "string", description: "Short task title" },
+            description: { type: "string", description: "Task description and implementation intent" },
+            steps: {
+              type: "array",
+              items: { type: "string" },
+              description: "Concrete execution steps for the appended task",
+            },
+            acceptance_criteria: {
+              type: "array",
+              items: { type: "string" },
+              description: "Acceptance criteria the task must satisfy",
+            },
+            depends_on_task_ids: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional existing task IDs that must complete first",
+            },
+            priority: { type: "number", description: "Optional numeric priority" },
+          },
+          required: ["session_id", "title", "steps", "acceptance_criteria"],
         },
       },
       // Task Steps
@@ -765,6 +798,9 @@ export function registerTools(
         break;
       case "v1_get_session_tasks":
         text = await handleGetSessionTasks(args, context);
+        break;
+      case "v1_append_task_to_plan":
+        text = await handleAppendTaskToPlan(args, context);
         break;
 
       // --- Task Steps ---

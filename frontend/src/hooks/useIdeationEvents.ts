@@ -13,6 +13,10 @@ import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { ideationApi } from "@/api/ideation";
+import {
+  latestVerificationChildSessionData,
+  latestVerificationChildSessionIdQueryKey,
+} from "@/components/agents/agentChatFocus";
 import { ideationKeys } from "./useIdeation";
 import { dependencyKeys } from "./useDependencyGraph";
 import { taskKeys } from "./useTasks";
@@ -264,6 +268,13 @@ export function useIdeationEvents() {
         // Track verification children in the store for notification display
         if (parsed.data.purpose === 'verification') {
           const orchestrationTriggered = parsed.data.orchestrationTriggered ?? true;
+          queryClient.setQueryData(
+            latestVerificationChildSessionIdQueryKey(parsed.data.parentSessionId),
+            latestVerificationChildSessionData(
+              parsed.data.parentSessionId,
+              parsed.data.sessionId,
+            ),
+          );
           updateSession(parsed.data.parentSessionId, {
             verificationInProgress: orchestrationTriggered,
           });

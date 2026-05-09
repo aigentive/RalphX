@@ -326,3 +326,9 @@ export const CreateChildSessionResponseSchema = z.object({
   generation: z.number().optional(),
   parent_context: ParentSessionContextResponseSchema.optional(),
 });
+
+export const LatestChildSessionIdResponseSchema = z.object({
+  session_id: z.string(),
+  purpose: z.enum(["general", "verification"]).nullable().optional(),
+  latest_child_session_id: z.string().nullable(),
+});

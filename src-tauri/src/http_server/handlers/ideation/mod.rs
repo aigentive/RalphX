@@ -3,12 +3,14 @@
 use axum::{http::StatusCode, Json};
 
 mod acceptance;
+mod append;
 mod dependency_analysis;
 mod proposals;
 mod runtime;
 mod verification;
 
 pub use acceptance::*;
+pub use append::*;
 pub use dependency_analysis::*;
 pub use proposals::*;
 pub use runtime::*;

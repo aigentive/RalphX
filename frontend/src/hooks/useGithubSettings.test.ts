@@ -13,7 +13,12 @@ import { createElement } from "react";
 import type { ReactNode } from "react";
 import {
   useGitRemoteUrl,
+  useGitAuthDiagnostics,
   useGhAuthStatus,
+  useLoginGhWithBrowser,
+  useSwitchGitOriginToSsh,
+  useSetupGhGitAuth,
+  useResumeDeferredGitStartup,
   useUpdateGithubPrEnabled,
 } from "./useGithubSettings";
 
@@ -94,6 +99,49 @@ describe("useGitRemoteUrl", () => {
 });
 
 // ============================================================================
+// useGitAuthDiagnostics
+// ============================================================================
+
+describe("useGitAuthDiagnostics", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("is disabled when projectId is null", () => {
+    const { result } = renderHook(() => useGitAuthDiagnostics(null), {
+      wrapper: createWrapper(),
+    });
+
+    expect(result.current.data).toBeUndefined();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("calls get_git_auth_diagnostics with projectId when enabled", async () => {
+    const diagnostics = {
+      fetchUrl: "https://github.com/org/repo.git",
+      pushUrl: "git@github.com:org/repo.git",
+      fetchKind: "HTTPS",
+      pushKind: "SSH",
+      mixedAuthModes: true,
+      canSwitchToSsh: true,
+      suggestedSshUrl: "git@github.com:org/repo.git",
+    };
+    vi.mocked(invoke).mockResolvedValue(diagnostics);
+
+    const { result } = renderHook(() => useGitAuthDiagnostics("proj-1"), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invoke).toHaveBeenCalledWith("get_git_auth_diagnostics", {
+      projectId: "proj-1",
+    });
+    expect(result.current.data).toEqual(diagnostics);
+  });
+});
+
+// ============================================================================
 // useGhAuthStatus
 // ============================================================================
 
@@ -137,6 +185,82 @@ describe("useGhAuthStatus", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
 
     expect(result.current.isLoading).toBe(false);
+  });
+});
+
+// ============================================================================
+// Git auth repair mutations
+// ============================================================================
+
+describe("git auth repair mutations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls switch_git_origin_to_ssh with projectId", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      fetchUrl: "git@github.com:org/repo.git",
+      pushUrl: "git@github.com:org/repo.git",
+      fetchKind: "SSH",
+      pushKind: "SSH",
+      mixedAuthModes: false,
+      canSwitchToSsh: false,
+      suggestedSshUrl: null,
+    });
+
+    const { result } = renderHook(() => useSwitchGitOriginToSsh(), {
+      wrapper: createWrapper(),
+    });
+
+    result.current.mutate({ projectId: "proj-1" });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invoke).toHaveBeenCalledWith("switch_git_origin_to_ssh", {
+      projectId: "proj-1",
+    });
+  });
+
+  it("calls setup_gh_git_auth without project args", async () => {
+    vi.mocked(invoke).mockResolvedValue(true);
+
+    const { result } = renderHook(() => useSetupGhGitAuth(), {
+      wrapper: createWrapper(),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invoke).toHaveBeenCalledWith("setup_gh_git_auth", {});
+  });
+
+  it("calls login_gh_with_browser without project args", async () => {
+    vi.mocked(invoke).mockResolvedValue(true);
+
+    const { result } = renderHook(() => useLoginGhWithBrowser(), {
+      wrapper: createWrapper(),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invoke).toHaveBeenCalledWith("login_gh_with_browser", {});
+  });
+
+  it("calls resume_deferred_git_startup without project args", async () => {
+    vi.mocked(invoke).mockResolvedValue(true);
+
+    const { result } = renderHook(() => useResumeDeferredGitStartup(), {
+      wrapper: createWrapper(),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invoke).toHaveBeenCalledWith("resume_deferred_git_startup", {});
   });
 });
 

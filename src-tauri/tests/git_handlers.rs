@@ -118,6 +118,122 @@ mod sha_validation {
     }
 }
 
+mod task_commits {
+    use super::*;
+
+    async fn setup_state() -> HttpServerState {
+        let app_state = Arc::new(AppState::new_test());
+        let execution_state = Arc::new(ExecutionState::new());
+        let tracker = TeamStateTracker::new();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            tracker.clone(),
+        )));
+        HttpServerState {
+            app_state,
+            execution_state,
+            team_tracker: tracker,
+            team_service,
+            delegation_service: Default::default(),
+        }
+    }
+
+    fn run_git(repo: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn run_git_output(repo: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    fn setup_repo_with_advanced_base() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+
+        run_git(repo, &["init", "-b", "main"]);
+        run_git(repo, &["config", "user.email", "test@test.com"]);
+        run_git(repo, &["config", "user.name", "Test"]);
+
+        std::fs::write(repo.join("README.md"), "initial").unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "initial commit"]);
+
+        run_git(repo, &["checkout", "-b", "task-branch"]);
+        std::fs::write(repo.join("task.txt"), "task work").unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "feat: selected task work"]);
+        let task_sha = run_git_output(repo, &["rev-parse", "HEAD"]);
+
+        run_git(repo, &["checkout", "main"]);
+        run_git(repo, &["merge", "--ff-only", "task-branch"]);
+
+        std::fs::write(repo.join("base.txt"), "later base work").unwrap();
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", "fix: unrelated base branch work"]);
+
+        (dir, task_sha)
+    }
+
+    #[tokio::test]
+    async fn get_task_commits_scopes_merged_task_to_recorded_merge_sha() {
+        let (repo, task_sha) = setup_repo_with_advanced_base();
+        let state = setup_state().await;
+
+        let mut project = Project::new(
+            "task-commits-project".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        let project_id = project.id.clone();
+        state.app_state.project_repo.create(project).await.unwrap();
+
+        let mut task = Task::new(project_id, "Merged task".to_string());
+        task.internal_status = InternalStatus::Merged;
+        task.merge_commit_sha = Some(task_sha);
+        let task_id = task.id.clone();
+        state.app_state.task_repo.create(task).await.unwrap();
+
+        let Json(commits) = get_task_commits(
+            State(state),
+            Path(task_id.as_str().to_string()),
+        )
+        .await
+        .expect("merged task commits should resolve from recorded merge sha");
+
+        let messages: Vec<_> = commits
+            .iter()
+            .map(|commit| commit.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            vec!["feat: selected task work"],
+            "task details must not show later base-branch commits"
+        );
+    }
+}
+
 mod ipr_removal {
     use super::*;
 

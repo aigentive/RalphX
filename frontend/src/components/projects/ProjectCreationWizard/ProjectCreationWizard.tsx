@@ -261,6 +261,7 @@ export function ProjectCreationWizard({
         data-testid="project-creation-wizard"
         hideCloseButton={isFirstRun}
         className="max-w-lg p-0"
+        aria-describedby={undefined}
         onPointerDownOutside={(e) => {
           // Prevent closing on backdrop click in first-run mode
           if (isFirstRun || isCreating) {
@@ -509,7 +510,7 @@ export function ProjectCreationWizard({
           {/* ESC key hint when modal can be closed */}
           {!isFirstRun && !isCreating && (
             <span className="mr-auto text-xs text-[var(--text-muted)]">
-              Press <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-base)] border border-[var(--border-subtle)] font-mono text-[10px]">ESC</kbd> to cancel
+              Press <kbd className="px-1.5 py-0.5 rounded bg-[var(--bg-base)] border border-[var(--border-subtle)] font-mono text-[0.625rem]">ESC</kbd> to cancel
             </span>
           )}
           {/* Cancel button hidden in first-run mode */}

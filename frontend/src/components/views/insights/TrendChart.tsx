@@ -16,7 +16,7 @@ const tooltipStyle = {
   backgroundColor: "var(--bg-surface)",
   border: "1px solid var(--overlay-faint)",
   borderRadius: "8px",
-  fontSize: "12px",
+  fontSize: "0.75rem",
   color: "var(--text-primary)",
 };
 
@@ -73,17 +73,17 @@ export function TrendChart({
   const header = (
     <div className={timeWindow !== undefined ? "mb-2" : "mb-3"}>
       <div className="flex items-center justify-between">
-        <p className="text-[12px] font-medium text-text-secondary">
+        <p className="text-[0.75rem] font-medium text-text-secondary">
           {title}
         </p>
         {currentValue !== undefined && (
-          <span className="text-[12px] text-text-secondary">
+          <span className="text-[0.75rem] text-text-secondary">
             {currentValue}
           </span>
         )}
       </div>
       {timeWindow !== undefined && (
-        <p className="text-[10px] mt-0.5 text-text-muted">
+        <p className="text-[0.625rem] mt-0.5 text-text-muted">
           {timeWindow}
         </p>
       )}
@@ -94,7 +94,7 @@ export function TrendChart({
     return (
       <div>
         {header}
-        <p className="text-[12px] text-text-muted">
+        <p className="text-[0.75rem] text-text-muted">
           No data yet
         </p>
       </div>
@@ -168,7 +168,7 @@ export function TrendChart({
               className="inline-block w-[8px] h-[8px] rounded-full"
               style={{ backgroundColor: color }}
             />
-            <span className="text-[12px] text-text-secondary">
+            <span className="text-[0.75rem] text-text-secondary">
               {pLabel}
             </span>
           </span>
@@ -177,7 +177,7 @@ export function TrendChart({
               className="inline-block w-[8px] h-[8px] rounded-full"
               style={{ backgroundColor: secondaryColor }}
             />
-            <span className="text-[12px] text-text-secondary">
+            <span className="text-[0.75rem] text-text-secondary">
               {sLabel}
             </span>
           </span>

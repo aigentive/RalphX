@@ -1,62 +1,184 @@
 <p align="center">
-  <img src="assets/public/framed-welcome-2026-02-22.png" alt="RalphX.app — Describe it. Ship it." width="100%">
+  <img src="assets/public/framed-agents-overview-2026-05-01.png" alt="RalphX Agents view showing the project sidebar, agent conversation, commit & publish panel, and embedded terminal" width="100%">
 </p>
 
 <p align="center">
-  <strong>The AI development infrastructure you own. Open source. Local-first. Yours.</strong>
+  <strong>The best way to ship software with AI.</strong>
+  <br>
+  <sub>The AI development infrastructure you own. Open source. Local-first. Yours.</sub>
 </p>
 
 <p align="center">
   <a href="#what-it-is">What It Is</a> ·
-  <a href="#install">Install</a> ·
+  <a href="#what-changes-day-to-day">What Changes</a> ·
   <a href="#how-it-works">How It Works</a> ·
-  <a href="#who-its-for">Who It's For</a> ·
-  <a href="#documentation">Docs</a> ·
-  <a href="#origin">Origin</a>
+  <a href="https://ralphx.app">Website</a> ·
+  <a href="#getting-started">Get Started</a> ·
+  <a href="#who-its-for">Who It's For</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/aigentive/ralphx.app/releases">
+    <img alt="Homebrew version" src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2Faigentive%2Fhomebrew-ralphx%2Fmain%2FCasks%2Fralphx.rb&search=version%20%22(%5B%5E%22%5D%2B)%22&replace=%241&label=brew&logo=homebrew&logoColor=white">
+  </a>
+  <a href="https://app.codecov.io/gh/aigentive/ralphx.app">
+    <img alt="Coverage" src="https://img.shields.io/codecov/c/github/aigentive/ralphx.app/main?token=DXF9O681JQ&label=coverage&logo=codecov&logoColor=white">
+  </a>
 </p>
 
 ---
 
 ## What It Is
 
-RalphX.app is a native macOS desktop application for orchestrating AI development work across planning, implementation, review, QA, and merge workflows.
+RalphX is a local Mac desktop app for AI development work.
 
-Describe what you want to build. RalphX.app turns that into structured tasks, routes each step to the right agent, runs work in isolated git worktrees, reviews the result, and prepares the merge or PR according to your project settings.
+It organizes your AI coding agents by project, keeps their conversations persistent and searchable, gives each agent an isolated workspace, and manages the git, review, merge, and PR flow around the code they produce.
 
-RalphX.app has no hosted backend. Project state and orchestration data live locally in SQLite. Agent actions are logged, scoped, and auditable; the AI runtimes you configure still receive the context needed to perform their work.
+RalphX has no hosted backend. Project state and orchestration data live locally in SQLite. The AI runtimes you configure still receive the context needed to do their work, but RalphX owns the workflow around that work: projects, conversations, tasks, workspaces, review gates, merge state, and history.
 
-**Designed for provider-neutral orchestration, local ownership, and reviewable AI-generated code.**
+## The Daily Friction
 
-<p align="center">
-  <img src="assets/public/framed-graph-2026-02-22.png" alt="RalphX.app dependency graph — critical path highlighting, tier grouping, live execution status" width="100%">
-</p>
+If you already use Claude Code, Codex, or similar coding agents on real projects, the workflow often starts simple and then gets messy:
 
----
+- one terminal tab per agent session
+- hard-to-find or lost conversation history
+- sessions that are awkward to continue later
+- manual worktrees and branches
+- manual commits, rebases, pushes, PR checks, and merge cleanup
+- separate GitHub tabs for PR state
+- separate task boards for planning
+- separate logs, review notes, screenshots, and terminal output
+- no single project view of what all agents are doing
+
+RalphX turns that scattered workflow into one project-scoped desktop app.
+
+The first practical win is the Agents view: your agent conversations are grouped by project, titled, searchable, archivable, restorable, and connected to provider session metadata so work can continue later when the harness supports it.
+
+Before RalphX:
+
+```text
+Open terminal -> start Claude -> remember which tab is which -> keep terminal alive -> manually recover later.
+```
+
+With RalphX:
+
+```text
+Open project -> pick the agent conversation -> continue where the work lives.
+```
+
+## What Changes Day To Day
+
+RalphX does not need to replace your editor, git provider, or AI model. It changes how you use them.
+
+Some tools stay underneath it. You just stop managing all of them manually all day.
+
+| Existing tool or habit | What changes with RalphX |
+|---|---|
+| Terminal tabs for AI agents | Agent conversations become project-scoped, persistent, searchable, and resumable |
+| Manual Claude/Codex session management | RalphX starts, tracks, attributes, and can continue runs when provider session lineage is available |
+| Manual git worktrees | RalphX creates isolated task workspaces for agents |
+| Manual branches | RalphX creates task branches and plan branches |
+| Manual commits | RalphX can commit agent output after execution |
+| Manual rebases / merges | RalphX runs the configured merge strategy |
+| GitHub PR tab watching | RalphX can open and monitor plan PRs in GitHub PR mode |
+| Ad hoc AI code review | RalphX routes output through reviewer agents and human approval gates |
+| Kanban/task board | RalphX's board is tied directly to execution state, not just status labels |
+| Manually tracking what blocks what | RalphX Graph shows task dependencies, tiers, critical path, and parallelizable work |
+| Log tailing | Activity, chat, and task detail views show what happened and why |
+
+## How It Works
+
+RalphX starts with normal development primitives: projects, agents, workspaces, git, terminal, and UI.
+
+Then it adds an opinionated delivery pipeline around them.
+
+### 1. Agents Are Organized By Project
+
+The Agents view gives you a project-scoped place for AI conversations. Conversations persist after the terminal process exits, can be searched later, and can be tied to a workspace and terminal when the agent needs to inspect or change files.
+
+This is the day-one workflow improvement: stop treating every agent run like a disposable terminal tab.
+
+### 2. Agents Work In Isolated Git Workspaces
+
+When code needs to be changed, RalphX creates isolated git worktrees and task branches. Agents do not edit your main checkout or staged local work.
+
+If a task fails, the workspace can be preserved for inspection. If it succeeds, RalphX can commit the output and move it through review and merge.
+
+### 3. Work Moves Through Reviewable States
+
+RalphX turns "ask AI to code" into a repeatable workflow:
+
+```text
+Ready -> Executing -> Reviewing -> Review Passed -> Approved -> Merge -> Merged
+```
+
+Worker agents implement, reviewer agents inspect the diff, and you can approve or request changes before code lands.
+
+### 4. Git, Merge, And PR Flow Are Managed
+
+RalphX can create task branches, run validation commands, apply your merge strategy, clean up worktrees, and optionally create or monitor GitHub PRs for plan-level delivery.
+
+You still own your repo. RalphX manages the repetitive git and PR workflow around agent-produced code.
+
+## First Workflow
+
+1. **Create a project** - Point RalphX at a git repository.
+2. **Start an agent conversation** - Use the Agents view for project-scoped chat, debugging, planning, or implementation help.
+3. **Use Ideation for larger work** - Describe the feature and let RalphX propose a plan and task breakdown.
+4. **Review proposals** - Edit, accept, or reject the generated tasks before execution.
+5. **Watch execution** - Tasks move through Kanban as agents implement, review, and merge.
+6. **Approve code before merge** - Review findings and decide whether the task should land or go back for changes.
+
+For simple work, you can start directly from an agent conversation or a task. For larger work, Ideation turns a brief into a task graph.
+
+## Core Surfaces
+
+| Surface | What it is for |
+|---|---|
+| **Agents** | Project-scoped agent conversations, persistent history, search, workspace/terminal access |
+| **Ideation** | Turn a feature description into a plan, proposals, dependencies, and executable tasks |
+| **Kanban** | Live task execution state: backlog, ready, executing, review, approval, merge, done |
+| **Graph** | Plan dependencies, execution tiers, critical path, and timeline context |
+| **Activity** | Audit trail of state changes, agent events, review, and merge activity |
+| **Settings** | Repository settings, execution lanes, ideation lanes, harness/model controls, validation |
+
+## Safety And Ownership
+
+RalphX is designed around local ownership and reviewable AI-generated code.
+
+- **Local-first state** - Project state and orchestration history live in local SQLite.
+- **No hosted backend** - The desktop app runs locally.
+- **Worktree isolation** - Agents work in isolated git worktrees instead of your main checkout.
+- **Review gates** - Reviewer agents and human approval points sit between generated code and merge.
+- **Explicit merge flow** - Validation, merge strategies, conflict handling, and PR mode are first-class.
+- **Scoped agents** - Agent roles have different tools and responsibilities.
+- **Provider-neutral direction** - Claude is the broadest default today; Codex can be selected per supported lane.
+
+RalphX is not a replacement for your model, editor, or git provider. It is the local workflow layer that makes them work together.
 
 ## Getting Started
 
 ### Requirements
 
-To run RalphX.app:
+To run RalphX:
 
 - macOS 13+ (Ventura or later)
 - At least one supported agent runtime installed and authenticated:
   - [Claude CLI](https://docs.anthropic.com/en/docs/claude-code)
   - [Codex CLI](https://developers.openai.com/codex/cli)
 
-To build from source:
+To build from source, see the [build from source guide](docs/development/build-from-source.md).
 
-- Node.js 18+ and npm
-- Rust via [rustup.rs](https://rustup.rs); this repo pins its toolchain in `rust-toolchain.toml`
-- Git
+Harness controls are exposed in the desktop app:
 
-RalphX.app can route different workflow lanes through different harnesses. Claude remains the default, while Codex can be enabled incrementally for supported lanes. See [`docs/user-guides/agent-harnesses.md`](docs/user-guides/agent-harnesses.md).
-
-Harness controls are exposed directly in the desktop app:
 - `Settings -> General -> Execution Agents` for worker, reviewer, re-executor, and merger lanes
 - `Settings -> Ideation -> Ideation Agents` for ideation, verifier, and specialist lanes
 
 ### Install
+
+Website:
+
+- [ralphx.app](https://ralphx.app)
 
 #### Homebrew
 
@@ -65,115 +187,51 @@ brew tap aigentive/ralphx
 brew install --cask ralphx
 ```
 
-This is the recommended path. The tap installs the signed DMG for your Mac and keeps RalphX.app available through normal Homebrew updates.
+For upgrades, repairs, and uninstall notes, see the [Homebrew installation guide](docs/install/homebrew.md).
 
-#### Direct Download
+#### GitHub Releases
 
-- [Apple Silicon DMG](https://github.com/aigentive/ralphx.app/releases/download/v0.1.0/RalphX_0.1.0_aarch64.dmg) for M-series Macs
-- [Intel DMG](https://github.com/aigentive/ralphx.app/releases/download/v0.1.0/RalphX_0.1.0_x86_64.dmg) for Intel Macs
+Download signed builds from the [GitHub Releases page](https://github.com/aigentive/ralphx.app/releases).
 
 #### Build From Source
 
-```bash
-git clone https://github.com/aigentive/ralphx.app.git ralphx.app
-cd ralphx.app
-cd frontend
-npm install
-npm run tauri dev
-```
+For local development setup, see the [build from source guide](docs/development/build-from-source.md).
 
-First build compiles the Rust backend. Subsequent starts are faster.
+## Who It's For
 
-For a fresh native dev start from the repo root:
+**Developers using Claude/Codex on real repos** - Keep agent conversations persistent, searchable, project-scoped, and connected to actual workspaces.
 
-```bash
-./dev-fresh
-```
+**Solo builders** - Turn AI agents into a local engineering bench for planning, implementation, review, and merge.
 
-### First Task
+**Team leads** - Make AI coding reviewable instead of invisible terminal activity.
 
-1. **Create a project** — Point RalphX.app at a git repository
-2. **Open Ideation** — Describe what you want to build
-3. **Apply proposals** — Review the generated tasks, apply to Kanban
-4. **Watch it execute** — Workers write code, reviewers check it, and RalphX.app prepares the merge or PR according to your project settings
+**Staff+ engineers** - Encode practices through agents, settings, review gates, and workflow structure.
 
-You intervene when a review gate escalates or when your settings require human approval. Otherwise, the workflow keeps moving.
+### Not For You Yet If
 
----
-
-## How It Works
-
-RalphX.app turns a request into planned work, creates isolated branches and worktrees, routes each step to the right agent, and keeps review, QA, merge, and PR gates explicit.
-
-Tool access is controlled at the runtime and MCP server layers, then reinforced by agent-specific prompts:
-
-1. **Rust spawn config** — which tools the process can call
-2. **MCP server filter** — which API endpoints the agent can reach
-3. **Agent system prompt** — role guidance and escalation expectations
-
-For example: reviewers run read-only, workers cannot approve their own output, and merge flows must pass the configured validation or PR gates.
-
----
+- You are on Linux or Windows. RalphX is macOS-only for now.
+- You do not want to install an external agent runtime.
+- You need fully offline AI execution.
+- You need multi-user collaboration. RalphX Desktop is currently single-developer orchestration.
 
 ## Tech Stack
 
 | Layer | Technology | Why |
-|-------|------------|-----|
-| **Desktop** | Tauri 2.0 | Native macOS app shell without Electron. |
-| **Backend** | Rust | Memory-safe. Compile-time guarantees. No GC pauses. |
-| **Frontend** | React 19 + TypeScript | Strict types. Responsive Kanban, graph view, real-time activity stream. |
-| **Database** | SQLite (local) | No hosted database. Project state and orchestration history stay local. |
-| **AI Runtime** | Claude + Codex via lane-based harnesses | Provider-neutral orchestration with per-lane routing, recovery, and chat lineage. |
-| **State Machine** | Rust enum + exhaustive match | Runtime-enforced transitions. Compile-time exhaustiveness checking. |
-| **Git** | Worktree isolation | Parallel execution. AI never touches your working directory. |
-
----
-
-## Who It's For
-
-**Solo developers** — One board for all your AI agents. Review diffs before merge. Stop managing terminal tabs.
-
-**Solopreneurs** — AI agents are your engineering team. Describe what you want, get shipped features with review gates that catch bugs at 2 AM.
-
-**Team leads** — Encode standards as methodology plugins. Review gates catch routine issues before human review.
-
-**Staff+ engineers** — Methodology plugins help encode architectural standards and team practices into agent workflows.
-
-### Not for you (yet) if
-
-- You're on Linux or Windows (macOS only, for now)
-- You don't want to install an external agent runtime (RalphX.app currently targets Claude CLI and Codex CLI)
-- You need fully offline AI execution
-- You need multi-user collaboration (single-developer orchestration)
-
----
-
-## Documentation
-
-| Guide | What It Covers |
-|-------|----------------|
-| [Getting Started](docs/user-guides/getting-started.md) | Installation, first project, first workflow |
-| [Ideation Studio](docs/user-guides/ideation-studio.md) | Session modes, team configuration, plan artifacts |
-| [Kanban Board](docs/user-guides/kanban.md) | Board layout, task cards, drag-and-drop, filtering |
-| [Graph View](docs/user-guides/graph-view.md) | Dependency graph, critical path, timeline, Battle Mode |
-| [Execution Pipeline](docs/user-guides/execution.md) | Worker/coder/reviewer agents, concurrency, recovery |
-| [Merge Pipeline](docs/user-guides/merge.md) | Merge strategies, validation, conflict resolution |
-| [Agent Harnesses](docs/user-guides/agent-harnesses.md) | Claude/Codex lane routing, execution agent settings, chat lineage |
-| [Task State Machine](docs/user-guides/task-state-machine.md) | Task lifecycle, transitions, and invariants |
-| [Agent Orchestration](docs/user-guides/agent-orchestration.md) | Agent roles, permissions, and tool scoping |
-| [Configuration](docs/user-guides/configuration.md) | Project settings, model config, methodology plugins |
-
----
+|---|---|---|
+| **Desktop** | Tauri 2.0 | Native macOS app shell without Electron |
+| **Backend** | Rust | Memory-safe orchestration, state machine, git and process management |
+| **Frontend** | React 19 + TypeScript | Responsive Agents, Kanban, Graph, Activity, and Settings views |
+| **Database** | SQLite | Local project state and orchestration history |
+| **AI runtime** | Claude + Codex via lane-based harnesses | Provider-aware orchestration with per-lane routing |
+| **Git** | Worktrees and branches | Isolated agent workspaces and reviewable history |
 
 ## Origin
 
-RalphX.app began as a shell script running a Ralph Wiggum loop for orchestrating agent sessions and grew into a native macOS control room for planning, executing, reviewing, and merging AI-assisted software work.
+RalphX began as a shell script for orchestrating AI coding sessions and grew into a native macOS desktop app for planning, running, reviewing, and merging AI-assisted software work.
 
-Built independently by [one person](https://www.linkedin.com/in/laza-bogdan/) and a fleet of AI agents.
+Built independently by [Laza Bogdan](https://www.linkedin.com/in/laza-bogdan/), [Adrian Demian](https://www.linkedin.com/in/adrian-demian/), and a fleet of AI agents.
 
 The tool was built by the thing it builds.
-
----
 
 ## License
 
@@ -184,10 +242,9 @@ Use it however you want. Build commercial products with it. Modify it. Distribut
 ---
 
 <p align="center">
-  <strong>RalphX.app</strong> — Describe it. Ship it.
+  <strong>RalphX.app</strong> - The best way to ship software with AI.
   <br>
   <sub>Open source. Local-first. Yours.</sub>
   <br><br>
-  <a href="#getting-started">Get Started</a> &middot;
-  <a href="#documentation">Documentation</a>
+  <a href="#getting-started">Get Started</a>
 </p>

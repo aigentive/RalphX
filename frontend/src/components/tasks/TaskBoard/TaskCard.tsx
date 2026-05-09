@@ -1,11 +1,10 @@
 /**
  * TaskCard - Draggable task card for the kanban board
  *
- * Design: macOS Tahoe (2025)
- * - Clean, flat surfaces - no gradients or glows
- * - Priority stripe on left edge
- * - Subtle selection highlight (blue tint like Finder)
- * - Minimal visual noise
+ * Design: v29a Kanban
+ * - Flat card surfaces, no gradients or glows
+ * - No left status stripe
+ * - Full-card status tints for warning and completed states
  *
  * Styling utilities extracted to TaskCard.utils.ts
  */
@@ -59,13 +58,15 @@ interface TaskCardProps {
   revisionCount?: number;
   /** Group context for showing group actions in task context menu */
   groupInfo?: GroupInfo;
+  /** Optional host-owned task selection handler for embedded task surfaces. */
+  onSelect?: (taskId: string) => void;
 }
 
 function CheckpointIndicator() {
   return (
     <Badge
       data-testid="checkpoint-indicator"
-      className="text-[9px] px-1.5 py-px"
+      className="text-[0.5625rem] px-1.5 py-px"
       style={{
         backgroundColor: "var(--status-warning-muted)",
         color: "var(--status-warning)",
@@ -89,6 +90,7 @@ export function TaskCard({
   hasCheckpoint,
   revisionCount,
   groupInfo,
+  onSelect,
 }: TaskCardProps) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: task.id });
 
@@ -164,22 +166,22 @@ export function TaskCard({
     ...(testStatus !== undefined && { testStatus }),
   };
 
-  // Computed styles using extracted utilities - left border colored by status
+  // Computed styles using extracted utilities - full-card status surfaces
   const cardStyles = useMemo(
     () => getCardStyles(task.internalStatus, isArchived, !!isDragging, isDraggable, !!isSelected),
     [task.internalStatus, isArchived, isDragging, isDraggable, isSelected]
   );
 
   // Context menu handlers - use selectedTaskId for split layout overlay
-  const handleViewDetails = () => {
-    // Set selectedTaskId to show TaskDetailOverlay in the split layout
+  const handleViewDetails = useCallback(() => {
+    if (onSelect) {
+      onSelect(task.id);
+      return;
+    }
     setSelectedTaskId(task.id);
-  };
+  }, [onSelect, setSelectedTaskId, task.id]);
 
-  const handleEdit = () => {
-    // Open task detail (edit mode can be triggered from overlay)
-    setSelectedTaskId(task.id);
-  };
+  const handleEdit = handleViewDetails;
 
   const handleArchive = () => {
     archiveMutation.mutate(task.id);
@@ -264,53 +266,57 @@ export function TaskCard({
           onClick={() => {
             handleViewDetails();
           }}
-          className={`group relative p-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${isArchived ? "opacity-50" : ""} ${!isDraggable ? "opacity-70 cursor-default" : ""}`}
+          className={`group relative px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${isArchived ? "opacity-50" : ""} ${!isDraggable ? "cursor-default" : ""}`}
           style={{ ...cardStyles, ...dragStyle }}
           tabIndex={0}
         >
-      {/* Status badge - shown for ALL task states */}
-      <div className="absolute top-1 right-1" data-testid="status-badge-container">
-        <TaskStatusBadge
-          status={task.internalStatus}
-          isArchived={isArchived}
-          {...(revisionCount !== undefined && { revisionCount })}
-        />
-      </div>
-
       {/* Drag handle - appears on hover over the status badge (hidden if not draggable) */}
       {isDraggable && !isArchived && (
         <div
           data-testid="drag-handle"
-          className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab"
+          className="absolute right-8 top-2.5 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab"
         >
           <GripVertical className="w-3.5 h-3.5" style={{ color: "var(--text-muted)" }} />
         </div>
       )}
 
       {/* Card content */}
-      <div className="pr-7">
-        {/* Title - clean, simple */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-start gap-2">
+        {/* Title - v29a compact card heading */}
         <div
           data-testid="task-title"
-          className="truncate"
+          className="min-w-0 flex-1 truncate"
           style={{
-            fontSize: "12px",
+            fontSize: "0.8125rem",
             fontWeight: 500,
             color: "var(--text-primary)",
             lineHeight: 1.35,
+            letterSpacing: 0,
           }}
         >
           {task.title}
         </div>
 
+        {/* Status badge - shown for ALL task states */}
+        <div className="shrink-0" data-testid="status-badge-container">
+          <TaskStatusBadge
+            status={task.internalStatus}
+            isArchived={isArchived}
+            {...(revisionCount !== undefined && { revisionCount })}
+          />
+        </div>
+        </div>
+
         {/* Description - 2 line clamp with markdown */}
         {task.description && (
           <div
-            className="mt-1 line-clamp-2 [&_*]:!mb-0 [&_*]:!mt-0"
+            className="line-clamp-2 [&_*]:!mb-0 [&_*]:!mt-0"
             style={{
-              fontSize: "11px",
-              color: "var(--text-secondary)",
-              lineHeight: 1.4,
+              fontSize: "0.7188rem",
+              color: "var(--text-muted)",
+              lineHeight: 1.45,
+              letterSpacing: 0,
             }}
           >
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -344,12 +350,16 @@ export function TaskCard({
         )}
 
         {/* Badge row - simple, muted */}
-        <div className="flex flex-wrap items-center gap-1 mt-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <span
+            className="inline-flex h-5 items-center rounded-full px-2"
             style={{
-              fontSize: "10px",
+              background: "var(--bg-hover)",
+              border: "1px solid var(--border-default)",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontSize: "0.6562rem",
               fontWeight: 500,
-              color: "var(--text-muted)",
+              color: "var(--text-secondary)",
               textTransform: "capitalize",
             }}
           >
@@ -410,7 +420,7 @@ export function TaskCard({
                   >
                     <GitBranch className="w-3 h-3 flex-shrink-0" />
                     <span
-                      className="text-[10px] truncate max-w-[80px]"
+                      className="text-[0.625rem] truncate max-w-[80px]"
                       style={{
                         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                       }}
@@ -437,7 +447,7 @@ export function TaskCard({
                     style={{ color: prIndicatorColor }}
                   >
                     <GitPullRequest className="w-3 h-3 flex-shrink-0" />
-                    <span className="text-[10px]">{prIndicatorLabel}</span>
+                    <span className="text-[0.625rem]">{prIndicatorLabel}</span>
                   </div>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
@@ -459,13 +469,13 @@ export function TaskCard({
           task.internalStatus === "revision_needed" ||
           task.internalStatus === "approved" ||
           task.internalStatus === "merged") && (
-          <div className="flex items-center gap-2 mt-2" data-testid="step-progress-footer">
+          <div className="flex items-center gap-2" data-testid="step-progress-footer">
             <StepProgressBar taskId={task.id} compact={true} internalStatus={task.internalStatus} />
 
             {/* Duration badge - shown when executing */}
             {(task.internalStatus === "executing" || task.internalStatus === "re_executing") && executionState.duration !== null && (
               <div
-                className="flex items-center gap-1 text-[11px]"
+                className="flex items-center gap-1 text-[0.6875rem]"
                 style={{ color: "var(--text-secondary)" }}
               >
                 <Clock className="w-3 h-3" />

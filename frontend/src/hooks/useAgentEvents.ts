@@ -10,6 +10,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { chatApi } from "@/api/chat";
 import { useEventBus } from "@/providers/EventProvider";
 import type { ChatMessageResponse } from "@/api/chat";
 import {
@@ -32,12 +33,69 @@ import { findStoreKeyForContextId } from "@/lib/agent-event-utils";
 import {
   chatKeys,
   invalidateConversationDataQueries,
-  type ConversationHistoryWindowData,
+  type ConversationQueryData,
 } from "./useChat";
+import {
+  appendMessageToConversationHistory,
+  replaceMatchingOptimisticMessage,
+  type ConversationHistoryCacheData,
+} from "./chat-cache";
 import { ideationKeys } from "./useIdeation";
 import { conversationStatsKey } from "./useConversationStats";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { logger } from "@/lib/logger";
+
+function isConversationHistoryCacheData(
+  data: ConversationHistoryCacheData | undefined
+): data is ConversationHistoryCacheData {
+  return Boolean(data && Array.isArray(data.pages));
+}
+
+function updateConversationHistoryConversation(
+  data: ConversationHistoryCacheData | undefined,
+  updateConversation: (conversation: ChatConversation) => ChatConversation
+): ConversationHistoryCacheData | undefined {
+  if (!isConversationHistoryCacheData(data)) {
+    return data;
+  }
+
+  return {
+    ...data,
+    pages: data.pages.map((page) => ({
+      ...page,
+      conversation: updateConversation(page.conversation),
+    })),
+  };
+}
+
+function shouldRouteRunStartSelectionToCallerStoreKey(
+  callerStoreKey: string | undefined,
+  eventStoreKey: string,
+  eventContextId: string
+): boolean {
+  if (!callerStoreKey) {
+    return false;
+  }
+  if (callerStoreKey === eventStoreKey) {
+    return true;
+  }
+
+  const parsedCallerStoreKey = parseStoreKey(callerStoreKey);
+  if (!parsedCallerStoreKey) {
+    return false;
+  }
+
+  // Project store keys are conversation-scoped. A different project key means a
+  // different Agents workspace conversation and must not be overwritten by a
+  // run_started event from another workspace.
+  if (parsedCallerStoreKey.contextType === "project") {
+    return false;
+  }
+
+  // Task detail panels can intentionally bridge related task/task_execution
+  // slots for the same task id.
+  return parsedCallerStoreKey.contextId === eventContextId;
+}
 
 /**
  * Hook to manage agent event listeners
@@ -47,9 +105,8 @@ import { logger } from "@/lib/logger";
  *
  * @param activeConversationId - The currently active conversation ID to filter events
  * @param storeKey - Caller-provided store key for scoped setActiveConversation writes.
- *   When provided, agent:run_started uses this key instead of the event-derived key.
- *   Callers know which panel slot to write to; cross-context events are handled
- *   separately by IntegratedChatPanel's own bus.subscribe handler.
+ *   agent:run_started may use this key only when it targets the same slot or a
+ *   compatible task slot; unrelated project conversation events stay isolated.
  */
 export function useAgentEvents(activeConversationId: string | null, storeKey?: string) {
   const bus = useEventBus();
@@ -96,7 +153,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           claudeSessionId,
         });
 
-      queryClient.setQueryData<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>(
+      queryClient.setQueryData<ConversationQueryData>(
         chatKeys.conversation(conversationId),
         (oldData) => {
           if (!oldData) return oldData;
@@ -107,15 +164,9 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         }
       );
 
-      queryClient.setQueryData<ConversationHistoryWindowData>(
+      queryClient.setQueryData<ConversationHistoryCacheData>(
         chatKeys.conversationHistory(conversationId),
-        (oldData) => {
-          if (!oldData) return oldData;
-          return {
-            ...oldData,
-            conversation: mergeConversation(oldData.conversation),
-          };
-        }
+        (oldData) => updateConversationHistoryConversation(oldData, mergeConversation)
       );
 
       queryClient.setQueryData<ChatConversation[]>(
@@ -265,10 +316,25 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
         // If no active conversation is set, set it to this one
         // This handles the case where a new conversation was just created by the backend.
-        // Use caller-provided storeKey when available — the caller knows which panel slot to
-        // write to. Cross-context events are handled by IntegratedChatPanel's bus.subscribe.
+        // When a caller provides a storeKey, only write to it if the event targets that
+        // same slot or a compatible task slot. Project keys are conversation-scoped, so
+        // blindly writing another project conversation here can poison Agents workspace
+        // selection and render the wrong transcript.
         if (!activeConversationId && conversation_id) {
-          setActiveConversation(storeKeyRef.current ?? eventContextKey, conversation_id);
+          const callerStoreKey = storeKeyRef.current;
+          const activeSelectionStoreKey = callerStoreKey
+            ? shouldRouteRunStartSelectionToCallerStoreKey(
+                callerStoreKey,
+                eventContextKey,
+                eventContextId
+              )
+              ? callerStoreKey
+              : null
+            : eventContextKey;
+
+          if (activeSelectionStoreKey) {
+            setActiveConversation(activeSelectionStoreKey, conversation_id);
+          }
         }
       })
     );
@@ -301,65 +367,39 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         // This handles both lead and teammate conversations — teammate messages
         // have their own conversation_id that won't match activeConversationId.
         if (role === "user" && conversation_id === activeConversationId) {
+          const newMessage: ChatMessageResponse = {
+            id: message_id,
+            conversationId: conversation_id,
+            sessionId: null,
+            projectId: null,
+            taskId: null,
+            role: role as "user" | "assistant" | "system",
+            content: content || "",
+            metadata: payload.metadata ?? null,
+            parentMessageId: null,
+            createdAt: created_at ?? new Date().toISOString(),
+            toolCalls: null,
+            contentBlocks: null,
+            sender: null,
+          };
+
           // Optimistic append for user messages in the active conversation only
-          queryClient.setQueryData<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>(
+          queryClient.setQueryData<ConversationQueryData>(
             chatKeys.conversation(activeConversationId),
             (oldData) => {
               if (!oldData) return oldData;
-              const existingMessages = oldData.messages ?? [];
-              if (existingMessages.some(m => m.id === message_id)) {
-                return oldData;
-              }
-
-              const newMessage: ChatMessageResponse = {
-                id: message_id,
-                conversationId: conversation_id,
-                sessionId: null,
-                projectId: null,
-                taskId: null,
-                role: role as "user" | "assistant" | "system",
-                content: content || "",
-                metadata: payload.metadata ?? null,
-                parentMessageId: null,
-                createdAt: created_at ?? new Date().toISOString(),
-                toolCalls: null,
-                contentBlocks: null,
-                sender: null,
-              };
-              return { ...oldData, messages: [...existingMessages, newMessage] };
-            }
-          );
-          queryClient.setQueryData<ConversationHistoryWindowData>(
-            chatKeys.conversationHistory(activeConversationId),
-            (oldData) => {
-              if (!oldData) return oldData;
-              const existingMessages = oldData.messages ?? [];
-              if (existingMessages.some((message) => message.id === message_id)) {
-                return oldData;
-              }
-
-              const newMessage: ChatMessageResponse = {
-                id: message_id,
-                conversationId: conversation_id,
-                sessionId: null,
-                projectId: null,
-                taskId: null,
-                role: role as "user" | "assistant" | "system",
-                content: content || "",
-                metadata: payload.metadata ?? null,
-                parentMessageId: null,
-                createdAt: created_at ?? new Date().toISOString(),
-                toolCalls: null,
-                contentBlocks: null,
-                sender: null,
-              };
-
               return {
                 ...oldData,
-                messages: [...existingMessages, newMessage],
-                totalMessageCount: (oldData.totalMessageCount ?? existingMessages.length) + 1,
+                messages: replaceMatchingOptimisticMessage(
+                  oldData.messages ?? [],
+                  newMessage
+                ),
               };
             }
+          );
+          queryClient.setQueryData<ConversationHistoryCacheData>(
+            chatKeys.conversationHistory(activeConversationId),
+            (oldData) => appendMessageToConversationHistory(oldData, newMessage)
           );
         } else if (conversation_id !== activeConversationId) {
           // Non-active conversation (e.g. teammate messages): invalidate to refetch from DB.
@@ -513,6 +553,15 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       })
     );
 
+    unsubscribes.push(
+      bus.subscribe<unknown>("agent:workspace_changed", (payload) => {
+        const conversationId = workspaceChangedConversationId(payload);
+        if (conversationId) {
+          invalidateAgentWorkspacePublishQueries(conversationId);
+        }
+      })
+    );
+
     // Listen for agent stopped - defensive cleanup if agent:run_completed emission regresses.
     // Backend emits agent:stopped immediately on SIGTERM, before agent:run_completed.
     // This ensures running state clears even if the subsequent run_completed is lost.
@@ -641,6 +690,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     const TOOL_CALL_MAX_DURATION_MS = 600_000; // 10 minutes per-tool ceiling
     const TOOL_CALL_GRACE_MS = 5_000;        // 5s grace after last tool completion
     const CHECK_INTERVAL_MS = 30_000;        // Check every 30s
+    const projectLivenessChecksInFlight = new Set<string>();
 
     const interval = setInterval(() => {
       const now = Date.now();
@@ -669,6 +719,37 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         const parsedKey = parseStoreKey(key);
         if (parsedKey?.contextType === "ideation") {
           if (ideationState.activeVerificationChildId[parsedKey.contextId]) continue;
+        }
+
+        // Project agent conversations are runtime-keyed by conversation id. Before
+        // clearing their UI status, ask the backend registry whether that process
+        // is still alive; otherwise long but healthy Agents runs can lose Stop
+        // state until the user reselects the conversation.
+        if (parsedKey?.contextType === "project") {
+          if (projectLivenessChecksInFlight.has(key)) continue;
+          projectLivenessChecksInFlight.add(key);
+          void chatApi
+            .isAgentRunning("project", parsedKey.contextId)
+            .then((isRunning) => {
+              const latestState = useChatStore.getState();
+              if (latestState.agentStatus[key] !== "generating") return;
+              if (isRunning) {
+                latestState.updateLastAgentEvent(key);
+                return;
+              }
+              latestState.clearToolCallStartTimes(key);
+              latestState.setAgentStatus(key, "idle");
+            })
+            .catch(() => {
+              const latestState = useChatStore.getState();
+              if (latestState.agentStatus[key] !== "generating") return;
+              latestState.clearToolCallStartTimes(key);
+              latestState.setAgentStatus(key, "idle");
+            })
+            .finally(() => {
+              projectLivenessChecksInFlight.delete(key);
+            });
+          continue;
         }
 
         // Genuinely stalled — silent reset (no toast — bad UX)

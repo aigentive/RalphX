@@ -26,7 +26,7 @@ test.describe("Ideation Chat Replay", () => {
     await expect(page.getByText("4,821")).toBeVisible();
     await expect(page.getByText("713")).toBeVisible();
     await expect(page.getByText("$0.08")).toBeVisible();
-    await expect(page.getByText("claude-sonnet-4-6")).toBeVisible();
+    await expect(page.getByText("claude-sonnet-4-6", { exact: true })).toBeVisible();
   });
 
   test("matches ideation chat replay snapshot", async ({ page }) => {

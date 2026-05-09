@@ -57,17 +57,17 @@ export const TeamOverviewHeader = React.memo(function TeamOverviewHeader({
       </div>
 
       {/* Active count */}
-      <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+      <span className="text-[0.6875rem]" style={{ color: "var(--text-secondary)" }}>
         {activeCount} active
       </span>
 
       {/* Task count */}
-      <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+      <span className="text-[0.6875rem]" style={{ color: "var(--text-secondary)" }}>
         {teammates.length} tasks
       </span>
 
       {/* Total cost */}
-      <span className="text-[11px] ml-auto" style={{ color: "var(--text-muted)" }}>
+      <span className="text-[0.6875rem] ml-auto" style={{ color: "var(--text-muted)" }}>
         {formatCost(team.totalEstimatedCostUsd)}
       </span>
     </div>

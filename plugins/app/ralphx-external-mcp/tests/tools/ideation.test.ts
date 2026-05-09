@@ -41,6 +41,7 @@ const {
   handleModifyProposal,
   handleAnalyzeDependencies,
   handleGetSessionTasks,
+  handleAppendTaskToPlan,
 } = await import("../../src/tools/ideation.js");
 
 const { startIdeation } = await import(
@@ -439,5 +440,67 @@ describe("handleGetSessionTasks", () => {
 
     expect(parsed.error).toBe("backend_error");
     expect(parsed.status).toBe(404);
+  });
+});
+
+// ─── handleAppendTaskToPlan ─────────────────────────────────────────────────
+
+describe("handleAppendTaskToPlan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("appends a one-off task to an accepted active ideation plan", async () => {
+    const backendPayload = {
+      sessionId: "sess-001",
+      taskId: "task-new",
+      executionPlanId: "plan-001",
+      planBranchId: "branch-001",
+      mergeTaskId: "merge-001",
+      taskStatus: "ready",
+      dependenciesCreated: 1,
+      anyReadyTasks: true,
+    };
+    mockPost.mockResolvedValueOnce({ status: 200, body: backendPayload });
+
+    const result = await handleAppendTaskToPlan(
+      {
+        session_id: "sess-001",
+        title: "Add keyboard shortcut",
+        description: "One-off follow-up after plan acceptance",
+        steps: ["Wire command", "Add regression test"],
+        acceptance_criteria: ["Shortcut works in Agents and Ideation modes"],
+        depends_on_task_ids: ["task-existing"],
+        priority: 40,
+      },
+      testContext
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.taskId).toBe("task-new");
+    expect(mockPost).toHaveBeenCalledWith(
+      "/api/external/sessions/sess-001/tasks",
+      testContext,
+      {
+        title: "Add keyboard shortcut",
+        description: "One-off follow-up after plan acceptance",
+        steps: ["Wire command", "Add regression test"],
+        acceptanceCriteria: ["Shortcut works in Agents and Ideation modes"],
+        dependsOnTaskIds: ["task-existing"],
+        priority: 40,
+      }
+    );
+  });
+
+  it("returns missing_argument when title is absent", async () => {
+    const result = await handleAppendTaskToPlan(
+      { session_id: "sess-001" },
+      testContext
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.error).toBe("missing_argument");
+    expect(parsed.message).toContain("title");
+    expect(mockPost).not.toHaveBeenCalled();
   });
 });

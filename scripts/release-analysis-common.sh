@@ -28,6 +28,84 @@ release_analysis_normalize_version() {
   printf '%s\n' "${version}"
 }
 
+release_analysis_compare_versions() {
+  local left
+  local right
+  local left_major
+  local left_minor
+  local left_patch
+  local right_major
+  local right_minor
+  local right_patch
+
+  left="$(release_analysis_normalize_version "$1")"
+  right="$(release_analysis_normalize_version "$2")"
+  IFS='.' read -r left_major left_minor left_patch <<< "${left}"
+  IFS='.' read -r right_major right_minor right_patch <<< "${right}"
+
+  left_major=$((10#${left_major}))
+  left_minor=$((10#${left_minor}))
+  left_patch=$((10#${left_patch}))
+  right_major=$((10#${right_major}))
+  right_minor=$((10#${right_minor}))
+  right_patch=$((10#${right_patch}))
+
+  if (( left_major < right_major )); then
+    printf -- '-1\n'
+  elif (( left_major > right_major )); then
+    printf '1\n'
+  elif (( left_minor < right_minor )); then
+    printf -- '-1\n'
+  elif (( left_minor > right_minor )); then
+    printf '1\n'
+  elif (( left_patch < right_patch )); then
+    printf -- '-1\n'
+  elif (( left_patch > right_patch )); then
+    printf '1\n'
+  else
+    printf '0\n'
+  fi
+}
+
+release_analysis_assert_version_greater() {
+  local current
+  local selected
+  local comparison
+
+  current="$(release_analysis_normalize_version "$1")"
+  selected="$(release_analysis_normalize_version "$2")"
+  comparison="$(release_analysis_compare_versions "${current}" "${selected}")"
+
+  [[ "${comparison}" == "-1" ]] || release_analysis_die "Selected release version ${selected} must be greater than current version ${current}."
+}
+
+release_analysis_is_major_bump() {
+  local current
+  local selected
+  local current_major
+  local selected_major
+
+  current="$(release_analysis_normalize_version "$1")"
+  selected="$(release_analysis_normalize_version "$2")"
+  IFS='.' read -r current_major _ <<< "${current}"
+  IFS='.' read -r selected_major _ <<< "${selected}"
+
+  (( 10#${selected_major} > 10#${current_major} ))
+}
+
+release_analysis_assert_major_bump_allowed() {
+  local current
+  local selected
+  local approval_mode="${3:-automatic}"
+
+  current="$(release_analysis_normalize_version "$1")"
+  selected="$(release_analysis_normalize_version "$2")"
+
+  if release_analysis_is_major_bump "${current}" "${selected}" && [[ "${approval_mode}" != "manual" ]]; then
+    release_analysis_die "Major release bump ${current} -> ${selected} requires explicit manual approval. Re-run Daily Release with release_bump=major or release_version=${selected}, or use a manually approved local release path."
+  fi
+}
+
 release_analysis_try_read_selected_version() {
   [[ -f "${RELEASE_ANALYSIS_VERSION_FILE}" ]] || return 1
 
@@ -97,19 +175,117 @@ release_analysis_resolve_range() {
   [[ "${RELEASE_ANALYSIS_COMMIT_COUNT}" -gt 0 ]] || release_analysis_die "No commits found in range ${RELEASE_ANALYSIS_RANGE_SPEC}"
 }
 
+release_analysis_repo_full_name() {
+  if [[ -n "${GITHUB_REPOSITORY:-}" ]]; then
+    [[ "${GITHUB_REPOSITORY}" =~ ^[^/]+/[^/]+$ ]] || return 1
+    printf '%s\n' "${GITHUB_REPOSITORY}"
+    return 0
+  fi
+
+  local remote_url
+  remote_url="$(git config --get remote.origin.url 2>/dev/null || true)"
+  [[ -n "${remote_url}" ]] || return 1
+
+  local repo=""
+  case "${remote_url}" in
+    git@github.com:*)
+      repo="${remote_url#git@github.com:}"
+      ;;
+    ssh://git@github.com/*)
+      repo="${remote_url#ssh://git@github.com/}"
+      ;;
+    https://github.com/*)
+      repo="${remote_url#https://github.com/}"
+      ;;
+    https://*@github.com/*)
+      repo="${remote_url#https://*@github.com/}"
+      ;;
+    http://github.com/*)
+      repo="${remote_url#http://github.com/}"
+      ;;
+    http://*@github.com/*)
+      repo="${remote_url#http://*@github.com/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  repo="${repo%.git}"
+  [[ "${repo}" =~ ^[^/]+/[^/]+$ ]] || return 1
+
+  printf '%s\n' "${repo}"
+}
+
+release_analysis_extract_pr_number() {
+  local text="$1"
+  printf '%s\n' "${text}" | sed -nE 's/.*\(#([0-9]+)\).*/\1/p' | head -n 1
+}
+
+release_analysis_fetch_pr_details() {
+  local pr_number="$1"
+
+  command -v gh >/dev/null 2>&1 || return 1
+
+  local repo_full_name
+  repo_full_name="$(release_analysis_repo_full_name)" || return 1
+
+  GH_PROMPT_DISABLED=1 gh pr view "${pr_number}" \
+    --repo "${repo_full_name}" \
+    --json title,body,url \
+    --template $'URL: {{.url}}\nTitle: {{.title}}\nBody:\n{{.body}}\n' \
+    2>/dev/null
+}
+
+release_analysis_write_associated_pr_details() {
+  local commit_body="$1"
+  local pr_number
+  pr_number="$(release_analysis_extract_pr_number "${commit_body}" || true)"
+  [[ -n "${pr_number}" ]] || return 0
+
+  local pr_details
+  pr_details="$(release_analysis_fetch_pr_details "${pr_number}" || true)"
+  [[ -n "$(printf '%s' "${pr_details}" | tr -d '[:space:]')" ]] || return 0
+
+  printf 'Associated GitHub PR #%s (primary narrative source when commit body is sparse):\n' "${pr_number}"
+  printf '%s\n' "${pr_details}"
+}
+
+release_analysis_commit_link() {
+  local sha="$1"
+  local short_sha="${sha:0:8}"
+  local repo_full_name
+
+  if repo_full_name="$(release_analysis_repo_full_name 2>/dev/null)"; then
+    printf '[%s](https://github.com/%s/commit/%s)\n' "${short_sha}" "${repo_full_name}" "${sha}"
+    return 0
+  fi
+
+  printf '%s\n' "${short_sha}"
+}
+
 release_analysis_collect_evidence() {
   RELEASE_ANALYSIS_SHORTSTAT="$(git diff --shortstat "${RELEASE_ANALYSIS_RANGE_SPEC}" || true)"
   [[ -n "${RELEASE_ANALYSIS_SHORTSTAT}" ]] || RELEASE_ANALYSIS_SHORTSTAT="No diff stat available."
 
   RELEASE_ANALYSIS_COMMIT_LOG="$(git log --reverse --no-merges --pretty=format:'- %h %s' "${RELEASE_ANALYSIS_RANGE_SPEC}")"
+  RELEASE_ANALYSIS_COMMIT_REFERENCES="$(
+    while IFS= read -r sha; do
+      [[ -n "${sha}" ]] || continue
+      subject="$(git show -s --format=%s "${sha}")"
+      printf -- '- %s %s\n' "$(release_analysis_commit_link "${sha}")" "${subject}"
+    done < <(git rev-list --reverse "${RELEASE_ANALYSIS_RANGE_SPEC}")
+  )"
 
   RELEASE_ANALYSIS_RAW_COMMIT_BODIES="$(
     while IFS= read -r sha; do
       [[ -n "${sha}" ]] || continue
       body="$(git show -s --format=%B "${sha}")"
       [[ -n "$(printf '%s' "${body}" | tr -d '[:space:]')" ]] || continue
-      printf -- '--- %s ---\n' "${sha:0:8}"
+      printf -- '--- %s ---\n' "$(release_analysis_commit_link "${sha}")"
       printf '%s\n\n' "${body}"
+      release_analysis_write_associated_pr_details "${body}"
+      printf '\n'
     done < <(git rev-list --reverse "${RELEASE_ANALYSIS_RANGE_SPEC}")
   )"
 }
@@ -123,6 +299,9 @@ release_analysis_write_evidence_sections() {
   printf '\nReader guidance:\n%s\n' "${guidance}"
   printf '\nCommit subjects:\n'
   printf '%s\n' "${RELEASE_ANALYSIS_COMMIT_LOG}"
+  if [[ -n "${RELEASE_ANALYSIS_COMMIT_REFERENCES}" ]]; then
+    printf '\nCommit references (use these exact Markdown links for traceability):\n%s\n' "${RELEASE_ANALYSIS_COMMIT_REFERENCES}"
+  fi
   if [[ -n "${RELEASE_ANALYSIS_RAW_COMMIT_BODIES}" ]]; then
     printf '\nRaw commit bodies (primary narrative source):\n%s\n' "${RELEASE_ANALYSIS_RAW_COMMIT_BODIES}"
   fi
@@ -136,6 +315,9 @@ release_analysis_compute_candidate_versions() {
 
   current_version="$(release_analysis_normalize_version "$1")"
   IFS='.' read -r major minor patch <<< "${current_version}"
+  major=$((10#${major}))
+  minor=$((10#${minor}))
+  patch=$((10#${patch}))
 
   RELEASE_ANALYSIS_CURRENT_VERSION="${current_version}"
   RELEASE_ANALYSIS_NEXT_PATCH="${major}.${minor}.$((patch + 1))"

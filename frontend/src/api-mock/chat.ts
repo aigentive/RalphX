@@ -93,6 +93,7 @@ export interface MockChatController {
   getConversationStats(
     conversationId: string
   ): Promise<ConversationStatsResponse | null>;
+  seedAgentConversationWorkspace(workspace: AgentConversationWorkspace): void;
 }
 
 export function resetMockChatState(): void {
@@ -176,6 +177,12 @@ export function replaceMockConversationMessages(
   refreshConversationMessageStats(conversationId);
 }
 
+export function seedMockAgentConversationWorkspace(
+  workspace: AgentConversationWorkspace
+): void {
+  mockWorkspaces.set(workspace.conversationId, { ...workspace });
+}
+
 function exposeMockChatController(): void {
   if (typeof window === "undefined") {
     return;
@@ -194,6 +201,7 @@ function exposeMockChatController(): void {
     listConversationsPage: mockListConversationsPage,
     getConversation: mockGetConversation,
     getConversationStats: mockGetConversationStats,
+    seedAgentConversationWorkspace: seedMockAgentConversationWorkspace,
   };
 }
 

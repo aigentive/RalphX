@@ -2,7 +2,7 @@
  * TaskStatusBadge - Icon-only badge for ALL task states
  *
  * Uses shared STATUS_ICON_CONFIG for consistency with Graph view.
- * Displays a 5x5 rounded icon container in the top-right of task cards.
+ * Displays a compact status icon in the card header.
  */
 
 import type { InternalStatus } from "@/types/status";
@@ -31,9 +31,9 @@ export function TaskStatusBadge({ status, isArchived = false, revisionCount }: T
   return (
     <div
       data-testid={`status-badge-${isArchived ? "archived" : status}`}
-      className="flex items-center justify-center w-5 h-5 rounded"
+      className="flex h-4 w-4 items-center justify-center rounded-full"
       style={{
-        backgroundColor: `color-mix(in srgb, ${config.color} ${parseFloat(config.bgOpacity) * 100}%, transparent)`,
+        backgroundColor: "transparent",
         color: config.color,
       }}
       title={title}

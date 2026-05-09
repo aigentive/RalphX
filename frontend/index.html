@@ -19,22 +19,12 @@
         try {
           var root = document.documentElement;
           var theme = localStorage.getItem('ralphx-theme');
-          // Explicit stored choice wins.
           var resolved;
           if (theme === 'dark' || theme === 'light' || theme === 'high-contrast') {
             resolved = theme;
-          } else if (window.matchMedia) {
-            // First run — infer from OS signals.
-            // Precedence: prefers-contrast: more > prefers-color-scheme: light.
-            if (window.matchMedia('(prefers-contrast: more)').matches) {
-              resolved = 'high-contrast';
-            } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-              resolved = 'light';
-            } else {
-              resolved = 'dark';
-            }
           } else {
             resolved = 'dark';
+            if (theme !== null) localStorage.removeItem('ralphx-theme');
           }
           root.setAttribute('data-theme', resolved);
           // Keep shadcn's `.dark` class compat in sync with the resolved theme

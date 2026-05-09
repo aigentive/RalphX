@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROMPT_FILE="${SCRIPT_DIR}/prompts/release-proposal-codex-prompt.md"
 COMMON_FILE="${SCRIPT_DIR}/release-analysis-common.sh"
-DEFAULT_MODEL="${RELEASE_PROPOSAL_MODEL:-${RELEASE_NOTES_MODEL:-gpt-5.4}}"
+DEFAULT_MODEL="${RELEASE_PROPOSAL_MODEL:-${RELEASE_NOTES_MODEL:-gpt-5.5}}"
 DEFAULT_REASONING_EFFORT="${RELEASE_PROPOSAL_REASONING_EFFORT:-${RELEASE_NOTES_REASONING_EFFORT:-xhigh}}"
 
 usage() {
@@ -14,19 +14,20 @@ usage() {
 Recommend the next RalphX.app release version from committed changes.
 
 Usage:
-  ./scripts/propose-release.sh [--current-version <version>] [--from <ref>] [--to <ref>] [--model <model>] [--reasoning-effort <low|medium|high|xhigh>] [--output <file>] [--accept] [--no-prompt] [--context-only]
+  ./scripts/propose-release.sh [--current-version <version>] [--from <ref>] [--to <ref>] [--model <model>] [--reasoning-effort <low|medium|high|xhigh>] [--output <file>] [--accept] [--no-prompt] [--allow-major] [--context-only]
 
 Options:
   --current-version <version>
                         Current released version when it cannot be inferred from --from
   --from <ref>          Explicit start ref/tag/commit for the compare range (default: previous tag)
   --to <ref>            End ref/tag/commit for the compare range (default: HEAD)
-  --model <model>       Codex model to use (default: RELEASE_PROPOSAL_MODEL, RELEASE_NOTES_MODEL, or gpt-5.4)
+  --model <model>       Codex model to use (default: RELEASE_PROPOSAL_MODEL, RELEASE_NOTES_MODEL, or gpt-5.5)
   --reasoning-effort <level>
                         Codex reasoning effort to use (default: RELEASE_PROPOSAL_REASONING_EFFORT, RELEASE_NOTES_REASONING_EFFORT, or xhigh)
   --output <file>       Output markdown path (default: .artifacts/release-notes/proposal-from-v<current-version>.md)
   --accept              Persist the proposed version to .artifacts/release-notes/.version without prompting
   --no-prompt           Do not prompt to persist the proposed version
+  --allow-major         Allow a proposed major version after explicit manual approval
   --context-only        Write the assembled proposal context instead of invoking Codex
   -h, --help            Show this help
 
@@ -48,6 +49,7 @@ reasoning_effort="${DEFAULT_REASONING_EFFORT}"
 output_path=""
 context_only="false"
 accept_mode="prompt"
+allow_major="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -90,6 +92,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-prompt)
       accept_mode="no"
+      ;;
+    --allow-major)
+      allow_major="true"
       ;;
     --context-only)
       context_only="true"
@@ -144,21 +149,24 @@ trap 'rm -f "${tmp_context}" "${tmp_final_input}"' EXIT
   printf -- '- Current released version: %s\n' "${RELEASE_ANALYSIS_CURRENT_VERSION}"
   printf -- '- Candidate patch version: %s\n' "${RELEASE_ANALYSIS_NEXT_PATCH}"
   printf -- '- Candidate minor version: %s\n' "${RELEASE_ANALYSIS_NEXT_MINOR}"
-  printf -- '- Candidate major version: %s\n' "${RELEASE_ANALYSIS_NEXT_MAJOR}"
+  printf -- '- Candidate major version (manual approval only): %s\n' "${RELEASE_ANALYSIS_NEXT_MAJOR}"
   printf '\nRelease evidence:\n'
   release_analysis_write_evidence_sections "${reader_guidance}"
   printf '\nVersioning policy:\n'
   printf -- '- RalphX.app uses SemVer-style numbering: MAJOR.MINOR.PATCH.\n'
   printf -- '- RalphX.app is only now starting formal public release management after an internal-only phase, and it is still in a high-volatility 0.x phase.\n'
+  printf -- '- 0.x.y minor and patch numbers are unbounded integers; versions such as 0.42.0, 0.100.0, and 0.100.42 are valid and expected before 1.0.\n'
   printf -- '- Release decisions follow the shipped surface, not raw code churn.\n'
   printf -- '- Raw commit count, file count, diff size, dependency bump volume, CI churn, and release-workflow churn do not justify a larger bump by themselves.\n'
   printf -- '- While RalphX.app is on 0.x, patch is for fixes, polish, dependency churn, release/build/CI work, and internal changes that do not materially expand the shipped product surface.\n'
   printf -- '- While RalphX.app is on 0.x, minor is the normal feature release for net-new user-visible capabilities or meaningful workflow expansions, even if the product is still evolving quickly.\n'
-  printf -- '- While RalphX.app is on 0.x, major is reserved for an explicit 1.0-level milestone or a deliberate compatibility reset. High volatility alone is not a reason to recommend 1.0.0.\n'
+  printf -- '- While RalphX.app is on 0.x, major is reserved for an explicit manually approved 1.0-level milestone or a deliberate compatibility reset. High volatility, large minor numbers, or release pressure are not reasons to recommend 1.0.0.\n'
+  printf -- '- An unattended major recommendation is treated as a stop signal: downstream automation will fail unless a release owner manually provides the version.\n'
   printf -- '- Choose exactly one of the provided candidate versions; do not invent a different version number.\n'
   printf '\nWriter instructions for this packet:\n'
   printf -- '- Recommend the smallest bump fully justified by the release evidence.\n'
   printf -- '- Treat the current 0.x policy as binding, especially the high bar for recommending 1.0.0.\n'
+  printf -- '- Prefer continued 0.x.y progression for normal feature releases, including multi-digit minor and patch numbers.\n'
   printf -- '- Use raw commit bodies as the primary source of truth and cite short SHAs inline where the supporting commit is known.\n'
   printf -- '- Keep the final proposal specific enough that a human can accept it or override it quickly.\n'
 } > "${tmp_context}"
@@ -195,6 +203,12 @@ release_analysis_run_codex_with_log "${write_log}" "${model}" "${reasoning_effor
   - < "${tmp_final_input}"
 
 proposed_version="$(release_analysis_extract_proposed_version_from_file "${output_path}")" || release_analysis_die "Could not extract the proposed version from ${output_path}. Keep the proposal file, inspect the prompt contract, and retry."
+release_analysis_assert_version_greater "${RELEASE_ANALYSIS_CURRENT_VERSION}" "${proposed_version}"
+if [[ "${allow_major}" == "true" ]]; then
+  release_analysis_assert_major_bump_allowed "${RELEASE_ANALYSIS_CURRENT_VERSION}" "${proposed_version}" "manual"
+else
+  release_analysis_assert_major_bump_allowed "${RELEASE_ANALYSIS_CURRENT_VERSION}" "${proposed_version}" "automatic"
+fi
 
 echo "Wrote release proposal to ${output_path}"
 echo "Generation log: ${write_log}"

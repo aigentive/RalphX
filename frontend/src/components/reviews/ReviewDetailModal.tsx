@@ -27,6 +27,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -86,7 +87,7 @@ function TaskContextSection({
   return (
     <div className="space-y-3">
       {/* Title removed - already displayed in modal header */}
-      <div className="flex items-center gap-3 text-[12px]">
+      <div className="flex items-center gap-3 text-[0.75rem]">
         <span className="text-text-primary/50">
           Priority: <span className="text-text-primary/70">{priority}</span>
         </span>
@@ -97,7 +98,7 @@ function TaskContextSection({
       {description && (
         <div
           data-testid="modal-task-description"
-          className="text-[12px] text-text-primary/60"
+          className="text-[0.75rem] text-text-primary/60"
           style={{ lineHeight: "1.5", wordBreak: "break-word", overflowWrap: "anywhere" }}
         >
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -128,7 +129,7 @@ function AIReviewSummary({
           border: "1px solid var(--overlay-weak)",
         }}
       >
-        <p className="text-[12px] text-text-primary/40">No AI review yet</p>
+        <p className="text-[0.75rem] text-text-primary/40">No AI review yet</p>
       </div>
     );
   }
@@ -157,12 +158,12 @@ function AIReviewSummary({
         >
           <Bot className="w-3.5 h-3.5" style={{ color: "var(--status-info)" }} />
         </div>
-        <span className="text-[12px] font-medium text-text-primary/70">
+        <span className="text-[0.75rem] font-medium text-text-primary/70">
           AI Review Summary
         </span>
         {latestApproved && (
           <span
-            className="ml-auto text-[11px] px-2 py-0.5 rounded-full"
+            className="ml-auto text-[0.6875rem] px-2 py-0.5 rounded-full"
             style={{
               backgroundColor: "var(--status-success-muted)",
               color: "var(--status-success)",
@@ -175,7 +176,7 @@ function AIReviewSummary({
 
       {/* Summary text - rendered as markdown */}
       {latestApproved?.notes && (
-        <div className="text-[12px] text-text-primary/60 prose prose-sm prose-invert max-w-none">
+        <div className="text-[0.75rem] text-text-primary/60 prose prose-sm prose-invert max-w-none">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {latestApproved.notes}
           </ReactMarkdown>
@@ -193,7 +194,7 @@ function AIReviewSummary({
               className="w-3.5 h-3.5 shrink-0"
               style={{ color: item.passed ? "var(--status-success)" : withAlpha("var(--text-primary)", 30) }}
             />
-            <span className="text-[12px]">{item.label}</span>
+            <span className="text-[0.75rem]">{item.label}</span>
           </div>
         ))}
       </div>
@@ -207,7 +208,7 @@ function AIReviewSummary({
 function ReviewHistorySection({ history }: { history: ReviewNoteResponse[] }) {
   if (history.length === 0) {
     return (
-      <p className="text-[12px] text-text-primary/40 italic">No review history</p>
+      <p className="text-[0.75rem] text-text-primary/40 italic">No review history</p>
     );
   }
 
@@ -263,7 +264,7 @@ function ReviewHistorySection({ history }: { history: ReviewNoteResponse[] }) {
               ) : (
                 <User className="w-3 h-3 text-text-primary/50" />
               )}
-              <span className="text-[11px] font-medium text-text-primary/60">
+              <span className="text-[0.6875rem] font-medium text-text-primary/60">
                 {entry.reviewer === "ai" ? "AI" : entry.reviewer === "system" ? "System" : "Human"}{" "}
                 {entry.outcome === "approved"
                   ? "approved"
@@ -273,13 +274,13 @@ function ReviewHistorySection({ history }: { history: ReviewNoteResponse[] }) {
                   ? "requested changes"
                   : "rejected"}
               </span>
-              <span className="text-[10px] text-text-primary/40 ml-auto flex items-center gap-1">
+              <span className="text-[0.625rem] text-text-primary/40 ml-auto flex items-center gap-1">
                 <Clock className="w-2.5 h-2.5" />
                 {formatDate(entry.created_at)}
               </span>
             </div>
             {entry.summary && (
-              <p className="text-[11px] text-text-primary/40 truncate mt-0.5">
+              <p className="text-[0.6875rem] text-text-primary/40 truncate mt-0.5">
                 {entry.summary}
               </p>
             )}
@@ -290,13 +291,13 @@ function ReviewHistorySection({ history }: { history: ReviewNoteResponse[] }) {
                   border: "1px solid var(--overlay-weak)",
                 }}
               >
-                <span className="text-[10px] text-text-primary/45 break-all min-w-0">
+                <span className="text-[0.625rem] text-text-primary/45 break-all min-w-0">
                   Follow-up: {entry.followup_session_id}
                 </span>
                 <button
                   type="button"
                   onClick={() => navigateToIdeationSession(entry.followup_session_id!)}
-                  className="shrink-0 inline-flex items-center gap-1 text-[10px] font-medium transition-opacity hover:opacity-80"
+                  className="shrink-0 inline-flex items-center gap-1 text-[0.625rem] font-medium transition-opacity hover:opacity-80"
                   style={{ color: "var(--status-warning)" }}
                 >
                   <ExternalLink className="w-3 h-3" />
@@ -330,7 +331,7 @@ function RevisionCountBadge({ count }: { count: number }) {
         className="w-3.5 h-3.5"
         style={{ color: "var(--status-warning)" }}
       />
-      <span className="text-[11px] font-medium" style={{ color: "var(--status-warning)" }}>
+      <span className="text-[0.6875rem] font-medium" style={{ color: "var(--status-warning)" }}>
         Revision #{count}
       </span>
     </div>
@@ -343,7 +344,7 @@ function RevisionCountBadge({ count }: { count: number }) {
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <h4
-      className="text-[11px] font-semibold uppercase tracking-wider mb-2"
+      className="text-[0.6875rem] font-semibold uppercase tracking-wider mb-2"
       style={{ color: "var(--text-muted)" }}
     >
       {children}
@@ -480,6 +481,7 @@ export function ReviewDetailModal({
           "p-0 gap-0 overflow-hidden flex flex-col",
           "max-w-[95vw] w-[95vw] h-[95vh]"
         )}
+        aria-describedby={undefined}
         style={{
           backgroundColor: "var(--bg-surface)",
           border: "1px solid var(--border-subtle)",
@@ -495,13 +497,13 @@ export function ReviewDetailModal({
           }}
         >
           <div className="flex items-center gap-3">
-            <h2
+            <DialogTitle
               data-testid="review-detail-modal-title"
               className="text-base font-semibold text-text-primary/90"
               style={{ letterSpacing: "-0.02em" }}
             >
               Review: {task?.title ?? "Loading..."}
-            </h2>
+            </DialogTitle>
             <RevisionCountBadge count={revisionCount} />
           </div>
           <Button
@@ -571,7 +573,7 @@ export function ReviewDetailModal({
               >
                 <div className="flex items-center gap-2 mb-2">
                   <MessageSquare className="w-4 h-4 text-text-primary/50" />
-                  <span className="text-[12px] font-medium text-text-primary/60">
+                  <span className="text-[0.75rem] font-medium text-text-primary/60">
                     What needs to be changed?
                   </span>
                 </div>
@@ -580,7 +582,7 @@ export function ReviewDetailModal({
                   value={feedback}
                   onChange={(e) => setFeedback(e.target.value)}
                   placeholder="Describe the changes needed..."
-                  className="min-h-[80px] text-[13px] resize-none"
+                  className="min-h-[80px] text-[0.8125rem] resize-none"
                   style={{
                     backgroundColor: "var(--overlay-scrim)",
                     border: "1px solid var(--overlay-moderate)",
@@ -591,7 +593,7 @@ export function ReviewDetailModal({
                     setShowFeedbackInput(false);
                     setFeedback("");
                   }}
-                  className="text-[11px] text-text-primary/40 hover:text-text-primary/60 mt-2"
+                  className="text-[0.6875rem] text-text-primary/40 hover:text-text-primary/60 mt-2"
                 >
                   Cancel
                 </button>
@@ -603,7 +605,7 @@ export function ReviewDetailModal({
           <div className="flex-1 min-w-0">
             {task?.internalStatus === "merged" && (
               <div
-                className="px-4 py-2 text-[11px] text-text-primary/55 border-b"
+                className="px-4 py-2 text-[0.6875rem] text-text-primary/55 border-b"
                 style={{ borderColor: "var(--overlay-weak)" }}
               >
                 {isPlanMergeReview
@@ -646,7 +648,7 @@ export function ReviewDetailModal({
           >
             {/* Error display */}
             {(approveMutation.error || requestChangesMutation.error) && (
-              <span className="text-[12px] text-status-error mr-auto">
+              <span className="text-[0.75rem] text-status-error mr-auto">
                 {approveMutation.error?.message || requestChangesMutation.error?.message}
               </span>
             )}

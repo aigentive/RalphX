@@ -10,6 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
+import { backendApiUrl } from "@/api/backend";
 
 // ============================================================================
 // Schemas (match Rust TeamStateTracker response structs)
@@ -120,8 +121,6 @@ export type TeamHistoryResponse = z.infer<typeof TeamHistoryResponseSchema>;
 // spawning infrastructure that Tauri commands don't have access to)
 // ============================================================================
 
-const MCP_SERVER_URL = "http://127.0.0.1:3847";
-
 export const ApproveTeamPlanResponseSchema = z.object({
   success: z.boolean(),
   team_name: z.string(),
@@ -141,7 +140,7 @@ export async function approveTeamPlan(
   contextType: string,
   contextId: string,
 ): Promise<ApproveTeamPlanResponse> {
-  const resp = await fetch(`${MCP_SERVER_URL}/api/team/plan/approve`, {
+  const resp = await fetch(backendApiUrl("team/plan/approve"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -187,7 +186,7 @@ export type PendingPlanFromServer = z.infer<typeof PendingPlanFromServerSchema>;
 
 export async function getPendingPlans(contextId: string): Promise<PendingPlanFromServer[]> {
   try {
-    const resp = await fetch(`${MCP_SERVER_URL}/api/team/plan/pending/${contextId}`);
+    const resp = await fetch(backendApiUrl(`team/plan/pending/${contextId}`));
     if (!resp.ok) return [];
     const data = PendingPlansResponseSchema.parse(await resp.json());
     return data.plans;
@@ -197,7 +196,7 @@ export async function getPendingPlans(contextId: string): Promise<PendingPlanFro
 }
 
 export async function rejectTeamPlan(planId: string): Promise<void> {
-  const resp = await fetch(`${MCP_SERVER_URL}/api/team/plan/reject`, {
+  const resp = await fetch(backendApiUrl("team/plan/reject"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ plan_id: planId }),

@@ -295,7 +295,8 @@ async fn gap2_two_phase_plan_update_then_task_merge() {
 
 /// Merge backstop: if review already recorded unrelated drift and the branch still contains
 /// that out-of-scope file at PendingMerge, the merge must fail closed instead of silently
-/// proceeding to merge unrelated work.
+/// proceeding to merge unrelated work. The backstop must still run when retry metadata
+/// points at a task worktree that was already cleaned up.
 #[tokio::test]
 async fn gap2b_unrelated_reviewed_drift_blocks_merge_attempt() {
     let git_repo = setup_real_git_repo();
@@ -308,6 +309,11 @@ async fn gap2b_unrelated_reviewed_drift_blocks_merge_attempt() {
     let mut task = Task::new(project_id.clone(), "Gap2b scope drift backstop".to_string());
     task.internal_status = InternalStatus::PendingMerge;
     task.task_branch = Some(git_repo.task_branch.clone());
+    task.worktree_path = Some(
+        path.join("deleted-task-worktree")
+            .to_string_lossy()
+            .to_string(),
+    );
     task.metadata = Some(
         ReviewScopeMetadata::new(
             vec!["src-tauri/src/http_server".to_string()],

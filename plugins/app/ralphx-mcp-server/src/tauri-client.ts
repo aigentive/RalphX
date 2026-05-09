@@ -7,7 +7,6 @@ import { safeTrace } from "./redact.js";
 
 const DEFAULT_TAURI_API_URL = "http://127.0.0.1:3847";
 const ALLOWED_TAURI_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const ALLOWED_TAURI_PORT = "3847";
 
 function resolveTauriApiBaseUrl(): string {
   const raw = process.env.TAURI_API_URL || DEFAULT_TAURI_API_URL;
@@ -27,8 +26,12 @@ function resolveTauriApiBaseUrl(): string {
     throw new Error(`Invalid TAURI_API_URL host: ${parsed.hostname}`);
   }
 
-  const effectivePort = parsed.port || "80";
-  if (effectivePort !== ALLOWED_TAURI_PORT) {
+  const effectivePort = parsed.port;
+  if (!/^\d+$/.test(effectivePort)) {
+    throw new Error(`Invalid TAURI_API_URL port: ${effectivePort}`);
+  }
+  const portNumber = Number(effectivePort);
+  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
     throw new Error(`Invalid TAURI_API_URL port: ${effectivePort}`);
   }
 

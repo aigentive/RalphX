@@ -9,9 +9,13 @@ capabilities:
     - get_memory
     - get_memories_for_paths
     - get_conversation_transcript
+    - append_task_to_ideation_plan
     - delegate_start
     - delegate_wait
     - delegate_cancel
+  internal_skills:
+    allowed:
+      - ralphx-agent-workspace-swe
 harnesses:
   claude:
     model: sonnet

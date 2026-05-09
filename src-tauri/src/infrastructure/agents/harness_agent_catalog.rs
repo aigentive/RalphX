@@ -36,6 +36,19 @@ pub struct CanonicalAgentDefinition {
 pub struct CanonicalAgentCapabilities {
     #[serde(default)]
     pub mcp_tools: Vec<String>,
+    #[serde(default)]
+    pub internal_skills: CanonicalInternalSkillsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalInternalSkillsConfig {
+    #[serde(default)]
+    pub auto_match: bool,
+    #[serde(default)]
+    pub allowed: Vec<String>,
+    #[serde(default)]
+    pub max_auto_loaded: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]

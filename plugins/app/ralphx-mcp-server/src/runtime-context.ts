@@ -5,7 +5,8 @@ type RuntimeContextKey =
   | "workingDirectory"
   | "contextType"
   | "contextId"
-  | "leadSessionId";
+  | "leadSessionId"
+  | "tauriApiUrl";
 
 type RuntimeContext = Partial<Record<RuntimeContextKey, string>>;
 
@@ -21,6 +22,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   { key: "contextType", argName: "context-type", envName: "RALPHX_CONTEXT_TYPE" },
   { key: "contextId", argName: "context-id", envName: "RALPHX_CONTEXT_ID" },
   { key: "leadSessionId", argName: "lead-session-id", envName: "RALPHX_LEAD_SESSION_ID" },
+  { key: "tauriApiUrl", argName: "tauri-api-url", envName: "TAURI_API_URL" },
 ];
 
 export function parseCliOptionFromArgs(

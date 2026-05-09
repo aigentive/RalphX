@@ -9,6 +9,7 @@
     "watch": "tsc --watch",
     "start": "node build/index.js",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
@@ -25,6 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "@vitest/coverage-v8": "^4.1.5",
     "@vitest/ui": "^4.1.4",
     "typescript": "^6.0.3",
     "vitest": "^4.0.18"

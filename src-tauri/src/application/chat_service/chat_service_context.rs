@@ -1611,6 +1611,10 @@ fn apply_ralphx_env_vars(
     lead_session_id: Option<&str>,
     subagent_model_cap: Option<&str>,
 ) {
+    cmd.env(
+        "TAURI_API_URL",
+        &crate::utils::backend_endpoint::backend_http_base_url(),
+    );
     cmd.env("RALPHX_AGENT_TYPE", mcp_agent_type(agent_name));
     cmd.env("RALPHX_CONTEXT_TYPE", &context_type.to_string());
     cmd.env("RALPHX_CONTEXT_ID", context_id);

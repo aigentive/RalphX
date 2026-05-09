@@ -45,7 +45,7 @@ interface DebateSummaryProps {
 function SectionHeader({ label }: { label: string }) {
   return (
     <h4
-      className="text-[11px] uppercase tracking-wide font-medium mb-1.5"
+      className="text-[0.6875rem] uppercase tracking-wide font-medium mb-1.5"
       style={{ color: "var(--text-muted)" }}
     >
       {label}
@@ -79,7 +79,7 @@ function AdvocateColumn({
       {/* Header */}
       <div className="flex items-center gap-2">
         <span
-          className="text-[13px] font-medium tracking-[-0.01em]"
+          className="text-[0.8125rem] font-medium tracking-[-0.01em]"
           style={{
             color: isWinner ? "var(--accent-primary)" : "var(--text-primary)",
           }}
@@ -87,7 +87,7 @@ function AdvocateColumn({
           {advocate.name}
         </span>
         <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+          className="text-[0.625rem] font-medium px-1.5 py-0.5 rounded-md"
           style={{
             background: "var(--overlay-faint)",
             border: "1px solid var(--overlay-faint)",
@@ -105,7 +105,7 @@ function AdvocateColumn({
           {advocate.strengths.map((s) => (
             <li
               key={s}
-              className="text-[12px] leading-relaxed pl-3 relative"
+              className="text-[0.75rem] leading-relaxed pl-3 relative"
               style={{ color: "var(--text-secondary)" }}
             >
               <span
@@ -125,7 +125,7 @@ function AdvocateColumn({
           {advocate.weaknesses.map((w) => (
             <li
               key={w}
-              className="text-[12px] leading-relaxed pl-3 relative"
+              className="text-[0.75rem] leading-relaxed pl-3 relative"
               style={{ color: "var(--text-secondary)" }}
             >
               <span
@@ -145,7 +145,7 @@ function AdvocateColumn({
           {advocate.evidence.map((e) => (
             <li
               key={e}
-              className="text-[12px] leading-relaxed pl-3 relative"
+              className="text-[0.75rem] leading-relaxed pl-3 relative"
               style={{ color: "var(--text-secondary)" }}
             >
               <span
@@ -162,7 +162,7 @@ function AdvocateColumn({
       <div>
         <SectionHeader label="Critic Challenge" />
         <p
-          className="text-[12px] leading-relaxed italic pl-3"
+          className="text-[0.75rem] leading-relaxed italic pl-3"
           style={{
             color: "var(--text-secondary)",
             borderLeft: "2px solid var(--overlay-faint)",
@@ -199,13 +199,13 @@ function WinnerIndicator({
       />
       <div className="flex items-baseline gap-2 flex-wrap">
         <span
-          className="text-[13px] font-semibold"
+          className="text-[0.8125rem] font-semibold"
           style={{ color: "var(--accent-primary)" }}
         >
           {winner.name}
         </span>
         <span
-          className="text-[12px]"
+          className="text-[0.75rem]"
           style={{ color: "var(--text-secondary)" }}
         >
           {winner.justification}

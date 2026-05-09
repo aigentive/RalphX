@@ -73,6 +73,18 @@ describe("useRunningProcesses", () => {
       });
     });
 
+    it("does not call getRunningProcesses API when disabled", () => {
+      vi.mocked(runningProcessesApi.getRunningProcesses).mockResolvedValue(mockResponse);
+
+      const { result } = renderHook(
+        () => useRunningProcesses("project-1", { enabled: false }),
+        { wrapper }
+      );
+
+      expect(runningProcessesApi.getRunningProcesses).not.toHaveBeenCalled();
+      expect(result.current.fetchStatus).toBe("idle");
+    });
+
     it("returns loading state initially", () => {
       vi.mocked(runningProcessesApi.getRunningProcesses).mockImplementation(
         () => new Promise(() => {}) // Never resolves

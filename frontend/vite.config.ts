@@ -137,6 +137,13 @@ export default defineConfig(async ({ mode }) => {
       },
     },
     build: {
+      rolldownOptions: {
+        output: {
+          // Preserve production chunk execution order so dependency chunks do not
+          // call app-entry re-exports before the entry module initializes them.
+          strictExecutionOrder: true,
+        },
+      },
       commonjsOptions: {
         transformMixedEsModules: true,
         include: [/node_modules/],

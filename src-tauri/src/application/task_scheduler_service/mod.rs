@@ -38,9 +38,9 @@ use crate::domain::entities::{
     ChatContextType, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository,
+    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
+    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     TaskDependencyRepository, TaskRepository,
 };
@@ -84,6 +84,8 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     /// Optional lane settings repository so fallback transition services can resolve Codex lanes.
     pub(super) agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    /// Optional provider settings repository so fallback transition services honor onboarding.
+    pub(super) agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     /// Optional provider-neutral client bundle for fallback transition construction.
     pub(super) agent_clients: Option<AgentClientBundle>,
     /// Optional PR poller registry so scheduled plan merges can start GitHub polling.
@@ -149,6 +151,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
             interactive_process_registry: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             agent_clients: None,
             pr_poller_registry: None,
             github_service: None,
@@ -192,6 +195,14 @@ impl<R: Runtime> TaskSchedulerService<R> {
         repo: Arc<dyn AgentLaneSettingsRepository>,
     ) -> Self {
         self.agent_lane_settings_repo = Some(repo);
+        self
+    }
+
+    pub fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(repo);
         self
     }
 
@@ -391,6 +402,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         .with_runtime_support(
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
+            self.agent_provider_settings_repo.as_ref().map(Arc::clone),
             self.plan_branch_repo.as_ref().map(Arc::clone),
             self.interactive_process_registry.as_ref().map(Arc::clone),
         )

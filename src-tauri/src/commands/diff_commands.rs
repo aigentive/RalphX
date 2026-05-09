@@ -12,6 +12,18 @@ use crate::error::{AppError, AppResult};
 use std::path::{Path, PathBuf};
 use tauri::State;
 
+fn resolve_merge_base(repo: &Path, base: &str, target: &str) -> Result<String, String> {
+    let output = Command::new(resolve_git_cli_path())
+        .args(["merge-base", base, target])
+        .current_dir(repo)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Determine the working path for a task.
 ///
 /// Uses task.worktree_path if available and exists, falls back to project.working_directory.
@@ -73,6 +85,15 @@ fn plan_branch_review_base_ref(plan_branch: &PlanBranch, project: &Project) -> S
         .to_string()
 }
 
+fn plan_branch_review_diff_base_ref(
+    repo: &Path,
+    plan_branch: &PlanBranch,
+    project: &Project,
+) -> String {
+    let base_ref = plan_branch_review_base_ref(plan_branch, project);
+    resolve_merge_base(repo, &base_ref, &plan_branch.branch_name).unwrap_or(base_ref)
+}
+
 /// Get all files changed by the agent for a task
 #[tauri::command]
 pub async fn get_task_file_changes(
@@ -93,6 +114,7 @@ pub async fn get_task_file_changes_for_state(
 
     let diff_service = DiffService::new();
     let plan_branch = get_branchless_plan_branch(app_state, &task).await?;
+    let repo_path = Path::new(&working_path_str);
     if task.internal_status == crate::domain::entities::InternalStatus::Merged {
         let merge_sha = task.merge_commit_sha.as_deref().or_else(|| {
             plan_branch
@@ -113,7 +135,7 @@ pub async fn get_task_file_changes_for_state(
     }
 
     if let Some(plan_branch) = plan_branch {
-        let base_ref = plan_branch_review_base_ref(&plan_branch, &project);
+        let base_ref = plan_branch_review_diff_base_ref(repo_path, &plan_branch, &project);
         return diff_service.get_file_changes_between_refs(
             &working_path_str,
             &base_ref,
@@ -148,6 +170,7 @@ pub async fn get_file_diff_for_state(
 
     let diff_service = DiffService::new();
     let plan_branch = get_branchless_plan_branch(app_state, &task).await?;
+    let repo_path = Path::new(&working_path_str);
     if task.internal_status == crate::domain::entities::InternalStatus::Merged {
         let merge_sha = task.merge_commit_sha.as_deref().or_else(|| {
             plan_branch
@@ -169,7 +192,7 @@ pub async fn get_file_diff_for_state(
     }
 
     if let Some(plan_branch) = plan_branch {
-        let base_ref = plan_branch_review_base_ref(&plan_branch, &project);
+        let base_ref = plan_branch_review_diff_base_ref(repo_path, &plan_branch, &project);
         return diff_service.get_file_diff_between_refs(
             &file_path,
             &working_path_str,

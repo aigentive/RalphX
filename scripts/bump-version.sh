@@ -33,6 +33,9 @@ npm --prefix frontend version $VERSION --no-git-tag-version
 # Update Cargo.toml
 VERSION="${VERSION}" perl -0pi -e 's/^version = ".*"/version = "$ENV{VERSION}"/m' src-tauri/Cargo.toml
 
+# Keep Cargo.lock's root package metadata aligned with Cargo.toml.
+VERSION="${VERSION}" perl -0pi -e 's/(\[\[package\]\]\nname = "ralphx"\nversion = ")[^"]+(")/$1$ENV{VERSION}$2/' src-tauri/Cargo.lock
+
 # Update tauri.conf.json
 cd src-tauri
 tmp_conf="$(mktemp)"
@@ -43,7 +46,7 @@ cd ..
 echo "Version updated to $VERSION"
 echo ""
 echo "To release:"
-echo "  git add frontend/package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json"
+echo "  git add frontend/package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json"
 echo "  git commit -m 'chore: bump version to $VERSION'"
 echo "  git tag v$VERSION"
 echo "  git push origin main --tags"

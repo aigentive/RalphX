@@ -84,18 +84,18 @@ function HistoricalLensCard({ viewMode }: { viewMode: TaskDetailViewMode }) {
           <div className="flex items-center gap-2">
             <Clock className="w-4 h-4 text-text-primary/45 shrink-0" />
             <div className="min-w-0">
-              <div className="text-[13px] font-medium text-text-primary/80">
+              <div className="text-[0.8125rem] font-medium text-text-primary/80">
                 Historical State
               </div>
-              <div className="text-[12px] text-text-primary/45">
+              <div className="text-[0.75rem] text-text-primary/45">
                 {titleCaseStatus(viewMode.status)}
               </div>
-              <div className="text-[12px] text-text-primary/35">
+              <div className="text-[0.75rem] text-text-primary/35">
                 {formatTimestamp(viewMode.timestamp)}
               </div>
             </div>
           </div>
-          <p className="text-[12px] leading-relaxed text-text-primary/45">
+          <p className="text-[0.75rem] leading-relaxed text-text-primary/45">
             Plan, branch, and PR values show the latest task context.
           </p>
         </div>
@@ -127,13 +127,13 @@ function PlanCard({ model }: { model: TaskDetailContextModel }) {
               >
                 <FileText className="mt-0.5 h-4 w-4 shrink-0 text-text-primary/40" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-wider text-text-primary/35">
+                  <div className="text-[0.6875rem] uppercase tracking-wider text-text-primary/35">
                     Implementation Plan
                   </div>
-                  <div className="mt-1 text-[13px] font-medium leading-snug text-text-primary/80">
+                  <div className="mt-1 text-[0.8125rem] font-medium leading-snug text-text-primary/80">
                     {planArtifact.title}
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-text-primary/45">
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[0.6875rem] text-text-primary/45">
                     <span>v{planArtifact.currentVersion}</span>
                     <span>•</span>
                     <span>{planArtifact.artifactType}</span>
@@ -152,14 +152,14 @@ function PlanCard({ model }: { model: TaskDetailContextModel }) {
               >
                 <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-text-primary/40" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-wider text-text-primary/35">
+                  <div className="text-[0.6875rem] uppercase tracking-wider text-text-primary/35">
                     Source Proposal
                   </div>
-                  <div className="mt-1 text-[13px] font-medium leading-snug text-text-primary/75">
+                  <div className="mt-1 text-[0.8125rem] font-medium leading-snug text-text-primary/75">
                     {sourceProposal.title}
                   </div>
                   {sourceProposal.planVersionAtCreation !== null && (
-                    <div className="mt-1 text-[11px] text-text-primary/45">
+                    <div className="mt-1 text-[0.6875rem] text-text-primary/45">
                       Created against plan v{sourceProposal.planVersionAtCreation}
                     </div>
                   )}
@@ -169,7 +169,7 @@ function PlanCard({ model }: { model: TaskDetailContextModel }) {
             )}
 
             {!planArtifact && !sourceProposal && sessionId && (
-              <div className="text-[12px] text-text-primary/45">
+              <div className="text-[0.75rem] text-text-primary/45">
                 Ideation session {sessionId.slice(0, 8)}
               </div>
             )}
@@ -208,7 +208,7 @@ function BranchCard({
               <BranchBadge branch={branch.source} variant="muted" size="sm" />
             )}
             {branch.status && (
-              <div className="mt-1 text-[11px] capitalize text-text-primary/35">
+              <div className="mt-1 text-[0.6875rem] capitalize text-text-primary/35">
                 {branch.status.replace(/_/g, " ")}
               </div>
             )}
@@ -236,7 +236,7 @@ function PullRequestCard({
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <GitPullRequest className="w-4 h-4 text-text-primary/45 shrink-0" />
-            <span className="text-[13px] font-medium text-text-primary/80">
+            <span className="text-[0.8125rem] font-medium text-text-primary/80">
               PR #{pullRequest.number}
             </span>
           </div>
@@ -246,7 +246,7 @@ function PullRequestCard({
           <button
             type="button"
             onClick={handleOpen}
-            className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-medium text-status-success hover:text-status-success/85"
+            className="mt-3 inline-flex items-center gap-1.5 text-[0.75rem] font-medium text-status-success hover:text-status-success/85"
           >
             <ExternalLink className="w-3.5 h-3.5" />
             View PR
@@ -270,7 +270,7 @@ function MergeCard({
             <div className="flex items-center gap-2">
               <GitBranch className="w-4 h-4 text-text-primary/40 shrink-0" />
               <div className="min-w-0">
-                <div className="text-[11px] uppercase tracking-wider text-text-primary/35">
+                <div className="text-[0.6875rem] uppercase tracking-wider text-text-primary/35">
                   Target
                 </div>
                 <BranchBadge branch={merge.target} variant="target" size="sm" />
@@ -281,17 +281,17 @@ function MergeCard({
             <div className="flex items-center gap-2">
               <GitCommit className="w-4 h-4 text-text-primary/40 shrink-0" />
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-text-primary/35">
+                <div className="text-[0.6875rem] uppercase tracking-wider text-text-primary/35">
                   Commit
                 </div>
-                <span className="text-[12px] font-mono text-text-primary/70">
+                <span className="text-[0.75rem] font-mono text-text-primary/70">
                   {shortSha(merge.commitSha)}
                 </span>
               </div>
             </div>
           )}
           {merge.mergedAt && (
-            <div className="text-[12px] text-text-primary/40">
+            <div className="text-[0.75rem] text-text-primary/40">
               Merged {formatTimestamp(merge.mergedAt)}
             </div>
           )}

@@ -148,18 +148,14 @@ impl GitService {
         base_branch: &str,
         merge_commit_sha: &str,
     ) -> AppResult<Vec<CommitInfo>> {
-        // Get the merge-base (where the task branch diverged from base)
-        // We need the first parent of the merge commit, which is the base branch
-        // Then get commits from merge-base to the merge commit's second parent (the task branch)
-        //
         // For a merge commit:
         // - First parent (^1) is the base branch commit
         // - Second parent (^2) is the task branch tip
         //
-        // We want commits that were on the task branch: merge_commit^1..merge_commit^2
-        // But if it was a fast-forward, there's no second parent, so we use merge_commit^1..merge_commit
-
-        // First, check if merge commit has a second parent (true merge vs fast-forward)
+        // For a non-merge recorded merge SHA, RalphX usually records the single
+        // squash/rebase commit that represented the task. Use its direct parent
+        // to avoid pulling in unrelated earlier plan/agent-branch commits when
+        // the project base has moved independently.
         let check_output = git_cmd::run(
             &["rev-parse", "--verify", &format!("{}^2", merge_commit_sha)],
             repo,
@@ -170,19 +166,24 @@ impl GitService {
             // True merge - get commits from first parent to second parent
             format!("{}^1..{}^2", merge_commit_sha, merge_commit_sha)
         } else {
-            // Fast-forward - get commits from before merge to merge commit
-            // Find merge-base between base branch and merge commit
-            let merge_base_output =
-                git_cmd::run(&["merge-base", base_branch, merge_commit_sha], repo).await?;
-
-            if !merge_base_output.status.success() {
-                // If we can't find merge-base, just use base_branch..merge_commit
-                format!("{}..{}", base_branch, merge_commit_sha)
+            let parent_ref = format!("{}^", merge_commit_sha);
+            let parent_output = git_cmd::run(&["rev-parse", "--verify", &parent_ref], repo).await?;
+            if parent_output.status.success() {
+                format!("{}..{}", parent_ref, merge_commit_sha)
             } else {
-                let merge_base = String::from_utf8_lossy(&merge_base_output.stdout)
-                    .trim()
-                    .to_string();
-                format!("{}..{}", merge_base, merge_commit_sha)
+                // Root commit or unusual manual state: fall back to the older
+                // merge-base behavior so the UI still has something to show.
+                let merge_base_output =
+                    git_cmd::run(&["merge-base", base_branch, merge_commit_sha], repo).await?;
+
+                if !merge_base_output.status.success() {
+                    format!("{}..{}", base_branch, merge_commit_sha)
+                } else {
+                    let merge_base = String::from_utf8_lossy(&merge_base_output.stdout)
+                        .trim()
+                        .to_string();
+                    format!("{}..{}", merge_base, merge_commit_sha)
+                }
             }
         };
 

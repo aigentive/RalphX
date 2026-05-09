@@ -23,6 +23,7 @@ jobs:
       run_plugins: ${{ steps.decide.outputs.run_plugins }}
       run_rust: ${{ steps.decide.outputs.run_rust }}
       run_frontend: ${{ steps.decide.outputs.run_frontend }}
+      run_visual: ${{ steps.decide.outputs.run_visual }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -50,6 +51,12 @@ jobs:
               - 'scripts/validate_sqlite_migrations.py'
             frontend:
               - 'frontend/**'
+            visual:
+              - 'frontend/**'
+              - 'src-tauri/Cargo.lock'
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/src/application/runtime_wiring.rs'
+              - 'src-tauri/tauri.conf.json'
 
       - name: Decide CI scope
         id: decide
@@ -57,18 +64,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "run_automation=${{ steps.filter.outputs.automation }}" >> "${GITHUB_OUTPUT}"
-
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            echo "run_plugins=true" >> "${GITHUB_OUTPUT}"
-            echo "run_rust=true" >> "${GITHUB_OUTPUT}"
-            echo "run_frontend=true" >> "${GITHUB_OUTPUT}"
+            {
+              echo "run_automation=${{ steps.filter.outputs.automation }}"
+              echo "run_plugins=true"
+              echo "run_rust=true"
+              echo "run_frontend=true"
+              echo "run_visual=true"
+            } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          echo "run_plugins=${{ steps.filter.outputs.plugins }}" >> "${GITHUB_OUTPUT}"
-          echo "run_rust=${{ steps.filter.outputs.rust }}" >> "${GITHUB_OUTPUT}"
-          echo "run_frontend=${{ steps.filter.outputs.frontend }}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "run_automation=${{ steps.filter.outputs.automation }}"
+            echo "run_plugins=${{ steps.filter.outputs.plugins }}"
+            echo "run_rust=${{ steps.filter.outputs.rust }}"
+            echo "run_frontend=${{ steps.filter.outputs.frontend }}"
+            echo "run_visual=${{ steps.filter.outputs.visual }}"
+          } >> "${GITHUB_OUTPUT}"
 
   automation-config:
     name: Automation Config
@@ -105,6 +118,20 @@ jobs:
           set -euo pipefail
           bash -n scripts/build-prod-release.sh
           bash -n scripts/render-homebrew-cask.sh
+
+  tauri-package-alignment:
+    name: Tauri Package Alignment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Check JavaScript and Rust Tauri package alignment
+        run: node scripts/check-tauri-package-alignment.mjs .
 
   rust-ipc-contracts:
     name: Rust IPC Contracts
@@ -146,6 +173,7 @@ jobs:
             --test task_commands \
             --test api_key_commands \
             --test project_commands \
+            --test harness_provider_commands \
             --test unified_chat_commands \
             --test task_step_commands \
             ipc_contract
@@ -271,10 +299,10 @@ jobs:
             package_dir: plugins/app/ralphx-mcp-server
             package_lock: plugins/app/ralphx-mcp-server/package-lock.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -445,3 +473,68 @@ jobs:
               exit 1
             fi
           done
+
+  frontend-visual-snapshots:
+    name: Frontend Visual Snapshots
+    needs: changes
+    if: needs.changes.outputs.run_visual == 'true'
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+        working-directory: frontend
+
+      - name: Run visual snapshots
+        run: npm run test:visual
+        working-directory: frontend
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-visual-report
+          path: frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend-visual-tests:
+    name: Frontend Visual Tests
+    needs:
+      - changes
+      - frontend-visual-snapshots
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Finalize visual status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then
+            echo "CI scope detection failed for visual tests." >&2
+            exit 1
+          fi
+
+          if [[ "${{ needs.changes.outputs.run_visual }}" != "true" ]]; then
+            echo "No visual-relevant changes detected for this pull request; skipping visual suite."
+            exit 0
+          fi
+
+          if [[ "${{ needs.frontend-visual-snapshots.result }}" != "success" ]]; then
+            echo "Visual suite result: ${{ needs.frontend-visual-snapshots.result }}" >&2
+            exit 1
+          fi

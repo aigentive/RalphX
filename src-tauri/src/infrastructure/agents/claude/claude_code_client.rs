@@ -24,8 +24,9 @@ use crate::domain::agents::{
 };
 
 use super::{
-    apply_common_spawn_env, claude_runtime_config, create_mcp_config, ensure_claude_spawn_allowed,
-    get_allowed_tools, get_effective_settings, get_preapproved_tools, sanitize_claude_user_state,
+    append_claude_permission_args, apply_common_spawn_env, claude_runtime_config,
+    create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
+    get_effective_settings, get_preapproved_tools, sanitize_claude_user_state,
 };
 
 // ============================================================================
@@ -283,7 +284,10 @@ pub async fn kill_all_tracked_processes() {
     let mut processes = PROCESSES.lock().await;
     let count = processes.len();
     if count > 0 {
-        tracing::info!(count, "Killing tracked non-streaming agent processes on exit");
+        tracing::info!(
+            count,
+            "Killing tracked non-streaming agent processes on exit"
+        );
         for (_id, (mut child, _start_time)) in processes.drain() {
             let _ = child.kill().await;
         }
@@ -303,9 +307,9 @@ pub struct ClaudeCodeClient {
 impl ClaudeCodeClient {
     /// Create a new Claude Code client
     ///
-    /// Attempts to find `claude` in PATH, falls back to "claude" if not found
+    /// Attempts to find `claude` in terminal and GUI app contexts.
     pub fn new() -> Self {
-        let cli_path = which::which("claude").unwrap_or_else(|_| PathBuf::from("claude"));
+        let cli_path = find_claude_cli().unwrap_or_else(|| PathBuf::from("claude"));
         Self {
             cli_path,
             capabilities: ClientCapabilities::claude_code(),
@@ -406,22 +410,8 @@ impl AgenticClient for ClaudeCodeClient {
             args.extend(["--max-tokens".to_string(), max_tokens.to_string()]);
         }
 
-        // Permission handling from config/ralphx.yaml
-        let runtime = claude_runtime_config();
-        args.extend([
-            "--permission-prompt-tool".to_string(),
-            runtime.permission_prompt_tool.clone(),
-        ]);
-        let permission_mode = crate::infrastructure::agents::claude::resolve_permission_mode(
-            config.agent.as_deref(),
-        );
-        args.extend([
-            "--permission-mode".to_string(),
-            permission_mode,
-        ]);
-        if runtime.dangerously_skip_permissions {
-            args.push("--dangerously-skip-permissions".to_string());
-        }
+        // Permission handling from config/harnesses/claude.yaml.
+        append_claude_permission_args(&mut args, config.agent.as_deref());
         // Optional settings JSON passed to claude CLI via --settings.
         // Agent-specific profile overrides global profile when configured.
         if let Some(s) = get_effective_settings(config.agent.as_deref()) {
@@ -650,22 +640,8 @@ impl ClaudeCodeClient {
             args.extend(["--max-tokens".to_string(), max_tokens.to_string()]);
         }
 
-        // Permission handling from config/ralphx.yaml
-        let runtime = claude_runtime_config();
-        args.extend([
-            "--permission-prompt-tool".to_string(),
-            runtime.permission_prompt_tool.clone(),
-        ]);
-        let permission_mode = crate::infrastructure::agents::claude::resolve_permission_mode(
-            config.agent.as_deref(),
-        );
-        args.extend([
-            "--permission-mode".to_string(),
-            permission_mode,
-        ]);
-        if runtime.dangerously_skip_permissions {
-            args.push("--dangerously-skip-permissions".to_string());
-        }
+        // Permission handling from config/harnesses/claude.yaml.
+        append_claude_permission_args(&mut args, config.agent.as_deref());
         // Optional settings JSON passed to claude CLI via --settings.
         // Agent-specific profile overrides global profile when configured.
         if let Some(s) = get_effective_settings(config.agent.as_deref()) {
@@ -755,7 +731,11 @@ impl ClaudeCodeClient {
 
         let handle = AgentHandle::new(ClientType::ClaudeCode, config.role);
 
-        Ok(StreamingSpawnResult { handle, child, stdin })
+        Ok(StreamingSpawnResult {
+            handle,
+            child,
+            stdin,
+        })
     }
 
     /// Spawn an agent in interactive mode (no `-p` flag, stdin kept open).
@@ -824,7 +804,9 @@ impl ClaudeCodeClient {
 
         // stdin must be present — we configured Stdio::piped() above
         let stdin = child.stdin.take().ok_or_else(|| {
-            AgentError::SpawnFailed("Failed to capture stdin pipe for interactive agent".to_string())
+            AgentError::SpawnFailed(
+                "Failed to capture stdin pipe for interactive agent".to_string(),
+            )
         })?;
 
         let handle = AgentHandle::new(ClientType::ClaudeCode, config.role);
@@ -856,7 +838,10 @@ impl ClaudeCodeClient {
     /// - **Team CLI flags** — `--agent-id`, `--agent-name`, `--team-name`, etc.
     /// - **`--append-system-prompt`** — lead-generated role prompt
     /// - **`--dangerously-skip-permissions`** — automated teammates skip prompts
-    pub fn build_teammate_cli_args(&self, config: &TeammateSpawnConfig) -> Result<Vec<String>, String> {
+    pub fn build_teammate_cli_args(
+        &self,
+        config: &TeammateSpawnConfig,
+    ) -> Result<Vec<String>, String> {
         sanitize_claude_user_state();
         let mut args = Vec::new();
 
@@ -949,8 +934,7 @@ impl ClaudeCodeClient {
             ]);
         }
 
-        // Skip permissions for automated teammates
-        args.push("--dangerously-skip-permissions".to_string());
+        append_claude_permission_args(&mut args, Some(&config.agent_type));
 
         // Optional settings JSON passed to claude CLI via --settings.
         // Uses agent_type for profile lookup, same as task agents.
@@ -1101,14 +1085,10 @@ impl ClaudeCodeClient {
                 ))
             })?;
             stdin.write_all(b"\n").await.map_err(|e| {
-                AgentError::SpawnFailed(format!(
-                    "Failed to write newline to teammate stdin: {e}"
-                ))
+                AgentError::SpawnFailed(format!("Failed to write newline to teammate stdin: {e}"))
             })?;
             stdin.flush().await.map_err(|e| {
-                AgentError::SpawnFailed(format!(
-                    "Failed to flush teammate stdin: {e}"
-                ))
+                AgentError::SpawnFailed(format!("Failed to flush teammate stdin: {e}"))
             })?;
         }
 

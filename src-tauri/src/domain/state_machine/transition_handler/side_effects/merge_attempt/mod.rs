@@ -166,15 +166,7 @@ impl<'a> TransitionHandler<'a> {
                 "target_branch": target_branch,
             });
             if self
-                .route_merge_scope_violation_to_revision(
-                    TaskCore {
-                        task: &mut *task,
-                        task_id: &task_id,
-                        task_id_str,
-                        task_repo,
-                    },
-                    metadata,
-                )
+                .route_merge_scope_violation_to_revision(&task_id, task_id_str, metadata)
                 .await
             {
                 return;
@@ -190,6 +182,8 @@ impl<'a> TransitionHandler<'a> {
                 serde_json::json!({
                     "error": "Merge scope backstop could not route task back to revision",
                     "error_code": "merge_scope_drift_guard_fallback",
+                    "scope_guard_triggered": true,
+                    "scope_guard_out_of_scope_files": violation.out_of_scope_files,
                     "source_branch": source_branch,
                     "target_branch": target_branch,
                 }),

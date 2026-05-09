@@ -208,6 +208,7 @@ export function ProposalEditModal({
         className="max-w-3xl !flex !flex-col overflow-hidden"
         style={{ maxHeight: "85vh" }}
         aria-labelledby="modal-title"
+        aria-describedby="modal-description"
       >
         {/* Header */}
         <DialogHeader className="flex-shrink-0">
@@ -219,7 +220,7 @@ export function ProposalEditModal({
               <DialogTitle id="modal-title" className="text-lg font-medium">
                 Edit Proposal
               </DialogTitle>
-              <p className="text-sm text-[var(--text-muted)] mt-0.5">
+              <p id="modal-description" className="text-sm text-[var(--text-muted)] mt-0.5">
                 Refine the details of your task proposal
               </p>
             </div>

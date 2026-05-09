@@ -115,7 +115,7 @@ def auto_crop_top(img, threshold=10, min_crop=0):
     return img
 
 
-def frame_screenshot(input_path, output_path, gradient_colors, scale=0.85, padding_ratio=0.08, crop_top=True):
+def frame_screenshot(input_path, output_path, gradient_colors, scale=0.94, padding_ratio=0.035, crop_top=True):
     """
     Create a Dribbble-style framed screenshot.
 
@@ -182,6 +182,13 @@ def frame_screenshot(input_path, output_path, gradient_colors, scale=0.85, paddi
 # ============================================================================
 
 PALETTES = {
+    # README hero — deep ocean: electric blue → indigo → teal → violet.
+    'agents-overview': (
+        (30, 100, 200),    # Electric blue
+        (80, 50, 180),     # Indigo
+        (20, 140, 180),    # Teal
+        (100, 60, 200),    # Violet
+    ),
     # Warm sunset vibes — brand-aligned orange → coral → magenta
     'welcome': (
         (180, 80, 50),     # Warm orange
@@ -282,14 +289,11 @@ VARIATION_PALETTES = {
 
 # Default public screenshot set used by README/docs: (source_filename, output_prefix, palette_key)
 PUBLIC_SCREENSHOTS = [
-    ('welcome-2026-02-22.png', 'framed-welcome-2026-02-22.png', 'welcome'),
-    ('graph-2026-02-22.png', 'framed-graph-2026-02-22.png', 'graph'),
+    ('agents-overview-2026-05-01.png', 'framed-agents-overview-2026-05-01.png', 'agents-overview'),
 ]
 
 # Additional optional screenshot entries available for manual one-off publishing.
-OPTIONAL_SCREENSHOTS = [
-    ('approved-2026-02-22.png', 'framed-approved-2026-02-22.png', 'approved'),
-]
+OPTIONAL_SCREENSHOTS: list[tuple[str, str, str]] = []
 
 SCREENSHOTS = PUBLIC_SCREENSHOTS + OPTIONAL_SCREENSHOTS
 

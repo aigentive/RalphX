@@ -7,7 +7,8 @@ PROJECT_ROOT="$SCRIPT_DIR"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 SRC_TAURI_DIR="$PROJECT_ROOT/src-tauri"
 VITE_PORT=1420
-TAURI_BACKEND_PORT=3847
+TAURI_BACKEND_PORT="${RALPHX_BACKEND_PORT:-3857}"
+EXTERNAL_MCP_PORT="${RALPHX_EXTERNAL_MCP_PORT:-3858}"
 
 print_help() {
   cat <<'EOF'
@@ -26,7 +27,14 @@ Equivalent to:
   cd frontend && npm ci   # only when node_modules is missing or invalid
   cd src-tauri && cargo clean
   rm -rf frontend/node_modules/.vite
+  export RALPHX_BACKEND_PORT=3857
+  export RALPHX_EXTERNAL_MCP_PORT=3858
+  export TAURI_API_URL=http://127.0.0.1:3857
+  export VITE_RALPHX_BACKEND_URL=http://localhost:3857
   cd frontend && npm run tauri dev
+
+The source dev app uses backend port 3857 and external-MCP port 3858 by default
+so an installed production RalphX.app can keep using 3847/3848.
 EOF
 }
 
@@ -93,6 +101,65 @@ failure_looks_like_broken_frontend_install() {
     "$log_file"
 }
 
+port_has_listener() {
+  local port="$1"
+  lsof -ti tcp:"$port" >/dev/null 2>&1
+}
+
+wait_for_pid_exit() {
+  local pid="$1"
+  local attempts=20
+
+  while [[ $attempts -gt 0 ]]; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+cleanup_stale_dev_external_mcp() {
+  if port_has_listener "$VITE_PORT" || port_has_listener "$TAURI_BACKEND_PORT"; then
+    return
+  fi
+
+  local pids
+  pids="$(lsof -ti tcp:"$EXTERNAL_MCP_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$pids" ]]; then
+    return
+  fi
+
+  local pid
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+
+    local ppid
+    ppid="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$ppid" == "1" ]] || continue
+
+    local command_env
+    command_env="$(ps eww -p "$pid" -o command= 2>/dev/null || true)"
+    [[ "$command_env" == *"ralphx-external-mcp"* ]] || continue
+    [[ "$command_env" == *"EXTERNAL_MCP_PORT=$EXTERNAL_MCP_PORT"* ]] || continue
+
+    if [[ "$command_env" != *"RALPHX_BACKEND_PORT=$TAURI_BACKEND_PORT"* &&
+      "$command_env" != *"RALPHX_BACKEND_URL=http://127.0.0.1:$TAURI_BACKEND_PORT"* &&
+      "$command_env" != *"TAURI_API_URL=http://127.0.0.1:$TAURI_BACKEND_PORT"* ]]; then
+      continue
+    fi
+
+    echo "dev-fresh: stopping stale orphaned dev external MCP process $pid on port $EXTERNAL_MCP_PORT"
+    kill "$pid" >/dev/null 2>&1 || true
+    if ! wait_for_pid_exit "$pid"; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+      wait_for_pid_exit "$pid" || true
+    fi
+  done <<<"$pids"
+}
+
 start_tauri_dev() {
   local repair_attempted="${1:-0}"
   local launch_log
@@ -129,17 +196,27 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if lsof -ti tcp:"$VITE_PORT" >/dev/null 2>&1 || lsof -ti tcp:"$TAURI_BACKEND_PORT" >/dev/null 2>&1; then
+cleanup_stale_dev_external_mcp
+
+if port_has_listener "$VITE_PORT" ||
+  port_has_listener "$TAURI_BACKEND_PORT" ||
+  port_has_listener "$EXTERNAL_MCP_PORT"; then
   cat >&2 <<EOF
 dev-fresh refused to start because a stale dev process is still holding one of the dev ports:
   frontend Vite dev server: $VITE_PORT
   Tauri backend: $TAURI_BACKEND_PORT
+  external MCP server: $EXTERNAL_MCP_PORT
 
 Stop the existing tauri/vite dev process first, then rerun ./dev-fresh.
 Closing the app window is not sufficient if the terminal process is still alive.
 EOF
   exit 1
 fi
+
+export RALPHX_BACKEND_PORT="$TAURI_BACKEND_PORT"
+export TAURI_API_URL="http://127.0.0.1:$TAURI_BACKEND_PORT"
+export VITE_RALPHX_BACKEND_URL="http://localhost:$TAURI_BACKEND_PORT"
+export RALPHX_EXTERNAL_MCP_PORT="$EXTERNAL_MCP_PORT"
 
 verify_tauri_package_alignment
 ensure_frontend_install
