@@ -782,6 +782,7 @@ export function IntegratedChatPanel({
     selectedTaskId: selectedTaskId ?? undefined,
     ideationSessionId,
     sendMessage,
+    activeConversationId: effectiveConversationId,
     sendOptions,
     messageCount: messagesData.length,
     onUserMessageSent,

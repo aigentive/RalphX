@@ -91,6 +91,75 @@ export interface MessageItemProps {
   cacheCreationTokens?: number | null | undefined;
   cacheReadTokens?: number | null | undefined;
   estimatedUsd?: number | null | undefined;
+  showAssistantIcon?: boolean | undefined;
+  hideMeta?: boolean | undefined;
+}
+
+export interface MessageMetaProps {
+  createdAt: string;
+  copyableText?: string | undefined;
+  isUser?: boolean | undefined;
+}
+
+export function MessageMeta({
+  createdAt,
+  copyableText = "",
+  isUser = false,
+}: MessageMetaProps) {
+  const [copied, setCopied] = useState(false);
+  const showInlineCopy = copyableText.trim().length > 0;
+  const handleCopy = useCallback(async () => {
+    if (!showInlineCopy) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(copyableText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Silently fail
+    }
+  }, [copyableText, showInlineCopy]);
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 px-1 pb-[10px] text-[0.625rem] text-text-primary/40",
+        isUser ? "justify-end" : "justify-start"
+      )}
+      data-testid="message-meta"
+    >
+      <span title={formatTimestampTitle(createdAt) || undefined}>
+        {formatTimestamp(createdAt)}
+      </span>
+      {showInlineCopy && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void handleCopy()}
+              className="h-4 w-4 rounded-sm p-0 text-text-primary/40 hover:bg-[var(--overlay-moderate)] hover:text-text-primary/70"
+              aria-label={copied ? "Copied" : "Copy message"}
+              data-testid="message-copy-button"
+              data-theme-button-skip="true"
+            >
+              {copied ? (
+                <Check className="h-3 w-3 text-[var(--status-success)]" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs">
+            {copied ? "Copied" : "Copy message"}
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
+  );
 }
 
 // ============================================================================
@@ -121,10 +190,11 @@ export const MessageItem = React.memo(function MessageItem({
   cacheCreationTokens,
   cacheReadTokens,
   estimatedUsd,
+  showAssistantIcon = true,
+  hideMeta = false,
 }: MessageItemProps) {
   const isUser = role === "user";
   const hasCustomBody = children != null;
-  const [copied, setCopied] = useState(false);
   const providerHarnessLabel = formatProviderHarnessLabel(providerHarness);
   const providerHarnessStyle = getProviderHarnessBadgeStyle(providerHarness);
   const modelEffortLabel = formatProviderModelEffortLabel({
@@ -181,20 +251,6 @@ export const MessageItem = React.memo(function MessageItem({
 
     return content.trim();
   }, [content, hasContentBlocks, hasCustomBody, parsedContentBlocks]);
-  const showInlineCopy = copyableText.length > 0;
-  const handleCopy = useCallback(async () => {
-    if (!showInlineCopy) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(copyableText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Silently fail
-    }
-  }, [copyableText, showInlineCopy]);
 
   // Collect IDs of child tool calls that belong to Task subagents.
   // These are embedded in Task result content blocks and should NOT render as top-level cards.
@@ -234,7 +290,7 @@ export const MessageItem = React.memo(function MessageItem({
       style={teammateColor ? { borderLeft: `2px solid ${teammateColor}`, paddingLeft: "8px" } : undefined}
     >
       {/* Agent indicator for assistant messages */}
-      {!isUser && !teammateName && (
+      {!isUser && !teammateName && showAssistantIcon && (
         <Bot className={cn("w-3.5 h-3.5 mr-2 shrink-0 text-text-primary/40", showProviderMeta ? "mt-0.5" : "mt-2")} />
       )}
       {/* Teammate name badge */}
@@ -349,42 +405,13 @@ export const MessageItem = React.memo(function MessageItem({
           </>
         )}
 
-        <div
-          className={cn(
-            "flex items-center gap-1.5 px-1 pb-[10px] text-[0.625rem] text-text-primary/40",
-            isUser ? "justify-end" : "justify-start"
-          )}
-          data-testid="message-meta"
-        >
-          <span title={formatTimestampTitle(createdAt) || undefined}>
-            {formatTimestamp(createdAt)}
-          </span>
-          {showInlineCopy && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => void handleCopy()}
-                  className="h-4 w-4 rounded-sm p-0 text-text-primary/40 hover:bg-[var(--overlay-moderate)] hover:text-text-primary/70"
-                  aria-label={copied ? "Copied" : "Copy message"}
-                  data-testid="message-copy-button"
-                  data-theme-button-skip="true"
-                >
-                  {copied ? (
-                    <Check className="h-3 w-3 text-[var(--status-success)]" />
-                  ) : (
-                    <Copy className="h-3 w-3" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="text-xs">
-                {copied ? "Copied" : "Copy message"}
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
+        {!hideMeta && (
+          <MessageMeta
+            createdAt={createdAt}
+            copyableText={copyableText}
+            isUser={isUser}
+          />
+        )}
       </div>
     </div>
   );
@@ -413,5 +440,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.outputTokens === next.outputTokens
     && prev.cacheCreationTokens === next.cacheCreationTokens
     && prev.cacheReadTokens === next.cacheReadTokens
-    && prev.estimatedUsd === next.estimatedUsd;
+    && prev.estimatedUsd === next.estimatedUsd
+    && prev.showAssistantIcon === next.showAssistantIcon
+    && prev.hideMeta === next.hideMeta;
 });
