@@ -218,17 +218,22 @@ export function HarnessProvidersSection() {
     await updateProviderAsync(input);
   };
 
-  const applyAsDefault = async (provider: AgentProviderSettingsResponse) => {
-    const applyToAllLanes = await confirm({
-      title: `Use ${providerLabel(provider.provider)} by default?`,
-      description:
-        "Apply this provider to all agent lanes now, or only make it the default for future resets and new lanes.",
-      confirmText: "Apply to all lanes",
-      cancelText: "Default only",
+  const applyProviderToAgents = async (
+    provider: AgentProviderSettingsResponse,
+  ) => {
+    const label = providerLabel(provider.provider);
+    const confirmed = await confirm({
+      title: `Apply ${label} to all agents?`,
+      description: provider.isDefault
+        ? `Update every agent lane to use ${label} with this provider's current defaults.`
+        : `Make ${label} the default provider and update every agent lane to use this provider's current defaults.`,
+      confirmText: "Apply to all agents",
+      cancelText: "Cancel",
     });
+    if (!confirmed) return;
     await updateProvider(provider, {
       isDefault: true,
-      applyToAllLanes,
+      applyToAllLanes: true,
     });
   };
 
@@ -264,371 +269,408 @@ export function HarnessProvidersSection() {
         <ProvidersLoadingState />
       ) : (
         <>
-      <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-[var(--text-primary)]">
-            Default Provider
-          </div>
-          <div className="truncate text-xs text-[var(--text-muted)]">
-            {settings.defaultProvider
-              ? providerLabel(settings.defaultProvider)
-              : "No enabled default provider"}
-          </div>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => void refetchProviders()}
-        >
-          <RefreshCw className="mr-2 h-4 w-4" />
-          Re-check
-        </Button>
-      </div>
-
-      <div className="space-y-4">
-        {providers.map((provider) => {
-          const agentProvider = isAgentProvider(provider.provider)
-            ? provider.provider
-            : "claude";
-          const providerModels = models.filter(
-            (model) => model.provider === provider.provider && model.enabled,
-          );
-          const selectedModel = provider.model ?? PROVIDER_DEFAULT_SELECT_VALUE;
-          const selectedModelEntry = providerModels.find(
-            (model) => model.modelId === selectedModel,
-          );
-          const selectedModelId =
-            provider.model ?? defaultModelForProvider(agentProvider);
-          const effortOptions = agentEffortOptionsForModel(
-            agentProvider,
-            selectedModelId,
-          );
-          const selectedEffort = provider.effort ?? PROVIDER_DEFAULT_SELECT_VALUE;
-          const hasCustomModel =
-            provider.model != null &&
-            provider.model.trim() !== "" &&
-            selectedModelEntry == null;
-
-          return (
-            <div
-              key={provider.provider}
-              data-testid={`provider-card-${provider.provider}`}
-              className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
-            >
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--border-subtle)] px-4 py-3">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Cpu className="h-4 w-4 text-[var(--text-muted)]" />
-                    <h4 className="text-sm font-semibold text-[var(--text-primary)]">
-                      {providerLabel(provider.provider)}
-                    </h4>
-                    <ProviderBadge provider={provider} />
-                    {provider.isDefault && (
-                      <span className="rounded-md border border-[var(--accent-primary)] px-1.5 py-0.5 text-[10px] text-[var(--accent-primary)]">
-                        Default
-                      </span>
-                    )}
-                  </div>
-                  <ProviderCliStatus provider={provider} />
-                </div>
-                <div className="flex items-center gap-3">
-                  <Label
-                    htmlFor={`provider-enabled-${provider.provider}`}
-                    className="text-xs text-[var(--text-muted)]"
-                  >
-                    Enabled
-                  </Label>
-                  <Switch
-                    id={`provider-enabled-${provider.provider}`}
-                    checked={provider.enabled}
-                    disabled={isUpdating || !provider.available}
-                    onCheckedChange={(checked) =>
-                      void updateProvider(provider, { enabled: checked })
-                    }
-                  />
-                </div>
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-[var(--text-primary)]">
+                Default Provider
               </div>
-
-              <div className="grid gap-3 px-4 py-4 md:grid-cols-2">
-                <div className="space-y-1">
-                  <Label htmlFor={`provider-model-${provider.provider}`}>
-                    Default Model
-                  </Label>
-                  <Select
-                    value={selectedModel}
-                    onValueChange={(model) =>
-                      void updateProvider(provider, {
-                        model:
-                          model === PROVIDER_DEFAULT_SELECT_VALUE ? "" : model,
-                      })
-                    }
-                    disabled={isUpdating || providerModels.length === 0}
-                  >
-                    <SelectTrigger id={`provider-model-${provider.provider}`}>
-                      <SelectValue>
-                        <span className="truncate">
-                          {provider.model == null
-                            ? "Harness default"
-                            : selectedModelEntry?.menuLabel ?? provider.model}
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem
-                        value={PROVIDER_DEFAULT_SELECT_VALUE}
-                        textValue="Harness default"
-                      >
-                        <div className="flex flex-col">
-                          <span className="text-[var(--text-primary)]">
-                            Harness default
-                          </span>
-                          <span className="text-xs text-[var(--text-muted)]">
-                            Use the provider's built-in default model.
-                          </span>
-                        </div>
-                      </SelectItem>
-                      {providerModels.map((model) => (
-                        <SelectItem
-                          key={model.modelId}
-                          value={model.modelId}
-                          textValue={model.menuLabel}
-                        >
-                          <div className="flex flex-col">
-                            <span className="text-[var(--text-primary)]">
-                              {model.menuLabel}
-                            </span>
-                            {model.description && (
-                              <span className="text-xs text-[var(--text-muted)]">
-                                {model.description}
-                              </span>
-                            )}
-                          </div>
-                        </SelectItem>
-                      ))}
-                      {hasCustomModel && provider.model && (
-                        <SelectItem
-                          value={provider.model}
-                          textValue={provider.model}
-                        >
-                          <div className="flex flex-col">
-                            <span className="text-[var(--text-primary)]">
-                              Custom model
-                            </span>
-                            <span className="text-xs text-[var(--text-muted)]">
-                              {provider.model}
-                            </span>
-                          </div>
-                        </SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor={`provider-effort-${provider.provider}`}>
-                    Default Effort
-                  </Label>
-                  <Select
-                    value={selectedEffort}
-                    onValueChange={(effort) =>
-                      void updateProvider(provider, {
-                        effort:
-                          effort === PROVIDER_DEFAULT_SELECT_VALUE ? "" : effort,
-                      })
-                    }
-                    disabled={isUpdating}
-                  >
-                    <SelectTrigger id={`provider-effort-${provider.provider}`}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem
-                        value={PROVIDER_DEFAULT_SELECT_VALUE}
-                        textValue="Harness default"
-                      >
-                        <div className="flex flex-col">
-                          <span className="text-[var(--text-primary)]">
-                            Harness default
-                          </span>
-                          <span className="text-xs text-[var(--text-muted)]">
-                            Use the provider's built-in default effort.
-                          </span>
-                        </div>
-                      </SelectItem>
-                      {effortOptions.map((effort) => (
-                        <SelectItem key={effort.id} value={effort.id}>
-                          {effortLabel(effort.id)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {provider.provider === "codex" && (
-                  <>
-                    <ProviderPermissionDisclosure
-                      provider={provider.provider}
-                      expanded={!!expandedPermissions[provider.provider]}
-                      onToggle={() =>
-                        setExpandedPermissions((current) => ({
-                          ...current,
-                          [provider.provider]: !current[provider.provider],
-                        }))
-                      }
-                    />
-                    <div
-                      id={`provider-permissions-${provider.provider}`}
-                      hidden={!expandedPermissions[provider.provider]}
-                      className="md:col-span-2 grid gap-3 md:grid-cols-2"
-                    >
-                      <div className="space-y-1">
-                        <Label htmlFor="codex-approval-policy">
-                          Approval Policy
-                        </Label>
-                        <Select
-                          value={provider.approvalPolicy ?? "never"}
-                          onValueChange={() => undefined}
-                          disabled
-                        >
-                          <SelectTrigger id="codex-approval-policy">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {CODEX_APPROVAL_POLICIES.map((policy) => (
-                              <SelectItem key={policy} value={policy}>
-                                {policy}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-1">
-                        <Label htmlFor="codex-sandbox-mode">Sandbox Mode</Label>
-                        <Select
-                          value={provider.sandboxMode ?? "danger-full-access"}
-                          onValueChange={() => undefined}
-                          disabled
-                        >
-                          <SelectTrigger id="codex-sandbox-mode">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {CODEX_SANDBOX_MODES.map((mode) => (
-                              <SelectItem key={mode} value={mode}>
-                                {mode}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <p className="md:col-span-2 text-xs text-[var(--text-muted)]">
-                        {CODEX_MCP_LOCK_COPY}
-                      </p>
-                    </div>
-                  </>
-                )}
-
-                {provider.provider === "claude" && (
-                  <>
-                    <ProviderPermissionDisclosure
-                      provider={provider.provider}
-                      expanded={!!expandedPermissions[provider.provider]}
-                      onToggle={() =>
-                        setExpandedPermissions((current) => ({
-                          ...current,
-                          [provider.provider]: !current[provider.provider],
-                        }))
-                      }
-                    />
-                    <div
-                      id={`provider-permissions-${provider.provider}`}
-                      hidden={!expandedPermissions[provider.provider]}
-                      className="md:col-span-2 grid gap-3 md:grid-cols-2"
-                    >
-                      <div className="space-y-1">
-                        <Label htmlFor="claude-permission-mode">
-                          Permission Mode
-                        </Label>
-                        <Select
-                          value={
-                            provider.claudePermissionMode ?? "bypassPermissions"
-                          }
-                          onValueChange={(claudePermissionMode) =>
-                            void updateProvider(provider, {
-                              claudePermissionMode,
-                            })
-                          }
-                          disabled={isUpdating}
-                        >
-                          <SelectTrigger id="claude-permission-mode">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {CLAUDE_PERMISSION_MODES.map((mode) => (
-                              <SelectItem key={mode} value={mode}>
-                                {mode}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
-                        <div className="space-y-1">
-                          <Label
-                            htmlFor="claude-dangerous-skip"
-                            className="text-xs text-[var(--text-primary)]"
-                          >
-                            Skip Permissions
-                          </Label>
-                          <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
-                            Actually bypasses Claude permission prompts for
-                            RalphX-launched runs.
-                          </p>
-                        </div>
-                        <Switch
-                          id="claude-dangerous-skip"
-                          checked={provider.claudeDangerouslySkipPermissions}
-                          disabled={isUpdating}
-                          onCheckedChange={(checked) =>
-                            void updateProvider(provider, {
-                              claudeDangerouslySkipPermissions: checked,
-                            })
-                          }
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <div className="flex justify-end gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isUpdating}
-                  onClick={() => void resetProviderDefaults(provider)}
-                >
-                  <RotateCcw className="mr-2 h-4 w-4" />
-                  Reset {providerLabel(provider.provider)}
-                </Button>
-                <Button
-                  type="button"
-                  variant={provider.isDefault ? "secondary" : "default"}
-                  size="sm"
-                  disabled={isUpdating || !provider.enabled || provider.isDefault}
-                  onClick={() => void applyAsDefault(provider)}
-                >
-                  Apply as Default
-                </Button>
+              <div className="truncate text-xs text-[var(--text-muted)]">
+                {settings.defaultProvider
+                  ? providerLabel(settings.defaultProvider)
+                  : "No enabled default provider"}
               </div>
             </div>
-          );
-        })}
-      </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void refetchProviders()}
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Re-check
+            </Button>
+          </div>
+
+          <div className="space-y-4">
+            {providers.map((provider) => {
+              const agentProvider = isAgentProvider(provider.provider)
+                ? provider.provider
+                : "claude";
+              const providerModels = models.filter(
+                (model) => model.provider === provider.provider && model.enabled,
+              );
+              const selectedModel =
+                provider.model ?? PROVIDER_DEFAULT_SELECT_VALUE;
+              const selectedModelEntry = providerModels.find(
+                (model) => model.modelId === selectedModel,
+              );
+              const selectedModelId =
+                provider.model ?? defaultModelForProvider(agentProvider);
+              const effortOptions = agentEffortOptionsForModel(
+                agentProvider,
+                selectedModelId,
+              );
+              const selectedEffort =
+                provider.effort ?? PROVIDER_DEFAULT_SELECT_VALUE;
+              const hasCustomModel =
+                provider.model != null &&
+                provider.model.trim() !== "" &&
+                selectedModelEntry == null;
+
+              return (
+                <div
+                  key={provider.provider}
+                  data-testid={`provider-card-${provider.provider}`}
+                  className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+                >
+                  <div
+                    className={`flex flex-wrap items-start justify-between gap-3 px-4 py-3 ${
+                      provider.enabled
+                        ? "border-b border-[var(--border-subtle)]"
+                        : ""
+                    }`}
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-4 w-4 text-[var(--text-muted)]" />
+                        <h4 className="text-sm font-semibold text-[var(--text-primary)]">
+                          {providerLabel(provider.provider)}
+                        </h4>
+                        <ProviderBadge provider={provider} />
+                        {provider.isDefault && (
+                          <span className="rounded-md border border-[var(--accent-primary)] px-1.5 py-0.5 text-[10px] text-[var(--accent-primary)]">
+                            Default
+                          </span>
+                        )}
+                      </div>
+                      <ProviderCliStatus provider={provider} />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <Label
+                        htmlFor={`provider-enabled-${provider.provider}`}
+                        className="text-xs text-[var(--text-muted)]"
+                      >
+                        Enabled
+                      </Label>
+                      <Switch
+                        id={`provider-enabled-${provider.provider}`}
+                        checked={provider.enabled}
+                        disabled={isUpdating || !provider.available}
+                        onCheckedChange={(checked) =>
+                          void updateProvider(provider, { enabled: checked })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  {provider.enabled && (
+                    <>
+                      <div className="grid gap-3 px-4 py-4 md:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label htmlFor={`provider-model-${provider.provider}`}>
+                            Default Model
+                          </Label>
+                          <Select
+                            value={selectedModel}
+                            onValueChange={(model) =>
+                              void updateProvider(provider, {
+                                model:
+                                  model === PROVIDER_DEFAULT_SELECT_VALUE
+                                    ? ""
+                                    : model,
+                              })
+                            }
+                            disabled={isUpdating || providerModels.length === 0}
+                          >
+                            <SelectTrigger
+                              id={`provider-model-${provider.provider}`}
+                            >
+                              <SelectValue>
+                                <span className="truncate">
+                                  {provider.model == null
+                                    ? "Harness default"
+                                    : selectedModelEntry?.menuLabel ??
+                                      provider.model}
+                                </span>
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem
+                                value={PROVIDER_DEFAULT_SELECT_VALUE}
+                                textValue="Harness default"
+                              >
+                                <div className="flex flex-col">
+                                  <span className="text-[var(--text-primary)]">
+                                    Harness default
+                                  </span>
+                                  <span className="text-xs text-[var(--text-muted)]">
+                                    Use the provider's built-in default model.
+                                  </span>
+                                </div>
+                              </SelectItem>
+                              {providerModels.map((model) => (
+                                <SelectItem
+                                  key={model.modelId}
+                                  value={model.modelId}
+                                  textValue={model.menuLabel}
+                                >
+                                  <div className="flex flex-col">
+                                    <span className="text-[var(--text-primary)]">
+                                      {model.menuLabel}
+                                    </span>
+                                    {model.description && (
+                                      <span className="text-xs text-[var(--text-muted)]">
+                                        {model.description}
+                                      </span>
+                                    )}
+                                  </div>
+                                </SelectItem>
+                              ))}
+                              {hasCustomModel && provider.model && (
+                                <SelectItem
+                                  value={provider.model}
+                                  textValue={provider.model}
+                                >
+                                  <div className="flex flex-col">
+                                    <span className="text-[var(--text-primary)]">
+                                      Custom model
+                                    </span>
+                                    <span className="text-xs text-[var(--text-muted)]">
+                                      {provider.model}
+                                    </span>
+                                  </div>
+                                </SelectItem>
+                              )}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-1">
+                          <Label
+                            htmlFor={`provider-effort-${provider.provider}`}
+                          >
+                            Default Effort
+                          </Label>
+                          <Select
+                            value={selectedEffort}
+                            onValueChange={(effort) =>
+                              void updateProvider(provider, {
+                                effort:
+                                  effort === PROVIDER_DEFAULT_SELECT_VALUE
+                                    ? ""
+                                    : effort,
+                              })
+                            }
+                            disabled={isUpdating}
+                          >
+                            <SelectTrigger
+                              id={`provider-effort-${provider.provider}`}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem
+                                value={PROVIDER_DEFAULT_SELECT_VALUE}
+                                textValue="Harness default"
+                              >
+                                <div className="flex flex-col">
+                                  <span className="text-[var(--text-primary)]">
+                                    Harness default
+                                  </span>
+                                  <span className="text-xs text-[var(--text-muted)]">
+                                    Use the provider's built-in default effort.
+                                  </span>
+                                </div>
+                              </SelectItem>
+                              {effortOptions.map((effort) => (
+                                <SelectItem key={effort.id} value={effort.id}>
+                                  {effortLabel(effort.id)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {provider.provider === "codex" && (
+                          <>
+                            <ProviderPermissionDisclosure
+                              provider={provider.provider}
+                              expanded={
+                                !!expandedPermissions[provider.provider]
+                              }
+                              onToggle={() =>
+                                setExpandedPermissions((current) => ({
+                                  ...current,
+                                  [provider.provider]:
+                                    !current[provider.provider],
+                                }))
+                              }
+                            />
+                            <div
+                              id={`provider-permissions-${provider.provider}`}
+                              hidden={!expandedPermissions[provider.provider]}
+                              className="grid gap-3 md:col-span-2 md:grid-cols-2"
+                            >
+                              <div className="space-y-1">
+                                <Label htmlFor="codex-approval-policy">
+                                  Approval Policy
+                                </Label>
+                                <Select
+                                  value={provider.approvalPolicy ?? "never"}
+                                  onValueChange={() => undefined}
+                                  disabled
+                                >
+                                  <SelectTrigger id="codex-approval-policy">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {CODEX_APPROVAL_POLICIES.map((policy) => (
+                                      <SelectItem key={policy} value={policy}>
+                                        {policy}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div className="space-y-1">
+                                <Label htmlFor="codex-sandbox-mode">
+                                  Sandbox Mode
+                                </Label>
+                                <Select
+                                  value={
+                                    provider.sandboxMode ??
+                                    "danger-full-access"
+                                  }
+                                  onValueChange={() => undefined}
+                                  disabled
+                                >
+                                  <SelectTrigger id="codex-sandbox-mode">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {CODEX_SANDBOX_MODES.map((mode) => (
+                                      <SelectItem key={mode} value={mode}>
+                                        {mode}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <p className="text-xs text-[var(--text-muted)] md:col-span-2">
+                                {CODEX_MCP_LOCK_COPY}
+                              </p>
+                            </div>
+                          </>
+                        )}
+
+                        {provider.provider === "claude" && (
+                          <>
+                            <ProviderPermissionDisclosure
+                              provider={provider.provider}
+                              expanded={
+                                !!expandedPermissions[provider.provider]
+                              }
+                              onToggle={() =>
+                                setExpandedPermissions((current) => ({
+                                  ...current,
+                                  [provider.provider]:
+                                    !current[provider.provider],
+                                }))
+                              }
+                            />
+                            <div
+                              id={`provider-permissions-${provider.provider}`}
+                              hidden={!expandedPermissions[provider.provider]}
+                              className="grid gap-3 md:col-span-2 md:grid-cols-2"
+                            >
+                              <div className="space-y-1">
+                                <Label htmlFor="claude-permission-mode">
+                                  Permission Mode
+                                </Label>
+                                <Select
+                                  value={
+                                    provider.claudePermissionMode ??
+                                    "bypassPermissions"
+                                  }
+                                  onValueChange={(claudePermissionMode) =>
+                                    void updateProvider(provider, {
+                                      claudePermissionMode,
+                                    })
+                                  }
+                                  disabled={isUpdating}
+                                >
+                                  <SelectTrigger id="claude-permission-mode">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {CLAUDE_PERMISSION_MODES.map((mode) => (
+                                      <SelectItem key={mode} value={mode}>
+                                        {mode}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                                <div className="space-y-1">
+                                  <Label
+                                    htmlFor="claude-dangerous-skip"
+                                    className="text-xs text-[var(--text-primary)]"
+                                  >
+                                    Skip Permissions
+                                  </Label>
+                                  <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                                    Actually bypasses Claude permission prompts
+                                    for RalphX-launched runs.
+                                  </p>
+                                </div>
+                                <Switch
+                                  id="claude-dangerous-skip"
+                                  checked={
+                                    provider.claudeDangerouslySkipPermissions
+                                  }
+                                  disabled={isUpdating}
+                                  onCheckedChange={(checked) =>
+                                    void updateProvider(provider, {
+                                      claudeDangerouslySkipPermissions: checked,
+                                    })
+                                  }
+                                />
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      <div className="flex justify-end gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={isUpdating}
+                          onClick={() => void resetProviderDefaults(provider)}
+                        >
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                          Reset {providerLabel(provider.provider)}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="sm"
+                          disabled={isUpdating}
+                          onClick={() => void applyProviderToAgents(provider)}
+                        >
+                          Apply to all agents
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </>
       )}
       <ConfirmationDialog {...confirmationDialogProps} />

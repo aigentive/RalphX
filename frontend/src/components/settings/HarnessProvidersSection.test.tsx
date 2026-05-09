@@ -179,6 +179,27 @@ describe("HarnessProvidersSection", () => {
     expect(
       screen.getByRole("link", { name: /Install instructions/ }),
     ).toHaveAttribute("href", "https://docs.anthropic.com/en/docs/claude-code/setup");
+    expect(screen.queryByRole("button", { name: "Apply as Default" })).toBeNull();
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(
+      within(codexCard).getByRole("button", { name: "Apply to all agents" }),
+    ).toBeEnabled();
+
+    const claudeCard = screen.getByTestId("provider-card-claude");
+    expect(within(claudeCard).queryByText("Default Model")).toBeNull();
+    expect(within(claudeCard).queryByText("Default Effort")).toBeNull();
+    expect(
+      within(claudeCard).queryByRole("button", { name: "Show permissions" }),
+    ).toBeNull();
+    expect(
+      within(claudeCard).queryByRole("button", { name: "Reset Claude" }),
+    ).toBeNull();
+    expect(
+      within(claudeCard).queryByRole("button", {
+        name: "Apply to all agents",
+      }),
+    ).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /Re-check/ }));
     expect(refetchProviders).toHaveBeenCalledTimes(1);
@@ -190,7 +211,7 @@ describe("HarnessProvidersSection", () => {
     });
   });
 
-  it("updates provider model settings and applies an enabled provider as default", async () => {
+  it("updates provider model settings and applies an enabled provider to all agents", async () => {
     const user = userEvent.setup();
     const nextSettings: AgentProvidersSettingsResponse = {
       ...settings,
@@ -233,18 +254,42 @@ describe("HarnessProvidersSection", () => {
 
     await user.click(
       within(screen.getByTestId("provider-card-claude")).getByRole("button", {
-        name: "Apply as Default",
+        name: "Apply to all agents",
       }),
     );
 
     expect(confirm).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: "Use Claude by default?",
-        confirmText: "Apply to all lanes",
+        title: "Apply Claude to all agents?",
+        confirmText: "Apply to all agents",
+        cancelText: "Cancel",
       }),
     );
     expect(updateProviderAsync).toHaveBeenLastCalledWith({
       provider: "claude",
+      isDefault: true,
+      applyToAllLanes: true,
+    });
+  });
+
+  it("reapplies the current default provider to all agents", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    await user.click(
+      within(screen.getByTestId("provider-card-codex")).getByRole("button", {
+        name: "Apply to all agents",
+      }),
+    );
+
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Apply Codex to all agents?",
+        confirmText: "Apply to all agents",
+      }),
+    );
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
       isDefault: true,
       applyToAllLanes: true,
     });
