@@ -670,4 +670,63 @@ mod tests {
             older.id.as_str()
         );
     }
+
+    #[tokio::test]
+    async fn project_grouping_returns_project_groups_with_pinned_rows_first() {
+        let state = AppState::new_test();
+        let alpha = create_project(&state, "alpha").await;
+        let beta = create_project(&state, "beta").await;
+        let now = Utc::now();
+
+        let newest = create_conversation(&state, &alpha.id, "Newest alpha", now).await;
+        create_workspace(&state, &newest, &alpha.id, None, Some("open"), None).await;
+        let pinned = create_conversation(
+            &state,
+            &alpha.id,
+            "Pinned alpha",
+            now - chrono::Duration::minutes(5),
+        )
+        .await;
+        create_workspace(&state, &pinned, &alpha.id, Some(42), Some("open"), None).await;
+        let beta_conversation = create_conversation(&state, &beta.id, "Beta work", now).await;
+        create_workspace(
+            &state,
+            &beta_conversation,
+            &beta.id,
+            None,
+            Some("draft"),
+            None,
+        )
+        .await;
+
+        let mut input = sidebar_input(&alpha.id);
+        input.project_ids = vec![alpha.id.as_str().to_string(), beta.id.as_str().to_string()];
+        input.group_by = Some("project".to_string());
+        input.pinned_conversation_ids = Some(vec![pinned.id.as_str().to_string()]);
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(response.groups.len(), 2);
+        assert_eq!(response.groups[0].key, alpha.id.as_str());
+        assert_eq!(response.groups[0].label, "alpha");
+        assert_eq!(response.groups[0].total, 2);
+        assert_eq!(
+            response.groups[0].rows[0].conversation.id,
+            pinned.id.as_str()
+        );
+        assert_eq!(response.groups[0].rows[0].ref_label, "PR #42");
+        assert_eq!(
+            response.groups[0].rows[1].conversation.id,
+            newest.id.as_str()
+        );
+        assert_eq!(response.groups[1].key, beta.id.as_str());
+        assert_eq!(response.groups[1].label, "beta");
+        assert_eq!(response.groups[1].total, 1);
+        assert_eq!(
+            response.groups[1].rows[0].conversation.id,
+            beta_conversation.id.as_str()
+        );
+    }
 }

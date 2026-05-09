@@ -32,6 +32,7 @@ const { projectConversationCalls } = vi.hoisted(() => ({
     projectId: string | null;
     includeArchived: boolean;
     options?: { search?: string; enabled?: boolean };
+    pinnedConversationIds?: string[];
   }>,
 }));
 const { archivedConversationCounts, archivedCountCalls } = vi.hoisted(() => ({
@@ -120,19 +121,39 @@ vi.mock("./useProjectAgentConversationWorkspaces", () => ({
   },
 }));
 
-vi.mock("./useAgentSidebarPublicationGroup", () => ({
-  useAgentSidebarPublicationGroup: ({
+vi.mock("./useAgentSidebarPublicationGroup", () => {
+  const getPublicationLabel = (state: string): string =>
+    state
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const buildGroupResult = ({
     projectIds,
-    publicationState,
+    groupKey,
+    groupLabel,
     archivedOnly,
     search,
+    publicationStates,
     pinnedConversationIds,
+    total,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    isLoading,
   }: {
     projectIds: string[];
-    publicationState: string;
+    groupKey: string;
+    groupLabel: string;
     archivedOnly: boolean;
     search: string;
+    publicationStates: string[];
     pinnedConversationIds: string[];
+    total?: number;
+    hasNextPage?: boolean;
+    isFetchingNextPage?: boolean;
+    fetchNextPage?: () => Promise<unknown>;
+    isLoading?: boolean;
   }) => {
     const getPublicationState = (
       workspace: AgentConversationWorkspace | null
@@ -152,20 +173,6 @@ vi.mock("./useAgentSidebarPublicationGroup", () => ({
       if (prStatus === "draft") return "draft";
       return "active";
     };
-    const getPublicationLabel = (state: string): string =>
-      state
-        .split("_")
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
-
-    publicationGroupCalls.push({
-      projectIds,
-      publicationState,
-      archivedOnly,
-      search,
-      pinnedConversationIds,
-    });
-
     const normalizedSearch = search.trim().toLowerCase();
     const pinnedIds = new Set(pinnedConversationIds);
     const workspaceByConversationId = new Map(
@@ -202,7 +209,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => ({
           publicationLabel: state === "active" ? null : state,
         };
       })
-      .filter((row) => row.publicationState === publicationState)
+      .filter((row) => publicationStates.includes(row.publicationState))
       .sort((left, right) => {
         const pinnedDelta =
           Number(pinnedIds.has(right.conversation.id)) -
@@ -216,21 +223,89 @@ vi.mock("./useAgentSidebarPublicationGroup", () => ({
 
     return {
       group: {
-        key: publicationState,
-        label: getPublicationLabel(publicationState),
-        total: rows.length,
+        key: groupKey,
+        label: groupLabel,
+        total: total ?? rows.length,
         offset: 0,
         limit: 20,
-        hasMore: false,
+        hasMore: hasNextPage ?? false,
         rows,
       },
-      isLoading: false,
-      hasNextPage: false,
-      isFetchingNextPage: false,
-      fetchNextPage: vi.fn(),
+      isLoading: isLoading ?? false,
+      hasNextPage: hasNextPage ?? false,
+      isFetchingNextPage: isFetchingNextPage ?? false,
+      fetchNextPage: fetchNextPage ?? vi.fn(),
     };
-  },
-}));
+  };
+
+  return {
+    useAgentSidebarPublicationGroup: ({
+      projectIds,
+      publicationState,
+      archivedOnly,
+      search,
+      pinnedConversationIds,
+    }: {
+      projectIds: string[];
+      publicationState: string;
+      archivedOnly: boolean;
+      search: string;
+      pinnedConversationIds: string[];
+    }) => {
+      publicationGroupCalls.push({
+        projectIds,
+        publicationState,
+        archivedOnly,
+        search,
+        pinnedConversationIds,
+      });
+      return buildGroupResult({
+        projectIds,
+        groupKey: publicationState,
+        groupLabel: getPublicationLabel(publicationState),
+        archivedOnly,
+        search,
+        publicationStates: [publicationState],
+        pinnedConversationIds,
+      });
+    },
+    useAgentSidebarProjectGroup: ({
+      projectId,
+      archivedOnly,
+      search,
+      publicationStates,
+      pinnedConversationIds,
+    }: {
+      projectId: string | null | undefined;
+      archivedOnly: boolean;
+      search: string;
+      publicationStates: string[];
+      pinnedConversationIds: string[];
+    }) => {
+      const projectResult = conversationsByProject.get(projectId ?? "");
+      projectConversationCalls.push({
+        projectId: projectId ?? null,
+        includeArchived: archivedOnly,
+        options: { search, enabled: true },
+        pinnedConversationIds,
+      });
+      return buildGroupResult({
+        projectIds: projectId ? [projectId] : [],
+        groupKey: projectId ?? "",
+        groupLabel: projectId ?? "",
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        total: projectResult?.total,
+        hasNextPage: projectResult?.hasNextPage,
+        isFetchingNextPage: projectResult?.isFetchingNextPage,
+        fetchNextPage: projectResult?.fetchNextPage,
+        isLoading: projectResult?.isLoading,
+      });
+    },
+  };
+});
 
 const project = (overrides: Partial<Project> = {}): Project => ({
   id: "project-1",
@@ -1445,20 +1520,22 @@ describe("AgentsSidebar", () => {
     expect(screen.getByText("running")).toBeInTheDocument();
   });
 
-  it("prepends a pinnedConversation that is not in the loaded conversations list", () => {
+  it("orders backend-returned pinned conversations before unpinned rows", () => {
     const loaded = conversation({ id: "conversation-loaded", title: "Loaded" });
     const pinned = conversation({ id: "conversation-pinned", title: "Pinned run" });
     conversationsByProject.set("project-1", {
-      data: [loaded],
-      total: 1,
+      data: [loaded, pinned],
+      total: 2,
       isLoading: false,
       hasNextPage: false,
       isFetchingNextPage: false,
       fetchNextPage: vi.fn(),
     });
+    useAgentSessionStore.setState({
+      pinnedConversationIds: { [pinned.id]: true },
+    });
 
     renderSidebar([project()], {
-      pinnedConversation: pinned,
       selectedConversationId: pinned.id,
     });
 
@@ -1488,6 +1565,14 @@ describe("AgentsSidebar", () => {
     const rows = screen.getAllByTestId(/agents-session-/);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveAttribute("data-testid", "agents-session-conversation-shared");
+    expect(projectConversationCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectId: "project-1",
+          pinnedConversationIds: [shared.id],
+        }),
+      ])
+    );
   });
 
   it("pins and unpins a session from the row action menu", async () => {

@@ -59,6 +59,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
+import type { AgentSidebarConversationRow } from "@/api/chat";
 import {
   useAgentSessionStore,
   type AgentProjectSort,
@@ -75,16 +76,13 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import {
-  getConversationRefDisplay,
   getSidebarPublicationGroupLabel,
-  getSidebarPublicationLabel,
-  getSidebarPublicationState,
   PUBLICATION_STATE_OPTIONS,
-  shouldShowConversationForPublicationFilters,
 } from "./agentSidebarMetadata";
-import { useProjectAgentConversations } from "./useProjectAgentConversations";
-import { useProjectAgentConversationWorkspaces } from "./useProjectAgentConversationWorkspaces";
-import { useAgentSidebarPublicationGroup } from "./useAgentSidebarPublicationGroup";
+import {
+  useAgentSidebarProjectGroup,
+  useAgentSidebarPublicationGroup,
+} from "./useAgentSidebarPublicationGroup";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
@@ -176,6 +174,17 @@ export function AgentsSidebar({
   const togglePinnedConversation = useAgentSessionStore(
     (s) => s.togglePinnedConversation
   );
+  const pinnedConversationIdList = useMemo(
+    () => Object.keys(pinnedConversationIds),
+    [pinnedConversationIds]
+  );
+  const priorityConversationIds = useMemo(() => {
+    const ids = new Set(pinnedConversationIdList);
+    if (pinnedConversation) {
+      ids.add(pinnedConversation.id);
+    }
+    return Array.from(ids);
+  }, [pinnedConversation, pinnedConversationIdList]);
   const selectedProjectFilterIds = useMemo(() => {
     if (showAllProjects) {
       return projects.map((project) => project.id);
@@ -397,6 +406,7 @@ export function AgentsSidebar({
         ) : sidebarGroupBy === "publication" ? (
           <PublicationStateGroups
             projects={orderedProjects}
+            priorityConversationIds={priorityConversationIds}
             pinnedConversationIds={pinnedConversationIds}
             selectedConversationId={selectedConversationId}
             searchQuery={normalizedSearch}
@@ -415,9 +425,6 @@ export function AgentsSidebar({
               project={project}
               isFocused={focusedProjectId === project.id}
               selectedConversationId={selectedConversationId}
-              pinnedConversation={
-                pinnedConversation?.projectId === project.id ? pinnedConversation : null
-              }
               searchQuery={normalizedSearch}
               onFocusProject={onFocusProject}
               onSelectConversation={onSelectConversation}
@@ -426,8 +433,8 @@ export function AgentsSidebar({
               onArchiveConversation={onArchiveConversation}
               onRestoreConversation={onRestoreConversation}
               onTogglePinnedConversation={togglePinnedConversation}
+              priorityConversationIds={priorityConversationIds}
               pinnedConversationIds={pinnedConversationIds}
-              publicationStateFilter={null}
               selectedPublicationStates={selectedPublicationStates}
               showArchived={showArchived}
               showAllProjects={showAllProjects}
@@ -757,6 +764,7 @@ function FilterSectionLabel({ children }: { children: string }) {
 
 interface PublicationStateGroupsProps {
   projects: Project[];
+  priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   selectedConversationId: string | null;
   searchQuery: string;
@@ -771,6 +779,7 @@ interface PublicationStateGroupsProps {
 
 function PublicationStateGroups({
   projects,
+  priorityConversationIds,
   pinnedConversationIds,
   selectedConversationId,
   searchQuery,
@@ -788,6 +797,7 @@ function PublicationStateGroups({
         <PublicationStateGroup
           key={publicationState}
           projects={projects}
+          priorityConversationIds={priorityConversationIds}
           pinnedConversationIds={pinnedConversationIds}
           publicationState={publicationState}
           searchQuery={searchQuery}
@@ -806,6 +816,7 @@ function PublicationStateGroups({
 
 interface PublicationStateGroupProps {
   projects: Project[];
+  priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   publicationState: AgentSidebarPublicationState;
   searchQuery: string;
@@ -820,6 +831,7 @@ interface PublicationStateGroupProps {
 
 function PublicationStateGroup({
   projects,
+  priorityConversationIds,
   pinnedConversationIds,
   publicationState,
   searchQuery,
@@ -836,16 +848,12 @@ function PublicationStateGroup({
     () => new Map(projects.map((project) => [project.id, project])),
     [projects]
   );
-  const pinnedIds = useMemo(
-    () => Object.keys(pinnedConversationIds),
-    [pinnedConversationIds]
-  );
   const groupQuery = useAgentSidebarPublicationGroup({
     projectIds,
     publicationState,
     archivedOnly: showArchived,
     search: searchQuery,
-    pinnedConversationIds: pinnedIds,
+    pinnedConversationIds: priorityConversationIds,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
@@ -977,9 +985,6 @@ function PublicationStateGroup({
           const agentStatus = agentStatuses[rowKey] ?? "idle";
           const isSelected = selectedConversationId === conversation.id;
           const isActiveRuntime = activeConversationId === conversation.id;
-          const title = conversation.title || "Untitled agent";
-          const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
-          const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
           const isPinned = Boolean(pinnedConversationIds[conversation.id]);
           const runtimeState = getSessionRuntimeState(
             conversation,
@@ -990,165 +995,37 @@ function PublicationStateGroup({
           const sessionActionsOpen = openSessionActionsId === conversation.id;
 
           return (
-            <div
+            <AgentSessionRow
               key={conversation.id}
-              className="group/session relative"
-              data-testid={`agents-session-${conversation.id}`}
-            >
-              <button
-                type="button"
-                className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-                onClick={() => onSelectConversation(conversation.projectId, conversation)}
-                aria-current={isSelected ? "true" : undefined}
-                style={{
-                  opacity: conversation.archivedAt ? 0.58 : 1,
-                  boxShadow: "none",
-                }}
-              >
-                <span className="min-w-0 flex flex-col gap-px">
-                  <span className="agents-session-title min-w-0 truncate text-[0.8125rem] leading-[1.35] tracking-[-0.005em]">
-                    {title}
-                  </span>
-                  <span
-                    className="agents-session-meta min-w-0 truncate text-[0.6875rem] leading-[1.35]"
-                    style={{
-                      fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
-                    }}
-                  >
-                    <span>{project?.name ?? conversation.projectId}</span>
-                    <span>{" · "}</span>
-                    <span className="inline-flex min-w-0 items-center gap-1">
-                      {row.refKind === "pull-request" ? (
-                        <GitPullRequest
-                          className="h-3 w-3 shrink-0"
-                          data-ref-kind="pull-request"
-                          data-testid={`agents-ref-icon-${conversation.id}`}
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <GitBranch
-                          className="h-3 w-3 shrink-0"
-                          data-ref-kind="branch"
-                          data-testid={`agents-ref-icon-${conversation.id}`}
-                          aria-hidden="true"
-                        />
-                      )}
-                      <span>{row.refLabel}</span>
-                    </span>
-                    <span>{" · "}</span>
-                    {row.publicationLabel && (
-                      <>
-                        <span
-                          className="agents-session-publication-state font-medium"
-                          style={{
-                            color:
-                              row.publicationState === "merged"
-                                ? "var(--status-success)"
-                                : row.publicationState === "closed"
-                                  ? "var(--text-muted)"
-                                  : "var(--status-warning)",
-                          }}
-                        >
-                          {row.publicationLabel}
-                        </span>
-                        <span>{" · "}</span>
-                      </>
-                    )}
-                    <span title={createdTitle || undefined}>{createdLabel}</span>
-                    {showRuntimeState && (
-                      <>
-                        <span>{" · "}</span>
-                        <SessionRuntimeLabel state={runtimeState} />
-                      </>
-                    )}
-                  </span>
-                </span>
-                <span
-                  className={`agents-session-status-slot grid h-4 w-4 place-items-center justify-self-end transition-opacity duration-150 ${
-                    sessionActionsOpen
-                      ? "opacity-0"
-                      : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
-                  }`}
-                >
-                  <SessionStatusIcon
-                    isPinned={isPinned}
-                    state={runtimeState}
-                    conversationId={conversation.id}
-                    selected={isSelected}
-                  />
-                </span>
-              </button>
-              <DropdownMenu
-                onOpenChange={(open) => {
-                  setOpenSessionActionsId(open ? conversation.id : null);
-                  if (!open) {
-                    requestAnimationFrame(() => {
-                      sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                    });
-                  }
-                }}
-              >
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    ref={(node) => {
-                      sessionActionsTriggerRefs.current[conversation.id] = node;
-                    }}
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="absolute right-2 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 bg-transparent p-0 opacity-0 outline-none ring-0 transition-opacity hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:bg-transparent data-[state=open]:opacity-100"
-                    aria-label="Session actions"
-                    style={{ boxShadow: "none" }}
-                  >
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  onCloseAutoFocus={(event) => {
-                    event.preventDefault();
+              conversation={conversation}
+              projectName={project?.name ?? conversation.projectId}
+              showProjectNameInMeta
+              refKind={row.refKind}
+              refLabel={row.refLabel}
+              publicationState={row.publicationState}
+              publicationLabel={row.publicationLabel}
+              isSelected={isSelected}
+              isPinned={isPinned}
+              runtimeState={runtimeState}
+              showRuntimeState={showRuntimeState}
+              sessionActionsOpen={sessionActionsOpen}
+              onSelect={() => onSelectConversation(conversation.projectId, conversation)}
+              onRename={() => openRenameDialog(conversation)}
+              onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+              onRestore={() => onRestoreConversation(conversation)}
+              onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+              setActionsTriggerRef={(node) => {
+                sessionActionsTriggerRefs.current[conversation.id] = node;
+              }}
+              onActionsOpenChange={(open) => {
+                setOpenSessionActionsId(open ? conversation.id : null);
+                if (!open) {
+                  requestAnimationFrame(() => {
                     sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                  }}
-                >
-                  <DropdownMenuItem
-                    className="gap-2 text-xs"
-                    onClick={() => openRenameDialog(conversation)}
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                    Rename session
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="gap-2 text-xs"
-                    onClick={() => onTogglePinnedConversation(conversation.id)}
-                  >
-                    {isPinned ? (
-                      <PinOff className="w-3.5 h-3.5" />
-                    ) : (
-                      <Pin className="w-3.5 h-3.5" />
-                    )}
-                    {isPinned ? "Unpin session" : "Pin session"}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  {conversation.archivedAt ? (
-                    <DropdownMenuItem
-                      className="gap-2 text-xs"
-                      onClick={() => onRestoreConversation(conversation)}
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      Restore session
-                    </DropdownMenuItem>
-                  ) : (
-                    <DropdownMenuItem
-                      className="gap-2 text-xs"
-                      onClick={() => setArchiveDialogConversation(conversation)}
-                    >
-                      <Archive className="w-3.5 h-3.5" />
-                      Archive session
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                  });
+                }
+              }}
+            />
           );
         })}
 
@@ -1180,11 +1057,199 @@ function PublicationStateGroup({
   );
 }
 
+interface AgentSessionRowProps {
+  conversation: AgentConversation;
+  projectName: string | null;
+  showProjectNameInMeta: boolean;
+  refKind: AgentSidebarConversationRow["refKind"];
+  refLabel: string;
+  publicationState: AgentSidebarPublicationState;
+  publicationLabel: string | null;
+  isSelected: boolean;
+  isPinned: boolean;
+  runtimeState: SessionRuntimeState;
+  showRuntimeState: boolean;
+  sessionActionsOpen: boolean;
+  onSelect: () => void;
+  onRename: () => void;
+  onTogglePinned: () => void;
+  onRestore: () => void;
+  onArchiveRequest: () => void;
+  setActionsTriggerRef: (node: HTMLButtonElement | null) => void;
+  onActionsOpenChange: (open: boolean) => void;
+}
+
+function AgentSessionRow({
+  conversation,
+  projectName,
+  showProjectNameInMeta,
+  refKind,
+  refLabel,
+  publicationState,
+  publicationLabel,
+  isSelected,
+  isPinned,
+  runtimeState,
+  showRuntimeState,
+  sessionActionsOpen,
+  onSelect,
+  onRename,
+  onTogglePinned,
+  onRestore,
+  onArchiveRequest,
+  setActionsTriggerRef,
+  onActionsOpenChange,
+}: AgentSessionRowProps) {
+  const title = conversation.title || "Untitled agent";
+  const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
+  const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
+
+  return (
+    <div
+      className="group/session relative"
+      data-testid={`agents-session-${conversation.id}`}
+    >
+      <button
+        type="button"
+        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+        onClick={onSelect}
+        aria-current={isSelected ? "true" : undefined}
+        style={{
+          opacity: conversation.archivedAt ? 0.58 : 1,
+          boxShadow: "none",
+        }}
+      >
+        <span className="min-w-0 flex flex-col gap-px">
+          <span className="agents-session-title min-w-0 truncate text-[0.8125rem] leading-[1.35]">
+            {title}
+          </span>
+          <span
+            className="agents-session-meta min-w-0 truncate text-[0.6875rem] leading-[1.35]"
+            style={{
+              fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
+            }}
+          >
+            {showProjectNameInMeta && projectName && (
+              <>
+                <span>{projectName}</span>
+                <span>{" · "}</span>
+              </>
+            )}
+            <span className="inline-flex min-w-0 items-center gap-1">
+              {refKind === "pull-request" ? (
+                <GitPullRequest
+                  className="h-3 w-3 shrink-0"
+                  data-ref-kind="pull-request"
+                  data-testid={`agents-ref-icon-${conversation.id}`}
+                  aria-hidden="true"
+                />
+              ) : (
+                <GitBranch
+                  className="h-3 w-3 shrink-0"
+                  data-ref-kind="branch"
+                  data-testid={`agents-ref-icon-${conversation.id}`}
+                  aria-hidden="true"
+                />
+              )}
+              <span>{refLabel}</span>
+            </span>
+            <span>{" · "}</span>
+            {publicationLabel && (
+              <>
+                <span
+                  className="agents-session-publication-state font-medium"
+                  style={{
+                    color:
+                      publicationState === "merged"
+                        ? "var(--status-success)"
+                        : publicationState === "closed"
+                          ? "var(--text-muted)"
+                          : "var(--status-warning)",
+                  }}
+                >
+                  {publicationLabel}
+                </span>
+                <span>{" · "}</span>
+              </>
+            )}
+            <span title={createdTitle || undefined}>{createdLabel}</span>
+            {showRuntimeState && (
+              <>
+                <span>{" · "}</span>
+                <SessionRuntimeLabel state={runtimeState} />
+              </>
+            )}
+          </span>
+        </span>
+        <span
+          className={`agents-session-status-slot grid h-4 w-4 place-items-center justify-self-end transition-opacity duration-150 ${
+            sessionActionsOpen
+              ? "opacity-0"
+              : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
+          }`}
+        >
+          <SessionStatusIcon
+            isPinned={isPinned}
+            state={runtimeState}
+            conversationId={conversation.id}
+            selected={isSelected}
+          />
+        </span>
+      </button>
+      <DropdownMenu onOpenChange={onActionsOpenChange}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            ref={setActionsTriggerRef}
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="absolute right-2 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 bg-transparent p-0 opacity-0 outline-none ring-0 transition-opacity hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:bg-transparent data-[state=open]:opacity-100"
+            aria-label="Session actions"
+            style={{ boxShadow: "none" }}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+          }}
+        >
+          <DropdownMenuItem className="gap-2 text-xs" onClick={onRename}>
+            <Pencil className="w-3.5 h-3.5" />
+            Rename session
+          </DropdownMenuItem>
+          <DropdownMenuItem className="gap-2 text-xs" onClick={onTogglePinned}>
+            {isPinned ? (
+              <PinOff className="w-3.5 h-3.5" />
+            ) : (
+              <Pin className="w-3.5 h-3.5" />
+            )}
+            {isPinned ? "Unpin session" : "Pin session"}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {conversation.archivedAt ? (
+            <DropdownMenuItem className="gap-2 text-xs" onClick={onRestore}>
+              <RotateCcw className="w-3.5 h-3.5" />
+              Restore session
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem className="gap-2 text-xs" onClick={onArchiveRequest}>
+              <Archive className="w-3.5 h-3.5" />
+              Archive session
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 interface ProjectSessionGroupProps {
   project: Project;
   isFocused: boolean;
   selectedConversationId: string | null;
-  pinnedConversation: AgentConversation | null;
   searchQuery: string;
   onFocusProject: (projectId: string) => void;
   onSelectConversation: (projectId: string, conversation: AgentConversation) => void;
@@ -1193,8 +1258,8 @@ interface ProjectSessionGroupProps {
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
   onTogglePinnedConversation: (conversationId: string) => void;
+  priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
-  publicationStateFilter: AgentSidebarPublicationState | null;
   selectedPublicationStates: AgentSidebarPublicationState[];
   showArchived: boolean;
   showAllProjects: boolean;
@@ -1206,7 +1271,6 @@ function ProjectSessionGroup({
   project,
   isFocused,
   selectedConversationId,
-  pinnedConversation,
   searchQuery,
   onFocusProject,
   onSelectConversation,
@@ -1215,8 +1279,8 @@ function ProjectSessionGroup({
   onArchiveConversation,
   onRestoreConversation,
   onTogglePinnedConversation,
+  priorityConversationIds,
   pinnedConversationIds,
-  publicationStateFilter,
   selectedPublicationStates,
   showArchived,
   showAllProjects,
@@ -1236,60 +1300,21 @@ function ProjectSessionGroup({
   const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const setProjectExpanded = useAgentSessionStore((s) => s.setProjectExpanded);
   const expanded = searchQuery.length > 0 ? true : expandedProjectIds[project.id] ?? isFocused;
-  const conversations = useProjectAgentConversations(project.id, showArchived, {
+  const groupQuery = useAgentSidebarProjectGroup({
+    projectId: project.id,
+    archivedOnly: showArchived,
     search: searchQuery,
-    enabled: true,
-  });
-  const workspaces = useProjectAgentConversationWorkspaces(project.id, {
-    enabled: true,
+    publicationStates: selectedPublicationStates,
+    pinnedConversationIds: priorityConversationIds,
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
-  const workspaceByConversationId = useMemo(() => {
-    return new Map(
-      workspaces.data.map((workspace) => [workspace.conversationId, workspace])
-    );
-  }, [workspaces.data]);
-  const visibleConversations = useMemo(() => {
-    const items = conversations.data ?? [];
-    const deduped = new Map<string, AgentConversation>();
-    for (const conversation of items) {
-      deduped.set(conversation.id, conversation);
-    }
-    if (pinnedConversation && !deduped.has(pinnedConversation.id)) {
-      deduped.set(pinnedConversation.id, pinnedConversation);
-    }
-    return Array.from(deduped.values())
-      .filter((conversation) => {
-        const workspace = workspaceByConversationId.get(conversation.id) ?? null;
-        if (publicationStateFilter) {
-          return getSidebarPublicationState(workspace) === publicationStateFilter;
-        }
-        return shouldShowConversationForPublicationFilters(
-          workspace,
-          selectedPublicationStates
-        );
-      })
-      .sort((a, b) => {
-        const pinnedConversationA = pinnedConversation?.id === a.id;
-        const pinnedConversationB = pinnedConversation?.id === b.id;
-        const pinnedDelta =
-          Number(Boolean(pinnedConversationIds[b.id]) || pinnedConversationB) -
-          Number(Boolean(pinnedConversationIds[a.id]) || pinnedConversationA);
-        if (pinnedDelta !== 0) {
-          return pinnedDelta;
-        }
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
-  }, [
-    conversations.data,
-    pinnedConversation,
-    pinnedConversationIds,
-    publicationStateFilter,
-    selectedPublicationStates,
-    workspaceByConversationId,
-  ]);
-  const totalConversationCount = conversations.total;
+  const visibleRows = groupQuery.group.rows;
+  const visibleConversations = useMemo(
+    () => visibleRows.map((row) => toProjectAgentConversation(row.conversation)),
+    [visibleRows]
+  );
+  const totalConversationCount = groupQuery.group.total;
   const activeRuntimeCount = visibleConversations.filter((conversation) => {
     const rowKey = getAgentConversationStoreKey(conversation);
     return (
@@ -1320,7 +1345,7 @@ function ProjectSessionGroup({
   };
 
   if (
-    !conversations.isLoading &&
+    !groupQuery.isLoading &&
     visibleConversations.length === 0 &&
     (!showProjectHeader || showArchived || searchQuery.length > 0 || !showAllProjects)
   ) {
@@ -1333,7 +1358,7 @@ function ProjectSessionGroup({
       data-testid={
         showProjectHeader
           ? `agents-project-${project.id}`
-          : `agents-project-${project.id}-${publicationStateFilter ?? "state"}`
+          : `agents-project-${project.id}-state`
       }
     >
         <div className="relative">
@@ -1557,23 +1582,13 @@ function ProjectSessionGroup({
 
           {(showProjectHeader ? expanded : true) && (
             <div className="mb-2 mt-1 flex flex-col gap-0.5" role="group">
-                {visibleConversations.map((conversation) => {
+                {visibleRows.map((row) => {
+                  const conversation = toProjectAgentConversation(row.conversation);
                   const rowKey = getAgentConversationStoreKey(conversation);
                   const activeConversationId = activeConversationIds[rowKey] ?? null;
                   const agentStatus = agentStatuses[rowKey] ?? "idle";
                   const isSelected = selectedConversationId === conversation.id;
                   const isActiveRuntime = activeConversationId === conversation.id;
-                  const title = conversation.title || "Untitled agent";
-                  const createdLabel = formatAgentConversationCreatedAt(conversation.createdAt);
-                  const createdTitle = formatAgentConversationCreatedAtTitle(conversation.createdAt);
-                  const workspace = workspaceByConversationId.get(conversation.id) ?? null;
-                  const refDisplay = getConversationRefDisplay(
-                    conversation,
-                    project,
-                    workspace
-                  );
-                  const publicationState = getSidebarPublicationState(workspace);
-                  const publicationLabel = getSidebarPublicationLabel(publicationState);
                   const isPinned = Boolean(pinnedConversationIds[conversation.id]);
                   const runtimeState = getSessionRuntimeState(
                     conversation,
@@ -1584,193 +1599,59 @@ function ProjectSessionGroup({
                   const sessionActionsOpen = openSessionActionsId === conversation.id;
 
                   return (
-                    <div
+                    <AgentSessionRow
                       key={conversation.id}
-                      className="group/session relative"
-                      data-testid={`agents-session-${conversation.id}`}
-                    >
-                      <button
-                        type="button"
-                        className="agents-session-row grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-                        onClick={() => onSelectConversation(project.id, conversation)}
-                        aria-current={isSelected ? "true" : undefined}
-                        style={{
-                          opacity: conversation.archivedAt ? 0.58 : 1,
-                          boxShadow: "none",
-                        }}
-                      >
-                        <span className="min-w-0 flex flex-col gap-px">
-                          <span
-                            className="agents-session-title min-w-0 truncate text-[0.8125rem] leading-[1.35] tracking-[-0.005em]"
-                          >
-                            {title}
-                          </span>
-                          <span
-                            className="agents-session-meta min-w-0 truncate text-[0.6875rem] leading-[1.35]"
-                            style={{
-                              fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)",
-                            }}
-                          >
-                            {showProjectNameInMeta && (
-                              <>
-                                <span>{project.name}</span>
-                                <span>{" · "}</span>
-                              </>
-                            )}
-                            <span className="inline-flex min-w-0 items-center gap-1">
-                              {refDisplay.kind === "pull-request" ? (
-                                <GitPullRequest
-                                  className="h-3 w-3 shrink-0"
-                                  data-ref-kind="pull-request"
-                                  data-testid={`agents-ref-icon-${conversation.id}`}
-                                  aria-hidden="true"
-                                />
-                              ) : (
-                                <GitBranch
-                                  className="h-3 w-3 shrink-0"
-                                  data-ref-kind="branch"
-                                  data-testid={`agents-ref-icon-${conversation.id}`}
-                                  aria-hidden="true"
-                                />
-                              )}
-                              <span>{refDisplay.label}</span>
-                            </span>
-                            <span>{" · "}</span>
-                            {publicationLabel && (
-                              <>
-                                <span
-                                  className="agents-session-publication-state font-medium"
-                                  style={{
-                                    color:
-                                      publicationState === "merged"
-                                        ? "var(--status-success)"
-                                        : publicationState === "closed"
-                                          ? "var(--text-muted)"
-                                          : "var(--status-warning)",
-                                  }}
-                                >
-                                  {publicationLabel}
-                                </span>
-                                <span>{" · "}</span>
-                              </>
-                            )}
-                            <span title={createdTitle || undefined}>{createdLabel}</span>
-                            {showRuntimeState && (
-                              <>
-                                <span>{" · "}</span>
-                                <SessionRuntimeLabel state={runtimeState} />
-                              </>
-                            )}
-                          </span>
-                        </span>
-                        <span
-                          className={`agents-session-status-slot grid h-4 w-4 place-items-center justify-self-end transition-opacity duration-150 ${
-                            sessionActionsOpen
-                              ? "opacity-0"
-                              : "opacity-100 group-hover/session:opacity-0 group-focus-within/session:opacity-0"
-                          }`}
-                        >
-                          <SessionStatusIcon
-                            isPinned={isPinned}
-                            state={runtimeState}
-                            conversationId={conversation.id}
-                            selected={isSelected}
-                          />
-                        </span>
-                      </button>
-                      <DropdownMenu
-                        onOpenChange={(open) => {
-                          setOpenSessionActionsId(open ? conversation.id : null);
-                          if (!open) {
-                            requestAnimationFrame(() => {
-                              sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                            });
-                          }
-                        }}
-                      >
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            ref={(node) => {
-                              sessionActionsTriggerRefs.current[conversation.id] = node;
-                            }}
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="absolute right-2 top-1/2 h-6 w-6 -translate-y-1/2 rounded-[6px] border-0 bg-transparent p-0 opacity-0 outline-none ring-0 transition-opacity hover:bg-transparent focus:bg-transparent focus:outline-none focus:ring-0 focus-visible:bg-transparent focus-visible:outline-none focus-visible:ring-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100 data-[state=open]:bg-transparent data-[state=open]:opacity-100"
-                            aria-label="Session actions"
-                            style={{ boxShadow: "none" }}
-                          >
-                            <MoreHorizontal className="h-3.5 w-3.5" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          align="end"
-                          onCloseAutoFocus={(event) => {
-                            event.preventDefault();
+                      conversation={conversation}
+                      projectName={project.name}
+                      showProjectNameInMeta={showProjectNameInMeta}
+                      refKind={row.refKind}
+                      refLabel={row.refLabel}
+                      publicationState={row.publicationState}
+                      publicationLabel={row.publicationLabel}
+                      isSelected={isSelected}
+                      isPinned={isPinned}
+                      runtimeState={runtimeState}
+                      showRuntimeState={showRuntimeState}
+                      sessionActionsOpen={sessionActionsOpen}
+                      onSelect={() => onSelectConversation(project.id, conversation)}
+                      onRename={() => openRenameDialog(conversation)}
+                      onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+                      onRestore={() => onRestoreConversation(conversation)}
+                      onArchiveRequest={() => setArchiveDialogConversation(conversation)}
+                      setActionsTriggerRef={(node) => {
+                        sessionActionsTriggerRefs.current[conversation.id] = node;
+                      }}
+                      onActionsOpenChange={(open) => {
+                        setOpenSessionActionsId(open ? conversation.id : null);
+                        if (!open) {
+                          requestAnimationFrame(() => {
                             sessionActionsTriggerRefs.current[conversation.id]?.blur();
-                          }}
-                        >
-                          <DropdownMenuItem
-                            className="gap-2 text-xs"
-                            onClick={() => openRenameDialog(conversation)}
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                            Rename session
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="gap-2 text-xs"
-                            onClick={() => onTogglePinnedConversation(conversation.id)}
-                          >
-                            {isPinned ? (
-                              <PinOff className="w-3.5 h-3.5" />
-                            ) : (
-                              <Pin className="w-3.5 h-3.5" />
-                            )}
-                            {isPinned ? "Unpin session" : "Pin session"}
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          {conversation.archivedAt ? (
-                            <DropdownMenuItem
-                              className="gap-2 text-xs"
-                              onClick={() => onRestoreConversation(conversation)}
-                            >
-                              <RotateCcw className="w-3.5 h-3.5" />
-                              Restore session
-                            </DropdownMenuItem>
-                          ) : (
-                            <DropdownMenuItem
-                              className="gap-2 text-xs"
-                              onClick={() => setArchiveDialogConversation(conversation)}
-                            >
-                              <Archive className="w-3.5 h-3.5" />
-                              Archive session
-                            </DropdownMenuItem>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
+                          });
+                        }
+                      }}
+                    />
                     );
                   })}
 
-                {visibleConversations.length > 0 && conversations.hasNextPage && (
+                {visibleConversations.length > 0 && groupQuery.hasNextPage && (
                   <div className="py-0.5">
                     <button
                       type="button"
                       className="inline-flex items-center pl-[26px] text-[0.6719rem] font-medium transition-colors"
-                      onClick={() => void conversations.fetchNextPage()}
-                      disabled={conversations.isFetchingNextPage}
+                      onClick={() => void groupQuery.fetchNextPage()}
+                      disabled={groupQuery.isFetchingNextPage}
                       data-testid={`agents-load-more-${project.id}`}
                       style={{
                         color: "var(--text-muted)",
-                        opacity: conversations.isFetchingNextPage ? 0.7 : 1,
+                        opacity: groupQuery.isFetchingNextPage ? 0.7 : 1,
                       }}
                     >
-                      {conversations.isFetchingNextPage ? "Loading..." : "Load more"}
+                      {groupQuery.isFetchingNextPage ? "Loading..." : "Load more"}
                     </button>
                   </div>
                 )}
 
-                {conversations.isLoading && (
+                {groupQuery.isLoading && (
                   <div className="py-1.5 text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
                     Loading...
                   </div>
