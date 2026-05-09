@@ -7,6 +7,7 @@ pub mod agent_terminal_commands;
 pub mod branch_helpers;
 pub mod api_key_commands;
 pub mod agent_profile_commands;
+pub(crate) mod agent_workspace_auto_publish;
 pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
