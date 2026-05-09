@@ -2374,6 +2374,15 @@ pub async fn get_agent_conversation_workspace_freshness(
             .unwrap_or(workspace);
     }
 
+    if status.is_base_ahead {
+        if let Some(app_handle) = state.app_handle.clone() {
+            crate::commands::agent_workspace_auto_publish::schedule_agent_workspace_auto_publish_after_freshness_detected(
+                app_handle,
+                workspace.conversation_id.clone(),
+            );
+        }
+    }
+
     let has_uncommitted_changes = GitService::has_uncommitted_changes(&worktree_path)
         .await
         .map_err(|e| e.to_string())?;
