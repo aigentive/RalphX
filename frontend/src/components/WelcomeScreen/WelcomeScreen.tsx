@@ -60,17 +60,31 @@ export default function WelcomeScreen({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onCreateProject, onSetupProviders, providerSetupRequired]);
 
-  const action = providerSetupRequired ? onSetupProviders : onCreateProject;
+  const action = providerSetupRequired
+    ? onSetupProviders
+    : hasProjects
+      ? (onClose ?? onCreateProject)
+      : onCreateProject;
   const Icon = providerSetupRequired ? Settings : Sparkles;
   const actionLabel = providerSetupRequired
     ? "Set Up Provider"
     : hasProjects
       ? "Continue"
       : "Start Your First Project";
-  const projectStepStatus = hasProjects ? "complete" : "pending";
+  const providerStepStatus = providerSetupRequired ? "current" : "complete";
+  const projectStepStatus = hasProjects
+    ? "complete"
+    : providerSetupRequired
+      ? "pending"
+      : "current";
+  const providerStepSubtitle = providerSetupRequired
+    ? "Choose your agent harness."
+    : "Agent harness ready.";
   const projectStepSubtitle = hasProjects
     ? "Project workspace ready."
     : "Create your first project.";
+  const providerStepCurrent = providerStepStatus === "current";
+  const projectStepCurrent = projectStepStatus === "current";
 
   return (
     <div
@@ -149,68 +163,87 @@ export default function WelcomeScreen({
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            {providerSetupRequired
-              ? "The best way to ship software with AI"
-              : "Describe it. Ship it."}
+            The best way to ship software with AI
           </p>
         </div>
 
-        {providerSetupRequired && (
+        <div
+          data-testid="welcome-setup-steps"
+          className="mb-8 flex w-full max-w-md items-center justify-center gap-2"
+          style={{ animation: "fadeSlideIn 0.6s ease-out 0.1s forwards" }}
+        >
           <div
-            data-testid="welcome-setup-steps"
-            className="mb-8 flex w-full max-w-md items-center justify-center gap-2"
-            style={{ animation: "fadeSlideIn 0.6s ease-out 0.1s forwards" }}
+            data-testid="welcome-provider-step"
+            data-current={providerStepCurrent ? "true" : "false"}
+            data-status={providerStepStatus}
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
+            style={{
+              backgroundColor: providerStepCurrent
+                ? "var(--bg-elevated)"
+                : "var(--bg-surface)",
+              borderColor: providerStepCurrent
+                ? "var(--accent-primary)"
+                : "var(--border-subtle)",
+              color: providerStepCurrent
+                ? "var(--text-primary)"
+                : "var(--text-secondary)",
+            }}
           >
-            <div
-              data-testid="welcome-provider-step"
-              data-current="true"
-              data-status="current"
-              className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
-              style={{
-                backgroundColor: "var(--bg-elevated)",
-                borderColor: "var(--accent-primary)",
-                color: "var(--text-primary)",
-              }}
-            >
+            {providerStepCurrent ? (
               <Settings className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="min-w-0">
-                <span className="block truncate font-medium">Provider</span>
-                <span
-                  className="block truncate text-[0.6875rem]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Choose your agent harness.
-                </span>
+            ) : (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-success)]" />
+            )}
+            <span className="min-w-0">
+              <span className="block truncate font-medium">Provider</span>
+              <span
+                className="block truncate text-[0.6875rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {providerStepSubtitle}
               </span>
-            </div>
-            <div
-              data-testid="welcome-project-step"
-              data-current="false"
-              data-status={projectStepStatus}
-              className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
-              style={{
-                backgroundColor: "var(--bg-surface)",
-                borderColor: "var(--border-subtle)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {hasProjects ? (
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-success)]" />
-              ) : (
-                <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
-              )}
-              <span className="min-w-0">
-                <span className="block truncate font-medium">Project</span>
-                <span
-                  className="block truncate text-[0.6875rem]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  {projectStepSubtitle}
-                </span>
-              </span>
-            </div>
+            </span>
           </div>
-        )}
+          <div
+            data-testid="welcome-project-step"
+            data-current={projectStepCurrent ? "true" : "false"}
+            data-status={projectStepStatus}
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
+            style={{
+              backgroundColor: projectStepCurrent
+                ? "var(--bg-elevated)"
+                : "var(--bg-surface)",
+              borderColor: projectStepCurrent
+                ? "var(--accent-primary)"
+                : "var(--border-subtle)",
+              color: projectStepCurrent
+                ? "var(--text-primary)"
+                : "var(--text-secondary)",
+            }}
+          >
+            {hasProjects ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-success)]" />
+            ) : (
+              <Sparkles
+                className="mt-0.5 h-4 w-4 shrink-0"
+                style={{
+                  color: projectStepCurrent
+                    ? "var(--accent-primary)"
+                    : "currentColor",
+                }}
+              />
+            )}
+            <span className="min-w-0">
+              <span className="block truncate font-medium">Project</span>
+              <span
+                className="block truncate text-[0.6875rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {projectStepSubtitle}
+              </span>
+            </span>
+          </div>
+        </div>
 
         {/* CTA section */}
         <div
@@ -238,7 +271,7 @@ export default function WelcomeScreen({
           </button>
 
           {/* Keyboard shortcut hint with idle pulse */}
-          {!providerSetupRequired && (
+          {!providerSetupRequired && !hasProjects && (
             <p
               className={`text-sm transition-all duration-300 ${isIdle ? "keyboard-hint-pulse" : ""}`}
               style={{

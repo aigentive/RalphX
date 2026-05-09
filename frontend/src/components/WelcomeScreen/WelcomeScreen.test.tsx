@@ -68,7 +68,19 @@ describe("WelcomeScreen", () => {
 
     render(<WelcomeScreen onCreateProject={onCreateProject} />);
 
-    expect(screen.getByText("Describe it. Ship it.")).toBeInTheDocument();
+    expect(
+      screen.getByText("The best way to ship software with AI"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Agent harness ready.")).toBeInTheDocument();
+    expect(screen.getByText("Create your first project.")).toBeInTheDocument();
+    expect(screen.getByTestId("welcome-provider-step")).toHaveAttribute(
+      "data-status",
+      "complete",
+    );
+    expect(screen.getByTestId("welcome-project-step")).toHaveAttribute(
+      "data-status",
+      "current",
+    );
     expect(
       screen.getByRole("button", { name: /Start Your First Project/ }),
     ).toBeInTheDocument();
@@ -77,6 +89,40 @@ describe("WelcomeScreen", () => {
     fireEvent.keyDown(window, { key: "n", metaKey: true });
 
     expect(onCreateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows completed onboarding state and closes from the manual welcome overlay", async () => {
+    const user = userEvent.setup();
+    const onCreateProject = vi.fn();
+    const onClose = vi.fn();
+
+    render(
+      <WelcomeScreen
+        onCreateProject={onCreateProject}
+        hasProjects
+        onClose={onClose}
+      />,
+    );
+
+    expect(
+      screen.getByText("The best way to ship software with AI"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Agent harness ready.")).toBeInTheDocument();
+    expect(screen.getByText("Project workspace ready.")).toBeInTheDocument();
+    expect(screen.getByTestId("welcome-provider-step")).toHaveAttribute(
+      "data-status",
+      "complete",
+    );
+    expect(screen.getByTestId("welcome-project-step")).toHaveAttribute(
+      "data-status",
+      "complete",
+    );
+    expect(screen.queryByText(/to create a project/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Continue/ }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onCreateProject).not.toHaveBeenCalled();
   });
 
   it("ignores create-project shortcuts while typing", () => {
