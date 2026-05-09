@@ -1,4 +1,6 @@
-use crate::application::chat_service::{AgentRunCompletedPayload, AgentRunStartedPayload};
+use crate::application::chat_service::{
+    AgentErrorPayload, AgentRunCompletedPayload, AgentRunStartedPayload,
+};
 use crate::domain::agents::AgentHarnessKind;
 
 #[test]
@@ -115,4 +117,39 @@ fn agent_run_completed_payload_sets_legacy_claude_alias_only_for_claude() {
         codex_payload.provider_session_id,
         Some("codex-thread-123".to_string())
     );
+}
+
+#[test]
+fn agent_run_completed_payload_serializes_run_id_for_terminal_correlation() {
+    let payload = AgentRunCompletedPayload::with_provider_session_and_run_id(
+        Some("run-1".to_string()),
+        "conv-1",
+        "project",
+        "project-1",
+        Some(AgentHarnessKind::Codex),
+        Some("thread-123".to_string()),
+        None,
+    );
+
+    let value = serde_json::to_value(&payload).expect("serialization failed");
+
+    assert_eq!(value["run_id"], "run-1");
+    assert!(value.get("agentRunId").is_none());
+}
+
+#[test]
+fn agent_error_payload_serializes_agent_run_id_for_terminal_correlation() {
+    let payload = AgentErrorPayload {
+        conversation_id: Some("conv-1".to_string()),
+        context_type: "task_execution".to_string(),
+        context_id: "task-1".to_string(),
+        agent_run_id: Some("run-1".to_string()),
+        error: "boom".to_string(),
+        stderr: Some("boom".to_string()),
+    };
+
+    let value = serde_json::to_value(&payload).expect("serialization failed");
+
+    assert_eq!(value["agent_run_id"], "run-1");
+    assert!(value.get("agentRunId").is_none());
 }

@@ -18,7 +18,7 @@ use crate::infrastructure::agents::claude::{
 use crate::infrastructure::agents::{CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
-use tauri::test::MockRuntime;
+use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -51,6 +51,10 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
 
     process_stream_background::<MockRuntime>(
         child,
@@ -58,7 +62,7 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         ChatContextType::Ideation,
         context_id.as_str(),
         &conversation_id,
-        None::<tauri::AppHandle<MockRuntime>>,
+        Some(app_handle),
         None,
         None,
         None,
@@ -70,7 +74,7 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         StreamingStateCache::new(),
         None,
         None,
-        None,
+        Some("stream-run-id".to_string()),
         None,
         None,
         false,
@@ -184,6 +188,17 @@ async fn claude_stream_assistant_text_with_rate_limit_is_not_provider_error() {
         "The local metadata file contains the literal rate_limit string."
     );
     assert!(outcome.tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn claude_stream_success_result_completes_interactive_turn() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("successful result should complete the turn");
+
+    assert_eq!(outcome.session_id, Some("sess-1".to_string()));
 }
 
 #[tokio::test]

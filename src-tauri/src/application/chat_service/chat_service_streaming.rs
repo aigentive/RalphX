@@ -1652,7 +1652,8 @@ pub async fn process_stream_background<R: Runtime>(
                             let provider_session_id = session_id.clone();
                             let _ = handle.emit(
                                 super::chat_service_types::events::AGENT_TURN_COMPLETED,
-                                super::chat_service_types::AgentRunCompletedPayload::with_provider_session(
+                                super::chat_service_types::AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                    agent_run_id.clone(),
                                     conversation_id_str.clone(),
                                     context_type_str.clone(),
                                     context_id_str.clone(),

@@ -6,6 +6,7 @@ import {
   selectQueuedMessages,
   selectIsAgentRunning,
   selectActiveConversationId,
+  selectActiveAgentRunId,
   selectToolCallStartTimes,
   selectEffectiveModel,
   getContextKey,
@@ -42,6 +43,7 @@ describe("chatStore", () => {
       context: null,
       isLoading: false,
       activeConversationIds: {},
+      activeAgentRunIds: {},
       queuedMessages: {},
       agentStatus: {},
       isSending: {},
@@ -70,6 +72,11 @@ describe("chatStore", () => {
     it("has empty activeConversationIds", () => {
       const state = useChatStore.getState();
       expect(state.activeConversationIds).toEqual({});
+    });
+
+    it("has empty activeAgentRunIds", () => {
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds).toEqual({});
     });
 
     it("has empty queuedMessages", () => {
@@ -351,6 +358,52 @@ describe("chatStore", () => {
     });
   });
 
+  describe("active agent run ids", () => {
+    const storeKey = "project:conversation-1";
+
+    it("sets activeAgentRunIds for a storeKey", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds[storeKey]).toBe("run-123");
+    });
+
+    it("replaces previous active run id for same storeKey", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-old");
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds[storeKey]).toBe("run-new");
+    });
+
+    it("clears active run id only when the expected run id matches", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-new");
+      useChatStore.getState().clearActiveAgentRun(storeKey, "run-old");
+
+      expect(useChatStore.getState().activeAgentRunIds[storeKey]).toBe("run-new");
+
+      useChatStore.getState().clearActiveAgentRun(storeKey, "run-new");
+
+      expect(useChatStore.getState().activeAgentRunIds[storeKey]).toBeUndefined();
+    });
+
+    it("clears active run id when agent status is set to idle", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+      useChatStore.getState().setAgentStatus(storeKey, "generating");
+      useChatStore.getState().setAgentStatus(storeKey, "idle");
+
+      const state = useChatStore.getState();
+      expect(state.agentStatus[storeKey]).toBeUndefined();
+      expect(state.activeAgentRunIds[storeKey]).toBeUndefined();
+    });
+
+    it("selectActiveAgentRunId returns the stored active run id", () => {
+      useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
+
+      expect(selectActiveAgentRunId(storeKey)(useChatStore.getState())).toBe("run-123");
+    });
+  });
+
   describe("setAgentRunning", () => {
     const contextKey = "task:test-task";
 
@@ -380,6 +433,19 @@ describe("chatStore", () => {
       const state = useChatStore.getState();
       expect(state.agentStatus[taskKey]).toBeUndefined();
       expect(state.agentStatus[execKey]).toBe("generating");
+    });
+
+    it("clearAgentRunningForTask removes active run ids for task-scoped keys", () => {
+      useChatStore.getState().setActiveAgentRun("task:task-123", "run-task");
+      useChatStore.getState().setActiveAgentRun("task_execution:task-123", "run-worker");
+      useChatStore.getState().setActiveAgentRun("project:conversation-1", "run-project");
+
+      useChatStore.getState().clearAgentRunningForTask("task-123");
+
+      const state = useChatStore.getState();
+      expect(state.activeAgentRunIds["task:task-123"]).toBeUndefined();
+      expect(state.activeAgentRunIds["task_execution:task-123"]).toBeUndefined();
+      expect(state.activeAgentRunIds["project:conversation-1"]).toBe("run-project");
     });
 
     it("is no-op when setting false and key is already absent", () => {
@@ -789,6 +855,7 @@ describe("selectors", () => {
       context: null,
       isLoading: false,
       activeConversationIds: {},
+      activeAgentRunIds: {},
       queuedMessages: {},
       agentStatus: {},
       isSending: {},

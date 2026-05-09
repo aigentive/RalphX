@@ -1237,6 +1237,10 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
 
     let conversation_id = ChatConversationId::new();
     let context_id = "test-session-id";
@@ -1285,7 +1289,7 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
         &None, // question_state — not used in Cancelled path
         &None, // plan_branch_repo — not used for Ideation
         &None, // execution_settings_repo — not used for Ideation
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &Some(app_handle),
         None,  // agent_name
         false, // team_mode
         None,  // run_chain_id

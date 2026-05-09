@@ -1473,7 +1473,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(agent_run_id.to_string()),
                         conversation_id.as_str().to_string(),
                         context_type.to_string(),
                         context_id.to_string(),
@@ -1543,7 +1544,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(agent_run_id.to_string()),
                         conversation_id.as_str().to_string(),
                         context_type.to_string(),
                         context_id.to_string(),
@@ -2729,6 +2731,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 conversation_id: Some(conversation_id.as_str().to_string()),
                 context_type: context_type.to_string(),
                 context_id: context_id.to_string(),
+                agent_run_id: Some(agent_run_id.to_string()),
                 error: redacted_error.clone(),
                 stderr: Some(redacted_error.clone()),
             },
