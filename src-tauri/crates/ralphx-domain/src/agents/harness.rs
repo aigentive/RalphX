@@ -21,6 +21,11 @@ pub enum AgentHarnessKind {
 pub const DEFAULT_AGENT_HARNESS: AgentHarnessKind = AgentHarnessKind::Claude;
 pub const STANDARD_AGENT_HARNESSES: [AgentHarnessKind; 2] =
     [AgentHarnessKind::Claude, AgentHarnessKind::Codex];
+pub const CLAUDE_DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
+pub const CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS: bool = true;
+pub const CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS: bool = false;
+pub const CODEX_DEFAULT_APPROVAL_POLICY: &str = "never";
+pub const CODEX_DEFAULT_SANDBOX_MODE: &str = "danger-full-access";
 
 pub fn standard_harness_map<T>(claude: T, codex: T) -> HashMap<AgentHarnessKind, T> {
     HashMap::from([
@@ -82,6 +87,20 @@ pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
             effort_strategy: HarnessEffortStrategy::LogicalOnly,
             stream_mode: HarnessStreamMode::CodexJsonl,
         },
+    }
+}
+
+pub fn default_approval_policy_for_harness(harness: AgentHarnessKind) -> Option<&'static str> {
+    match harness {
+        AgentHarnessKind::Claude => None,
+        AgentHarnessKind::Codex => Some(CODEX_DEFAULT_APPROVAL_POLICY),
+    }
+}
+
+pub fn default_sandbox_mode_for_harness(harness: AgentHarnessKind) -> Option<&'static str> {
+    match harness {
+        AgentHarnessKind::Claude => None,
+        AgentHarnessKind::Codex => Some(CODEX_DEFAULT_SANDBOX_MODE),
     }
 }
 
@@ -285,24 +304,24 @@ pub fn generic_harness_lane_defaults(
                         super::model_registry::default_model_for_provider(harness).to_string(),
                     );
                     settings.effort = Some(LogicalEffort::XHigh);
-                    settings.approval_policy = Some("never".to_string());
-                    settings.sandbox_mode = Some("danger-full-access".to_string());
+                    settings.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+                    settings.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
                 }
                 AgentLane::IdeationVerifier => {
                     settings.model = Some(
                         super::model_registry::lightweight_model_for_provider(harness).to_string(),
                     );
                     settings.effort = Some(LogicalEffort::Medium);
-                    settings.approval_policy = Some("never".to_string());
-                    settings.sandbox_mode = Some("danger-full-access".to_string());
+                    settings.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+                    settings.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
                 }
                 AgentLane::IdeationSubagent | AgentLane::IdeationVerifierSubagent => {
                     settings.model = Some(
                         super::model_registry::lightweight_model_for_provider(harness).to_string(),
                     );
                     settings.effort = Some(LogicalEffort::Medium);
-                    settings.approval_policy = Some("never".to_string());
-                    settings.sandbox_mode = Some("danger-full-access".to_string());
+                    settings.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+                    settings.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
                 }
                 AgentLane::ExecutionWorker
                 | AgentLane::ExecutionReviewer
@@ -312,8 +331,8 @@ pub fn generic_harness_lane_defaults(
                         super::model_registry::default_model_for_provider(harness).to_string(),
                     );
                     settings.effort = Some(LogicalEffort::XHigh);
-                    settings.approval_policy = Some("never".to_string());
-                    settings.sandbox_mode = Some("danger-full-access".to_string());
+                    settings.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
+                    settings.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
                 }
             }
 

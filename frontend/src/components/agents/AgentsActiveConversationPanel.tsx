@@ -11,6 +11,7 @@ import {
   type IntegratedChatComposerRenderProps,
 } from "@/components/Chat/IntegratedChatPanel";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -465,6 +466,7 @@ function AgentsPausedQueuedEmptyState({
     haltState === "stopped"
       ? "This prompt will start when execution starts."
       : "This prompt will start when execution resumes.";
+  const promptExcerpt = formatQueuedMessageExcerpt(prompt);
 
   return (
     <div
@@ -475,8 +477,10 @@ function AgentsPausedQueuedEmptyState({
         <div
           className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-md border"
           style={{
-            background: "var(--status-warning-muted)",
+            backgroundColor: "var(--status-warning-muted)",
             borderColor: "var(--status-warning-border)",
+            borderStyle: "solid",
+            borderWidth: "1px",
             color: "var(--status-warning)",
           }}
         >
@@ -497,8 +501,10 @@ function AgentsPausedQueuedEmptyState({
         <div
           className="mt-5 rounded-md border px-3 py-2.5 text-left"
           style={{
-            background: "var(--bg-surface)",
+            backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
           }}
         >
           <p
@@ -508,10 +514,11 @@ function AgentsPausedQueuedEmptyState({
             Queued prompt
           </p>
           <p
+            data-testid="agents-paused-queued-prompt"
             className="mt-1 line-clamp-4 text-sm leading-relaxed"
             style={{ color: "var(--text-secondary)" }}
           >
-            {prompt}
+            {promptExcerpt}
           </p>
         </div>
       </div>

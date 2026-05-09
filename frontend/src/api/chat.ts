@@ -1571,11 +1571,21 @@ export async function getAgentConversationWorkspaceFreshness(
 }
 
 export async function updateAgentConversationWorkspaceFromBase(
-  conversationId: string
+  conversationId: string,
+  base?: AgentConversationBaseSelection | null
 ): Promise<UpdateAgentConversationWorkspaceFromBaseResult> {
   const raw = await typedInvoke(
     "update_agent_conversation_workspace_from_base",
-    { conversationId },
+    {
+      conversationId,
+      ...(base
+        ? {
+            baseRefKind: base.kind,
+            baseRef: base.ref,
+            baseDisplayName: base.displayName,
+          }
+        : {}),
+    },
     UpdateAgentConversationWorkspaceFromBaseResponseSchema
   );
   return transformUpdateAgentConversationWorkspaceFromBaseResponse(raw);

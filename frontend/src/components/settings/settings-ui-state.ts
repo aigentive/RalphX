@@ -15,8 +15,9 @@ const ACTIVE_SECTION_KEY = "ralphx-settings-active-section";
 const ACTIVE_SECTION_VERSION_KEY = "ralphx-settings-active-section-version";
 const HARNESS_TAB_KEY = "ralphx-settings-harness-tab";
 const HARNESS_EXPANDED_KEY = "ralphx-settings-harness-expanded";
-const SETTINGS_ACTIVE_SECTION_VERSION = 1;
+const SETTINGS_ACTIVE_SECTION_VERSION = 2;
 const LEGACY_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "execution";
+const PRE_HARNESS_DEFAULT_ACTIVE_SECTION: SettingsSectionId = "repository";
 
 export type HarnessTabScope = "ideation" | "execution";
 export type HarnessTabValue = "global" | "project";
@@ -59,7 +60,11 @@ export function migrateActiveSectionPreference(
   if (version >= SETTINGS_ACTIVE_SECTION_VERSION) {
     return saved;
   }
-  if (saved === null || saved === LEGACY_DEFAULT_ACTIVE_SECTION) {
+  if (
+    saved === null ||
+    saved === LEGACY_DEFAULT_ACTIVE_SECTION ||
+    saved === PRE_HARNESS_DEFAULT_ACTIVE_SECTION
+  ) {
     return DEFAULT_SETTINGS_SECTION;
   }
   return saved;

@@ -5,9 +5,10 @@ import {
   resetAgentSessionState,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { QueryClient } from "@tanstack/react-query";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -19,11 +20,13 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
   archiveConversationMock,
   createConversationMock,
   getPlanBranchesMock,
+  integratedChatPanelRenderMock,
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   listIdeationSessionsMock,
@@ -142,7 +145,13 @@ describe("AgentsView start conversation", () => {
     expect(useAgentSessionStore.getState().selectedConversationId).toBe("conversation-2");
     expect(queryClient.getQueryData(["chat", "conversations", "conversation-2"])).toEqual({
       conversation: expect.objectContaining({ id: "conversation-2" }),
-      messages: [],
+      messages: [
+        expect.objectContaining({
+          conversationId: "conversation-2",
+          role: "user",
+          content: "fix agent landing flow",
+        }),
+      ],
     });
     expect(
       queryClient.getQueryData(["agents", "conversation-workspace", "conversation-2"])
@@ -158,6 +167,7 @@ describe("AgentsView start conversation", () => {
   it("renders a queued starter prompt and paused explanation when global execution is paused", async () => {
     mockAgentViewData();
     useUiStore.getState().setExecutionPaused(true);
+    const queuedPrompt = `build ${"queued feature ".repeat(40)}final`;
     const pausedConversation = conversation({
       id: "conversation-paused",
       contextId: "project-1",
@@ -189,7 +199,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-submit")).toHaveTextContent("Queue Prompt");
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "build the queued feature" },
+      target: { value: queuedPrompt },
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
@@ -197,7 +207,7 @@ describe("AgentsView start conversation", () => {
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
           conversationId: "conversation-paused",
-          content: "build the queued feature",
+          content: queuedPrompt,
         })
       )
     );
@@ -205,7 +215,7 @@ describe("AgentsView start conversation", () => {
       expect(useChatStore.getState().queuedMessages["project:conversation-paused"]).toEqual([
         expect.objectContaining({
           id: "queued-paused-start",
-          content: "build the queued feature",
+          content: queuedPrompt,
           isEditing: false,
         }),
       ])
@@ -216,7 +226,10 @@ describe("AgentsView start conversation", () => {
     expect(queuedEmptyState).toHaveTextContent(
       "This prompt will start when execution resumes."
     );
-    expect(queuedEmptyState).toHaveTextContent("build the queued feature");
+    const queuedPromptPreview = screen.getByTestId("agents-paused-queued-prompt");
+    expect(queuedPromptPreview).not.toHaveTextContent(queuedPrompt);
+    expect(queuedPromptPreview.textContent).toMatch(/^build queued feature/);
+    expect(queuedPromptPreview.textContent).toMatch(/\.\.\.$/);
   });
 
   it("starts with the remembered runtime when the project has a valid runtime preference", async () => {
@@ -359,7 +372,7 @@ describe("AgentsView start conversation", () => {
       })
     );
 
-    renderAgentsView();
+    const { queryClient } = renderAgentsView();
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "fix agent landing flow" },
@@ -372,8 +385,46 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
+    expect(
+      queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
+    ).toEqual({
+      conversation: expect.objectContaining({ id: "conversation-seeded" }),
+      messages: [
+        expect.objectContaining({
+          conversationId: "conversation-seeded",
+          role: "user",
+          content: "fix agent landing flow",
+        }),
+      ],
+    });
+    expect(
+      useChatStore.getState().agentStatus["project:conversation-seeded"]
+    ).toBe("generating");
+    expect(
+      useChatStore.getState().isSending["project:conversation-seeded"]
+    ).toBe(true);
+    expect(
+      useAgentSessionStore.getState().runtimeByConversationId["conversation-seeded"]
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.5",
+      effort: "xhigh",
+    });
     expect(useAgentSessionStore.getState().selectedConversationId).toBe(
       "conversation-seeded"
+    );
+    expect(integratedChatPanelRenderMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        conversationIdOverride: "conversation-seeded",
+        storeContextKeyOverride: "project:conversation-seeded",
+        agentProcessContextIdOverride: "conversation-seeded",
+        sendOptions: expect.objectContaining({
+          conversationId: "conversation-seeded",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+        }),
+      })
     );
     expect(startAgentConversationMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -405,8 +456,136 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("does not hydrate branch base options until the starter base picker gets intent", async () => {
+  it("clears optimistic running state when the seeded agent start fails", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const seededConversation = conversation({
+      id: "conversation-failed-start",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockRejectedValue(new Error("backend unavailable"));
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper }
+    );
+
+    await expect(
+      result.current({
+        projectId: "project-1",
+        content: "start then fail",
+        runtime: {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        mode: "edit",
+        base: null,
+        files: [],
+      })
+    ).rejects.toThrow("backend unavailable");
+
+    expect(
+      queryClient.getQueryData(["chat", "conversations", "conversation-failed-start"])
+    ).toEqual({
+      conversation: expect.objectContaining({ id: "conversation-failed-start" }),
+      messages: [
+        expect.objectContaining({
+          conversationId: "conversation-failed-start",
+          role: "user",
+          content: "start then fail",
+        }),
+      ],
+    });
+    expect(
+      useChatStore.getState().agentStatus["project:conversation-failed-start"]
+    ).toBeUndefined();
+    expect(
+      useChatStore.getState().isSending["project:conversation-failed-start"]
+    ).toBeUndefined();
+  });
+
+  it("falls back to the project default when the remembered branch selection is empty", async () => {
     mockAgentViewData();
+    resetAgentSessionState({
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+    );
+    expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+      "Project default (main)"
+    );
+  });
+
+  it("renders remembered branch base options before hover and refreshes with a loading state on intent", async () => {
+    mockAgentViewData();
+    let resolveBranches: ((branches: unknown[]) => void) | null = null;
+    getPlanBranchesMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveBranches = resolve;
+      })
+    );
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: [
+            {
+              key: "project_default:main",
+              label: "Project default (main)",
+              detail: "Configured project base branch",
+              source: "project",
+              selection: {
+                kind: "project_default",
+                ref: "main",
+                displayName: "Project default (main)",
+              },
+            },
+            {
+              key: "local_branch:feature/cached",
+              label: "feature/cached",
+              detail: "Local branch",
+              source: "local",
+              selection: {
+                kind: "local_branch",
+                ref: "feature/cached",
+                displayName: "feature/cached",
+              },
+            },
+          ],
+          selectedKey: "local_branch:feature/cached",
+          loadedAt: "2026-05-08T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "local_branch:feature/cached",
+      },
+    });
 
     renderAgentsView();
 
@@ -415,14 +594,27 @@ describe("AgentsView start conversation", () => {
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
+    expect(screen.getByTestId("agents-start-base")).toHaveTextContent("feature/cached");
     expect(getPlanBranchesMock).not.toHaveBeenCalled();
     expect(listIdeationSessionsMock).not.toHaveBeenCalled();
     expect(listConversationsMock).not.toHaveBeenCalled();
     expect(listAgentConversationWorkspacesByProjectMock).not.toHaveBeenCalled();
 
-    fireEvent.pointerEnter(screen.getByTestId("agents-start-base"));
+    await userEvent.click(screen.getByTestId("agents-start-base"));
 
     await waitFor(() => expect(getPlanBranchesMock).toHaveBeenCalledWith("project-1"));
+    expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
+    expect(screen.getAllByText("feature/cached").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByText("Project default (main)"));
+    expect(
+      useAgentSessionStore.getState().lastBranchBaseSelectionByProjectId["project-1"]
+    ).toBe("project_default:main");
+    expect(
+      useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]?.selectedKey
+    ).toBe("project_default:main");
+
+    resolveBranches?.([]);
   });
 
   it("starts a chat-mode conversation from the selected base and shows its workspace", async () => {

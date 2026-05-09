@@ -8,8 +8,15 @@
  * - Pending/queued visual style (muted, send icon)
  */
 
-import { useState, useCallback } from "react";
-import { Pencil, X } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import { Check, Pencil, X } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import type { QueuedMessage as QueuedMessageType } from "@/stores/chatStore";
 
 // ============================================================================
@@ -50,6 +57,14 @@ export interface QueuedMessageProps {
 export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps) {
   const [isEditing, setIsEditing] = useState(message.isEditing);
   const [editContent, setEditContent] = useState(message.content);
+  const previewContent = formatQueuedMessageExcerpt(message.content);
+
+  useEffect(() => {
+    setIsEditing(message.isEditing);
+    if (message.isEditing) {
+      setEditContent(message.content);
+    }
+  }, [message.content, message.isEditing]);
 
   const handleStartEdit = useCallback(() => {
     setIsEditing(true);
@@ -92,7 +107,9 @@ export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps)
       className="rounded-lg p-3 transition-all"
       style={{
         backgroundColor: "var(--bg-elevated)",
-        border: "1px solid var(--border-subtle)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
       }}
     >
       <div className="flex items-start gap-2">
@@ -124,74 +141,84 @@ export function QueuedMessage({ message, onEdit, onDelete }: QueuedMessageProps)
               className="text-sm break-words"
               style={{ color: "var(--text-secondary)" }}
             >
-              {message.content}
+              {previewContent}
             </p>
           )}
         </div>
 
         {/* Actions */}
-        <div className="flex items-start gap-1 flex-shrink-0">
-          {isEditing ? (
-            <>
-              {/* Save button */}
-              <button
-                data-testid="queued-message-save"
-                onClick={handleSaveEdit}
-                disabled={!editContent.trim()}
-                className="p-1 rounded transition-colors hover:bg-opacity-80 disabled:opacity-30"
-                style={{ color: "var(--status-success)" }}
-                title="Save (Enter)"
-                aria-label="Save edit"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M3 8L6 11L13 4"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-              {/* Cancel button */}
-              <button
-                data-testid="queued-message-cancel"
-                onClick={handleCancelEdit}
-                className="p-1 rounded transition-colors hover:bg-opacity-80"
-                style={{ color: "var(--text-muted)" }}
-                title="Cancel (Escape)"
-                aria-label="Cancel edit"
-              >
-                <X size={16} />
-              </button>
-            </>
-          ) : (
-            <>
-              {/* Edit button */}
-              <button
-                data-testid="queued-message-edit"
-                onClick={handleStartEdit}
-                className="p-1 rounded transition-colors hover:bg-opacity-80"
-                style={{ color: "var(--text-muted)" }}
-                title="Edit message"
-                aria-label="Edit message"
-              >
-                <Pencil size={16} />
-              </button>
-              {/* Delete button */}
-              <button
-                data-testid="queued-message-delete"
-                onClick={handleDelete}
-                className="p-1 rounded transition-colors hover:bg-opacity-80"
-                style={{ color: "var(--status-error)" }}
-                title="Delete message"
-                aria-label="Delete message"
-              >
-                <X size={16} />
-              </button>
-            </>
-          )}
-        </div>
+        <TooltipProvider>
+          <div className="flex items-start gap-1 flex-shrink-0">
+            {isEditing ? (
+              <>
+                {/* Save button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      data-testid="queued-message-save"
+                      onClick={handleSaveEdit}
+                      disabled={!editContent.trim()}
+                      className="p-1 rounded transition-colors hover:bg-opacity-80 disabled:opacity-30"
+                      style={{ color: "var(--status-success)" }}
+                      aria-label="Save edit"
+                    >
+                      <Check size={16} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Save edit</TooltipContent>
+                </Tooltip>
+                {/* Cancel button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      data-testid="queued-message-cancel"
+                      onClick={handleCancelEdit}
+                      className="p-1 rounded transition-colors hover:bg-opacity-80"
+                      style={{ color: "var(--text-muted)" }}
+                      aria-label="Cancel edit"
+                    >
+                      <X size={16} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Cancel edit</TooltipContent>
+                </Tooltip>
+              </>
+            ) : (
+              <>
+                {/* Edit button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      data-testid="queued-message-edit"
+                      onClick={handleStartEdit}
+                      className="p-1 rounded transition-colors hover:bg-opacity-80"
+                      style={{ color: "var(--text-muted)" }}
+                      aria-label="Edit message"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Edit message</TooltipContent>
+                </Tooltip>
+                {/* Delete button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      data-testid="queued-message-delete"
+                      onClick={handleDelete}
+                      className="p-1 rounded transition-colors hover:bg-opacity-80"
+                      style={{ color: "var(--status-error)" }}
+                      aria-label="Delete message"
+                    >
+                      <X size={16} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Delete message</TooltipContent>
+                </Tooltip>
+              </>
+            )}
+          </div>
+        </TooltipProvider>
       </div>
     </div>
   );

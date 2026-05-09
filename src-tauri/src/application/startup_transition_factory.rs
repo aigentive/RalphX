@@ -8,8 +8,8 @@ use crate::application::runtime_factory::{
 use crate::application::task_transition_service::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
-    AgentLaneSettingsRepository, ExecutionSettingsRepository, ExternalEventsRepository,
-    PlanBranchRepository, TaskStepRepository,
+    AgentLaneSettingsRepository, AgentProviderSettingsRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, PlanBranchRepository, TaskStepRepository,
 };
 use crate::domain::state_machine::services::{TaskScheduler, WebhookPublisher};
 
@@ -17,6 +17,7 @@ pub struct StartupTransitionFactory {
     pub execution_state: Arc<ExecutionState>,
     pub execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
+    pub agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     pub plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub agent_clients: AgentClientBundle,
@@ -36,6 +37,7 @@ impl StartupTransitionFactory {
         deps.agent_clients = Some(self.agent_clients.clone());
         deps.execution_settings_repo = Some(Arc::clone(&self.execution_settings_repo));
         deps.agent_lane_settings_repo = Some(Arc::clone(&self.agent_lane_settings_repo));
+        deps.agent_provider_settings_repo = Some(Arc::clone(&self.agent_provider_settings_repo));
         deps.plan_branch_repo = Some(Arc::clone(&self.plan_branch_repo));
         deps.interactive_process_registry = Some(Arc::clone(&self.interactive_process_registry));
 

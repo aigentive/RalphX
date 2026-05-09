@@ -9,16 +9,25 @@
  */
 
 import { useEffect, useState } from "react";
-import { Sparkles, X } from "lucide-react";
+import { CheckCircle2, Settings, Sparkles, X } from "lucide-react";
 import AgentConstellation from "./AgentConstellation";
 
 interface WelcomeScreenProps {
   onCreateProject: () => void;
+  onSetupProviders?: () => void;
+  providerSetupRequired?: boolean;
+  hasProjects?: boolean;
   /** Optional callback when closing manually-opened welcome screen (via ⌘⇧W or Escape) */
   onClose?: (() => void) | undefined;
 }
 
-export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScreenProps) {
+export default function WelcomeScreen({
+  onCreateProject,
+  onSetupProviders,
+  providerSetupRequired = false,
+  hasProjects = false,
+  onClose,
+}: WelcomeScreenProps) {
   // Track idle state for keyboard hint pulse animation
   const [isIdle, setIsIdle] = useState(false);
 
@@ -40,12 +49,42 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
       }
       if ((event.metaKey || event.ctrlKey) && event.key === "n") {
         event.preventDefault();
+        if (providerSetupRequired) {
+          onSetupProviders?.();
+          return;
+        }
         onCreateProject();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCreateProject]);
+  }, [onCreateProject, onSetupProviders, providerSetupRequired]);
+
+  const action = providerSetupRequired
+    ? onSetupProviders
+    : hasProjects
+      ? (onClose ?? onCreateProject)
+      : onCreateProject;
+  const Icon = providerSetupRequired ? Settings : Sparkles;
+  const actionLabel = providerSetupRequired
+    ? "Set Up Provider"
+    : hasProjects
+      ? "Continue"
+      : "Start Your First Project";
+  const providerStepStatus = providerSetupRequired ? "current" : "complete";
+  const projectStepStatus = hasProjects
+    ? "complete"
+    : providerSetupRequired
+      ? "pending"
+      : "current";
+  const providerStepSubtitle = providerSetupRequired
+    ? "Choose your agent harness."
+    : "Agent harness ready.";
+  const projectStepSubtitle = hasProjects
+    ? "Project workspace ready."
+    : "Create your first project.";
+  const providerStepCurrent = providerStepStatus === "current";
+  const projectStepCurrent = projectStepStatus === "current";
 
   return (
     <div
@@ -124,8 +163,86 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
               letterSpacing: "var(--tracking-wide)",
             }}
           >
-            Describe it. Ship it.
+            The best way to ship software with AI
           </p>
+        </div>
+
+        <div
+          data-testid="welcome-setup-steps"
+          className="mb-8 flex w-full max-w-md items-center justify-center gap-2"
+          style={{ animation: "fadeSlideIn 0.6s ease-out 0.1s forwards" }}
+        >
+          <div
+            data-testid="welcome-provider-step"
+            data-current={providerStepCurrent ? "true" : "false"}
+            data-status={providerStepStatus}
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
+            style={{
+              backgroundColor: providerStepCurrent
+                ? "var(--bg-elevated)"
+                : "var(--bg-surface)",
+              borderColor: providerStepCurrent
+                ? "var(--accent-primary)"
+                : "var(--border-subtle)",
+              color: providerStepCurrent
+                ? "var(--text-primary)"
+                : "var(--text-secondary)",
+            }}
+          >
+            {providerStepCurrent ? (
+              <Settings className="mt-0.5 h-4 w-4 shrink-0" />
+            ) : (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-success)]" />
+            )}
+            <span className="min-w-0">
+              <span className="block truncate font-medium">Provider</span>
+              <span
+                className="block truncate text-[0.6875rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {providerStepSubtitle}
+              </span>
+            </span>
+          </div>
+          <div
+            data-testid="welcome-project-step"
+            data-current={projectStepCurrent ? "true" : "false"}
+            data-status={projectStepStatus}
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-sm"
+            style={{
+              backgroundColor: projectStepCurrent
+                ? "var(--bg-elevated)"
+                : "var(--bg-surface)",
+              borderColor: projectStepCurrent
+                ? "var(--accent-primary)"
+                : "var(--border-subtle)",
+              color: projectStepCurrent
+                ? "var(--text-primary)"
+                : "var(--text-secondary)",
+            }}
+          >
+            {hasProjects ? (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--status-success)]" />
+            ) : (
+              <Sparkles
+                className="mt-0.5 h-4 w-4 shrink-0"
+                style={{
+                  color: projectStepCurrent
+                    ? "var(--accent-primary)"
+                    : "currentColor",
+                }}
+              />
+            )}
+            <span className="min-w-0">
+              <span className="block truncate font-medium">Project</span>
+              <span
+                className="block truncate text-[0.6875rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {projectStepSubtitle}
+              </span>
+            </span>
+          </div>
         </div>
 
         {/* CTA section */}
@@ -138,7 +255,7 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
         >
           {/* Primary CTA button with glow */}
           <button
-            onClick={onCreateProject}
+            onClick={action}
             className="group flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] cta-button"
             style={{
               backgroundColor: "var(--accent-primary)",
@@ -149,31 +266,33 @@ export default function WelcomeScreen({ onCreateProject, onClose }: WelcomeScree
             }}
             data-testid="create-first-project-button"
           >
-            <Sparkles className="w-4 h-4 transition-transform group-hover:rotate-12" />
-            Start Your First Project
+            <Icon className="w-4 h-4 transition-transform group-hover:rotate-12" />
+            {actionLabel}
           </button>
 
           {/* Keyboard shortcut hint with idle pulse */}
-          <p
-            className={`text-sm transition-all duration-300 ${isIdle ? "keyboard-hint-pulse" : ""}`}
-            style={{
-              color: "var(--text-muted)",
-              fontFamily: "var(--font-body)",
-            }}
-          >
-            Press{" "}
-            <kbd
-              className="px-2 py-0.5 rounded text-xs font-medium"
+          {!providerSetupRequired && !hasProjects && (
+            <p
+              className={`text-sm transition-all duration-300 ${isIdle ? "keyboard-hint-pulse" : ""}`}
               style={{
-                backgroundColor: "var(--bg-elevated)",
-                color: "var(--text-secondary)",
-                border: "1px solid var(--border-default)",
+                color: "var(--text-muted)",
+                fontFamily: "var(--font-body)",
               }}
             >
-              ⌘N
-            </kbd>{" "}
-            to create a project
-          </p>
+              Press{" "}
+              <kbd
+                className="px-2 py-0.5 rounded text-xs font-medium"
+                style={{
+                  backgroundColor: "var(--bg-elevated)",
+                  color: "var(--text-secondary)",
+                  border: "1px solid var(--border-default)",
+                }}
+              >
+                ⌘N
+              </kbd>{" "}
+              to create a project
+            </p>
+          )}
         </div>
       </div>
 

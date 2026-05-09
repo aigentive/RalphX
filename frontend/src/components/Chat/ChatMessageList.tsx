@@ -20,6 +20,7 @@ import {
   TypingIndicator,
   FailedRunBanner,
 } from "./IntegratedChatPanel.components";
+import { TextBubble } from "./TextBubble";
 import { ToolCallIndicator } from "./ToolCallIndicator";
 import type { ToolCall } from "./ToolCallIndicator";
 import type { StreamingTask, StreamingContentBlock } from "@/types/streaming-task";
@@ -1286,23 +1287,31 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       if (!hasFooterStreamingContent) {
         return null;
       }
+      const streamingCopyContent = normalizedStreamingContentBlocks
+        .filter((block) => block.type === "text" && block.text.trim().length > 0)
+        .map((block) => block.type === "text" ? block.text.trim() : "")
+        .join("\n\n");
 
       return (
-        <>
+        <MessageItem
+          role="assistant"
+          content={streamingCopyContent}
+          createdAt={new Date().toISOString()}
+          isLastInList
+          toolCalls={null}
+          contentBlocks={null}
+          providerHarness={providerHarness}
+          providerSessionId={providerSessionId}
+        >
           {normalizedStreamingContentBlocks.map((block, idx) => {
             if (block.type === "text") {
               // Skip empty/whitespace-only text blocks (e.g. pre-stream flush artifacts)
               if (!block.text.trim()) return null;
               return (
-                <MessageItem
+                <TextBubble
                   key={`streaming-text-${idx}`}
-                  role="assistant"
-                  content={block.text}
-                  createdAt={new Date().toISOString()}
-                  toolCalls={null}
-                  contentBlocks={null}
-                  providerHarness={providerHarness}
-                  providerSessionId={providerSessionId}
+                  text={block.text}
+                  isUser={false}
                 />
               );
             }
@@ -1363,7 +1372,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               <TypingIndicator />
             </>
           )}
-        </>
+        </MessageItem>
       );
     }, [
       hasFooterStreamingContent,

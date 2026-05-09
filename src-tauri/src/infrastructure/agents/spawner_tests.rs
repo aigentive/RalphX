@@ -2,18 +2,21 @@ use super::*;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings, AgentOutput,
-    AgentResponse, AgentResult, AgenticClient, ClientCapabilities, ClientType, ResponseChunk,
+    AgentProviderSettings, AgentResponse, AgentResult, AgenticClient, ClientCapabilities,
+    ClientType, ResponseChunk, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
-use crate::domain::execution::ExecutionSettings;
 use crate::domain::entities::{GitMode, Project, ProjectId, Task, TaskId};
+use crate::domain::execution::ExecutionSettings;
 use crate::domain::repositories::{
-    ProjectRepository, StateHistoryMetadata, StatusTransition, TaskRepository,
+    AgentProviderSettingsRepository, ProjectRepository, StateHistoryMetadata, StatusTransition,
+    TaskRepository,
 };
-use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentRegistry, RunningAgentKey};
+use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey, RunningAgentRegistry};
 use crate::error::AppResult;
 use crate::infrastructure::memory::{
-    MemoryAgentLaneSettingsRepository, MemoryExecutionSettingsRepository,
-    MemoryIdeationSessionRepository, MemoryProjectRepository, MemoryTaskRepository,
+    MemoryAgentLaneSettingsRepository, MemoryAgentProviderSettingsRepository,
+    MemoryExecutionSettingsRepository, MemoryIdeationSessionRepository, MemoryProjectRepository,
+    MemoryTaskRepository,
 };
 use crate::infrastructure::MockAgenticClient;
 use async_trait::async_trait;
@@ -39,8 +42,11 @@ fn make_runtime_plugin_layout() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let generated_dir = dir.path().join("generated/claude-plugin");
 
     fs::create_dir_all(plugin_dir.join("agents")).expect("create agents dir");
-    fs::write(plugin_dir.join("agents/session-namer.md"), "# Session Namer\n")
-        .expect("write agent prompt");
+    fs::write(
+        plugin_dir.join("agents/session-namer.md"),
+        "# Session Namer\n",
+    )
+    .expect("write agent prompt");
 
     (dir, plugin_dir, generated_dir)
 }
@@ -137,7 +143,13 @@ impl TaskRepository for MockTaskRepoForSpawner {
     ) -> AppResult<Vec<Task>> {
         Ok(vec![])
     }
-    async fn count_tasks(&self, _: &ProjectId, _: bool, _: Option<&str>, _: Option<&str>) -> AppResult<u32> {
+    async fn count_tasks(
+        &self,
+        _: &ProjectId,
+        _: bool,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> AppResult<u32> {
         Ok(0)
     }
     async fn search(&self, _: &ProjectId, _: &str, _: bool) -> AppResult<Vec<Task>> {
@@ -169,9 +181,7 @@ impl TaskRepository for MockTaskRepoForSpawner {
     async fn get_status_history_batch(
         &self,
         _task_ids: &[TaskId],
-    ) -> AppResult<
-        std::collections::HashMap<TaskId, Vec<StatusTransition>>,
-    > {
+    ) -> AppResult<std::collections::HashMap<TaskId, Vec<StatusTransition>>> {
         Ok(std::collections::HashMap::new())
     }
 }
@@ -603,7 +613,11 @@ async fn test_spawn_blocked_when_same_project_capacity_reached() {
     spawner.spawn("worker", "task-candidate").await;
 
     let calls = mock.get_spawn_calls().await;
-    assert_eq!(calls.len(), 0, "Should not spawn when same-project capacity is full");
+    assert_eq!(
+        calls.len(),
+        0,
+        "Should not spawn when same-project capacity is full"
+    );
 }
 
 #[tokio::test]
@@ -652,7 +666,10 @@ async fn test_spawn_ignores_other_project_capacity_usage() {
     other_project_running.id = TaskId::from_string("task-other-project".to_string());
     other_project_running.internal_status = crate::domain::entities::InternalStatus::Executing;
     other_project_running.worktree_path = Some("/tmp/task-other-project".to_string());
-    task_repo.create(other_project_running.clone()).await.unwrap();
+    task_repo
+        .create(other_project_running.clone())
+        .await
+        .unwrap();
 
     let mut candidate_task = Task::new(project_a_id.clone(), "Candidate task".to_string());
     candidate_task.id = TaskId::from_string("task-candidate".to_string());
@@ -684,7 +701,11 @@ async fn test_spawn_ignores_other_project_capacity_usage() {
     spawner.spawn("worker", "task-candidate").await;
 
     let calls = mock.get_spawn_calls().await;
-    assert_eq!(calls.len(), 1, "Should still spawn when only another project is busy");
+    assert_eq!(
+        calls.len(),
+        1,
+        "Should still spawn when only another project is busy"
+    );
 }
 
 #[tokio::test]
@@ -911,10 +932,7 @@ fn test_build_agent_config_for_claude_client_sets_plugin_and_agent() {
 
     assert_eq!(config.role, AgentRole::QaRefiner);
     assert_eq!(config.prompt, "Execute task task-456");
-    assert_eq!(
-        config.agent.as_deref(),
-        Some("ralphx:ralphx-qa-executor")
-    );
+    assert_eq!(config.agent.as_deref(), Some("ralphx:ralphx-qa-executor"));
     assert_eq!(config.plugin_dir, Some(generated_dir));
 }
 
@@ -967,7 +985,10 @@ async fn test_spawn_uses_codex_client_when_execution_lane_resolves_to_codex() {
     let running_agent_registry = Arc::new(MemoryRunningAgentRegistry::new());
 
     let project_id = ProjectId::from_string("project-codex".to_string());
-    let mut project = Project::new("Project Codex".to_string(), "/tmp/project-codex".to_string());
+    let mut project = Project::new(
+        "Project Codex".to_string(),
+        "/tmp/project-codex".to_string(),
+    );
     project.id = project_id.clone();
     project_repo.create(project).await.unwrap();
 
@@ -982,7 +1003,11 @@ async fn test_spawn_uses_codex_client_when_execution_lane_resolves_to_codex() {
     lane_settings.approval_policy = Some("on-request".to_string());
     lane_settings.sandbox_mode = Some("workspace-write".to_string());
     agent_lane_settings_repo
-        .upsert_for_project(project_id.as_str(), AgentLane::ExecutionWorker, &lane_settings)
+        .upsert_for_project(
+            project_id.as_str(),
+            AgentLane::ExecutionWorker,
+            &lane_settings,
+        )
         .await
         .unwrap();
 
@@ -1004,7 +1029,10 @@ async fn test_spawn_uses_codex_client_when_execution_lane_resolves_to_codex() {
     assert_eq!(codex_client.spawn_count().await, 1);
     let config = codex_client.last_spawn().await.expect("codex spawn config");
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(config.agent.as_deref(), Some("ralphx:ralphx-execution-worker"));
+    assert_eq!(
+        config.agent.as_deref(),
+        Some("ralphx:ralphx-execution-worker")
+    );
     assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
 }
 
@@ -1037,7 +1065,7 @@ async fn test_spawn_uses_reexecutor_lane_for_reexecuting_task() {
     let mut lane_settings = AgentLaneSettings::new(AgentHarnessKind::Codex);
     lane_settings.model = Some("gpt-5.4-mini".to_string());
     lane_settings.effort = Some(crate::domain::agents::LogicalEffort::Medium);
-    lane_settings.approval_policy = Some("never".to_string());
+    lane_settings.approval_policy = Some("on-request".to_string());
     lane_settings.sandbox_mode = Some("read-only".to_string());
     agent_lane_settings_repo
         .upsert_for_project(
@@ -1066,14 +1094,23 @@ async fn test_spawn_uses_reexecutor_lane_for_reexecuting_task() {
     assert_eq!(codex_client.spawn_count().await, 1);
     let config = codex_client.last_spawn().await.expect("codex spawn config");
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(config.agent.as_deref(), Some("ralphx:ralphx-execution-worker"));
+    assert_eq!(
+        config.agent.as_deref(),
+        Some("ralphx:ralphx-execution-worker")
+    );
     assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
     assert_eq!(
         config.logical_effort,
         Some(crate::domain::agents::LogicalEffort::Medium)
     );
-    assert_eq!(config.approval_policy.as_deref(), Some("never"));
-    assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
+    assert_eq!(
+        config.approval_policy.as_deref(),
+        Some(CODEX_DEFAULT_APPROVAL_POLICY)
+    );
+    assert_eq!(
+        config.sandbox_mode.as_deref(),
+        Some(CODEX_DEFAULT_SANDBOX_MODE)
+    );
 }
 
 #[tokio::test]
@@ -1113,7 +1150,11 @@ async fn test_spawn_uses_reviewer_lane_when_review_task_resolves_to_codex() {
     lane_settings.model = Some("gpt-5.4".to_string());
     lane_settings.effort = Some(crate::domain::agents::LogicalEffort::High);
     agent_lane_settings_repo
-        .upsert_for_project(project_id.as_str(), AgentLane::ExecutionReviewer, &lane_settings)
+        .upsert_for_project(
+            project_id.as_str(),
+            AgentLane::ExecutionReviewer,
+            &lane_settings,
+        )
         .await
         .unwrap();
 
@@ -1133,9 +1174,15 @@ async fn test_spawn_uses_reviewer_lane_when_review_task_resolves_to_codex() {
 
     assert_eq!(default_client.spawn_count().await, 0);
     assert_eq!(codex_client.spawn_count().await, 1);
-    let config = codex_client.last_spawn().await.expect("codex review spawn config");
+    let config = codex_client
+        .last_spawn()
+        .await
+        .expect("codex review spawn config");
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(config.agent.as_deref(), Some("ralphx:ralphx-execution-reviewer"));
+    assert_eq!(
+        config.agent.as_deref(),
+        Some("ralphx:ralphx-execution-reviewer")
+    );
     assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(config.plugin_dir, Some(generated_dir));
 }
@@ -1177,7 +1224,11 @@ async fn test_spawn_uses_merger_lane_when_merge_task_resolves_to_codex() {
     lane_settings.model = Some("gpt-5.4".to_string());
     lane_settings.effort = Some(crate::domain::agents::LogicalEffort::Medium);
     agent_lane_settings_repo
-        .upsert_for_project(project_id.as_str(), AgentLane::ExecutionMerger, &lane_settings)
+        .upsert_for_project(
+            project_id.as_str(),
+            AgentLane::ExecutionMerger,
+            &lane_settings,
+        )
         .await
         .unwrap();
 
@@ -1197,9 +1248,15 @@ async fn test_spawn_uses_merger_lane_when_merge_task_resolves_to_codex() {
 
     assert_eq!(default_client.spawn_count().await, 0);
     assert_eq!(codex_client.spawn_count().await, 1);
-    let config = codex_client.last_spawn().await.expect("codex merge spawn config");
+    let config = codex_client
+        .last_spawn()
+        .await
+        .expect("codex merge spawn config");
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(config.agent.as_deref(), Some("ralphx:ralphx-execution-merger"));
+    assert_eq!(
+        config.agent.as_deref(),
+        Some("ralphx:ralphx-execution-merger")
+    );
     assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(config.plugin_dir, Some(generated_dir));
 }
@@ -1236,4 +1293,90 @@ async fn test_spawn_does_not_fall_back_when_requested_harness_is_unavailable() {
 
     assert_eq!(default_client.spawn_count().await, 0);
     assert_eq!(unavailable_claude_client.spawn_count().await, 0);
+}
+
+#[test]
+fn test_with_agent_provider_settings_repo_attaches_repo() {
+    let mock = Arc::new(MockAgenticClient::new());
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> =
+        Arc::new(MemoryAgentProviderSettingsRepository::new());
+
+    let spawner = AgenticClientSpawner::new(mock).with_agent_provider_settings_repo(provider_repo);
+
+    assert!(spawner.agent_provider_settings_repo.is_some());
+}
+
+#[tokio::test]
+async fn test_custom_agent_spawn_requires_enabled_default_provider() {
+    let mock = Arc::new(MockAgenticClient::new());
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> =
+        Arc::new(MemoryAgentProviderSettingsRepository::new());
+    let spawner = AgenticClientSpawner::new(mock).with_agent_provider_settings_repo(provider_repo);
+
+    let error = spawner
+        .resolve_spawn_harness("custom-agent", "task-custom", None)
+        .await
+        .expect_err("custom agent should be blocked without provider setup");
+
+    assert!(error.contains("Settings > Harness > Providers"));
+}
+
+#[tokio::test]
+async fn test_resolved_lane_spawn_requires_requested_provider_enabled() {
+    let default_client = Arc::new(TestAgentClient::new(ClientType::ClaudeCode, true));
+    let codex_client = Arc::new(TestAgentClient::new(ClientType::Codex, true));
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let settings_repo = Arc::new(MemoryExecutionSettingsRepository::new());
+    let ideation_session_repo = Arc::new(MemoryIdeationSessionRepository::new());
+    let running_agent_registry = Arc::new(MemoryRunningAgentRegistry::new());
+    let agent_lane_settings_repo = Arc::new(MemoryAgentLaneSettingsRepository::new());
+    let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+
+    let mut claude = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    claude.enabled = true;
+    claude.is_default = true;
+    provider_repo.upsert(&claude).await.unwrap();
+
+    let project_id = ProjectId::from_string("project-provider-gate".to_string());
+    let mut project = Project::new(
+        "Project Provider Gate".to_string(),
+        "/tmp/project-provider-gate".to_string(),
+    );
+    project.id = project_id.clone();
+    project_repo.create(project).await.unwrap();
+
+    let mut task = Task::new(project_id.clone(), "Codex disabled lane task".to_string());
+    task.id = TaskId::from_string("task-provider-gate".to_string());
+    task.worktree_path = Some("/tmp/task-provider-gate".to_string());
+    task_repo.create(task).await.unwrap();
+
+    agent_lane_settings_repo
+        .upsert_for_project(
+            project_id.as_str(),
+            AgentLane::ExecutionWorker,
+            &AgentLaneSettings::new(AgentHarnessKind::Codex),
+        )
+        .await
+        .unwrap();
+
+    let provider_repo: Arc<dyn AgentProviderSettingsRepository> = provider_repo;
+    let spawner = AgenticClientSpawner::new(default_client)
+        .with_harness_client(AgentHarnessKind::Codex, codex_client)
+        .with_repos(task_repo, project_repo)
+        .with_runtime_admission_context(
+            settings_repo,
+            agent_lane_settings_repo,
+            ideation_session_repo,
+            running_agent_registry,
+        )
+        .with_agent_provider_settings_repo(provider_repo)
+        .with_working_dir("/tmp");
+
+    let error = spawner
+        .resolve_spawn_harness("worker", "task-provider-gate", Some(project_id.as_str()))
+        .await
+        .expect_err("disabled codex provider should block execution lane spawn");
+
+    assert!(error.contains("codex is not enabled"));
 }

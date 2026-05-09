@@ -76,4 +76,25 @@ describe("BranchBasePicker", () => {
     await user.click(screen.getByText("feature/x"));
     expect(onValueChange).toHaveBeenCalledWith("local_branch::feature/x");
   });
+
+  it("keeps cached options visible while a refresh is loading", async () => {
+    const user = userEvent.setup();
+    render(
+      <BranchBasePicker
+        value="local_branch::feature/x"
+        onValueChange={vi.fn()}
+        options={options}
+        placeholder="Select base"
+        testId="picker"
+        isLoading
+      />,
+    );
+
+    expect(screen.getByTestId("picker")).toHaveTextContent("feature/x");
+
+    await user.click(screen.getByTestId("picker"));
+
+    expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
+    expect(screen.getAllByText("feature/x").length).toBeGreaterThan(0);
+  });
 });

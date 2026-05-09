@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::warn;
 
-use crate::domain::agents::LogicalEffort;
+use crate::domain::agents::{
+    LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+};
 use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::claude::{
     claude_runtime_config, external_mcp_config, filter_interactive_tools,
@@ -94,8 +96,8 @@ impl Default for CodexExecCliConfig {
         Self {
             model: None,
             reasoning_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
+            approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
+            sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
             config_overrides: Vec::new(),
             cwd: None,
             add_dirs: Vec::new(),
@@ -107,6 +109,14 @@ impl Default for CodexExecCliConfig {
 }
 
 pub type CodexMcpRuntimeContext = McpRuntimeContext;
+
+fn effective_codex_approval_policy(_config: &CodexExecCliConfig) -> &str {
+    CODEX_DEFAULT_APPROVAL_POLICY
+}
+
+fn effective_codex_sandbox_mode(_config: &CodexExecCliConfig) -> &str {
+    CODEX_DEFAULT_SANDBOX_MODE
+}
 
 fn encode_codex_string_literal(value: &str) -> Result<String, String> {
     serde_json::to_string(value)
@@ -470,11 +480,9 @@ pub fn build_codex_exec_args(
         args.push(model.to_string());
     }
 
-    if let Some(sandbox_mode) = config.sandbox_mode.as_deref() {
-        require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
-        args.push("-s".to_string());
-        args.push(normalize_cli_token(sandbox_mode));
-    }
+    require_capability(capabilities.supports_sandbox_flag, "sandbox_flag")?;
+    args.push("-s".to_string());
+    args.push(normalize_cli_token(effective_codex_sandbox_mode(config)));
 
     if let Some(cwd) = config.cwd.as_ref() {
         args.push("-C".to_string());
@@ -508,14 +516,12 @@ pub fn build_codex_exec_args(
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
     }
 
-    if let Some(approval_policy) = config.approval_policy.as_deref() {
-        require_capability(capabilities.supports_config_override, "config_override")?;
-        args.push("-c".to_string());
-        args.push(format!(
-            "approval_policy=\"{}\"",
-            normalize_cli_token(approval_policy)
-        ));
-    }
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push(format!(
+        "approval_policy=\"{}\"",
+        normalize_cli_token(effective_codex_approval_policy(config))
+    ));
 
     Ok(args)
 }
@@ -562,23 +568,19 @@ pub fn build_codex_exec_resume_args(
         args.push(format!("model_reasoning_effort=\"{}\"", reasoning_effort));
     }
 
-    if let Some(approval_policy) = config.approval_policy.as_deref() {
-        require_capability(capabilities.supports_config_override, "config_override")?;
-        args.push("-c".to_string());
-        args.push(format!(
-            "approval_policy=\"{}\"",
-            normalize_cli_token(approval_policy)
-        ));
-    }
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push(format!(
+        "approval_policy=\"{}\"",
+        normalize_cli_token(effective_codex_approval_policy(config))
+    ));
 
-    if let Some(sandbox_mode) = config.sandbox_mode.as_deref() {
-        require_capability(capabilities.supports_config_override, "config_override")?;
-        args.push("-c".to_string());
-        args.push(format!(
-            "sandbox_mode=\"{}\"",
-            normalize_cli_token(sandbox_mode)
-        ));
-    }
+    require_capability(capabilities.supports_config_override, "config_override")?;
+    args.push("-c".to_string());
+    args.push(format!(
+        "sandbox_mode=\"{}\"",
+        normalize_cli_token(effective_codex_sandbox_mode(config))
+    ));
 
     Ok(args)
 }

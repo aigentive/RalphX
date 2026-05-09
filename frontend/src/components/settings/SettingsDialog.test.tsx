@@ -51,6 +51,12 @@ vi.mock("./ExternalMcpSettingsPanel", () => ({
   ),
 }));
 
+vi.mock("./HarnessProvidersSection", () => ({
+  HarnessProvidersSection: () => (
+    <div data-testid="providers-section">Providers</div>
+  ),
+}));
+
 vi.mock("./RepositorySettingsSection", () => ({
   RepositorySettingsSection: () => (
     <div data-testid="repository-section">Repository</div>
@@ -150,12 +156,12 @@ describe("SettingsDialog", () => {
   // --------------------------------------------------------------------------
 
   describe("Section initialization via modalContext deep-link", () => {
-    it("defaults to the Repository section when no modalContext.section is provided", async () => {
+    it("defaults to the Providers section when no modalContext.section is provided", async () => {
       uiState.activeModal = "settings";
       uiState.modalContext = undefined;
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(await screen.findByTestId("repository-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
     });
 
     it("initializes to API Keys section when modalContext.section is 'api-keys'", () => {
@@ -185,18 +191,18 @@ describe("SettingsDialog", () => {
   // --------------------------------------------------------------------------
 
   describe("Sidebar order and section persistence", () => {
-    it("shows Workspace first with Repository as the first sidebar item", () => {
+    it("shows Harness first with Providers as the first sidebar item", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);
 
       const navigation = screen.getByRole("navigation");
       const groupLabels = within(navigation)
-        .getAllByText(/Workspace|General|Ideation|Access|Preferences/)
+        .getAllByText(/Harness|Workspace|General|Ideation|Access|Preferences/)
         .map((element) => element.textContent);
 
-      expect(groupLabels.slice(0, 2)).toEqual(["Workspace", "General"]);
+      expect(groupLabels.slice(0, 2)).toEqual(["Harness", "Workspace"]);
       expect(within(navigation).getAllByRole("button")[0]).toHaveAccessibleName(
-        "Repository",
+        "Providers",
       );
     });
 
@@ -209,10 +215,10 @@ describe("SettingsDialog", () => {
 
       const navigation = screen.getByRole("navigation");
       expect(navigation).toHaveClass("settings-nav");
-      expect(within(navigation).getByRole("button", { name: "Repository" })).toHaveClass(
+      expect(within(navigation).getByRole("button", { name: "Providers" })).toHaveClass(
         "settings-nav__item",
       );
-      expect(within(navigation).getByRole("button", { name: "Repository" })).toHaveAttribute(
+      expect(within(navigation).getByRole("button", { name: "Providers" })).toHaveAttribute(
         "aria-current",
         "page",
       );
@@ -223,9 +229,9 @@ describe("SettingsDialog", () => {
       render(<SettingsDialog {...defaultProps} />);
 
       expect(screen.getByTestId("settings-dialog")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Repository" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Providers" })).toBeInTheDocument();
       expect(screen.getByTestId("settings-section-loading")).toBeInTheDocument();
-      expect(screen.queryByTestId("repository-section")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
     });
 
     it("remembers the last opened section across Settings reopens", async () => {
@@ -233,7 +239,7 @@ describe("SettingsDialog", () => {
       uiState.activeModal = "settings";
       const { rerender } = render(<SettingsDialog {...defaultProps} />);
 
-      expect(await screen.findByTestId("repository-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Review Policy" }));
       expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
@@ -262,13 +268,13 @@ describe("SettingsDialog", () => {
       uiState.activeModal = "settings";
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(await screen.findByTestId("repository-section")).toBeInTheDocument();
+      expect(await screen.findByTestId("providers-section")).toBeInTheDocument();
 
       // Click "Review Policy" in the left nav rail
       const reviewNavItem = screen.getByRole("button", { name: "Review Policy" });
       await user.click(reviewNavItem);
 
-      expect(screen.queryByTestId("repository-section")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("providers-section")).not.toBeInTheDocument();
       expect(await screen.findByTestId("review-policy-section")).toBeInTheDocument();
     });
 

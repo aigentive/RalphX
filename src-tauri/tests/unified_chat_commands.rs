@@ -1,13 +1,19 @@
 mod common;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ralphx_lib::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
 };
-use ralphx_lib::application::{AppState, MockChatService, SendResult};
+use ralphx_lib::application::pr_startup_recovery::{
+    cleanup_terminal_agent_workspace_local_artifacts_on_startup,
+    cleanup_terminal_plan_branch_local_artifacts_on_startup,
+};
+use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendResult};
 use ralphx_lib::commands::unified_chat_commands::{
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
@@ -15,11 +21,15 @@ use ralphx_lib::commands::unified_chat_commands::{
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
+use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ArtifactId,
+    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId,
 };
-use ralphx_lib::domain::services::github_service::GithubServiceTrait;
+use ralphx_lib::domain::services::github_service::{
+    GithubServiceTrait, PrStatus as GithubPrStatus,
+};
 use ralphx_lib::domain::services::QueuedMessage;
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 
@@ -176,6 +186,15 @@ fn setup_publish_repo(repo_path: &Path) -> String {
     git(repo_path, &["rev-parse", "HEAD"])
 }
 
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--verify", branch])
+        .current_dir(repo)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 async fn setup_ipc_workspace_state(
     suffix: &str,
     capture_base_commit: bool,
@@ -241,6 +260,415 @@ async fn setup_ipc_workspace_state(
         .expect("workspace should be persisted");
 
     (temp, state, conversation_id, github)
+}
+
+#[tokio::test]
+async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_artifacts() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_publish_repo(&repo_path);
+
+    let mut project = Project::new(
+        "IPC Terminal Cleanup".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+
+    let plan_branch_name = "ralphx/ipc-cleanup/plan-merged";
+    git(&repo_path, &["checkout", "-b", plan_branch_name]);
+    std::fs::write(repo_path.join("plan.txt"), "plan\n").expect("plan file should write");
+    git(&repo_path, &["add", "."]);
+    git(&repo_path, &["commit", "-m", "plan work"]);
+    git(&repo_path, &["checkout", "main"]);
+    git(
+        &repo_path,
+        &["merge", "--no-ff", plan_branch_name, "-m", "merge plan"],
+    );
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("ipc-cleanup-artifact"),
+        IdeationSessionId::from_string("ipc-cleanup-session"),
+        project.id.clone(),
+        plan_branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.status = PlanBranchStatus::Merged;
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(201);
+    plan_branch.pr_status = Some(DbPrStatus::Merged);
+    state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("plan branch should persist");
+
+    let conversation_id = ChatConversationId::from_string("ipc-terminal-cleanup-conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("workspace should be prepared");
+    let workspace_branch = workspace.branch_name.clone();
+    let workspace_path = std::path::PathBuf::from(&workspace.worktree_path);
+    std::fs::write(workspace_path.join("agent.txt"), "agent\n").expect("agent file should write");
+    git(&workspace_path, &["add", "."]);
+    git(&workspace_path, &["commit", "-m", "agent work"]);
+    git(
+        &repo_path,
+        &["merge", "--no-ff", &workspace_branch, "-m", "merge agent"],
+    );
+    workspace.publication_pr_number = Some(202);
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    cleanup_terminal_plan_branch_local_artifacts_on_startup(
+        Arc::clone(&state.plan_branch_repo),
+        Arc::clone(&state.project_repo),
+        None,
+        Arc::new(HashSet::new()),
+    )
+    .await;
+    cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+        None,
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(!branch_exists(&repo_path, plan_branch_name));
+    assert!(!workspace_path.exists());
+    assert!(!branch_exists(&repo_path, &workspace_branch));
+}
+
+#[tokio::test]
+async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_publish_repo(&repo_path);
+
+    let mut project = Project::new(
+        "IPC Cleanup Guards".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+
+    let unmerged_plan_branch = "ralphx/ipc-cleanup/plan-unmerged";
+    git(&repo_path, &["checkout", "-b", unmerged_plan_branch]);
+    std::fs::write(repo_path.join("unmerged-plan.txt"), "plan\n")
+        .expect("unmerged plan file should write");
+    git(&repo_path, &["add", "."]);
+    git(&repo_path, &["commit", "-m", "unmerged plan"]);
+    git(&repo_path, &["checkout", "main"]);
+    let mut unmerged_plan = PlanBranch::new(
+        ArtifactId::from_string("ipc-cleanup-unmerged-artifact"),
+        IdeationSessionId::from_string("ipc-cleanup-guards-session"),
+        project.id.clone(),
+        unmerged_plan_branch.to_string(),
+        "main".to_string(),
+    );
+    unmerged_plan.status = PlanBranchStatus::Merged;
+    unmerged_plan.pr_eligible = true;
+    unmerged_plan.pr_number = Some(401);
+    unmerged_plan.pr_status = Some(DbPrStatus::Merged);
+    state
+        .plan_branch_repo
+        .create(unmerged_plan)
+        .await
+        .expect("unmerged plan branch should persist");
+
+    let missing_target_branch = "ralphx/ipc-cleanup/plan-missing-target";
+    git(&repo_path, &["checkout", "-b", missing_target_branch]);
+    git(&repo_path, &["checkout", "main"]);
+    let mut missing_target_plan = PlanBranch::new(
+        ArtifactId::from_string("ipc-cleanup-missing-target-artifact"),
+        IdeationSessionId::from_string("ipc-cleanup-guards-session"),
+        project.id.clone(),
+        missing_target_branch.to_string(),
+        "main".to_string(),
+    );
+    missing_target_plan.status = PlanBranchStatus::Merged;
+    missing_target_plan.pr_eligible = true;
+    missing_target_plan.pr_number = Some(402);
+    missing_target_plan.pr_status = Some(DbPrStatus::Merged);
+    missing_target_plan.base_branch_override = Some("missing-base".to_string());
+    state
+        .plan_branch_repo
+        .create(missing_target_plan)
+        .await
+        .expect("missing-target plan branch should persist");
+
+    let closed_conversation_id =
+        ChatConversationId::from_string("ipc-closed-terminal-cleanup-conversation");
+    let mut closed_workspace = prepare_agent_conversation_workspace(
+        &project,
+        &closed_conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("closed workspace should be prepared");
+    let closed_branch = closed_workspace.branch_name.clone();
+    let closed_path = std::path::PathBuf::from(&closed_workspace.worktree_path);
+    closed_workspace.publication_pr_number = Some(403);
+    closed_workspace.publication_pr_status = Some("closed".to_string());
+    closed_workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(closed_workspace)
+        .await
+        .expect("closed workspace should persist");
+
+    let dirty_conversation_id =
+        ChatConversationId::from_string("ipc-dirty-terminal-cleanup-conversation");
+    let mut dirty_workspace = prepare_agent_conversation_workspace(
+        &project,
+        &dirty_conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("dirty workspace should be prepared");
+    let dirty_branch = dirty_workspace.branch_name.clone();
+    let dirty_path = std::path::PathBuf::from(&dirty_workspace.worktree_path);
+    std::fs::write(dirty_path.join("dirty.txt"), "dirty\n").expect("dirty file should write");
+    dirty_workspace.publication_pr_number = Some(404);
+    dirty_workspace.publication_pr_status = Some("merged".to_string());
+    dirty_workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(dirty_workspace)
+        .await
+        .expect("dirty workspace should persist");
+
+    cleanup_terminal_plan_branch_local_artifacts_on_startup(
+        Arc::clone(&state.plan_branch_repo),
+        Arc::clone(&state.project_repo),
+        None,
+        Arc::new(HashSet::new()),
+    )
+    .await;
+    cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.project_repo),
+        None,
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(branch_exists(&repo_path, unmerged_plan_branch));
+    assert!(branch_exists(&repo_path, missing_target_branch));
+    assert!(closed_path.exists());
+    assert!(branch_exists(&repo_path, &closed_branch));
+    assert!(dirty_path.exists());
+    assert!(branch_exists(&repo_path, &dirty_branch));
+}
+
+#[tokio::test]
+async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_publish_repo(&repo_path);
+
+    let mut project = Project::new(
+        "IPC Poller Cleanup".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("ipc-poller-cleanup-conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("workspace should be prepared");
+    let workspace_branch = workspace.branch_name.clone();
+    let workspace_path = std::path::PathBuf::from(&workspace.worktree_path);
+    std::fs::write(workspace_path.join("agent.txt"), "agent\n").expect("agent file should write");
+    git(&workspace_path, &["add", "."]);
+    git(&workspace_path, &["commit", "-m", "agent work"]);
+    git(
+        &repo_path,
+        &["merge", "--no-ff", &workspace_branch, "-m", "merge agent"],
+    );
+    workspace.publication_pr_number = Some(303);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let github = Arc::new(common::MockGithubService::new());
+    github.will_return_status(GithubPrStatus::Merged {
+        merge_commit_sha: None,
+    });
+    let registry = PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&state.plan_branch_repo),
+    );
+    registry.start_agent_workspace_polling(
+        conversation_id.clone(),
+        303,
+        project.clone(),
+        repo_path.clone(),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::new(MockChatService::new()),
+    );
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if !workspace_path.exists() && !branch_exists(&repo_path, &workspace_branch) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("poller should clean terminal artifacts");
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain persisted");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(github.check_calls(), 1);
+}
+
+#[tokio::test]
+async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    setup_publish_repo(&repo_path);
+
+    let mut project = Project::new(
+        "IPC Poller Closed Cleanup".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    let state = AppState::new_test();
+    let project = state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
+    let conversation_id = ChatConversationId::from_string("ipc-poller-closed-cleanup-conversation");
+    let mut workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("workspace should be prepared");
+    let workspace_branch = workspace.branch_name.clone();
+    let workspace_path = std::path::PathBuf::from(&workspace.worktree_path);
+    std::fs::write(workspace_path.join("agent.txt"), "agent\n").expect("agent file should write");
+    git(&workspace_path, &["add", "."]);
+    git(&workspace_path, &["commit", "-m", "agent work"]);
+    workspace.publication_pr_number = Some(405);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let github = Arc::new(common::MockGithubService::new());
+    github.will_return_status(GithubPrStatus::Closed);
+    let registry = PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&state.plan_branch_repo),
+    );
+    registry.start_agent_workspace_polling(
+        conversation_id.clone(),
+        405,
+        project,
+        repo_path.clone(),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::new(MockChatService::new()),
+    );
+
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if !workspace_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("poller should clean closed PR worktree");
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain persisted");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
+    assert!(branch_exists(&repo_path, &workspace_branch));
+    assert_eq!(github.check_calls(), 1);
 }
 
 #[tokio::test]

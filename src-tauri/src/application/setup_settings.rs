@@ -8,8 +8,12 @@ use crate::application::harness_runtime_registry::{
 };
 use crate::application::ideation_effort_bootstrap::seed_ideation_effort_defaults;
 use crate::application::ideation_model_bootstrap::seed_ideation_model_settings;
-use crate::application::{load_or_seed_agent_lane_settings_defaults, load_or_seed_execution_settings_defaults};
+use crate::application::{
+    load_or_seed_agent_lane_settings_defaults, load_or_seed_execution_settings_defaults,
+};
 use crate::commands::ExecutionState;
+use crate::domain::agents::AgentHarnessKind;
+use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
 
 pub(crate) fn initialize_settings_defaults(
     app_state: &AppState,
@@ -20,6 +24,7 @@ pub(crate) fn initialize_settings_defaults(
     let init_settings_repo = Arc::clone(&app_state.execution_settings_repo);
     let init_global_settings_repo = Arc::clone(&app_state.global_execution_settings_repo);
     let init_agent_lane_settings_repo = Arc::clone(&app_state.agent_lane_settings_repo);
+    let init_agent_provider_settings_repo = Arc::clone(&app_state.agent_provider_settings_repo);
     let execution_defaults = default_execution_settings_config();
     let agent_harness_defaults = default_agent_harness_settings_config();
     tauri::async_runtime::block_on(async move {
@@ -86,6 +91,38 @@ pub(crate) fn initialize_settings_defaults(
                 );
             }
         }
+
+        match init_agent_provider_settings_repo.get_default().await {
+            Ok(Some(settings)) if settings.enabled => {}
+            Ok(_) => {
+                init_execution_state.pause();
+                info!("Paused execution because no enabled default provider is configured");
+            }
+            Err(e) => {
+                init_execution_state.pause();
+                warn!(
+                    "Paused execution because provider settings could not be read: {}",
+                    e
+                );
+            }
+        }
+
+        match init_agent_provider_settings_repo
+            .get(AgentHarnessKind::Claude)
+            .await
+        {
+            Ok(Some(settings)) => {
+                apply_claude_provider_permission_settings(&settings);
+                info!("Initialized Claude permission defaults from provider settings");
+            }
+            Ok(None) => {}
+            Err(e) => {
+                warn!(
+                    "Failed to load Claude provider settings for permission defaults: {}",
+                    e
+                );
+            }
+        }
     });
 
     // Seed ideation effort defaults (idempotent — only seeds when no global row exists)
@@ -111,4 +148,40 @@ pub(crate) fn initialize_settings_defaults(
             Err(e) => tracing::warn!("Failed to seed ideation model settings: {}", e),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::application::AppState;
+    use crate::domain::agents::DEFAULT_AGENT_HARNESS;
+    use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+
+    #[test]
+    fn initialize_settings_defaults_pauses_execution_without_default_provider() {
+        let mut app_state = AppState::new_test();
+        app_state.agent_provider_settings_repo =
+            Arc::new(MemoryAgentProviderSettingsRepository::new());
+        let execution_state = Arc::new(ExecutionState::new());
+
+        initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+
+        assert!(execution_state.is_paused());
+    }
+
+    #[test]
+    fn initialize_settings_defaults_keeps_execution_running_with_default_provider() {
+        let mut app_state = AppState::new_test();
+        app_state.agent_provider_settings_repo =
+            Arc::new(MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                DEFAULT_AGENT_HARNESS,
+            ));
+        let execution_state = Arc::new(ExecutionState::new());
+
+        initialize_settings_defaults(&app_state, Arc::clone(&execution_state));
+
+        assert!(!execution_state.is_paused());
+    }
 }

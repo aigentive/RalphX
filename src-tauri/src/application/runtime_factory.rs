@@ -10,12 +10,12 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
@@ -39,6 +39,7 @@ pub(crate) struct RuntimeFactoryDeps {
     pub execution_plan_repo: Option<Arc<dyn ExecutionPlanRepository>>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
@@ -81,6 +82,7 @@ impl RuntimeFactoryDeps {
             execution_plan_repo: None,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             review_repo: None,
             plan_branch_repo: None,
             interactive_process_registry: None,
@@ -114,11 +116,13 @@ impl RuntimeFactoryDeps {
         mut self,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
         plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
         interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     ) -> Self {
         self.execution_settings_repo = execution_settings_repo;
         self.agent_lane_settings_repo = agent_lane_settings_repo;
+        self.agent_provider_settings_repo = agent_provider_settings_repo;
         self.plan_branch_repo = plan_branch_repo;
         self.interactive_process_registry = interactive_process_registry;
         self
@@ -156,6 +160,7 @@ impl RuntimeFactoryDeps {
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
             Some(Arc::clone(&state.agent_lane_settings_repo)),
+            Some(Arc::clone(&state.agent_provider_settings_repo)),
             Some(Arc::clone(&state.plan_branch_repo)),
             Some(Arc::clone(&state.interactive_process_registry)),
         )
@@ -184,6 +189,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
     pub execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     pub ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     pub ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
@@ -229,6 +235,7 @@ impl ChatRuntimeFactoryDeps {
             memory_event_repo,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             agent_conversation_workspace_repo: None,
@@ -254,6 +261,14 @@ impl ChatRuntimeFactoryDeps {
         repo: Arc<dyn AgentLaneSettingsRepository>,
     ) -> Self {
         self.agent_lane_settings_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(repo);
         self
     }
 
@@ -326,6 +341,7 @@ impl ChatRuntimeFactoryDeps {
         mut self,
         execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
         agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
         plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
         interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     ) -> Self {
@@ -334,6 +350,9 @@ impl ChatRuntimeFactoryDeps {
         }
         if let Some(repo) = agent_lane_settings_repo {
             self = self.with_agent_lane_settings_repo(repo);
+        }
+        if let Some(repo) = agent_provider_settings_repo {
+            self = self.with_agent_provider_settings_repo(repo);
         }
         if let Some(repo) = plan_branch_repo {
             self = self.with_plan_branch_repo(repo);
@@ -400,6 +419,7 @@ impl ChatRuntimeFactoryDeps {
         .with_runtime_support(
             Some(Arc::clone(&state.execution_settings_repo)),
             Some(Arc::clone(&state.agent_lane_settings_repo)),
+            Some(Arc::clone(&state.agent_provider_settings_repo)),
             Some(Arc::clone(&state.plan_branch_repo)),
             Some(Arc::clone(&state.interactive_process_registry)),
         )
@@ -455,6 +475,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.agent_lane_settings_repo.as_ref() {
         service = service.with_agent_lane_settings_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.agent_provider_settings_repo.as_ref() {
+        service = service.with_agent_provider_settings_repo(Arc::clone(repo));
     }
     if let Some(repo) = deps.ideation_effort_settings_repo.as_ref() {
         service = service.with_ideation_effort_settings_repo(Arc::clone(repo));
@@ -612,6 +635,9 @@ pub(crate) fn build_task_scheduler_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.agent_lane_settings_repo.as_ref() {
         scheduler = scheduler.with_agent_lane_settings_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.agent_provider_settings_repo.as_ref() {
+        scheduler = scheduler.with_agent_provider_settings_repo(Arc::clone(repo));
     }
     if let Some(repo) = deps.plan_branch_repo.as_ref() {
         scheduler = scheduler.with_plan_branch_repo(Arc::clone(repo));

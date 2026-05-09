@@ -82,10 +82,12 @@ What the scheduled workflow does:
 3. Skips the run when there are no commits after that tag.
 4. Installs Codex CLI with `npm i -g @openai/codex`.
 5. Runs `./scripts/propose-release.sh --accept` for the version recommendation.
-6. Runs `./scripts/bump-version.sh` and `./scripts/generate-release-notes.sh`.
+6. Runs `./scripts/bump-version.sh`, `./scripts/generate-release-notes.sh`, and `./scripts/append-github-release-metadata.sh`.
 7. Commits the version bump and `release-notes/vX.Y.Z.md` to `main`.
 8. Tags that release-prep commit.
 9. Dispatches `Release Build`, which still feeds the existing `Release Publish` workflow.
+
+The committed release note keeps the curated RalphX summary first, then appends a managed GitHub metadata block with pull-request attribution, new contributors when present, and the full changelog link. The public GitHub Release uses the full note. The app updater metadata strips that managed block so in-app update notes stay concise.
 
 Manual testing:
 
@@ -132,7 +134,7 @@ What it does:
 2. Pauses so you can review the proposal and accept or reject the suggested version
 3. Stores the accepted version in `.artifacts/release-notes/.version`
 4. Runs `./scripts/bump-version.sh`
-5. Runs `./scripts/generate-release-notes.sh`
+5. Runs `./scripts/generate-release-notes.sh` and `./scripts/append-github-release-metadata.sh`
 6. Pauses again so you can review and edit the generated artifacts before continuing to the manual git/tag/workflow steps
 
 Primary review artifacts:
@@ -211,6 +213,16 @@ Or pass an explicit version:
 ./scripts/generate-release-notes.sh 0.2.0
 ```
 
+Append GitHub pull-request and contributor metadata before reviewing the final public note:
+
+```bash
+./scripts/append-github-release-metadata.sh \
+  --tag v0.2.0 \
+  --previous-tag v0.1.0 \
+  --target HEAD \
+  --notes-file release-notes/v0.2.0.md
+```
+
 Then:
 
 1. Review and edit the draft from:
@@ -219,10 +231,11 @@ Then:
 3. If draft generation fails or you want to inspect the Codex run, check the logs in:
    - `.artifacts/release-notes/logs/`
 4. Generated drafts include Markdown commit links for traceability; keep them clickable when editing notes.
-5. Commit that curated notes file before tagging if you want the workflow-created draft GitHub release to use it automatically:
+5. Keep the managed GitHub metadata block at the end unless you intentionally rerun `./scripts/append-github-release-metadata.sh`.
+6. Commit that curated notes file before tagging if you want the workflow-created draft GitHub release to use it automatically:
    - `git add release-notes/v0.2.0.md`
    - `git commit -m "docs: add release notes for v0.2.0"`
-6. If you decide not to keep the draft in git, leave it uncommitted or remove it locally:
+7. If you decide not to keep the draft in git, leave it uncommitted or remove it locally:
    - `rm -f release-notes/v0.2.0.md`
 
 ### Step 5: Create And Push The Release Tag
@@ -401,6 +414,7 @@ cargo tauri build
 | `scripts/release-analysis-common.sh` | Shared release evidence and Codex logging helper used by the proposal and notes scripts |
 | `scripts/bump-version.sh` | Version management script |
 | `scripts/generate-release-notes.sh` | Codex-assisted release notes draft generator |
+| `scripts/append-github-release-metadata.sh` | Appends managed GitHub pull-request, contributor, and changelog metadata to release notes |
 | `release-notes/` | Curated release notes consumed automatically by the release workflow when present |
 | `src-tauri/tauri.conf.json` | Bundle config, updater config |
 | `src-tauri/Cargo.toml` | Release profile, updater dependency |

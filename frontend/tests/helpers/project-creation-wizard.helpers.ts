@@ -3,19 +3,26 @@ import { Page } from "@playwright/test";
 /**
  * Trigger the ProjectCreationWizard modal in web mode
  *
- * Opens the welcome overlay and uses its create-project CTA. The v27 topbar no
- * longer renders ProjectSelector, so this follows the current user-facing path.
+ * Uses the Agents sidebar add-project control. The welcome surface is now an
+ * onboarding flow, so visual tests should open this modal through the app-level
+ * project creation action instead of depending on a specific welcome step.
  */
 export async function openProjectCreationWizard(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const uiStore = (window as Window & {
-      __uiStore?: { getState(): { openWelcomeOverlay(): void } };
-    }).__uiStore;
-    uiStore?.getState().openWelcomeOverlay();
-  });
+  const addProjectButton = page.locator('[data-testid="agents-add-project"]');
 
-  await page.waitForSelector('[data-testid="welcome-screen"]', { state: "visible" });
-  await page.click('[data-testid="create-first-project-button"]');
+  if (!(await addProjectButton.isVisible())) {
+    const agentsNavButton = page.locator('[data-testid="nav-agents"]');
+    if (await agentsNavButton.isVisible()) {
+      await agentsNavButton.click();
+    }
+  }
+
+  if (await addProjectButton.isVisible()) {
+    await addProjectButton.click();
+  } else {
+    await page.keyboard.press("Meta+Shift+N");
+  }
+
   await page.waitForSelector('[data-testid="project-creation-wizard"]', { state: "visible" });
 }
 

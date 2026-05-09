@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, ChevronDown, GitBranch, Search } from "lucide-react";
+import { Check, ChevronDown, GitBranch, Loader2, Search } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import {
@@ -20,6 +20,9 @@ interface BranchBasePickerProps {
   testId?: string;
   className?: string;
   align?: "start" | "center" | "end";
+  isLoading?: boolean;
+  prefixLabel?: string;
+  ariaLabel?: string;
   onIntent?: () => void;
   onOpenChange?: (open: boolean) => void;
 }
@@ -34,6 +37,9 @@ export function BranchBasePicker({
   testId,
   className,
   align = "end",
+  isLoading = false,
+  prefixLabel = "Start from",
+  ariaLabel = prefixLabel,
   onIntent,
   onOpenChange,
 }: BranchBasePickerProps) {
@@ -80,13 +86,13 @@ export function BranchBasePicker({
       disabled={disabled || readOnly}
       data-testid={testId}
       data-theme-button-skip="true"
-      aria-label="Start from"
+      aria-label={ariaLabel}
       onFocus={onIntent}
       onPointerEnter={onIntent}
     >
       <GitBranch className="h-3.5 w-3.5 shrink-0" />
       <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-[0.14em]">
-        Start from
+        {prefixLabel}
       </span>
       <span
         className="min-w-0 truncate font-medium"
@@ -94,7 +100,11 @@ export function BranchBasePicker({
       >
         {selectedOption?.label ?? placeholder}
       </span>
-      {!readOnly && <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+      {isLoading ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+      ) : !readOnly ? (
+        <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+      ) : null}
     </button>
   );
 
@@ -131,6 +141,18 @@ export function BranchBasePicker({
         </div>
         <div className="max-h-72 overflow-y-auto overscroll-contain">
           <div className="p-1">
+            {isLoading && (
+              <div
+                className="mb-1 flex items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+                style={{
+                  color: "var(--text-secondary)",
+                  background: "var(--bg-surface)",
+                }}
+              >
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>Refreshing branches...</span>
+              </div>
+            )}
             {filteredOptions.length === 0 ? (
               <div
                 className="flex items-center justify-center py-6 text-xs"

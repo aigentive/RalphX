@@ -12,15 +12,113 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{PrPollerRegistry, RateLimitState};
-use crate::domain::entities::{PlanBranchId, TaskId};
-use crate::infrastructure::memory::MemoryPlanBranchRepository;
+use async_trait::async_trait;
+
+use super::{cleanup_terminal_agent_workspace_after_pr, PrPollerRegistry, RateLimitState};
+use crate::application::agent_conversation_workspace::{
+    agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
+};
+use crate::application::chat_service::MockChatService;
+use crate::application::git_service::GitService;
+use crate::domain::entities::{
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, Project, TaskId,
+};
+use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::services::GithubServiceTrait;
+use crate::error::{AppError, AppResult};
+use crate::infrastructure::memory::{
+    MemoryAgentConversationWorkspaceRepository, MemoryPlanBranchRepository,
+};
+use crate::tests::mock_github_service::MockGithubService;
 
 fn make_registry_no_github() -> PrPollerRegistry {
     PrPollerRegistry::new(
         None,
         Arc::new(MemoryPlanBranchRepository::new()),
     )
+}
+
+fn run_git(repo: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_cleanup_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    run_git(dir.path(), &["init"]);
+    run_git(dir.path(), &["config", "user.email", "test@example.com"]);
+    run_git(dir.path(), &["config", "user.name", "Test User"]);
+    run_git(dir.path(), &["checkout", "-b", "main"]);
+    std::fs::write(dir.path().join("README.md"), "base\n").expect("write readme");
+    run_git(dir.path(), &["add", "."]);
+    run_git(dir.path(), &["commit", "-m", "initial"]);
+    dir
+}
+
+fn branch_exists(repo: &std::path::Path, branch: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", branch])
+        .current_dir(repo)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn cleanup_project(repo: &std::path::Path, worktree_parent: &std::path::Path) -> Project {
+    let mut project = Project::new(
+        "Poller Cleanup".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    project
+}
+
+fn cleanup_workspace_with_conversation(
+    project: &Project,
+    branch_name: &str,
+    conversation_id: &str,
+) -> AgentConversationWorkspace {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let worktree_path =
+        resolve_agent_conversation_workspace_path(project, &conversation_id).unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        branch_name.to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    workspace.publication_pr_number = Some(101);
+    workspace.publication_pr_status = Some("merged".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.status = AgentConversationWorkspaceStatus::Active;
+    workspace
+}
+
+fn expected_workspace_branch(project: &Project, conversation_id: &str) -> String {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    agent_conversation_branch_name(project, &conversation_id)
+}
+
+fn repo_error() -> AppError {
+    AppError::Database("forced workspace repository failure".to_string())
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -206,6 +304,221 @@ fn pr_creation_guard_is_shared_arc() {
     );
 }
 
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_artifacts() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-cleanup-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
+        .await
+        .expect("create worktree");
+    std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+    run_git(&worktree_path, &["add", "."]);
+    run_git(&worktree_path, &["commit", "-m", "agent work"]);
+    run_git(
+        repo.path(),
+        &["merge", "--no-ff", &branch, "-m", "merge agent"],
+    );
+    let github = Arc::new(MockGithubService::new());
+
+    cleanup_terminal_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        &conversation_id,
+        &project,
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        true,
+    )
+    .await;
+
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(repo.path(), &branch));
+    let state = github.state();
+    assert_eq!(state.fetch_remote_calls, 1);
+    assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-fetch-failure-cleanup-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
+        .await
+        .expect("create worktree");
+    std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+    run_git(&worktree_path, &["add", "."]);
+    run_git(&worktree_path, &["commit", "-m", "agent work"]);
+    run_git(
+        repo.path(),
+        &["merge", "--no-ff", &branch, "-m", "merge agent"],
+    );
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
+        "simulated fetch failure".to_string(),
+    )));
+
+    cleanup_terminal_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        &conversation_id,
+        &project,
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        true,
+    )
+    .await;
+
+    assert!(!worktree_path.exists());
+    assert!(!branch_exists(repo.path(), &branch));
+    assert_eq!(github.state().fetch_remote_calls, 1);
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_returns_when_workspace_missing() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let conversation_id = ChatConversationId::new();
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        &conversation_id,
+        &project,
+        None,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_returns_when_workspace_lookup_fails() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(WorkspaceLookupErrorRepository);
+    let conversation_id = ChatConversationId::new();
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        &conversation_id,
+        &project,
+        None,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_logs_nonfatal_cleanup_error() {
+    let repo = tempfile::tempdir().expect("non-git repo path");
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let conversation_id_str = "poller-cleanup-error-conversation";
+    let branch = expected_workspace_branch(&project, conversation_id_str);
+    let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    cleanup_terminal_agent_workspace_after_pr(
+        workspace_repo,
+        &conversation_id,
+        &project,
+        None,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = "ralphx/poller-cleanup/agent-closed";
+    let mut workspace =
+        cleanup_workspace_with_conversation(&project, branch, "poller-closed-cleanup-conversation");
+    workspace.publication_pr_status = Some("open".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    GitService::create_worktree(repo.path(), &worktree_path, branch, "main")
+        .await
+        .expect("create worktree");
+    std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+    run_git(&worktree_path, &["add", "."]);
+    run_git(&worktree_path, &["commit", "-m", "agent work"]);
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_status(crate::domain::services::github_service::PrStatus::Closed);
+    let registry = PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    );
+
+    registry.start_agent_workspace_polling(
+        conversation_id.clone(),
+        101,
+        project,
+        repo.path().to_path_buf(),
+        Arc::clone(&workspace_repo),
+        Arc::new(MockChatService::new()),
+    );
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if !worktree_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("poller should remove closed PR worktree");
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should remain persisted");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
+    assert!(branch_exists(repo.path(), branch));
+    assert_eq!(github.state().fetch_remote_calls, 0);
+}
+
 // ────────────────────────────────────────────────────────────────────
 // Helper: compute age floor (mirrors poll_loop logic)
 // ────────────────────────────────────────────────────────────────────
@@ -218,4 +531,108 @@ fn compute_age_floor(elapsed: Duration) -> Duration {
     } else {
         Duration::from_secs(300)
     }
+}
+
+struct WorkspaceLookupErrorRepository;
+
+#[async_trait]
+impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
+    async fn create_or_update(
+        &self,
+        _workspace: AgentConversationWorkspace,
+    ) -> AppResult<AgentConversationWorkspace> {
+        Err(repo_error())
+    }
+
+    async fn get_by_conversation_id(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn get_by_project_id(
+        &self,
+        _project_id: &crate::domain::entities::ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_direct_published_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_needs_agent_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn update_links(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _ideation_session_id: Option<&IdeationSessionId>,
+        _plan_branch_id: Option<&PlanBranchId>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_publication(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: Option<i64>,
+        _pr_url: Option<&str>,
+        _pr_status: Option<&str>,
+        _push_status: Option<&str>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_status(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _status: AgentConversationWorkspaceStatus,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn save_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _description: AgentWorkspacePrDescription,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn get_pr_description(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrDescription>> {
+        Err(repo_error())
+    }
+
+    async fn clear_pr_description(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn append_publication_event(
+        &self,
+        _event: AgentConversationWorkspacePublicationEvent,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn list_publication_events(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>> {
+        Err(repo_error())
+    }
+
+    async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
+        Err(repo_error())
+    }
+
 }

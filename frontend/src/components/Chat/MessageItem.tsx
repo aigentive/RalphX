@@ -65,6 +65,8 @@ export interface MessageItemProps {
   role: string;
   content: string;
   createdAt: string;
+  /** Optional pre-rendered message body for live content that is not yet persisted as content blocks. */
+  children?: React.ReactNode | undefined;
   isLastInList?: boolean | undefined;
   /** Pre-parsed tool calls array (parsed at API layer) */
   toolCalls?: ToolCall[] | null;
@@ -99,6 +101,7 @@ export const MessageItem = React.memo(function MessageItem({
   role,
   content,
   createdAt,
+  children,
   isLastInList = false,
   toolCalls,
   contentBlocks,
@@ -120,6 +123,7 @@ export const MessageItem = React.memo(function MessageItem({
   estimatedUsd,
 }: MessageItemProps) {
   const isUser = role === "user";
+  const hasCustomBody = children != null;
   const [copied, setCopied] = useState(false);
   const providerHarnessLabel = formatProviderHarnessLabel(providerHarness);
   const providerHarnessStyle = getProviderHarnessBadgeStyle(providerHarness);
@@ -163,6 +167,10 @@ export const MessageItem = React.memo(function MessageItem({
   );
   const hasContentBlocks = parsedContentBlocks.length > 0;
   const copyableText = useMemo(() => {
+    if (hasCustomBody) {
+      return content.trim();
+    }
+
     if (hasContentBlocks) {
       return parsedContentBlocks
         .filter((block) => block.type === "text" && typeof block.text === "string")
@@ -172,7 +180,7 @@ export const MessageItem = React.memo(function MessageItem({
     }
 
     return content.trim();
-  }, [content, hasContentBlocks, parsedContentBlocks]);
+  }, [content, hasContentBlocks, hasCustomBody, parsedContentBlocks]);
   const showInlineCopy = copyableText.length > 0;
   const handleCopy = useCallback(async () => {
     if (!showInlineCopy) {
@@ -273,7 +281,9 @@ export const MessageItem = React.memo(function MessageItem({
           <MessageAttachments attachments={attachments} />
         )}
 
-        {hasContentBlocks ? (
+        {hasCustomBody ? (
+          children
+        ) : hasContentBlocks ? (
           // Render content blocks in order (interleaved text and tool calls)
           // Skip child tool calls that belong to Task subagents (they render inside TaskToolCallCard)
           parsedContentBlocks.map((block, index) => {
@@ -384,6 +394,7 @@ export const MessageItem = React.memo(function MessageItem({
   return prev.role === next.role
     && prev.content === next.content
     && prev.createdAt === next.createdAt
+    && prev.children === next.children
     && prev.isLastInList === next.isLastInList
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks

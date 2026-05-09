@@ -208,7 +208,7 @@ jobs:
             -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/contents/${notes_file}?ref=${{ steps.meta.outputs.tag }}" \
             --jq '.content' 2>/dev/null)"; then
-            printf '%s' "${notes_content}" | tr -d '\n' | base64 --decode > release-metadata/release-notes.md
+            printf '%s' "${notes_content}" | tr -d '\n' | base64 --decode > release-metadata/github-release-notes.md
           else
             {
               printf 'Release artifacts for %s.\n\n' "${{ steps.meta.outputs.tag }}"
@@ -220,8 +220,25 @@ jobs:
                 '- macOS Intel updater bundle' \
                 '- latest.json' \
                 '- checksums.txt'
-            } > release-metadata/release-notes.md
+            } > release-metadata/github-release-notes.md
           fi
+
+          awk '
+            $0 == "<!-- github-release-metadata:start -->" { dropping = 1; next }
+            $0 == "<!-- github-release-metadata:end -->" { dropping = 0; next }
+            !dropping { print }
+          ' release-metadata/github-release-notes.md | awk '
+            { lines[NR] = $0 }
+            END {
+              last = NR
+              while (last > 0 && lines[last] == "") {
+                last--
+              }
+              for (i = 1; i <= last; i++) {
+                print lines[i]
+              }
+            }
+          ' > release-metadata/release-notes.md
 
       - name: Write release metadata artifact
         shell: bash
@@ -249,6 +266,7 @@ jobs:
           name: release-metadata
           path: |
             release-metadata/release-metadata.json
+            release-metadata/github-release-notes.md
             release-metadata/release-notes.md
           if-no-files-found: error
 

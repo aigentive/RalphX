@@ -23,8 +23,8 @@ use crate::application::{AppChatService, ChatService, InteractiveProcessRegistry
 use crate::commands::execution_commands::{ExecutionState, AGENT_ACTIVE_STATUSES};
 use crate::domain::entities::{ChatContextType, InterruptedConversation, TaskId};
 use crate::domain::repositories::{
-    AgentLaneSettingsRepository, AgentRunRepository, ExecutionSettingsRepository,
-    PlanBranchRepository, TaskRepository,
+    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
+    ExecutionSettingsRepository, PlanBranchRepository, TaskRepository,
 };
 
 /// Runs chat resumption on startup.
@@ -38,6 +38,7 @@ pub struct ChatResumptionRunner<R: Runtime = tauri::Wry> {
     execution_state: Arc<ExecutionState>,
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+    agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     app_handle: Option<AppHandle<R>>,
@@ -58,6 +59,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
             execution_state,
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
+            agent_provider_settings_repo: None,
             plan_branch_repo: None,
             interactive_process_registry: None,
             app_handle: None,
@@ -82,6 +84,14 @@ impl<R: Runtime> ChatResumptionRunner<R> {
         repo: Arc<dyn AgentLaneSettingsRepository>,
     ) -> Self {
         self.agent_lane_settings_repo = Some(repo);
+        self
+    }
+
+    pub fn with_agent_provider_settings_repo(
+        mut self,
+        repo: Arc<dyn AgentProviderSettingsRepository>,
+    ) -> Self {
+        self.agent_provider_settings_repo = Some(repo);
         self
     }
 
@@ -260,6 +270,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
         let deps = self.chat_runtime_deps.clone().with_runtime_support(
             self.execution_settings_repo.as_ref().map(Arc::clone),
             self.agent_lane_settings_repo.as_ref().map(Arc::clone),
+            self.agent_provider_settings_repo.as_ref().map(Arc::clone),
             self.plan_branch_repo.as_ref().map(Arc::clone),
             self.interactive_process_registry.as_ref().map(Arc::clone),
         );

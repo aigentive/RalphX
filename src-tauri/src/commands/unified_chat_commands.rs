@@ -358,6 +358,54 @@ fn existing_pr_retarget_block_reason(pr_number: i64, resolution: &BaseResolution
     )
 }
 
+#[derive(Debug, Clone)]
+struct ExplicitPublishBaseSelection {
+    kind: IdeationAnalysisBaseRefKind,
+    base_ref: String,
+    display_name: String,
+}
+
+fn normalize_explicit_publish_base_selection(
+    selection: AgentConversationWorkspaceBaseSelection,
+) -> Result<Option<ExplicitPublishBaseSelection>, String> {
+    let Some(base_ref) = selection
+        .base_ref
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let kind = selection
+        .kind
+        .unwrap_or(IdeationAnalysisBaseRefKind::LocalBranch);
+    if kind == IdeationAnalysisBaseRefKind::PullRequest {
+        return Err(
+            "Pull-request base refs are not supported for agent workspace base recovery"
+                .to_string(),
+        );
+    }
+    let display_name = selection
+        .display_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| match kind {
+            IdeationAnalysisBaseRefKind::ProjectDefault => {
+                format!("Project default ({base_ref})")
+            }
+            IdeationAnalysisBaseRefKind::CurrentBranch => {
+                format!("Current branch ({base_ref})")
+            }
+            IdeationAnalysisBaseRefKind::LocalBranch => base_ref.clone(),
+            IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
+        });
+
+    Ok(Some(ExplicitPublishBaseSelection {
+        kind,
+        base_ref,
+        display_name,
+    }))
+}
+
 struct WorkspaceChangedEventGuard {
     app: tauri::AppHandle,
     conversation_id: String,
@@ -2351,6 +2399,9 @@ pub async fn get_agent_conversation_workspace_freshness(
 #[tauri::command]
 pub async fn update_agent_conversation_workspace_from_base(
     conversation_id: String,
+    base_ref_kind: Option<String>,
+    base_ref: Option<String>,
+    base_display_name: Option<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
@@ -2358,6 +2409,29 @@ pub async fn update_agent_conversation_workspace_from_base(
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
+    let selection = AgentConversationWorkspaceBaseSelection {
+        kind: parse_agent_workspace_base_kind(base_ref_kind.as_deref())?,
+        base_ref,
+        display_name: base_display_name,
+    };
+    update_agent_conversation_workspace_from_base_for_app_state(
+        state.inner(),
+        execution_state.inner(),
+        Some(team_service.inner().clone()),
+        conversation_id,
+        selection,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn update_agent_conversation_workspace_from_base_for_app_state(
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: Option<Arc<crate::application::TeamService>>,
+    conversation_id: ChatConversationId,
+    selection: AgentConversationWorkspaceBaseSelection,
+) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
     let mut workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -2369,6 +2443,7 @@ pub async fn update_agent_conversation_workspace_from_base(
                 conversation_id
             )
         })?;
+    let explicit_base = normalize_explicit_publish_base_selection(selection)?;
 
     let project = state
         .project_repo
@@ -2378,7 +2453,7 @@ pub async fn update_agent_conversation_workspace_from_base(
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
 
     let mut publish_target =
-        match resolve_agent_workspace_publish_target(state.inner(), &project, &workspace).await {
+        match resolve_agent_workspace_publish_target(state, &project, &workspace).await {
             Ok(target) => target,
             Err(error) => {
                 if error.contains("Agent conversation workspace is missing") {
@@ -2394,54 +2469,88 @@ pub async fn update_agent_conversation_workspace_from_base(
             }
         };
 
-    let repair_service = create_chat_service(
-        &state,
-        app,
-        &execution_state,
-        Some(team_service.inner().clone()),
-    );
+    let mut repair_service =
+        state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+    if let Some(team_service) = team_service {
+        repair_service = repair_service.with_team_service(team_service);
+    }
 
-    let base_resolution = resolve_workspace_base(&project, &workspace)
+    let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
+        publish_target.base_ref = explicit_base.base_ref.clone();
+        publish_target.base_display_name = Some(explicit_base.display_name.clone());
+        let retargeted_base = BaseResolutionResult {
+            status: BaseStatus::Retargeted,
+            old_base_ref: workspace.base_ref.clone(),
+            effective_base_ref: Some(explicit_base.base_ref.clone()),
+            effective_checkout_ref: Some(explicit_base.base_ref.clone()),
+            effective_base_commit: None,
+            display_name: Some(explicit_base.display_name.clone()),
+            block_reason: None,
+        };
+        if let Err(message) = retarget_existing_workspace_pr_base_if_needed(
+            state,
+            &publish_target,
+            &workspace,
+            &retargeted_base,
+        )
         .await
-        .map_err(|e| e.to_string())?;
-    if base_resolution.status == BaseStatus::Blocked {
-        let message = base_resolution
-            .block_reason
-            .clone()
-            .unwrap_or_else(|| "Agent workspace base is blocked".to_string());
-        mark_agent_workspace_publish_failure_with_target(
-            &state,
+        {
+            mark_agent_workspace_publish_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
+        }
+        None
+    } else {
+        let base_resolution = resolve_workspace_base(&project, &workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+        if base_resolution.status == BaseStatus::Blocked {
+            let message = base_resolution
+                .block_reason
+                .clone()
+                .unwrap_or_else(|| "Agent workspace base is blocked".to_string());
+            mark_agent_workspace_publish_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
+        }
+        apply_base_resolution_to_publish_target(&mut publish_target, &base_resolution)?;
+        if let Err(message) = retarget_existing_workspace_pr_base_if_needed(
+            state,
+            &publish_target,
             &workspace,
-            &message,
-            None,
-            &repair_service,
-            &publish_target.repair_target(),
+            &base_resolution,
         )
-        .await;
-        return Err(message);
-    }
-    apply_base_resolution_to_publish_target(&mut publish_target, &base_resolution)?;
-    if let Err(message) = retarget_existing_workspace_pr_base_if_needed(
-        state.inner(),
-        &publish_target,
-        &workspace,
-        &base_resolution,
-    )
-    .await
-    {
-        mark_agent_workspace_publish_failure_with_target(
-            &state,
-            &workspace,
-            &message,
-            None,
-            &repair_service,
-            &publish_target.repair_target(),
-        )
-        .await;
-        return Err(message);
-    }
+        .await
+        {
+            mark_agent_workspace_publish_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
+        }
+        Some(base_resolution)
+    };
 
-    mark_agent_workspace_publish_status(&state, &workspace, "refreshing")
+    mark_agent_workspace_publish_status(state, &workspace, "refreshing")
         .await
         .map_err(|e| e.to_string())?;
 
@@ -2467,7 +2576,7 @@ pub async fn update_agent_conversation_workspace_from_base(
         PublishBranchFreshnessOutcome::NeedsAgent { message, .. }
         | PublishBranchFreshnessOutcome::OperationalError { message } => {
             mark_agent_workspace_publish_failure_with_target(
-                &state,
+                state,
                 &workspace,
                 &message,
                 None,
@@ -2489,7 +2598,7 @@ pub async fn update_agent_conversation_workspace_from_base(
                     .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
                     .await;
                 mark_agent_workspace_publish_failure_with_target(
-                    &state,
+                    state,
                     &workspace,
                     &message,
                     None,
@@ -2512,7 +2621,7 @@ pub async fn update_agent_conversation_workspace_from_base(
                     .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
                     .await;
                 mark_agent_workspace_publish_failure_with_target(
-                    &state,
+                    state,
                     &workspace,
                     &message,
                     None,
@@ -2531,8 +2640,15 @@ pub async fn update_agent_conversation_workspace_from_base(
         }
     }
 
-    persist_workspace_base_resolution_if_retargeted(&state, &mut workspace, &base_resolution)
-        .await?;
+    if let Some(explicit_base) = explicit_base.as_ref() {
+        workspace.base_ref_kind = explicit_base.kind;
+        workspace.base_ref = explicit_base.base_ref.clone();
+        workspace.base_display_name = Some(explicit_base.display_name.clone());
+        workspace.updated_at = chrono::Utc::now();
+    } else if let Some(base_resolution) = base_resolution.as_ref() {
+        persist_workspace_base_resolution_if_retargeted(state, &mut workspace, base_resolution)
+            .await?;
+    }
     workspace.base_commit = Some(base_commit.clone());
     workspace = state
         .agent_conversation_workspace_repo
@@ -2551,7 +2667,7 @@ pub async fn update_agent_conversation_workspace_from_base(
         .await
         .map_err(|e| e.to_string())?;
     append_agent_workspace_publication_event(
-        &state,
+        state,
         &workspace.conversation_id,
         if updated {
             "updated_from_base"
@@ -2583,12 +2699,24 @@ pub async fn update_agent_conversation_workspace_from_base(
         .unwrap_or(workspace);
 
     Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
-        workspace: agent_workspace_response_for_state(&state, refreshed).await?,
+        workspace: agent_workspace_response_for_state(state, refreshed).await?,
         updated,
         target_ref,
         base_commit,
-        base_status: base_resolution.status.as_str().to_string(),
-        effective_base_display_name: base_resolution.display_name.clone(),
+        base_status: base_resolution
+            .as_ref()
+            .map(|resolution| resolution.status)
+            .unwrap_or(BaseStatus::Valid)
+            .as_str()
+            .to_string(),
+        effective_base_display_name: explicit_base
+            .as_ref()
+            .map(|selection| selection.display_name.clone())
+            .or_else(|| {
+                base_resolution
+                    .as_ref()
+                    .and_then(|resolution| resolution.display_name.clone())
+            }),
     })
 }
 
@@ -3115,6 +3243,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     state.pr_poller_registry.start_agent_workspace_polling(
         workspace.conversation_id,
         outcome.pr_number,
+        project.clone(),
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         review_chat_service,
@@ -3946,14 +4075,16 @@ mod tests {
         apply_base_resolution_to_publish_target,
         build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
         get_agent_conversation_workspace_freshness, merge_delegated_snapshot_into_result,
-        normalize_agent_runtime_selection, normalized_effort_for_supported,
-        parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
+        normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
+        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
+        persist_workspace_base_resolution_if_retargeted,
         project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
         send_agent_workspace_publish_repair_message_for_target,
-        switch_agent_conversation_mode_for_state, AgentConversationResponse,
+        switch_agent_conversation_mode_for_state,
+        update_agent_conversation_workspace_from_base_for_app_state, AgentConversationResponse,
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
         AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
@@ -3966,7 +4097,9 @@ mod tests {
         BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
     };
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
-    use crate::application::{chat_service::MockChatService, AppState};
+    use crate::application::{
+        chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
+    };
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
         AgentHarnessKind, AgentModelDefinition, LogicalEffort, ProviderSessionRef,
@@ -4314,6 +4447,60 @@ mod tests {
             display_name: None,
             block_reason: Some(reason.to_string()),
         }
+    }
+
+    #[test]
+    fn normalize_explicit_publish_base_selection_trims_defaults_and_rejects_prs() {
+        assert!(normalize_explicit_publish_base_selection(
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: Some("  ".to_string()),
+                display_name: Some("ignored".to_string()),
+            }
+        )
+        .expect("blank base ref should be allowed as no explicit selection")
+        .is_none());
+
+        let local =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: Some("  release/0.8  ".to_string()),
+                display_name: None,
+            })
+            .expect("local branch should normalize")
+            .expect("local branch should produce a selection");
+        assert_eq!(local.kind, IdeationAnalysisBaseRefKind::LocalBranch);
+        assert_eq!(local.base_ref, "release/0.8");
+        assert_eq!(local.display_name, "release/0.8");
+
+        let project =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: Some("  ".to_string()),
+            })
+            .expect("project default should normalize")
+            .expect("project default should produce a selection");
+        assert_eq!(project.display_name, "Project default (main)");
+
+        let current =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::CurrentBranch),
+                base_ref: Some("feature/base".to_string()),
+                display_name: None,
+            })
+            .expect("current branch should normalize")
+            .expect("current branch should produce a selection");
+        assert_eq!(current.display_name, "Current branch (feature/base)");
+
+        let error =
+            normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::PullRequest),
+                base_ref: Some("123".to_string()),
+                display_name: None,
+            })
+            .expect_err("pull-request bases should be rejected");
+        assert!(error.contains("Pull-request base refs are not supported"));
     }
 
     fn command_test_workspace() -> AgentConversationWorkspace {
@@ -4696,6 +4883,216 @@ mod tests {
         );
         assert_eq!(response.target_ref, "main");
         assert!(!response.is_base_ahead);
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_explicit_base_recovers_blocked_base() {
+        let (temp, state, conversation_id, _github) = setup_publish_command_state(
+            "explicit-base-recovery",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let repo_path = temp.path().join("repo");
+        git(&repo_path, &["checkout", "-b", "release/0.8"]);
+        std::fs::write(repo_path.join("release.txt"), "release\n")
+            .expect("release fixture should be written");
+        git(&repo_path, &["add", "release.txt"]);
+        git(&repo_path, &["commit", "-m", "release base"]);
+        let release_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", "main"]);
+        git(&repo_path, &["checkout", "--orphan", "rewritten-main"]);
+        git(&repo_path, &["rm", "-rf", "."]);
+        std::fs::write(repo_path.join("README.md"), "rewritten\n")
+            .expect("rewritten fixture should be written");
+        git(&repo_path, &["add", "README.md"]);
+        git(&repo_path, &["commit", "-m", "rewrite main"]);
+        git(&repo_path, &["branch", "-M", "main"]);
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(execution_state)
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let blocked =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should load");
+        assert_eq!(blocked.base_status, "blocked");
+
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            app.state::<AppState>().inner(),
+            app.state::<Arc<ExecutionState>>().inner(),
+            Some(app.state::<Arc<TeamService>>().inner().clone()),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("release/0.8".to_string()),
+                display_name: Some("release/0.8".to_string()),
+            },
+        )
+        .await
+        .expect("explicit base update should recover workspace");
+
+        assert!(response.updated);
+        assert_eq!(response.base_status, "valid");
+        assert_eq!(response.target_ref, "release/0.8");
+        assert_eq!(response.base_commit, release_sha);
+        assert_eq!(response.workspace.base_ref_kind, "local_branch");
+        assert_eq!(response.workspace.base_ref, "release/0.8");
+        assert_eq!(
+            response.workspace.base_display_name.as_deref(),
+            Some("release/0.8")
+        );
+        assert_eq!(
+            response.workspace.base_commit.as_deref(),
+            Some(release_sha.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_saved_base_retargets_to_project_default() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "saved-base-retarget",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(execution_state)
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let freshness =
+            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
+                .await
+                .expect("freshness should resolve retargeted base");
+        assert_eq!(freshness.base_status, "retargeted");
+
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            app.state::<AppState>().inner(),
+            app.state::<Arc<ExecutionState>>().inner(),
+            Some(app.state::<Arc<TeamService>>().inner().clone()),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+            },
+        )
+        .await
+        .expect("saved-base update should retarget workspace");
+
+        assert!(!response.updated);
+        assert_eq!(response.base_status, "retargeted");
+        assert_eq!(response.target_ref, "main");
+        assert_eq!(response.workspace.base_ref_kind, "project_default");
+        assert_eq!(response.workspace.base_ref, "main");
+        assert_eq!(
+            response.effective_base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+        assert_eq!(
+            response.workspace.base_display_name.as_deref(),
+            Some("Project default (main)")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_saved_base_blocks_when_base_commit_is_missing() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "update-missing-base",
+            false,
+            Some(987),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+            },
+        )
+        .await
+        .expect_err("missing saved base commit should block update");
+
+        assert_eq!(error, BLOCK_REASON_MISSING_BASE_COMMIT);
+        assert_eq!(github.state().update_pr_base_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_explicit_base_blocks_when_pr_retarget_fails() {
+        let github = Arc::new(MockGithubService::new());
+        {
+            github.state().update_pr_base_result =
+                Some(Err(AppError::Infrastructure("denied".to_string())));
+        }
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("update-explicit-retarget-fails", true, Some(988), github)
+                .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("release/0.8".to_string()),
+                display_name: Some("release/0.8".to_string()),
+            },
+        )
+        .await
+        .expect_err("failed explicit-base PR retarget should block update");
+
+        assert!(error.contains("Existing PR #988 targets the deleted branch"));
+        assert_eq!(
+            github.state().last_update_pr_base_args,
+            Some((988, "release/0.8".to_string()))
+        );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
     }
 
     #[tokio::test]

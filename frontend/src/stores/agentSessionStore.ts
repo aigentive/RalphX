@@ -6,6 +6,7 @@ import {
   normalizeAgentRuntimeSelection,
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
+import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
 
 export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/agent-models";
 
@@ -19,6 +20,12 @@ export interface AgentArtifactState {
   taskMode: AgentTaskArtifactMode;
 }
 
+export interface AgentBranchBaseCacheEntry {
+  options: BranchBaseOption[];
+  selectedKey: string;
+  loadedAt: string;
+}
+
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
@@ -30,6 +37,8 @@ interface AgentSessionState {
   artifactByConversationId: Record<string, AgentArtifactState>;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
+  branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
+  lastBranchBaseSelectionByProjectId: Record<string, string>;
 }
 
 interface AgentSessionActions {
@@ -50,6 +59,12 @@ interface AgentSessionActions {
     runtime: AgentRuntimeSelection
   ) => void;
   setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
+  setBranchBaseCacheForProject: (
+    projectId: string,
+    options: BranchBaseOption[],
+    selectedKey: string
+  ) => void;
+  setLastBranchBaseSelectionForProject: (projectId: string, selectedKey: string) => void;
 }
 
 const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
@@ -58,7 +73,7 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   taskMode: "graph",
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
-const AGENT_SESSION_STORE_VERSION = 2;
+const AGENT_SESSION_STORE_VERSION = 3;
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
   if (!value || typeof value !== "object") {
@@ -100,6 +115,11 @@ export function migrateAgentSessionStore(
     );
   }
 
+  if (version < 3) {
+    nextState.branchBaseCacheByProjectId = {};
+    nextState.lastBranchBaseSelectionByProjectId = {};
+  }
+
   return nextState;
 }
 
@@ -130,6 +150,8 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       artifactByConversationId: {},
       runtimeByConversationId: {},
       lastRuntimeByProjectId: {},
+      branchBaseCacheByProjectId: {},
+      lastBranchBaseSelectionByProjectId: {},
 
       setFocusedProject: (projectId) =>
         set((state) => {
@@ -218,6 +240,24 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.lastRuntimeByProjectId[projectId] =
             normalizeAgentRuntimeSelection(runtime);
         }),
+
+      setBranchBaseCacheForProject: (projectId, options, selectedKey) =>
+        set((state) => {
+          state.branchBaseCacheByProjectId[projectId] = {
+            options,
+            selectedKey,
+            loadedAt: new Date().toISOString(),
+          };
+        }),
+
+      setLastBranchBaseSelectionForProject: (projectId, selectedKey) =>
+        set((state) => {
+          state.lastBranchBaseSelectionByProjectId[projectId] = selectedKey;
+          const cached = state.branchBaseCacheByProjectId[projectId];
+          if (cached?.options.some((option) => option.key === selectedKey)) {
+            cached.selectedKey = selectedKey;
+          }
+        }),
     })),
     {
       name: "ralphx-agent-session-store",
@@ -234,6 +274,8 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         artifactByConversationId: state.artifactByConversationId,
         runtimeByConversationId: state.runtimeByConversationId,
         lastRuntimeByProjectId: state.lastRuntimeByProjectId,
+        branchBaseCacheByProjectId: state.branchBaseCacheByProjectId,
+        lastBranchBaseSelectionByProjectId: state.lastBranchBaseSelectionByProjectId,
       }),
     }
   )

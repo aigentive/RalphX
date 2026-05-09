@@ -22,14 +22,17 @@ use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
-use crate::domain::agents::{AgentHarnessKind, AgenticClient, LogicalEffort};
+use crate::domain::agents::{
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
+    AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
+};
 use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationWorkspaceRepository,
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
-    AgentRunRepository, ApiKeyRepository, AppStateRepository, ArtifactBucketRepository,
-    ArtifactFlowRepository, ArtifactRepository, ChatAttachmentRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ApiKeyRepository, AppStateRepository,
+    ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository, ChatAttachmentRepository,
     ChatConversationRepository, ChatMessageRepository, DelegatedSessionRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
@@ -49,10 +52,11 @@ use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
     MemoryActivityEventRepository, MemoryAgentConversationWorkspaceRepository,
     MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
-    MemoryAgentProfileRepository, MemoryAgentRunRepository, MemoryApiKeyRepository,
-    MemoryAppStateRepository, MemoryArtifactBucketRepository, MemoryArtifactFlowRepository,
-    MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryChatConversationRepository,
-    MemoryChatMessageRepository, MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
+    MemoryApiKeyRepository, MemoryAppStateRepository, MemoryArtifactBucketRepository,
+    MemoryArtifactFlowRepository, MemoryArtifactRepository, MemoryChatAttachmentRepository,
+    MemoryChatConversationRepository, MemoryChatMessageRepository,
+    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
@@ -70,11 +74,11 @@ use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
     SqliteActivePlanRepository, SqliteActivityEventRepository,
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
-    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository, SqliteAgentRunRepository,
-    SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
-    SqliteArtifactFlowRepository, SqliteArtifactRepository, SqliteChatAttachmentRepository,
-    SqliteChatConversationRepository, SqliteChatMessageRepository,
-    SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
+    SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
+    SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteApiKeyRepository,
+    SqliteAppStateRepository, SqliteArtifactBucketRepository, SqliteArtifactFlowRepository,
+    SqliteArtifactRepository, SqliteChatAttachmentRepository, SqliteChatConversationRepository,
+    SqliteChatMessageRepository, SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
     SqliteGlobalExecutionSettingsRepository, SqliteIdeationEffortSettingsRepository,
     SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
@@ -143,6 +147,8 @@ pub struct AppState {
     pub agent_lane_settings_repo: Arc<dyn AgentLaneSettingsRepository>,
     /// Provider/model compatibility and custom model registry
     pub agent_model_registry_repo: Arc<dyn AgentModelRegistryRepository>,
+    /// Global enabled/default provider settings
+    pub agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     /// Session link repository for managing parent-child session relationships
     pub session_link_repo: Arc<dyn SessionLinkRepository>,
     /// Task proposal repository
@@ -255,14 +261,24 @@ impl AppState {
         std::env::set_var("RALPHX_TEST_MODE", "1");
     }
 
-    fn default_background_agent_runtime(&self) -> ResolvedBackgroundAgentRuntime {
+    fn background_agent_runtime_for_harness(
+        &self,
+        client: Arc<dyn AgenticClient>,
+        harness: AgentHarnessKind,
+        model: Option<String>,
+        logical_effort: Option<LogicalEffort>,
+        approval_policy: Option<String>,
+        sandbox_mode: Option<String>,
+    ) -> ResolvedBackgroundAgentRuntime {
         ResolvedBackgroundAgentRuntime {
-            client: Arc::clone(&self.agent_clients.default_client),
-            harness: None,
-            model: None,
-            logical_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
+            client,
+            harness: Some(harness),
+            model,
+            logical_effort,
+            approval_policy: approval_policy
+                .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
+            sandbox_mode: sandbox_mode
+                .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
         }
     }
 
@@ -271,8 +287,31 @@ impl AppState {
         harness: AgentHarnessKind,
         purpose: &str,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        crate::application::ensure_provider_spawn_enabled(
+            &self.agent_provider_settings_repo,
+            harness,
+            purpose,
+        )
+        .await
+        .map_err(AppError::Infrastructure)?;
+        let provider_settings = self
+            .agent_provider_settings_repo
+            .get(harness)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .unwrap_or_else(|| {
+                crate::domain::agents::AgentProviderSettings::disabled_defaults(harness)
+            });
+
         if harness == self.agent_clients.default_harness {
-            return Ok(self.default_background_agent_runtime());
+            return Ok(self.background_agent_runtime_for_harness(
+                Arc::clone(&self.agent_clients.default_client),
+                harness,
+                provider_settings.model,
+                provider_settings.effort,
+                provider_settings.approval_policy,
+                provider_settings.sandbox_mode,
+            ));
         }
 
         if let Some(client) = self
@@ -280,14 +319,16 @@ impl AppState {
             .explicit_available_harness_client(harness)
             .await
         {
-            return Ok(ResolvedBackgroundAgentRuntime {
-                client,
-                harness: Some(harness),
-                model: None,
-                logical_effort: None,
-                approval_policy: None,
-                sandbox_mode: None,
-            });
+            return Ok(
+                self.background_agent_runtime_for_harness(
+                    client,
+                    harness,
+                    provider_settings.model,
+                    provider_settings.effort,
+                    provider_settings.approval_policy,
+                    provider_settings.sandbox_mode,
+                )
+            );
         }
 
         Err(AppError::Infrastructure(format!(
@@ -363,14 +404,21 @@ impl AppState {
             .explicit_available_harness_client(resolved.effective_harness)
             .await
         {
-            return Ok(ResolvedBackgroundAgentRuntime {
+            crate::application::ensure_provider_spawn_enabled(
+                &self.agent_provider_settings_repo,
+                resolved.effective_harness,
+                "ideation sidecar runtime",
+            )
+            .await
+            .map_err(AppError::Infrastructure)?;
+            return Ok(self.background_agent_runtime_for_harness(
                 client,
-                harness: Some(resolved.effective_harness),
-                model: Some(resolved.model),
-                logical_effort: resolved.logical_effort,
-                approval_policy: resolved.approval_policy,
-                sandbox_mode: resolved.sandbox_mode,
-            });
+                resolved.effective_harness,
+                Some(resolved.model),
+                resolved.logical_effort,
+                resolved.approval_policy,
+                resolved.sandbox_mode,
+            ));
         }
 
         if resolved.effective_harness != self.agent_clients.default_harness {
@@ -381,14 +429,29 @@ impl AppState {
             )));
         }
 
-        Ok(ResolvedBackgroundAgentRuntime {
-            client: Arc::clone(&self.agent_clients.default_client),
-            harness: None,
-            model: None,
-            logical_effort: None,
-            approval_policy: None,
-            sandbox_mode: None,
-        })
+        if resolved.effective_harness == AgentHarnessKind::Codex {
+            crate::application::ensure_provider_spawn_enabled(
+                &self.agent_provider_settings_repo,
+                resolved.effective_harness,
+                "ideation sidecar runtime",
+            )
+            .await
+            .map_err(AppError::Infrastructure)?;
+            return Ok(self.background_agent_runtime_for_harness(
+                Arc::clone(&self.agent_clients.default_client),
+                resolved.effective_harness,
+                Some(resolved.model),
+                resolved.logical_effort,
+                resolved.approval_policy,
+                resolved.sandbox_mode,
+            ));
+        }
+
+        self.resolve_background_agent_runtime_for_harness(
+            self.agent_clients.default_harness,
+            "ideation sidecar runtime",
+        )
+        .await
     }
 
     pub(crate) async fn resolve_session_namer_runtime_for_project(
@@ -451,7 +514,17 @@ impl AppState {
                 .await;
         }
 
-        Ok(self.default_background_agent_runtime())
+        let default_provider = crate::application::resolve_enabled_default_provider(
+            &self.agent_provider_settings_repo,
+            "PR describer default provider",
+        )
+        .await
+        .map_err(AppError::Infrastructure)?;
+        self.resolve_background_agent_runtime_for_harness(
+            default_provider.provider,
+            "PR describer default provider",
+        )
+        .await
     }
 
     /// Create AppState for production use with SQLite repositories.
@@ -563,6 +636,9 @@ impl AppState {
             agent_model_registry_repo: Arc::new(SqliteAgentModelRegistryRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            agent_provider_settings_repo: Arc::new(
+                SqliteAgentProviderSettingsRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             session_link_repo: Arc::new(SqliteSessionLinkRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -743,6 +819,11 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
+            agent_provider_settings_repo: Arc::new(
+                MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                    DEFAULT_AGENT_HARNESS,
+                ),
+            ),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -853,6 +934,11 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
+            agent_provider_settings_repo: Arc::new(
+                MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                    DEFAULT_AGENT_HARNESS,
+                ),
+            ),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -973,6 +1059,11 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
+            agent_provider_settings_repo: Arc::new(
+                MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                    DEFAULT_AGENT_HARNESS,
+                ),
+            ),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::new(SqliteTaskProposalRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1083,6 +1174,11 @@ impl AppState {
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
             agent_lane_settings_repo: Arc::new(MemoryAgentLaneSettingsRepository::new()),
             agent_model_registry_repo: Arc::new(MemoryAgentModelRegistryRepository::new()),
+            agent_provider_settings_repo: Arc::new(
+                MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+                    DEFAULT_AGENT_HARNESS,
+                ),
+            ),
             session_link_repo: Arc::new(MemorySessionLinkRepository::new()),
             task_proposal_repo: Arc::clone(&task_proposal_repo),
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),

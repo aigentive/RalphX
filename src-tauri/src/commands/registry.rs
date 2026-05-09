@@ -183,6 +183,8 @@ macro_rules! register_tauri_commands {
             commands::ideation_commands::get_agent_harness_availability,
             commands::ideation_commands::get_ideation_harness_availability,
             commands::ideation_commands::update_agent_lane_settings,
+            commands::harness_provider_commands::get_agent_provider_settings,
+            commands::harness_provider_commands::update_agent_provider_settings,
             // Ideation effort commands
             commands::ideation_commands::get_ideation_effort_settings,
             commands::ideation_commands::update_ideation_effort_settings,

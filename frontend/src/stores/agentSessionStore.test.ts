@@ -238,6 +238,51 @@ describe("agentSessionStore", () => {
         "gpt-5.4-mini",
       );
     });
+
+    it("remembers branch base cache and selected branch per project", () => {
+      const {
+        setBranchBaseCacheForProject,
+        setLastBranchBaseSelectionForProject,
+      } = useAgentSessionStore.getState();
+
+      setBranchBaseCacheForProject(
+        "p1",
+        [
+          {
+            key: "project_default:main",
+            label: "Project default (main)",
+            detail: "Configured project base branch",
+            source: "project",
+            selection: {
+              kind: "project_default",
+              ref: "main",
+              displayName: "Project default (main)",
+            },
+          },
+          {
+            key: "local_branch:feature/cached",
+            label: "feature/cached",
+            detail: "Local branch",
+            source: "local",
+            selection: {
+              kind: "local_branch",
+              ref: "feature/cached",
+              displayName: "feature/cached",
+            },
+          },
+        ],
+        "project_default:main",
+      );
+      setLastBranchBaseSelectionForProject("p1", "local_branch:feature/cached");
+
+      const state = useAgentSessionStore.getState();
+      expect(state.lastBranchBaseSelectionByProjectId.p1).toBe(
+        "local_branch:feature/cached",
+      );
+      expect(state.branchBaseCacheByProjectId.p1?.selectedKey).toBe(
+        "local_branch:feature/cached",
+      );
+    });
   });
 
   describe("selectArtifactState", () => {

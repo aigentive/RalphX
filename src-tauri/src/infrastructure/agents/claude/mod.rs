@@ -65,6 +65,9 @@ use std::sync::{Mutex, OnceLock};
 use tokio::process::Command;
 use tracing::{info, warn};
 
+use crate::domain::agents::{
+    AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE,
+};
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_claude_metadata, load_harness_agent_prompt, resolve_harness_agent_prompt_path,
     resolve_project_root_from_plugin_dir, AgentPromptHarness,
@@ -368,12 +371,118 @@ pub fn resolve_model(agent_type: Option<&str>) -> String {
 ///
 /// Priority: `AgentConfig.permission_mode` > `ClaudeRuntimeConfig.permission_mode`
 pub fn resolve_permission_mode(agent_type: Option<&str>) -> String {
-    let default = claude_runtime_config().permission_mode.clone();
+    let default = claude_permission_runtime_override()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|value| value.permission_mode.clone()))
+        .unwrap_or_else(|| claude_runtime_config().permission_mode.clone());
     match agent_type {
         Some(name) => get_agent_config(name)
             .and_then(|c| c.permission_mode.clone())
             .unwrap_or(default),
         None => default,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudePermissionRuntimeOverride {
+    pub permission_mode: Option<String>,
+    pub dangerously_skip_permissions: bool,
+    pub allow_dangerously_skip_permissions: bool,
+}
+
+fn claude_permission_runtime_override() -> &'static Mutex<Option<ClaudePermissionRuntimeOverride>> {
+    static OVERRIDE: OnceLock<Mutex<Option<ClaudePermissionRuntimeOverride>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn set_claude_permission_runtime_override(
+    next: Option<ClaudePermissionRuntimeOverride>,
+) -> Option<ClaudePermissionRuntimeOverride> {
+    claude_permission_runtime_override()
+        .lock()
+        .ok()
+        .and_then(|mut guard| std::mem::replace(&mut *guard, next))
+}
+
+pub(crate) fn claude_permission_override_from_provider_settings(
+    settings: &AgentProviderSettings,
+) -> ClaudePermissionRuntimeOverride {
+    ClaudePermissionRuntimeOverride {
+        permission_mode: settings
+            .claude_permission_mode
+            .clone()
+            .or_else(|| Some(CLAUDE_DEFAULT_PERMISSION_MODE.to_string())),
+        dangerously_skip_permissions: settings.claude_dangerously_skip_permissions,
+        allow_dangerously_skip_permissions: settings.claude_allow_dangerously_skip_permissions,
+    }
+}
+
+pub(crate) fn apply_claude_provider_permission_settings(settings: &AgentProviderSettings) {
+    set_claude_permission_runtime_override(Some(
+        claude_permission_override_from_provider_settings(settings),
+    ));
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudePermissionCliOptions {
+    pub permission_prompt_tool: String,
+    pub permission_mode: String,
+    pub dangerously_skip_permissions: bool,
+    pub allow_dangerously_skip_permissions: bool,
+}
+
+pub(crate) fn resolve_claude_permission_cli_options(
+    agent_type: Option<&str>,
+) -> ClaudePermissionCliOptions {
+    let runtime = claude_runtime_config();
+    let override_settings = claude_permission_runtime_override()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    ClaudePermissionCliOptions {
+        permission_prompt_tool: runtime.permission_prompt_tool.clone(),
+        permission_mode: resolve_permission_mode(agent_type),
+        dangerously_skip_permissions: override_settings
+            .as_ref()
+            .map(|settings| settings.dangerously_skip_permissions)
+            .unwrap_or(runtime.dangerously_skip_permissions),
+        allow_dangerously_skip_permissions: override_settings
+            .as_ref()
+            .map(|settings| settings.allow_dangerously_skip_permissions)
+            .unwrap_or(runtime.allow_dangerously_skip_permissions),
+    }
+}
+
+pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: Option<&str>) {
+    let options = resolve_claude_permission_cli_options(agent_type);
+    args.extend([
+        "--permission-prompt-tool".to_string(),
+        options.permission_prompt_tool,
+        "--permission-mode".to_string(),
+        options.permission_mode,
+    ]);
+    if options.allow_dangerously_skip_permissions {
+        args.push("--allow-dangerously-skip-permissions".to_string());
+    }
+    if options.dangerously_skip_permissions {
+        args.push("--dangerously-skip-permissions".to_string());
+    }
+}
+
+fn apply_claude_permission_args(cmd: &mut Command, agent_type: Option<&str>) {
+    let options = resolve_claude_permission_cli_options(agent_type);
+    cmd.args([
+        "--permission-prompt-tool",
+        &options.permission_prompt_tool,
+        "--permission-mode",
+        &options.permission_mode,
+    ]);
+    if options.allow_dangerously_skip_permissions {
+        cmd.arg("--allow-dangerously-skip-permissions");
+    }
+    if options.dangerously_skip_permissions {
+        cmd.arg("--dangerously-skip-permissions");
     }
 }
 
@@ -478,14 +587,8 @@ fn build_base_cli_command_inner_with_runtime_context(
         tracing::debug!(path = %debug_path.display(), "Enabled Claude debug file");
     }
 
-    // Configure permission handling from config/ralphx.yaml.
-    let runtime = claude_runtime_config();
-    cmd.args(["--permission-prompt-tool", &runtime.permission_prompt_tool]);
-    let permission_mode = resolve_permission_mode(agent_type);
-    cmd.args(["--permission-mode", &permission_mode]);
-    if runtime.dangerously_skip_permissions {
-        cmd.arg("--dangerously-skip-permissions");
-    }
+    // Configure permission handling from config/harnesses/claude.yaml.
+    apply_claude_permission_args(&mut cmd, agent_type);
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -1981,6 +2084,73 @@ fi
             None,
         );
         assert!(result.is_err(), "should be blocked in test environment");
+    }
+
+    #[test]
+    fn test_build_base_cli_command_defaults_to_most_permissive_claude_permissions() {
+        let command = build_base_cli_command_inner(
+            Path::new("/fake/claude"),
+            Path::new("/fake/plugin"),
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .expect("build base command with spawn guard disabled");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let permission_mode_idx = args
+            .iter()
+            .position(|arg| arg == "--permission-mode")
+            .expect("--permission-mode flag");
+
+        assert_eq!(args[permission_mode_idx + 1], "bypassPermissions");
+        assert!(
+            args.contains(&"--dangerously-skip-permissions".to_string()),
+            "Claude base command must bypass permission prompts by default"
+        );
+    }
+
+    #[test]
+    fn test_build_base_cli_command_uses_provider_permission_override() {
+        let _lock = lock_runtime_plugin_dirs_for_tests();
+        let previous = set_claude_permission_runtime_override(Some(
+            ClaudePermissionRuntimeOverride {
+                permission_mode: Some("dontAsk".to_string()),
+                dangerously_skip_permissions: false,
+                allow_dangerously_skip_permissions: true,
+            },
+        ));
+
+        let command = build_base_cli_command_inner(
+            Path::new("/fake/claude"),
+            Path::new("/fake/plugin"),
+            None,
+            false,
+            None,
+            None,
+            false,
+        )
+        .expect("build base command with spawn guard disabled");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let permission_mode_idx = args
+            .iter()
+            .position(|arg| arg == "--permission-mode")
+            .expect("--permission-mode flag");
+
+        assert_eq!(args[permission_mode_idx + 1], "dontAsk");
+        assert!(args.contains(&"--allow-dangerously-skip-permissions".to_string()));
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+
+        set_claude_permission_runtime_override(previous);
     }
 
     #[test]
