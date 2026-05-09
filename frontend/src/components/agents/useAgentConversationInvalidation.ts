@@ -8,6 +8,7 @@ import { archivedConversationCountKey } from "./useArchivedConversationCounts";
 import {
   agentConversationKeys,
 } from "./useProjectAgentConversations";
+import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup";
 
 export function useAgentConversationInvalidation(queryClient: QueryClient) {
   return useCallback(
@@ -15,6 +16,9 @@ export function useAgentConversationInvalidation(queryClient: QueryClient) {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: agentConversationKeys.project(targetProjectId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: agentSidebarConversationKeys.all,
         }),
         queryClient.invalidateQueries({
           queryKey: chatKeys.conversationList("project", targetProjectId),

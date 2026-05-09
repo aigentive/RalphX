@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import type { AgentConversationWorkspace } from "@/api/chat";
 import type { Project } from "@/types/project";
 import type { AgentConversation } from "./agentConversations";
 import {
@@ -31,11 +32,29 @@ const { projectConversationCalls } = vi.hoisted(() => ({
     projectId: string | null;
     includeArchived: boolean;
     options?: { search?: string; enabled?: boolean };
+    pinnedConversationIds?: string[];
   }>,
 }));
 const { archivedConversationCounts, archivedCountCalls } = vi.hoisted(() => ({
   archivedConversationCounts: new Map<string, number>(),
   archivedCountCalls: [] as string[][],
+}));
+const { workspacesByProject, workspaceCalls } = vi.hoisted(() => ({
+  workspacesByProject: new Map<string, AgentConversationWorkspace[]>(),
+  workspaceCalls: [] as Array<{
+    projectId: string | null;
+    enabled?: boolean;
+  }>,
+}));
+const { publicationGroupCalls } = vi.hoisted(() => ({
+  publicationGroupCalls: [] as Array<{
+    projectIds: string[];
+    publicationState: string;
+    archivedOnly: boolean;
+    search: string;
+    pinnedConversationIds: string[];
+    sort: string;
+  }>,
 }));
 
 vi.mock("./useProjectAgentConversations", () => ({
@@ -87,6 +106,220 @@ vi.mock("./useArchivedConversationCounts", () => ({
   },
 }));
 
+vi.mock("./useProjectAgentConversationWorkspaces", () => ({
+  useProjectAgentConversationWorkspaces: (
+    projectId: string | null | undefined,
+    options?: { enabled?: boolean }
+  ) => {
+    workspaceCalls.push({
+      projectId: projectId ?? null,
+      enabled: options?.enabled,
+    });
+    return {
+      data: workspacesByProject.get(projectId ?? "") ?? [],
+      isLoading: false,
+    };
+  },
+}));
+
+vi.mock("./useAgentSidebarPublicationGroup", () => {
+  const getPublicationLabel = (state: string): string =>
+    state
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const buildGroupResult = ({
+    projectIds,
+    groupKey,
+    groupLabel,
+    archivedOnly,
+    search,
+    publicationStates,
+    pinnedConversationIds,
+    sort = "latest",
+    total,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    isLoading,
+  }: {
+    projectIds: string[];
+    groupKey: string;
+    groupLabel: string;
+    archivedOnly: boolean;
+    search: string;
+    publicationStates: string[];
+    pinnedConversationIds: string[];
+    sort?: string;
+    total?: number;
+    hasNextPage?: boolean;
+    isFetchingNextPage?: boolean;
+    fetchNextPage?: () => Promise<unknown>;
+    isLoading?: boolean;
+  }) => {
+    const getPublicationState = (
+      workspace: AgentConversationWorkspace | null
+    ): string => {
+      const prStatus = workspace?.publicationPrStatus?.trim().toLowerCase();
+      const pushStatus = workspace?.publicationPushStatus?.trim().toLowerCase();
+      if (prStatus === "merged") return "merged";
+      if (prStatus === "closed") return "closed";
+      if (pushStatus === "needs_agent") return "uncommitted";
+      if (
+        pushStatus === "pending" ||
+        pushStatus === "failed" ||
+        pushStatus === "description_failed"
+      ) {
+        return "unpushed";
+      }
+      if (prStatus === "draft") return "draft";
+      return "active";
+    };
+    const normalizedSearch = search.trim().toLowerCase();
+    const pinnedIds = new Set(pinnedConversationIds);
+    const workspaceByConversationId = new Map(
+      projectIds.flatMap((projectId) =>
+        (workspacesByProject.get(projectId) ?? []).map((workspace) => [
+          workspace.conversationId,
+          workspace,
+        ] as const)
+      )
+    );
+    const rows = projectIds
+      .flatMap((projectId) => conversationsByProject.get(projectId)?.data ?? [])
+      .filter((conversation) =>
+        archivedOnly ? Boolean(conversation.archivedAt) : !conversation.archivedAt
+      )
+      .filter((conversation) => {
+        if (!normalizedSearch) return true;
+        return (conversation.title ?? "Untitled agent")
+          .toLowerCase()
+          .includes(normalizedSearch);
+      })
+      .map((conversation) => {
+        const workspace = workspaceByConversationId.get(conversation.id) ?? null;
+        const state = getPublicationState(workspace);
+        return {
+          conversation,
+          workspace,
+          refKind: workspace?.publicationPrNumber != null ? "pull-request" : "branch",
+          refLabel:
+            workspace?.publicationPrNumber != null
+              ? `PR #${workspace.publicationPrNumber}`
+              : workspace?.baseRef ?? "master",
+          publicationState: state,
+          publicationLabel: state === "active" ? null : state,
+        };
+      })
+      .filter((row) => publicationStates.includes(row.publicationState))
+      .sort((left, right) => {
+        const pinnedDelta =
+          Number(pinnedIds.has(right.conversation.id)) -
+          Number(pinnedIds.has(left.conversation.id));
+        if (pinnedDelta !== 0) return pinnedDelta;
+        if (sort === "az" || sort === "za") {
+          const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
+          const rightTitle = (right.conversation.title ?? "Untitled agent").toLowerCase();
+          const titleDelta = leftTitle.localeCompare(rightTitle);
+          if (titleDelta !== 0) return sort === "az" ? titleDelta : -titleDelta;
+        }
+        return (
+          new Date(right.conversation.createdAt).getTime() -
+          new Date(left.conversation.createdAt).getTime()
+        );
+      });
+
+    return {
+      group: {
+        key: groupKey,
+        label: groupLabel,
+        total: total ?? rows.length,
+        offset: 0,
+        limit: 6,
+        hasMore: hasNextPage ?? false,
+        rows,
+      },
+      isLoading: isLoading ?? false,
+      hasNextPage: hasNextPage ?? false,
+      isFetchingNextPage: isFetchingNextPage ?? false,
+      fetchNextPage: fetchNextPage ?? vi.fn(),
+    };
+  };
+
+  return {
+    useAgentSidebarPublicationGroup: ({
+      projectIds,
+      publicationState,
+      archivedOnly,
+      search,
+      pinnedConversationIds,
+      sort,
+    }: {
+      projectIds: string[];
+      publicationState: string;
+      archivedOnly: boolean;
+      search: string;
+      pinnedConversationIds: string[];
+      sort: string;
+    }) => {
+      publicationGroupCalls.push({
+        projectIds,
+        publicationState,
+        archivedOnly,
+        search,
+        pinnedConversationIds,
+        sort,
+      });
+      return buildGroupResult({
+        projectIds,
+        groupKey: publicationState,
+        groupLabel: getPublicationLabel(publicationState),
+        archivedOnly,
+        search,
+        publicationStates: [publicationState],
+        pinnedConversationIds,
+        sort,
+      });
+    },
+    useAgentSidebarProjectGroup: ({
+      projectId,
+      archivedOnly,
+      search,
+      publicationStates,
+      pinnedConversationIds,
+    }: {
+      projectId: string | null | undefined;
+      archivedOnly: boolean;
+      search: string;
+      publicationStates: string[];
+      pinnedConversationIds: string[];
+    }) => {
+      const projectResult = conversationsByProject.get(projectId ?? "");
+      projectConversationCalls.push({
+        projectId: projectId ?? null,
+        includeArchived: archivedOnly,
+        options: { search, enabled: true },
+        pinnedConversationIds,
+      });
+      return buildGroupResult({
+        projectIds: projectId ? [projectId] : [],
+        groupKey: projectId ?? "",
+        groupLabel: projectId ?? "",
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        total: projectResult?.total,
+        hasNextPage: projectResult?.hasNextPage,
+        isFetchingNextPage: projectResult?.isFetchingNextPage,
+        fetchNextPage: projectResult?.fetchNextPage,
+        isLoading: projectResult?.isLoading,
+      });
+    },
+  };
+});
+
 const project = (overrides: Partial<Project> = {}): Project => ({
   id: "project-1",
   name: "ralphx",
@@ -127,6 +360,30 @@ const conversation = (
   ...overrides,
 });
 
+const workspace = (
+  overrides: Partial<AgentConversationWorkspace> = {}
+): AgentConversationWorkspace => ({
+  conversationId: "conversation-1",
+  projectId: "project-1",
+  mode: "edit",
+  baseRefKind: "project_default",
+  baseRef: "main",
+  baseDisplayName: "Project default (main)",
+  baseCommit: null,
+  branchName: "ralphx/demo/agent-conversation-1",
+  worktreePath: "/tmp/ralphx/conversation-1",
+  linkedIdeationSessionId: null,
+  linkedPlanBranchId: null,
+  publicationPrNumber: null,
+  publicationPrUrl: null,
+  publicationPrStatus: null,
+  publicationPushStatus: null,
+  status: "active",
+  createdAt: "2026-04-22T10:00:00Z",
+  updatedAt: "2026-04-22T12:00:00Z",
+  ...overrides,
+});
+
 function renderSidebar(
   projects: Project[] = [project()],
   props?: Partial<ComponentProps<typeof AgentsSidebar>>
@@ -159,17 +416,37 @@ function getProjectRowOrder() {
     .map((row) => row.getAttribute("data-testid"));
 }
 
+function getSessionRowOrder() {
+  return screen
+    .getAllByTestId((testId) => testId.startsWith("agents-session-conversation-"))
+    .map((row) => row.getAttribute("data-testid"));
+}
+
 describe("AgentsSidebar", () => {
   beforeEach(() => {
     conversationsByProject.clear();
     projectConversationCalls.length = 0;
     archivedConversationCounts.clear();
     archivedCountCalls.length = 0;
+    workspacesByProject.clear();
+    workspaceCalls.length = 0;
+    publicationGroupCalls.length = 0;
     useChatStore.setState({ activeConversationIds: {}, agentStatus: {} });
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": false },
       showAllProjects: true,
       projectSort: "latest",
+      sidebarGroupBy: "project",
+      sidebarProjectFilterIds: [],
+      sidebarPublicationStateFilters: [
+        "active",
+        "draft",
+        "merged",
+        "closed",
+        "uncommitted",
+        "unpushed",
+      ],
+      pinnedConversationIds: {},
     });
   });
 
@@ -229,7 +506,7 @@ describe("AgentsSidebar", () => {
     expect(firstRow.queryByText("codex")).not.toBeInTheDocument();
   });
 
-  it("shows human-diff conversation time with a full timestamp title", () => {
+  it("shows compact conversation time with a full timestamp title", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));
     const activeConversation = conversation({
@@ -246,13 +523,13 @@ describe("AgentsSidebar", () => {
     renderSidebar();
 
     const row = within(screen.getByTestId("agents-session-conversation-1"));
-    expect(row.getByText("2 hours ago")).toHaveAttribute(
+    expect(row.getByText("2h")).toHaveAttribute(
       "title",
       "Apr 25, 2026, 2:33 PM",
     );
   });
 
-  it("shows a date without time for conversations older than one day", () => {
+  it("shows compact day labels before switching to a date-only label", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));
     const activeConversation = conversation({
@@ -269,12 +546,78 @@ describe("AgentsSidebar", () => {
     renderSidebar();
 
     const row = within(screen.getByTestId("agents-session-conversation-1"));
-    expect(row.getByText("Apr 23")).toHaveAttribute(
+    expect(row.getByText("2d")).toHaveAttribute(
       "title",
       "Apr 23, 2026, 12:06 PM",
     );
     expect(row.queryByText(/12:06/)).not.toBeInTheDocument();
     expect(row.queryByText(/days ago/)).not.toBeInTheDocument();
+  });
+
+  it("uses PR metadata instead of the base branch and omits implied open state", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 3, 25, 19, 0, 0));
+    const activeConversation = conversation({
+      createdAt: new Date(2026, 3, 25, 10, 0, 0).toISOString(),
+    });
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: activeConversation.id,
+        publicationPrNumber: 123,
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+    ]);
+
+    renderSidebar([project({ baseBranch: "develop" })]);
+
+    const row = within(screen.getByTestId("agents-session-conversation-1"));
+    expect(row.getByText("PR #123")).toBeInTheDocument();
+    expect(row.getByText("9h")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-ref-icon-conversation-1")).toHaveAttribute(
+      "data-ref-kind",
+      "pull-request",
+    );
+    expect(row.queryByText("develop")).not.toBeInTheDocument();
+    expect(row.queryByText("open")).not.toBeInTheDocument();
+  });
+
+  it("shows branch metadata and meaningful publication state badges", () => {
+    const activeConversation = conversation({ id: "conversation-merged" });
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: activeConversation.id,
+        baseRef: "feature/base",
+        baseDisplayName: "feature/base",
+        publicationPrNumber: 77,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      }),
+    ]);
+
+    renderSidebar([project({ baseBranch: "main" })]);
+
+    const row = within(screen.getByTestId("agents-session-conversation-merged"));
+    expect(row.getByText("PR #77")).toBeInTheDocument();
+    expect(row.getByText("merged")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-ref-icon-conversation-merged")).toHaveAttribute(
+      "data-ref-kind",
+      "pull-request",
+    );
   });
 
   it("only shows a runtime label for running conversations", () => {
@@ -319,7 +662,10 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    fireEvent.click(screen.getByTestId("agents-load-more-project-1"));
+    const loadMoreButton = screen.getByTestId("agents-load-more-project-1");
+    expect(loadMoreButton.parentElement).toHaveClass("justify-end");
+
+    fireEvent.click(loadMoreButton);
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
@@ -367,7 +713,8 @@ describe("AgentsSidebar", () => {
     expect(within(sessionRow).getByText("master").closest(".agents-session-meta")).toBeTruthy();
   });
 
-  it("renders the archived filter pill from project counts and toggles archived sessions", () => {
+  it("renders archived visibility inside Filters and toggles archived sessions", async () => {
+    const user = userEvent.setup();
     const onShowArchivedChange = vi.fn();
     archivedConversationCounts.set("project-1", 4);
     conversationsByProject.set("project-1", {
@@ -381,26 +728,29 @@ describe("AgentsSidebar", () => {
 
     renderSidebar([project()], { onShowArchivedChange });
 
-    const archivedPill = screen.getByTestId("agents-show-archived-pill");
-    expect(archivedPill).toHaveTextContent("Archived");
-    expect(archivedPill).toHaveTextContent("4");
+    expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+
+    const archivedFilter = screen.getByTestId("agents-filter-archived");
+    expect(archivedFilter).toHaveTextContent("Archived");
+    expect(archivedFilter).toHaveTextContent("4");
     expect(archivedCountCalls.at(-1)).toEqual(["project-1"]);
 
-    fireEvent.click(archivedPill);
+    expect(archivedFilter).toHaveAttribute("role", "checkbox");
+    await user.click(archivedFilter);
     expect(onShowArchivedChange).toHaveBeenCalledWith(true);
   });
 
-  it("keeps selected archived filter styling neutral", () => {
+  it("keeps selected archived filter styling neutral inside the filters popover", async () => {
+    const user = userEvent.setup();
     archivedConversationCounts.set("project-1", 4);
 
     renderSidebar([project()], { showArchived: true });
 
+    await user.click(screen.getByTestId("agents-filters-trigger"));
     expect(
-      screen.getByTestId("agents-show-archived-pill").getAttribute("style")
-    ).toContain("background-color: transparent");
-    expect(
-      screen.getByTestId("agents-show-archived-pill").getAttribute("style")
-    ).toContain("border-color: transparent");
+      screen.getByTestId("agents-filter-popover").getAttribute("style")
+    ).toContain("background-color: var(--bg-elevated)");
   });
 
   it("renders the static v27 Recent block above the add-project action", () => {
@@ -579,7 +929,8 @@ describe("AgentsSidebar", () => {
     );
   });
 
-  it("renders the project visibility and sort controls", () => {
+  it("renders Filters then Sort toolbar controls", async () => {
+    const user = userEvent.setup();
     conversationsByProject.set("project-1", {
       data: [],
       isLoading: false,
@@ -598,24 +949,40 @@ describe("AgentsSidebar", () => {
     expect(screen.getByTestId("agents-filter-toolbar").getAttribute("style")).toContain(
       "background-color: var(--bg-surface)",
     );
-    expect(screen.getByTestId("agents-show-all-projects-pill")).toHaveTextContent("All projects");
-    expect(screen.getByTestId("agents-show-all-projects-pill")).toHaveClass(
-      "whitespace-nowrap",
-      "px-2",
+    expect(screen.getByTestId("agents-filters-trigger")).toHaveTextContent("Filters");
+    expect(screen.getByTestId("agents-sort-trigger")).toHaveTextContent("Sort");
+    expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
+      "aria-label",
+      "Sort projects: Latest"
     );
     expect(
-      screen.getByTestId("agents-show-all-projects-pill").getAttribute("style")
-    ).toContain("background-color: transparent");
-    expect(
-      screen.getByTestId("agents-show-all-projects-pill").getAttribute("style")
-    ).toContain("border-color: transparent");
-    expect(screen.getByTestId("agents-project-sort-pill")).toHaveAccessibleName(
-      "Sort projects: Latest",
-    );
-    expect(screen.getByTestId("agents-project-sort-pill")).not.toHaveTextContent(
-      "Latest",
-    );
+      screen.getByTestId("agents-filters-trigger").compareDocumentPosition(
+        screen.getByTestId("agents-sort-trigger")
+      )
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(screen.queryByTestId("agents-show-archived-pill")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    expect(screen.getByTestId("agents-filter-group-by")).toHaveTextContent("Project");
+    await user.click(screen.getByRole("radio", { name: "Publication state" }));
+    expect(screen.getByTestId("agents-sort-trigger")).toHaveAttribute(
+      "aria-label",
+      "Sort conversations: Latest"
+    );
+
+    await user.click(
+      screen.getByTestId("agents-filter-projects-section-trigger")
+    );
+    expect(screen.getByTestId("agents-filter-all-projects")).toHaveTextContent(
+      "All projects"
+    );
+
+    await user.click(
+      screen.getByTestId("agents-filter-publication-section-trigger")
+    );
+    expect(screen.getByTestId("agents-filter-publication-state-active")).toHaveTextContent(
+      "Active"
+    );
   });
 
   it("uses a soft wrapper border for sidebar search focus", async () => {
@@ -656,15 +1023,77 @@ describe("AgentsSidebar", () => {
     renderSidebar([focused, idle]);
 
     expect(
-      projectConversationCalls.filter((call) => call.projectId === "project-2").at(-1)
-        ?.options?.enabled,
+      projectConversationCalls.some((call) => call.projectId === "project-2")
     ).toBe(false);
 
-    await user.click(screen.getByTestId("agents-show-all-projects-pill"));
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(
+      screen.getByTestId("agents-filter-projects-section-trigger")
+    );
+    await user.click(screen.getByTestId("agents-filter-all-projects"));
 
     await waitFor(() =>
       expect(useAgentSessionStore.getState().showAllProjects).toBe(true),
     );
+    expect(
+      projectConversationCalls.filter((call) => call.projectId === "project-2").at(-1)
+        ?.options?.enabled,
+    ).toBe(true);
+  });
+
+  it("switches from all projects to individual project filters inside the filter popover", async () => {
+    const user = userEvent.setup();
+    const alpha = project({ id: "project-1", name: "alpha" });
+    const beta = project({ id: "project-2", name: "beta" });
+    const gamma = project({ id: "project-3", name: "gamma" });
+
+    renderSidebar([alpha, beta, gamma]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByTestId("agents-filter-projects-section-trigger"));
+    await user.click(screen.getByTestId("agents-filter-project-project-2"));
+
+    expect(useAgentSessionStore.getState()).toMatchObject({
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1", "project-3"],
+    });
+
+    await user.click(screen.getByTestId("agents-filter-project-project-3"));
+    expect(useAgentSessionStore.getState().sidebarProjectFilterIds).toEqual([
+      "project-1",
+    ]);
+  });
+
+  it("hydrates individually selected project filters while all projects is off", () => {
+    const focused = project({ id: "project-1", name: "alpha" });
+    const selected = project({ id: "project-2", name: "beta" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: { "project-1": true, "project-2": true },
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-2"],
+    });
+    conversationsByProject.set("project-2", {
+      data: [
+        conversation({
+          id: "conversation-filtered-project",
+          title: "Filtered project",
+          projectId: "project-2",
+          contextId: "project-2",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([focused, selected]);
+
+    expect(screen.queryByTestId("agents-project-project-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-project-project-2")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-session-conversation-filtered-project"))
+      .toHaveTextContent("Filtered project");
     expect(
       projectConversationCalls.filter((call) => call.projectId === "project-2").at(-1)
         ?.options?.enabled,
@@ -687,7 +1116,27 @@ describe("AgentsSidebar", () => {
     fireEvent.click(screen.getByTestId("agents-add-project"));
 
     expect(onCreateProject).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("agents-show-all-projects-pill")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-filters-trigger")).toBeInTheDocument();
+  });
+
+  it("opens the sort dropdown synchronously with a selected conversation", () => {
+    const conv = conversation({ id: "conversation-selected", title: "Selected run" });
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { selectedConversationId: conv.id });
+
+    fireEvent.pointerDown(screen.getByTestId("agents-sort-trigger"), {
+      button: 0,
+      ctrlKey: false,
+    });
+
+    expect(screen.getByRole("menuitemradio", { name: "Latest" })).toBeInTheDocument();
   });
 
   it("preserves incoming project order for latest sort and can sort projects alphabetically", async () => {
@@ -717,14 +1166,67 @@ describe("AgentsSidebar", () => {
       "agents-project-project-1",
     ]);
 
-    await user.click(screen.getByTestId("agents-project-sort-pill"));
+    await user.click(screen.getByTestId("agents-sort-trigger"));
     await user.click(screen.getByRole("menuitemradio", { name: "A-Z" }));
 
-    expect(useAgentSessionStore.getState().projectSort).toBe("az");
-    expect(getProjectRowOrder()).toEqual([
-      "agents-project-project-1",
-      "agents-project-project-2",
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().projectSort).toBe("az")
+    );
+    await waitFor(() =>
+      expect(getProjectRowOrder()).toEqual([
+        "agents-project-project-1",
+        "agents-project-project-2",
+      ])
+    );
+  });
+
+  it("uses sort for conversations inside publication-state groups", async () => {
+    const user = userEvent.setup();
+    const zulu = conversation({
+      id: "conversation-zulu",
+      title: "Zulu task",
+      createdAt: "2026-05-02T10:00:00Z",
+    });
+    const alpha = conversation({
+      id: "conversation-alpha",
+      title: "Alpha task",
+      createdAt: "2026-05-01T10:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [alpha, zulu],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByRole("radio", { name: "Publication state" }));
+
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-zulu",
+      "agents-session-conversation-alpha",
     ]);
+
+    await user.click(screen.getByTestId("agents-sort-trigger"));
+    await user.click(screen.getByRole("menuitemradio", { name: "A-Z" }));
+
+    await waitFor(() =>
+      expect(getSessionRowOrder()).toEqual([
+        "agents-session-conversation-alpha",
+        "agents-session-conversation-zulu",
+      ])
+    );
+    expect(publicationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          publicationState: "active",
+          sort: "az",
+        }),
+      ])
+    );
   });
 
   it("keeps project actions visible while open and confirms before archiving", () => {
@@ -1155,20 +1657,22 @@ describe("AgentsSidebar", () => {
     expect(screen.getByText("running")).toBeInTheDocument();
   });
 
-  it("prepends a pinnedConversation that is not in the loaded conversations list", () => {
+  it("orders backend-returned pinned conversations before unpinned rows", () => {
     const loaded = conversation({ id: "conversation-loaded", title: "Loaded" });
     const pinned = conversation({ id: "conversation-pinned", title: "Pinned run" });
     conversationsByProject.set("project-1", {
-      data: [loaded],
-      total: 1,
+      data: [loaded, pinned],
+      total: 2,
       isLoading: false,
       hasNextPage: false,
       isFetchingNextPage: false,
       fetchNextPage: vi.fn(),
     });
+    useAgentSessionStore.setState({
+      pinnedConversationIds: { [pinned.id]: true },
+    });
 
     renderSidebar([project()], {
-      pinnedConversation: pinned,
       selectedConversationId: pinned.id,
     });
 
@@ -1198,6 +1702,248 @@ describe("AgentsSidebar", () => {
     const rows = screen.getAllByTestId(/agents-session-/);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveAttribute("data-testid", "agents-session-conversation-shared");
+    expect(projectConversationCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectId: "project-1",
+          pinnedConversationIds: [shared.id],
+        }),
+      ])
+    );
+  });
+
+  it("pins and unpins a session from the row action menu", async () => {
+    const user = userEvent.setup();
+    const older = conversation({
+      id: "conversation-older",
+      title: "Older",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    const newer = conversation({
+      id: "conversation-newer",
+      title: "Newer",
+      createdAt: "2026-04-22T12:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [newer, older],
+      total: 2,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-older")).getByRole(
+        "button",
+        { name: "Session actions" }
+      )
+    );
+    await user.click(screen.getByText("Pin session"));
+
+    expect(
+      useAgentSessionStore.getState().pinnedConversationIds["conversation-older"]
+    ).toBe(true);
+    expect(
+      screen.getAllByTestId(/agents-session-/).map((row) => row.getAttribute("data-testid"))
+    ).toEqual([
+      "agents-session-conversation-older",
+      "agents-session-conversation-newer",
+    ]);
+    expect(screen.getByTestId("agents-pin-icon-conversation-older")).toBeInTheDocument();
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-older")).getByRole(
+        "button",
+        { name: "Session actions" }
+      )
+    );
+    await user.click(screen.getByText("Unpin session"));
+    expect(
+      useAgentSessionStore.getState().pinnedConversationIds["conversation-older"]
+    ).toBeUndefined();
+  });
+
+  it("uses the pinned icon as the colored live status slot for pinned running sessions", () => {
+    const conv = conversation({ id: "conversation-pinned-running", title: "Pinned live" });
+    const storeKey = getAgentConversationStoreKey(conv);
+    conversationsByProject.set("project-1", {
+      data: [conv],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useAgentSessionStore.setState({
+      pinnedConversationIds: { [conv.id]: true },
+    });
+    useChatStore.setState({
+      activeConversationIds: { [storeKey]: conv.id },
+      agentStatus: { [storeKey]: "running" },
+    });
+
+    renderSidebar();
+
+    expect(
+      screen
+        .getByTestId("agents-pin-icon-conversation-pinned-running")
+        .getAttribute("style")
+    ).toContain("color: var(--accent-primary)");
+  });
+
+  it("groups conversations by publication state when selected in Filters", async () => {
+    const user = userEvent.setup();
+    const merged = conversation({ id: "conversation-merged", title: "Merged run" });
+    const closed = conversation({ id: "conversation-closed", title: "Closed run" });
+    conversationsByProject.set("project-1", {
+      data: [merged, closed],
+      total: 2,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: merged.id,
+        publicationPrNumber: 11,
+        publicationPrStatus: "merged",
+      }),
+      workspace({
+        conversationId: closed.id,
+        publicationPrNumber: 12,
+        publicationPrStatus: "closed",
+      }),
+    ]);
+
+    renderSidebar([project()]);
+
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(screen.getByRole("radio", { name: "Publication state" }));
+
+    const activeButton = screen.getByTestId("agents-publication-row-active");
+    const mergedButton = screen.getByTestId("agents-publication-row-merged");
+    const closedButton = screen.getByTestId("agents-publication-row-closed");
+    const mergedRow = within(mergedButton);
+    const closedRow = within(closedButton);
+    expect(activeButton).toHaveAttribute("aria-current", "true");
+    expect(mergedRow.getByText("Merged")).toBeInTheDocument();
+    expect(mergedRow.getByText("1")).toHaveClass("agents-project-count");
+    expect(closedRow.getByText("Closed")).toBeInTheDocument();
+    expect(closedRow.getByText("1")).toHaveClass("agents-project-count");
+    expect(screen.queryByTestId("agents-session-conversation-merged")).not.toBeInTheDocument();
+
+    await user.click(mergedButton);
+    expect(mergedButton).toHaveAttribute("aria-current", "true");
+    expect(activeButton).not.toHaveAttribute("aria-current");
+    expect(screen.getByTestId("agents-session-conversation-merged")).toBeInTheDocument();
+
+    await user.click(closedButton);
+    expect(closedButton).toHaveAttribute("aria-current", "true");
+    expect(mergedButton).not.toHaveAttribute("aria-current");
+    expect(screen.queryByTestId("agents-session-conversation-merged")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-session-conversation-closed")).toBeInTheDocument();
+    expect(publicationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectIds: ["project-1"],
+          publicationState: "merged",
+          archivedOnly: false,
+        }),
+        expect.objectContaining({
+          projectIds: ["project-1"],
+          publicationState: "closed",
+          archivedOnly: false,
+        }),
+      ])
+    );
+    expect(screen.queryByTestId("agents-project-row-project-1")).not.toBeInTheDocument();
+  });
+
+  it("handles row selection and actions inside publication-state groups", async () => {
+    const user = userEvent.setup();
+    const onSelectConversation = vi.fn();
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const onArchiveConversation = vi.fn();
+    const active = conversation({ id: "conversation-publication-active", title: "Active row" });
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [active],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      onSelectConversation,
+      onRenameConversation,
+      onArchiveConversation,
+    });
+
+    await user.click(screen.getByText("Active row"));
+    expect(onSelectConversation).toHaveBeenCalledWith("project-1", active);
+
+    const row = screen.getByTestId("agents-session-conversation-publication-active");
+    await user.click(within(row).getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    const input = screen.getByLabelText("Session title");
+    await user.clear(input);
+    await user.type(input, "Publication rename{Enter}");
+    await waitFor(() =>
+      expect(onRenameConversation).toHaveBeenCalledWith(
+        "conversation-publication-active",
+        "Publication rename"
+      )
+    );
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-publication-active")).getByRole(
+        "button",
+        { name: "Session actions" }
+      )
+    );
+    await user.click(screen.getByText("Archive session"));
+    expect(screen.getByText("Archive session?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Archive session" }));
+    expect(onArchiveConversation).toHaveBeenCalledWith(active);
+  });
+
+  it("hides publication groups when every publication state is filtered out", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-active", title: "Active run" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    expect(screen.getByTestId("agents-publication-row-active")).toBeInTheDocument();
+    await user.click(screen.getByTestId("agents-filters-trigger"));
+    await user.click(
+      screen.getByTestId("agents-filter-publication-section-trigger")
+    );
+    await user.click(screen.getByTestId("agents-filter-publication-state-active"));
+
+    expect(useAgentSessionStore.getState().sidebarPublicationStateFilters).toEqual([]);
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-publication-row-active")).not.toBeInTheDocument()
+    );
   });
 
   it("closes the rename dialog via Escape (onOpenChange false branch)", async () => {

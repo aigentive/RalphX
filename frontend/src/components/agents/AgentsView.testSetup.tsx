@@ -4,7 +4,10 @@ import { vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 import { ideationApi } from "@/api/ideation";
-import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import {
+  DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
+  useAgentSessionStore,
+} from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
@@ -22,6 +25,8 @@ import {
 const agentsViewTestMocks = vi.hoisted(() => ({
   useProjectsMock: vi.fn(),
   useProjectAgentConversationsMock: vi.fn(),
+  useAgentSidebarProjectGroupMock: vi.fn(),
+  useAgentSidebarPublicationGroupMock: vi.fn(),
   useConversationMock: vi.fn(),
   startAgentConversationMock: vi.fn(),
   getAgentConversationWorkspaceMock: vi.fn(),
@@ -60,6 +65,8 @@ const eventSubscriptions = new Map<string, ((payload: unknown) => void)[]>();
 const {
   useProjectsMock,
   useProjectAgentConversationsMock,
+  useAgentSidebarProjectGroupMock,
+  useAgentSidebarPublicationGroupMock,
   useConversationMock,
   startAgentConversationMock,
   getAgentConversationWorkspaceMock,
@@ -155,6 +162,56 @@ vi.mock("./useProjectAgentConversations", () => ({
     includeArchived = false,
     options?: { search?: string; enabled?: boolean }
   ) => useProjectAgentConversationsMock(projectId, includeArchived, options),
+}));
+
+vi.mock("./useAgentSidebarPublicationGroup", () => ({
+  agentSidebarConversationKeys: {
+    all: ["agents", "sidebar-conversations"],
+    projectGroup: (
+      projectId: string | null | undefined,
+      archivedOnly: boolean,
+      search = "",
+      publicationStates: string[] = [],
+      pinnedConversationIds: string[] = []
+    ) => [
+      "agents",
+      "sidebar-conversations",
+      "project",
+      projectId ?? "",
+      "archived",
+      archivedOnly,
+      "search",
+      search.trim().toLowerCase(),
+      "states",
+      publicationStates,
+      "pinned",
+      pinnedConversationIds,
+    ],
+    publicationGroup: (
+      projectIds: string[],
+      publicationState: string,
+      archivedOnly: boolean,
+      search = "",
+      pinnedConversationIds: string[] = []
+    ) => [
+      "agents",
+      "sidebar-conversations",
+      "publication",
+      publicationState,
+      "projects",
+      projectIds,
+      "archived",
+      archivedOnly,
+      "search",
+      search.trim().toLowerCase(),
+      "pinned",
+      pinnedConversationIds,
+    ],
+  },
+  useAgentSidebarProjectGroup: (args: Record<string, unknown>) =>
+    useAgentSidebarProjectGroupMock(args),
+  useAgentSidebarPublicationGroup: (args: Record<string, unknown>) =>
+    useAgentSidebarPublicationGroupMock(args),
 }));
 
 vi.mock("./AgentTerminalDrawer", async () => {
@@ -481,6 +538,7 @@ export function mockAgentViewData(agentConversation: AgentConversation = convers
     isFetchingNextPage: false,
     fetchNextPage: vi.fn(),
   });
+  mockAgentSidebarData([agentConversation]);
   useConversationMock.mockImplementation((conversationId: string | null) => ({
     data:
       conversationId === agentConversation.id
@@ -491,6 +549,142 @@ export function mockAgentViewData(agentConversation: AgentConversation = convers
         : null,
     isLoading: false,
   }));
+}
+
+export function mockAgentSidebarData(conversations: AgentConversation[]) {
+  useAgentSidebarProjectGroupMock.mockImplementation(
+    ({
+      projectId,
+      archivedOnly = false,
+      search = "",
+      publicationStates = DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
+      pinnedConversationIds = [],
+    }: {
+      projectId?: string | null;
+      archivedOnly?: boolean;
+      search?: string;
+      publicationStates?: string[];
+      pinnedConversationIds?: string[];
+    }) =>
+      buildAgentSidebarGroupResult({
+        key: projectId ?? "",
+        label: project.name,
+        conversations: filterSidebarConversations(conversations, {
+          projectIds: projectId ? [projectId] : [],
+          archivedOnly,
+          search,
+          publicationStates,
+          pinnedConversationIds,
+        }),
+      })
+  );
+  useAgentSidebarPublicationGroupMock.mockImplementation(
+    ({
+      projectIds = [],
+      publicationState = "active",
+      archivedOnly = false,
+      search = "",
+      pinnedConversationIds = [],
+    }: {
+      projectIds?: string[];
+      publicationState?: string;
+      archivedOnly?: boolean;
+      search?: string;
+      pinnedConversationIds?: string[];
+    }) =>
+      buildAgentSidebarGroupResult({
+        key: publicationState,
+        label: publicationState,
+        conversations: filterSidebarConversations(conversations, {
+          projectIds,
+          archivedOnly,
+          search,
+          publicationStates: [publicationState],
+          pinnedConversationIds,
+        }),
+      })
+  );
+}
+
+function filterSidebarConversations(
+  conversations: AgentConversation[],
+  {
+    projectIds,
+    archivedOnly,
+    search,
+    publicationStates,
+    pinnedConversationIds,
+  }: {
+    projectIds: string[];
+    archivedOnly: boolean;
+    search: string;
+    publicationStates: string[];
+    pinnedConversationIds: string[];
+  }
+) {
+  const projectIdSet = new Set(projectIds);
+  const pinnedIdSet = new Set(pinnedConversationIds);
+  const normalizedSearch = search.trim().toLowerCase();
+  return conversations
+    .filter((item) => projectIdSet.has(item.projectId ?? item.contextId))
+    .filter((item) => (archivedOnly ? Boolean(item.archivedAt) : !item.archivedAt))
+    .filter((item) => {
+      if (!normalizedSearch) {
+        return true;
+      }
+      return (item.title ?? "Untitled agent").toLowerCase().includes(normalizedSearch);
+    })
+    .filter(() => publicationStates.includes("active"))
+    .sort((left, right) => {
+      const pinnedDelta =
+        Number(pinnedIdSet.has(right.id)) - Number(pinnedIdSet.has(left.id));
+      if (pinnedDelta !== 0) {
+        return pinnedDelta;
+      }
+      return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+    });
+}
+
+function buildAgentSidebarGroupResult({
+  key,
+  label,
+  conversations,
+}: {
+  key: string;
+  label: string;
+  conversations: AgentConversation[];
+}) {
+  const rows = conversations.map((conversation) => ({
+    conversation: {
+      ...conversation,
+      contextType: "project" as const,
+      contextId: conversation.projectId ?? conversation.contextId,
+    },
+    workspace: null,
+    refKind: "branch" as const,
+    refLabel: "master",
+    publicationState: "active" as const,
+    publicationLabel: null,
+  }));
+  const group = {
+    key,
+    label,
+    total: rows.length,
+    offset: 0,
+    limit: 20,
+    hasMore: false,
+    rows,
+  };
+  return {
+    data: { pages: [group], pageParams: [0] },
+    group,
+    isLoading: false,
+    isSuccess: true,
+    isFetching: false,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    fetchNextPage: vi.fn(),
+  };
 }
 
 export function mockSessionWithData(
@@ -539,6 +733,12 @@ export function resetAgentSessionState(
     selectedConversationId: null,
     lastSelectedConversationByProjectId: {},
     expandedProjectIds: { "project-1": true },
+    showAllProjects: true,
+    projectSort: "latest",
+    sidebarGroupBy: "project",
+    sidebarProjectFilterIds: [],
+    sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
+    pinnedConversationIds: {},
     artifactByConversationId: {},
     runtimeByConversationId: {},
     lastRuntimeByProjectId: {
@@ -567,6 +767,8 @@ export function setupAgentsViewTest() {
   mockSidebarBreakpoint({ isLarge: true, isMedium: true });
   window.localStorage.clear();
   useProjectAgentConversationsMock.mockReset();
+  useAgentSidebarProjectGroupMock.mockReset();
+  useAgentSidebarPublicationGroupMock.mockReset();
   useProjectsMock.mockReset();
   useConversationMock.mockReset();
   startAgentConversationMock.mockReset();
@@ -623,6 +825,7 @@ export function setupAgentsViewTest() {
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
   listIdeationSessionsMock.mockResolvedValue([]);
+  mockAgentSidebarData([]);
   getWorkspaceChangesMock.mockResolvedValue([]);
   getWorkspaceDiffMock.mockResolvedValue("");
   getWorkspaceCommitsMock.mockResolvedValue([]);

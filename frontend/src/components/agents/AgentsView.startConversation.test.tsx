@@ -1,5 +1,6 @@
 import {
   getAgentsViewTestMocks,
+  mockAgentSidebarData,
   mockAgentViewData,
   renderAgentsView,
   resetAgentSessionState,
@@ -79,6 +80,7 @@ describe("AgentsView start conversation", () => {
       isFetchingNextPage: false,
       fetchNextPage: vi.fn(),
     });
+    mockAgentSidebarData([restoredConversation]);
     useConversationMock.mockImplementation((conversationId: string | null) => ({
       data:
         conversationId === "conversation-restored"
