@@ -402,13 +402,15 @@ impl AgentRunRepository for SqliteAgentRunRepository {
         let cutoff = cutoff.to_rfc3339();
         self.db
             .run(move |conn| {
+                let completed_at = Utc::now().to_rfc3339();
+                let params = rusqlite::params![
+                    completed_at,
+                    ORPHANED_AGENT_RUN_ON_APP_RESTART,
+                    cutoff
+                ];
                 let changes = conn.execute(
                     "UPDATE agent_runs SET status = 'cancelled', completed_at = ?1, error_message = ?2 WHERE status = 'running' AND started_at < ?3",
-                    rusqlite::params![
-                        Utc::now().to_rfc3339(),
-                        ORPHANED_AGENT_RUN_ON_APP_RESTART,
-                        cutoff
-                    ],
+                    params,
                 )?;
                 Ok(changes as u32)
             })

@@ -513,7 +513,7 @@ impl RunningAgentRegistry for SqliteRunningAgentRegistry {
             .run(move |conn| {
                 conn.execute(
                     "DELETE FROM running_agents WHERE started_at < ?1",
-                    rusqlite::params![cutoff_str],
+                    [&cutoff_str],
                 )?;
                 Ok(())
             })
