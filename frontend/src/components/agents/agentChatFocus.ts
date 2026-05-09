@@ -20,6 +20,29 @@ export interface AgentsChatFocusSwitchOption {
   tone?: AgentsChatFocusTone;
 }
 
+export function latestVerificationChildSessionIdQueryKey(
+  parentSessionId: string | null | undefined,
+) {
+  return [
+    "agents",
+    "chat-focus",
+    "latest-child-session-id",
+    parentSessionId,
+    "verification",
+  ] as const;
+}
+
+export function latestVerificationChildSessionData(
+  parentSessionId: string,
+  childSessionId: string | null,
+) {
+  return {
+    sessionId: parentSessionId,
+    purpose: "verification" as const,
+    latestChildSessionId: childSessionId,
+  };
+}
+
 export function getFocusedArtifactIdeationSessionId(
   chatFocus: AgentsChatFocus,
 ): string | null {

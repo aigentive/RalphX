@@ -29,6 +29,7 @@ import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { navigateToIdeationSession } from "@/lib/navigation";
+import { latestVerificationChildSessionIdQueryKey } from "@/components/agents/agentChatFocus";
 import { ideationKeys } from "./useIdeation";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { logger } from "@/lib/logger";
@@ -332,6 +333,9 @@ async function updateVerificationQueryCache({
   // Invalidate child sessions so history picker and VerificationPanel stay fresh.
   queryClient.invalidateQueries({ queryKey: ["childSessions", sessionId, "verification"] });
   queryClient.invalidateQueries({ queryKey: ["child-session-status", sessionId] });
+  queryClient.invalidateQueries({
+    queryKey: latestVerificationChildSessionIdQueryKey(sessionId),
+  });
 
   // Always invalidate session queries (different data source, no race risk)
   queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() });

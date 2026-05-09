@@ -1,4 +1,5 @@
 import {
+  fireAgentViewEvent,
   getAgentsViewTestMocks,
   mockAgentViewData,
   mockSessionWithData,
@@ -12,16 +13,24 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationApi } from "@/api/ideation";
+import { useIdeationEvents } from "@/hooks/useIdeationEvents";
+import { AgentsView } from "./AgentsView";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
+  renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 const {
   getAgentConversationWorkspaceMock,
   getLatestChildSessionIdMock,
   useConversationMock,
 } = getAgentsViewTestMocks();
+
+function AgentsViewWithIdeationEvents() {
+  useIdeationEvents();
+  return <AgentsView projectId="project-1" onCreateProject={vi.fn()} />;
+}
 
 describe("AgentsView", () => {
   beforeEach(setupAgentsViewTest);
@@ -169,12 +178,17 @@ describe("AgentsView", () => {
     expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
-  it("shows the chat focus switcher on workspace chat when an ideation child is known", async () => {
+  it("shows the chat focus switcher on workspace chat when the latest archived/completed verification child is hydrated", async () => {
     mockAgentViewData();
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "ideation", linkedIdeationSessionId: "session-1" })
     );
-    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    mockSessionWithData({
+      id: "session-1",
+      planArtifactId: "plan-1",
+      verificationStatus: "verified",
+      verificationInProgress: false,
+    });
     getLatestChildSessionIdMock.mockResolvedValue({
       sessionId: "session-1",
       purpose: "verification",
@@ -212,6 +226,61 @@ describe("AgentsView", () => {
       "data-conversation-id-override",
       "",
     );
+  });
+
+  it("adds Verification to the live composer selector when a verification child is created", async () => {
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "ideation", linkedIdeationSessionId: "session-1" })
+    );
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    getLatestChildSessionIdMock.mockResolvedValue({
+      sessionId: "session-1",
+      purpose: "verification",
+      latestChildSessionId: null,
+    });
+
+    renderWithProviders(<AgentsViewWithIdeationEvents />);
+    selectSidebarConversationRow();
+
+    const focusPill = await screen.findByTestId("agents-composer-chat-focus-pill");
+    expect(focusPill).toHaveTextContent("Workspace");
+    await waitFor(() => {
+      expect(getLatestChildSessionIdMock).toHaveBeenCalledWith(
+        "session-1",
+        "verification",
+        { includeArchived: true },
+      );
+    });
+
+    fireEvent.click(focusPill);
+    expect(
+      screen.queryByTestId("agents-composer-chat-focus-option-verification"),
+    ).not.toBeInTheDocument();
+
+    fireAgentViewEvent("ideation:child_session_created", {
+      sessionId: "verification-child-live",
+      parentSessionId: "session-1",
+      title: "Verification Session",
+      purpose: "verification",
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("agents-composer-chat-focus-option-verification"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(
+      screen.getByTestId("agents-composer-chat-focus-option-verification"),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-ideation-session-id",
+        "verification-child-live",
+      );
+    });
   });
 
   it("does NOT auto-switch the chat focus when the Plan artifact tab is selected", async () => {
