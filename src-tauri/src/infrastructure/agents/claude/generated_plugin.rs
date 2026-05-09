@@ -891,6 +891,88 @@ mod tests {
     }
 
     #[test]
+    fn generated_plugin_dir_current_validation_reports_invalid_filesystem_shapes() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let base_plugin_dir = dir.path().join("base/plugins/app");
+        let generated_dir = dir.path().join("generated/claude-plugin");
+        fs::create_dir_all(&base_plugin_dir).expect("create base plugin dir");
+
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("missing generated dir should be inspectable"));
+
+        fs::create_dir_all(&generated_dir).expect("create generated plugin dir");
+        ensure_symlink(
+            &dir.path().join("stale/agents"),
+            &generated_dir.join(GENERATED_AGENTS_DIR),
+        )
+        .expect("seed generated agents symlink");
+        assert!(!generated_plugin_dir_is_current(
+            &base_plugin_dir,
+            &base_plugin_dir,
+            &generated_dir
+        )
+        .expect("symlinked generated agents dir should be inspectable"));
+
+        fs::remove_file(generated_dir.join(GENERATED_AGENTS_DIR))
+            .expect("remove generated agents symlink");
+        fs::create_dir_all(generated_dir.join(GENERATED_AGENTS_DIR))
+            .expect("create generated agents dir");
+        fs::create_dir_all(generated_dir.join(".claude-plugin"))
+            .expect("create managed entry as directory");
+        let error =
+            generated_plugin_dir_is_current(&base_plugin_dir, &base_plugin_dir, &generated_dir)
+                .expect_err("managed directory in symlink slot should be reported");
+        assert!(
+            error.contains("Failed to inspect generated Claude plugin symlink"),
+            "unexpected managed-entry error: {error}"
+        );
+    }
+
+    #[test]
+    fn generated_plugin_dir_helpers_report_containment_errors() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let generated_root = dir.path().canonicalize().expect("canonical temp dir");
+        let file_path = generated_root.join("not-a-dir");
+        fs::write(&file_path, "not a directory").expect("write file");
+
+        let error = generated_plugin_dir_has_only_managed_entries(&file_path)
+            .expect_err("file path should not be listed as generated dir");
+        assert!(
+            error.contains("Failed to list generated Claude plugin dir"),
+            "unexpected generated dir list error: {error}"
+        );
+
+        let missing_dir = generated_root.join("missing-generated-dir");
+        let error = prune_unmanaged_generated_plugin_entries(&missing_dir)
+            .expect_err("missing generated dir should not be pruned");
+        assert!(
+            error.contains("Failed to canonicalize generated Claude plugin dir"),
+            "unexpected generated dir canonicalize error: {error}"
+        );
+
+        let error = prune_unmanaged_generated_plugin_entries(&file_path)
+            .expect_err("file path should not be pruned as generated dir");
+        assert!(
+            error.contains("Failed to list generated Claude plugin dir"),
+            "unexpected generated dir prune-list error: {error}"
+        );
+
+        let error = trusted_existing_generated_plugin_top_level_path(
+            &generated_root,
+            &generated_root.join("missing-parent").join(".cache"),
+        )
+        .expect_err("entry with missing parent should be rejected");
+        assert!(
+            error.contains("Failed to canonicalize generated Claude plugin entry parent"),
+            "unexpected generated entry parent error: {error}"
+        );
+    }
+
+    #[test]
     fn trusted_existing_generated_plugin_top_level_path_rejects_nested_entries() {
         let dir = tempfile::TempDir::new().expect("create temp dir");
         let generated_root = dir.path().canonicalize().expect("canonical temp dir");

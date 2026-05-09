@@ -1006,6 +1006,8 @@ mod tests {
         .expect("write prompt with submit tool");
         ensure_codex_pr_describer_prompt_contract(&plugin_dir)
             .expect("prompt with submit tool should satisfy preflight");
+        ensure_pr_describer_submit_tool_available(AgentHarnessKind::Codex, &plugin_dir)
+            .expect("valid Codex PR describer surface should satisfy full preflight");
     }
 
     #[test]
@@ -1049,6 +1051,8 @@ mod tests {
             format!(
                 "I cannot submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` was unavailable."
             ),
+            format!("I cannot submit because `{PR_DESCRIBER_SUBMIT_TOOL}` was missing."),
+            format!("I can't submit because `{PR_DESCRIBER_SUBMIT_TOOL}` was missing."),
         ] {
             assert!(
                 pr_describer_output_reports_missing_submit_tool(&output),
