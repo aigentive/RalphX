@@ -12,7 +12,7 @@
 // - agent:error - Agent failed
 // - agent:queue_sent - Queued message sent
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -26,8 +26,8 @@ use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
 };
 use crate::application::agent_workspace_bridge::{
-    dispatch_prepared_agent_workspace_bridge_wakeup, prepare_agent_workspace_bridge_wakeup,
-    AgentWorkspaceBridgeWakeUp,
+    wake_agent_workspace_for_bridge_events,
+    wake_agent_workspace_for_bridge_events_with_service_factory,
 };
 use crate::application::agent_workspace_pr_description::draft_agent_workspace_pr_description;
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
@@ -1253,66 +1253,6 @@ pub(crate) fn create_chat_service(
         service = service.with_team_service(svc);
     }
     service
-}
-
-async fn wake_agent_workspace_for_bridge_events_on_read(
-    state: &AppState,
-    app: tauri::AppHandle,
-    execution_state: &Arc<ExecutionState>,
-    conversation_id: &ChatConversationId,
-) {
-    let Some(wake_up) =
-        prepare_agent_workspace_bridge_wakeup_on_read_for_app_state(state, conversation_id).await
-    else {
-        return;
-    };
-
-    let service = create_chat_service(state, app, execution_state, None);
-    if let Err(error) =
-        dispatch_prepared_agent_workspace_bridge_wakeup(state, &service, wake_up).await
-    {
-        tracing::warn!(
-            conversation_id = %conversation_id,
-            error = %error,
-            "Failed to wake agent workspace for bridge events"
-        );
-    }
-}
-
-#[doc(hidden)]
-pub async fn prepare_agent_workspace_bridge_wakeup_on_read_for_app_state(
-    state: &AppState,
-    conversation_id: &ChatConversationId,
-) -> Option<AgentWorkspaceBridgeWakeUp> {
-    let prepare_started_at = Instant::now();
-    let wake_up = match prepare_agent_workspace_bridge_wakeup(state, conversation_id).await {
-        Ok(wake_up) => wake_up,
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                error = %error,
-                "Failed to prepare agent workspace bridge wake-up"
-            );
-            return None;
-        }
-    };
-
-    let Some(wake_up) = wake_up else {
-        tracing::debug!(
-            conversation_id = %conversation_id,
-            duration_ms = prepare_started_at.elapsed().as_millis(),
-            "Agent workspace bridge wake-up not needed for conversation read"
-        );
-        return None;
-    };
-
-    tracing::info!(
-        conversation_id = %conversation_id,
-        event_count = wake_up.event_keys.len(),
-        prepare_duration_ms = prepare_started_at.elapsed().as_millis(),
-        "Prepared agent workspace bridge wake-up for conversation read"
-    );
-    Some(wake_up)
 }
 
 /// Parse context type string to enum
@@ -3725,15 +3665,17 @@ pub async fn get_agent_conversation(
 
     let conversation_id = ChatConversationId::from_string(&conversation_id);
 
-    wake_agent_workspace_for_bridge_events_on_read(
-        state.inner(),
-        app.clone(),
-        execution_state.inner(),
-        &conversation_id,
-    )
-    .await;
-
     let service = create_chat_service(&state, app, &execution_state, None);
+    if let Err(error) =
+        wake_agent_workspace_for_bridge_events(&state, &service, &conversation_id).await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to wake agent workspace for bridge events"
+        );
+    }
+
     let conversation = service
         .get_conversation_with_messages(&conversation_id)
         .await
@@ -3802,13 +3744,19 @@ pub async fn get_agent_conversation_messages_page(
     let limit = limit.unwrap_or(40).clamp(1, 200);
     let offset = offset.unwrap_or(0);
 
-    wake_agent_workspace_for_bridge_events_on_read(
-        state.inner(),
-        app,
-        execution_state.inner(),
+    if let Err(error) = wake_agent_workspace_for_bridge_events_with_service_factory(
+        &state,
         &conversation_id,
+        || create_chat_service(&state, app, &execution_state, None),
     )
-    .await;
+    .await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to wake agent workspace for bridge events"
+        );
+    }
 
     get_agent_conversation_messages_page_for_app_state(&state, conversation_id, limit, offset).await
 }

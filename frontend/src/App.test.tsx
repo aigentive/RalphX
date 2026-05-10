@@ -588,6 +588,65 @@ describe("App", () => {
     expect(getMessagesPage).not.toHaveBeenCalled();
   });
 
+  it("falls back to the one-message history lookup when agent caches miss", async () => {
+    const queryClient = getQueryClient();
+    const getMessagesPage = vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
+      conversation: {
+        id: "conversation-cache-miss",
+        contextType: "project",
+        contextId: "demo-project-1",
+        providerSessionId: null,
+        providerHarness: null,
+        title: "Fetched after cache miss",
+        messageCount: 0,
+        lastMessageAt: null,
+        createdAt: "2026-05-07T00:00:00Z",
+        updatedAt: "2026-05-07T00:00:00Z",
+        archivedAt: null,
+      },
+      messages: [],
+      limit: 1,
+      offset: 0,
+      totalMessageCount: 0,
+      hasOlder: false,
+    });
+
+    useAgentSessionStore.setState({
+      selectedConversationId: "conversation-cache-miss",
+    });
+    queryClient.setQueryData(agentConversationKeys.projectList("demo-project-1", false, ""), {
+      pages: [
+        {
+          conversations: [
+            {
+              id: "other-conversation",
+              contextType: "project",
+              contextId: "demo-project-1",
+              providerSessionId: null,
+              providerHarness: null,
+              title: "Other conversation",
+              messageCount: 0,
+              lastMessageAt: null,
+              createdAt: "2026-05-07T00:00:00Z",
+              updatedAt: "2026-05-07T00:00:00Z",
+              archivedAt: null,
+            },
+          ],
+          total: 1,
+          offset: 0,
+          hasMore: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(getMessagesPage).toHaveBeenCalledWith("conversation-cache-miss", 1, 0);
+    });
+  });
+
   it("renames the selected agent conversation from the Agents breadcrumb", async () => {
     const user = userEvent.setup();
     const queryClient = getQueryClient();

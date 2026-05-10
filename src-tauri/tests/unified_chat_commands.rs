@@ -839,7 +839,11 @@ fn test_agent_run_status_response_serializes_model_absent() {
 
 #[cfg(test)]
 mod ipc_contract {
-    use ralphx_lib::application::agent_workspace_bridge::dispatch_prepared_agent_workspace_bridge_wakeup;
+    use ralphx_lib::application::agent_workspace_bridge::{
+        dispatch_prepared_agent_workspace_bridge_wakeup, prepare_agent_workspace_bridge_wakeup,
+        wake_agent_workspace_for_bridge_events,
+        wake_agent_workspace_for_bridge_events_with_service_factory,
+    };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
     use ralphx_lib::application::{AppState, MockChatService};
     use ralphx_lib::commands::agent_model_commands::{
@@ -849,7 +853,6 @@ mod ipc_contract {
     use ralphx_lib::commands::unified_chat_commands::{
         get_agent_conversation_messages_page_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
-        prepare_agent_workspace_bridge_wakeup_on_read_for_app_state,
         publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
         QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
         SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
@@ -1358,9 +1361,13 @@ mod ipc_contract {
             .await
             .expect("workspace should persist");
 
-        let wakeup =
-            prepare_agent_workspace_bridge_wakeup_on_read_for_app_state(&state, &conversation_id)
-                .await;
+        let wakeup = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            MockChatService::new,
+        )
+        .await
+        .expect("read bridge wake-up should prepare");
         assert!(wakeup.is_none());
 
         let page = get_agent_conversation_messages_page_for_app_state(
@@ -1427,19 +1434,57 @@ mod ipc_contract {
             .await
             .expect("event should persist");
 
-        let wakeup =
-            prepare_agent_workspace_bridge_wakeup_on_read_for_app_state(&state, &conversation_id)
-                .await
-                .expect("linked ideation event should prepare a wake-up");
-        let chat_service = MockChatService::new();
-        let result = dispatch_prepared_agent_workspace_bridge_wakeup(&state, &chat_service, wakeup)
-            .await
-            .expect("prepared wake-up should dispatch");
+        let result = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            MockChatService::new,
+        )
+        .await
+        .expect("read bridge wake-up should prepare")
+        .expect("linked ideation event should dispatch a wake-up");
 
         assert_eq!(result.event_count, 1);
-        assert_eq!(chat_service.call_count(), 1);
-        let options = chat_service.get_sent_options().await;
-        assert_eq!(options[0].conversation_id_override, Some(conversation_id));
+        assert!(!result.agent_run_id.is_empty());
+
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:proposals_ready",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc", "proposal_count": 2 })
+                    .to_string(),
+            )
+            .await
+            .expect("event should persist");
+        let prepared = prepare_agent_workspace_bridge_wakeup(&state, &conversation_id)
+            .await
+            .expect("read bridge wake-up should prepare")
+            .expect("new linked ideation event should prepare a wake-up");
+        let dispatch_service = MockChatService::new();
+        let dispatched =
+            dispatch_prepared_agent_workspace_bridge_wakeup(&state, &dispatch_service, prepared)
+                .await
+                .expect("prepared wake-up should dispatch");
+        assert_eq!(dispatched.event_count, 1);
+        assert_eq!(dispatch_service.call_count(), 1);
+
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:session_accepted",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc" }).to_string(),
+            )
+            .await
+            .expect("event should persist");
+        let eager_service = MockChatService::new();
+        let eager =
+            wake_agent_workspace_for_bridge_events(&state, &eager_service, &conversation_id)
+                .await
+                .expect("read bridge wake-up should dispatch")
+                .expect("new linked ideation event should dispatch a wake-up");
+        assert_eq!(eager.event_count, 1);
+        assert_eq!(eager_service.call_count(), 1);
     }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────
