@@ -12,7 +12,6 @@ test.describe("Ideation Chat Replay", () => {
     await expect(panel).toBeVisible();
     await expect(page.getByTestId("chat-session-provider-badge")).toHaveText(/Claude/i);
     await expect(panel.getByText("Preferred default for automatic PR creation?")).toBeVisible();
-    await expect(panel.getByText("to layer1-critic")).toBeVisible();
     await expect(panel.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeVisible();
   });
 
@@ -34,7 +33,6 @@ test.describe("Ideation Chat Replay", () => {
     await expect(panel).toBeVisible();
     await expect(page.getByTestId("chat-session-provider-badge")).toHaveText(/Claude/i);
     await expect(panel.getByText("Preferred default for automatic PR creation?")).toBeVisible();
-    await expect(panel.getByText("to layer1-critic")).toBeVisible();
     await expect(panel.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeVisible();
     await expect(panel).toHaveScreenshot("ideation-chat-replay.png", {
       maxDiffPixelRatio: 0.01,

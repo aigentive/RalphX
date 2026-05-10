@@ -165,6 +165,7 @@ export interface ChatMessageData {
   role: string;
   content: string;
   createdAt: string;
+  parentMessageId?: string | null;
   toolCalls?: ToolCall[] | null;
   contentBlocks?: ContentBlockItem[] | null;
   attachments?: MessageAttachment[];
@@ -183,6 +184,7 @@ export interface ChatMessageData {
   cacheCreationTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
+  timelineSequence?: number | null;
 }
 
 /** Discriminated union for timeline items when hook events are interleaved */
@@ -731,8 +733,24 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const timeline = useMemo((): TimelineItem[] => {
       const items: TimelineItem[] = [];
 
+      const suppressedProviderMessage = suppressedProviderMessageId
+        ? messages.find((msg) => msg.id === suppressedProviderMessageId)
+        : null;
+      const suppressedTimelineParentId =
+        suppressedProviderMessage?.timelineSequence != null
+          ? suppressedProviderMessage.parentMessageId
+          : null;
       const filteredMessages = suppressedProviderMessageId
-        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
+        ? messages.filter((msg) => {
+          if (msg.id === suppressedProviderMessageId) {
+            return false;
+          }
+          return !(
+            suppressedTimelineParentId &&
+            msg.timelineSequence != null &&
+            msg.parentMessageId === suppressedTimelineParentId
+          );
+        })
         : messages;
 
       // Team filter: each tab (lead/teammate) loads its own conversation's messages via
@@ -1640,7 +1658,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             );
             if (systemCard) {
               return (
-                <div key={`${item.kind}-${item.sortTime}-${index}`} className="px-3 w-full" style={contentContainerStyle}>
+                <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
                   <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
                 </div>
               );
@@ -1651,7 +1669,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               : { teammateName: null, teammateColor: null };
 
             return (
-              <div key={`${item.kind}-${item.sortTime}-${index}`} className="px-3 w-full" style={contentContainerStyle}>
+              <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
                 <ContentShell className={contentWidthClassName}>
                   <MessageItem
                     role={msg.role}

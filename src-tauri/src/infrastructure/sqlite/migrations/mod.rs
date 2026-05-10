@@ -333,9 +333,12 @@ mod v20260508103000_agent_provider_settings_tests;
 mod v20260509090000_release_notes_seen_version;
 #[cfg(test)]
 mod v20260509090000_release_notes_seen_version_tests;
+mod v20260510185257_chat_message_blocks_timeline;
+#[cfg(test)]
+mod v20260510185257_chat_message_blocks_timeline_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260509090000;
+pub const SCHEMA_VERSION: i64 = 20260510185257;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -949,6 +952,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260509090000,
         name: "release_notes_seen_version",
         migrate: v20260509090000_release_notes_seen_version::migrate,
+    },
+    Migration {
+        version: 20260510185257,
+        name: "chat_message_blocks_timeline",
+        migrate: v20260510185257_chat_message_blocks_timeline::migrate,
     },
 ];
 

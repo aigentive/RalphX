@@ -1037,7 +1037,13 @@ export function useChatEvents({
           if (assistantMessageId) {
             // Race guard: check if the query already has the message before subscribing
             const existing = getCachedConversationMessages(queryClient, convId);
-            if (existing.some((message) => message.id === assistantMessageId)) {
+            if (
+              existing.some(
+                (message) =>
+                  message.id === assistantMessageId ||
+                  message.parentMessageId === assistantMessageId
+              )
+            ) {
               clearFinalizing();
             } else {
               // Subscribe to query cache updates — clear isFinalizing when the new
@@ -1047,7 +1053,13 @@ export function useChatEvents({
                 const evKey = event.query.queryKey;
                 if (!Array.isArray(evKey) || evKey.length < 3 || evKey[2] !== convId) return;
                 const data = getCachedConversationMessages(queryClient, convId);
-                if (data.some((message) => message.id === assistantMessageId)) {
+                if (
+                  data.some(
+                    (message) =>
+                      message.id === assistantMessageId ||
+                      message.parentMessageId === assistantMessageId
+                  )
+                ) {
                   clearFinalizing();
                 }
               });

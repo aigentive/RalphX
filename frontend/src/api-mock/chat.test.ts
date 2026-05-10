@@ -3,12 +3,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
+  mockChatApi,
   mockGetAgentRunningStates,
+  mockGetConversationTimelinePage,
   mockListAgentSidebarConversations,
   resetMockChatState,
   seedMockAgentConversationWorkspace,
   seedMockConversation,
 } from "./chat";
+import { IDEATION_REPLAY_CONTEXTS } from "./chat-scenarios";
 
 const conversation = (
   id: string,
@@ -219,6 +222,83 @@ describe("mockGetAgentRunningStates", () => {
     ).resolves.toEqual({
       "conv-1": false,
       "conv-2": false,
+    });
+  });
+});
+
+describe("mockGetConversationTimelinePage", () => {
+  beforeEach(() => {
+    mockChatApi.reset();
+  });
+
+  it("normalizes seeded messages into block-counted timeline pages", async () => {
+    mockChatApi.seedScenario("ideation_widget_matrix");
+    const conversationId = IDEATION_REPLAY_CONTEXTS.ideation_widget_matrix.conversationId;
+
+    const newest = await mockGetConversationTimelinePage(conversationId, 3, null);
+    expect(newest.items).toHaveLength(3);
+    expect(newest.messages).toHaveLength(3);
+    expect(newest.hasOlder).toBe(true);
+    expect(newest.oldestLoadedSequence).toBeGreaterThan(1);
+    expect(newest.items.map((item) => item.asMessage.id)).toEqual(
+      newest.messages.map((message) => message.id)
+    );
+
+    const older = await mockGetConversationTimelinePage(
+      conversationId,
+      2,
+      newest.oldestLoadedSequence
+    );
+    expect(older.items).toHaveLength(2);
+    expect(older.newestLoadedSequence).toBeLessThan(
+      newest.oldestLoadedSequence ?? Number.MAX_SAFE_INTEGER
+    );
+  });
+
+  it("uses stable tool ids and carries usage only on the first assistant block", async () => {
+    mockChatApi.seedScenario("ideation_widget_matrix");
+    const conversationId = IDEATION_REPLAY_CONTEXTS.ideation_widget_matrix.conversationId;
+    const { messages } = await mockChatApi.getConversation(conversationId);
+    const assistant = messages.find(
+      (message) => message.id === "msg-ideation-widget-assistant-1"
+    );
+    if (!assistant) {
+      throw new Error("expected seeded assistant message");
+    }
+
+    mockChatApi.replaceMessages(conversationId, [
+      {
+        ...assistant,
+        inputTokens: 12,
+        outputTokens: 4,
+        estimatedUsd: 0.02,
+        contentBlocks: assistant.contentBlocks?.slice(0, 2) ?? null,
+      },
+    ]);
+
+    const page = await mockGetConversationTimelinePage(conversationId, 10, null);
+
+    expect(page.items.map((item) => item.id)).toEqual([
+      "block:msg-ideation-widget-assistant-1:proposal-create-1",
+      "block:msg-ideation-widget-assistant-1:proposal-update-1",
+    ]);
+    expect(page.items[0].toolCall).toMatchObject({
+      id: "proposal-create-1",
+      name: "mcp__ralphx__create_task_proposal",
+    });
+    expect(page.messages[0]).toMatchObject({
+      parentMessageId: "msg-ideation-widget-assistant-1",
+      inputTokens: 12,
+      outputTokens: 4,
+      estimatedUsd: 0.02,
+      timelineKind: "tool_use",
+      timelineSequence: 1,
+    });
+    expect(page.messages[1]).toMatchObject({
+      inputTokens: null,
+      outputTokens: null,
+      estimatedUsd: null,
+      timelineSequence: 2,
     });
   });
 });

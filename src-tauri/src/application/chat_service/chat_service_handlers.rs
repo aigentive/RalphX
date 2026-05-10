@@ -421,6 +421,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         plugin_dir: plugin_dir.to_path_buf(),
         repos: BackgroundRunRepos {
             chat_message_repo: Arc::clone(chat_message_repo),
+            chat_timeline_repo: None,
             chat_attachment_repo: Arc::clone(chat_attachment_repo),
             artifact_repo: Arc::clone(artifact_repo),
             conversation_repo: Arc::clone(conversation_repo),

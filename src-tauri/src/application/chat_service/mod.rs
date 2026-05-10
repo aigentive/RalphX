@@ -53,7 +53,7 @@ use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    DelegatedSessionRepository, ExecutionSettingsRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
     MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
     StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
@@ -602,6 +602,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     plugin_dir: PathBuf,
     default_working_directory: PathBuf,
     chat_message_repo: Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
@@ -675,6 +676,7 @@ impl<R: Runtime> AppChatService<R> {
             plugin_dir: bootstrap.plugin_dir,
             default_working_directory: bootstrap.default_working_directory,
             chat_message_repo,
+            chat_timeline_repo: None,
             chat_attachment_repo,
             artifact_repo,
             conversation_repo,
@@ -716,6 +718,11 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_execution_state(mut self, state: Arc<crate::commands::ExecutionState>) -> Self {
         self.execution_state = Some(state);
+        self
+    }
+
+    pub fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
+        self.chat_timeline_repo = Some(repo);
         self
     }
 
@@ -2000,7 +2007,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         );
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        let _ = self.chat_message_repo.create(user_msg).await;
+                        if self.chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                            chat_service_streaming::persist_message_text_timeline_item(
+                                &self.chat_timeline_repo,
+                                &user_msg,
+                            )
+                            .await;
+                        }
 
                         if context_type == ChatContextType::Ideation {
                             let _ = self
@@ -2530,9 +2543,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
             let user_msg_id = user_msg.id.as_str().to_string();
             let user_msg_created_at = user_msg.created_at.to_rfc3339();
-            if let Err(e) = self.chat_message_repo.create(user_msg).await {
+            if let Err(e) = self.chat_message_repo.create(user_msg.clone()).await {
                 cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
             }
+            chat_service_streaming::persist_message_text_timeline_item(
+                &self.chat_timeline_repo,
+                &user_msg,
+            )
+            .await;
             if context_type == ChatContextType::Ideation {
                 let _ = self
                     .ideation_session_repo
@@ -2951,6 +2969,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             plugin_dir: self.plugin_dir.clone(),
             repos: chat_service_send_background::BackgroundRunRepos {
                 chat_message_repo: Arc::clone(&self.chat_message_repo),
+                chat_timeline_repo: self.chat_timeline_repo.clone(),
                 chat_attachment_repo: Arc::clone(&self.chat_attachment_repo),
                 artifact_repo: Arc::clone(&self.artifact_repo),
                 conversation_repo: Arc::clone(&self.conversation_repo),
@@ -3116,7 +3135,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     );
                     let user_msg_id = user_msg.id.as_str().to_string();
                     let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                    let _ = self.chat_message_repo.create(user_msg).await;
+                    if self.chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                        chat_service_streaming::persist_message_text_timeline_item(
+                            &self.chat_timeline_repo,
+                            &user_msg,
+                        )
+                        .await;
+                    }
 
                     if context_type == ChatContextType::Ideation {
                         let _ = self

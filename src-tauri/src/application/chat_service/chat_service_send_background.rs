@@ -32,10 +32,11 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -44,6 +45,7 @@ use tokio_util::sync::CancellationToken;
 /// All repository and service dependencies grouped together.
 pub(super) struct BackgroundRunRepos {
     pub chat_message_repo: Arc<dyn ChatMessageRepository>,
+    pub chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     pub chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
@@ -472,6 +474,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         } = ctx;
         let BackgroundRunRepos {
             chat_message_repo,
+            chat_timeline_repo,
             chat_attachment_repo,
             artifact_repo,
             conversation_repo,
@@ -564,6 +567,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             Some(Arc::clone(&activity_event_repo)),
             Some(Arc::clone(&task_repo)),
             Some(Arc::clone(&chat_message_repo)),
+            chat_timeline_repo.clone(),
             Some(pre_assistant_msg_id.clone()),
             question_state.clone(),
             cancellation_token.clone(),
@@ -1186,6 +1190,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         sess_id,
                         &message_queue,
                         &chat_message_repo,
+                        chat_timeline_repo.clone(),
                         &chat_attachment_repo,
                         &artifact_repo,
                         &activity_event_repo,
@@ -1377,6 +1382,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 session_id,
                                 &message_queue,
                                 &chat_message_repo,
+                                chat_timeline_repo.clone(),
                                 &chat_attachment_repo,
                                 &artifact_repo,
                                 &activity_event_repo,

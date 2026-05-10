@@ -503,6 +503,7 @@ async fn stream_background_previews_heavy_live_tool_result() {
         None,
         None,
         Some(Arc::new(MemoryChatMessageRepository::new())),
+        None,
         Some("msg-live-preview".to_string()),
         None,
         CancellationToken::new(),

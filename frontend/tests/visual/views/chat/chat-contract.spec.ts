@@ -148,7 +148,13 @@ async function seedIdeationConversation(
     }
 
     mockChatApi.reset();
-    mockChatApi.seedConversation(conversation, seededMessages);
+    const timelineSeededMessages = seededMessages.map((message) => {
+      const id = typeof message.id === "string" ? message.id : "";
+      return message.role !== "user" && id.includes("live")
+        ? { ...message, timelineStatus: "streaming" }
+        : message;
+    });
+    mockChatApi.seedConversation(conversation, timelineSeededMessages);
 
     ideationStore.getState().selectSession({
       id: sessionId,
@@ -190,6 +196,12 @@ async function seedIdeationConversation(
       ],
       pageParams: [0],
     });
+    queryClient.setQueryData(["chat", "conversations", conversation.id, "timeline"], {
+      pages: [
+        await mockChatApi.getConversationTimelinePage(conversation.id, 40, null),
+      ],
+      pageParams: [null],
+    });
     chatStore.getState().setActiveConversation(`session:${sessionId}`, conversation.id);
   }, {
     conversation: baseConversation,
@@ -222,6 +234,11 @@ async function replaceConversationMessages(
 
     mockChatApi.replaceMessages(currentConversationId, seededMessages);
     const conversationPayload = await mockChatApi.getConversation(currentConversationId);
+    const timelinePage = await mockChatApi.getConversationTimelinePage(
+      currentConversationId,
+      40,
+      null,
+    );
     queryClient.setQueryData(["chat", "conversations", currentConversationId], conversationPayload);
     queryClient.setQueryData(["chat", "conversations", currentConversationId, "history"], {
       pages: [
@@ -235,6 +252,10 @@ async function replaceConversationMessages(
         },
       ],
       pageParams: [0],
+    });
+    queryClient.setQueryData(["chat", "conversations", currentConversationId, "timeline"], {
+      pages: [timelinePage],
+      pageParams: [null],
     });
   }, {
     currentConversationId: conversationId,

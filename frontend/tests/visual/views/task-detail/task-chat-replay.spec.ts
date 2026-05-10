@@ -386,12 +386,25 @@ async function seedTaskContractConversation(
       throw new Error("Expected mock chat app globals to be available");
     }
 
-    mockChatApi.seedConversation(conversation, seededMessages);
+    const timelineSeededMessages = seededMessages.map((message) => {
+      const id = typeof message.id === "string" ? message.id : "";
+      return message.role !== "user" && !id.includes("final")
+        ? { ...message, timelineStatus: "streaming" }
+        : message;
+    });
+
+    mockChatApi.seedConversation(conversation, timelineSeededMessages);
 
     queryClient.setQueryData(["chat", "conversations", conversation.contextType, conversation.contextId], [conversation]);
     queryClient.setQueryData(["chat", "conversations", conversation.id], {
       conversation,
-      messages: seededMessages,
+      messages: timelineSeededMessages,
+    });
+    queryClient.setQueryData(["chat", "conversations", conversation.id, "timeline"], {
+      pages: [
+        await mockChatApi.getConversationTimelinePage(conversation.id, 40, null),
+      ],
+      pageParams: [null],
     });
 
     chatStore.getState().setActiveConversation(`${conversation.contextType}:${conversation.contextId}`, conversation.id);
@@ -417,9 +430,14 @@ async function replaceTaskContractMessages(
     }
 
     mockChatApi.replaceMessages(conversationId, seededMessages);
+    const timelinePage = await mockChatApi.getConversationTimelinePage(conversationId, 40, null);
     queryClient.setQueryData(["chat", "conversations", conversationId], {
       conversation: await mockChatApi.getConversation(conversationId).then((payload) => payload.conversation),
       messages: seededMessages,
+    });
+    queryClient.setQueryData(["chat", "conversations", conversationId, "timeline"], {
+      pages: [timelinePage],
+      pageParams: [null],
     });
   }, {
     conversationId,

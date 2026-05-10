@@ -7,7 +7,9 @@ import {
   listConversationsPage,
   getConversation,
   getConversationMessagesPage,
+  getConversationTimelinePage,
   getAgentMessageToolCallDetail,
+  getAgentTimelineItemToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,
@@ -598,6 +600,138 @@ describe("chat api", () => {
     expect(result.messages[0]?.conversationId).toBe("c-legacy");
   });
 
+  it("transforms normalized conversation timeline pages into renderable messages", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation: {
+        id: "c-timeline",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: "thread-1",
+        provider_harness: "codex",
+        title: "Timeline",
+        message_count: 1,
+        last_message_at: "2026-01-24T10:00:01Z",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:00:01Z",
+      },
+      items: [
+        {
+          id: "block:msg-1:0",
+          conversation_id: "c-timeline",
+          message_id: "msg-1",
+          run_id: "run-1",
+          sequence: 4,
+          block_index: 0,
+          role: "orchestrator",
+          kind: "text",
+          status: "streaming",
+          content: "Working",
+          content_blocks: [{ type: "text", text: "Working" }],
+          tool_call: null,
+          metadata: null,
+          provider_harness: "codex",
+          provider_session_id: "thread-1",
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_creation_tokens: 1,
+          cache_read_tokens: 2,
+          estimated_usd: 0.01,
+          created_at: "2026-01-24T10:00:01Z",
+          updated_at: "2026-01-24T10:00:02Z",
+          finalized_at: null,
+        },
+        {
+          id: "block:msg-1:1",
+          conversation_id: "c-timeline",
+          message_id: "msg-1",
+          run_id: "run-1",
+          sequence: 5,
+          block_index: 1,
+          role: "orchestrator",
+          kind: "tool_use",
+          status: "finalized",
+          content: "",
+          content_blocks: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "bash",
+              arguments: { command: "cargo test" },
+              detail_ref: {
+                conversation_id: "c-timeline",
+                message_id: "msg-1",
+                tool_call_id: "tool-1",
+                content_block_index: 1,
+                timeline_item_id: "block:msg-1:1",
+              },
+            },
+          ],
+          tool_call: {
+            id: "tool-1",
+            name: "bash",
+            arguments: { command: "cargo test" },
+            result: "ok",
+            detail_ref: {
+              conversation_id: "c-timeline",
+              message_id: "msg-1",
+              tool_call_id: "tool-1",
+              content_block_index: 1,
+              timeline_item_id: "block:msg-1:1",
+            },
+          },
+          metadata: "{\"kind\":\"tool\"}",
+          provider_harness: "codex",
+          provider_session_id: "thread-1",
+          created_at: "2026-01-24T10:00:03Z",
+          updated_at: "2026-01-24T10:00:04Z",
+          finalized_at: "2026-01-24T10:00:04Z",
+        },
+      ],
+      limit: 40,
+      before_sequence: 6,
+      total_item_count: 8,
+      has_older: true,
+      oldest_loaded_sequence: 4,
+      newest_loaded_sequence: 5,
+    });
+
+    const result = await getConversationTimelinePage("c-timeline", 40, 6);
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_conversation_timeline_page", {
+      conversationId: "c-timeline",
+      limit: 40,
+      beforeSequence: 6,
+    });
+    expect(result).toMatchObject({
+      limit: 40,
+      beforeSequence: 6,
+      totalItemCount: 8,
+      hasOlder: true,
+      oldestLoadedSequence: 4,
+      newestLoadedSequence: 5,
+    });
+    expect(result.messages.map((message) => message.id)).toEqual([
+      "block:msg-1:0",
+      "block:msg-1:1",
+    ]);
+    expect(result.messages[0]).toMatchObject({
+      parentMessageId: "msg-1",
+      timelineStatus: "streaming",
+      timelineKind: "text",
+      timelineSequence: 4,
+      inputTokens: 10,
+      providerHarness: "codex",
+    });
+    expect(result.items[1].toolCall?.detailRef).toMatchObject({
+      conversationId: "c-timeline",
+      messageId: "msg-1",
+      toolCallId: "tool-1",
+      contentBlockIndex: 1,
+      timelineItemId: "block:msg-1:1",
+    });
+  });
+
   it("loads a full tool call detail by preview detail ref", async () => {
     mockInvoke.mockResolvedValue({
       tool_call: {
@@ -625,6 +759,48 @@ describe("chat api", () => {
       name: "bash",
       result: "full output",
     });
+  });
+
+  it("loads a full tool call detail by timeline item detail ref", async () => {
+    mockInvoke.mockResolvedValue({
+      tool_call: {
+        id: "tool-1",
+        name: "bash",
+        arguments: { command: "cargo test" },
+        result: "full output",
+      },
+    });
+
+    const result = await getAgentMessageToolCallDetail({
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      timelineItemId: "block:msg-1:1",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_timeline_item_tool_call_detail", {
+      conversationId: "conv-1",
+      timelineItemId: "block:msg-1:1",
+    });
+    expect(result?.toolCall).toMatchObject({
+      id: "tool-1",
+      name: "bash",
+      result: "full output",
+    });
+  });
+
+  it("returns null when a timeline item detail payload is unavailable", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await getAgentTimelineItemToolCallDetail(
+      "conv-1",
+      "missing-timeline-item"
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_timeline_item_tool_call_detail", {
+      conversationId: "conv-1",
+      timelineItemId: "missing-timeline-item",
+    });
+    expect(result).toBeNull();
   });
 
   it("returns null when a preview detail ref no longer has a full result", async () => {
@@ -1317,9 +1493,16 @@ describe("chat api", () => {
     window.__mockChatApi = {
       reset: vi.fn(),
       seedScenario: vi.fn(),
+      seedConversation: vi.fn(),
+      replaceMessages: vi.fn(),
       listScenarios: vi.fn().mockReturnValue([]),
       listConversations: vi.fn(),
+      listConversationsPage: vi.fn(),
+      listAgentSidebarConversations: vi.fn(),
       getConversation: vi.fn(),
+      getConversationTimelinePage: vi.fn(),
+      getConversationStats: vi.fn(),
+      seedAgentConversationWorkspace: vi.fn(),
       getChildSessionStatus: vi.fn().mockResolvedValue({
         session_id: "child-1",
         title: "Mock child session",

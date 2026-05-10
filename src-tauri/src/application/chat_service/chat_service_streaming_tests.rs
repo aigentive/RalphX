@@ -1,7 +1,8 @@
 use super::{
     codex_tool_call_content_block, flush_content_before_error, format_agent_exit_stderr,
-    persist_assistant_message_snapshot, process_codex_stream_background,
-    process_exit_details, process_stream_background, provider_session_ref_for_harness,
+    persist_assistant_message_snapshot, persist_message_text_timeline_item,
+    persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
+    process_stream_background, provider_session_ref_for_harness,
     resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
     upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
@@ -10,7 +11,8 @@ use crate::application::chat_service::chat_service_errors::{ProviderErrorCategor
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
-    ChatContextType, ChatConversationId, ChatMessageId, IdeationSessionId,
+    ChatContextType, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItemStatus,
+    IdeationSessionId, MessageRole,
 };
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
@@ -68,6 +70,7 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         None,
         None,
         None,
+        None,
         CancellationToken::new(),
         None,
         false,
@@ -99,6 +102,7 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
         None,
         None,
         None,
+        None,
         CancellationToken::new(),
         StreamingStateCache::new(),
         None,
@@ -110,6 +114,172 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
         false,
     )
     .await
+}
+
+#[tokio::test]
+async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let message_id = Some("assistant-message-timeline".to_string());
+    let blocks = vec![
+        ContentBlockItem::Text {
+            text: String::new(),
+        },
+        ContentBlockItem::Text {
+            text: "Working through the change".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": "cargo test" }),
+            result: Some(serde_json::json!("ok")),
+            parent_tool_use_id: None,
+            diff_context: Some(serde_json::json!({ "file_path": "src/lib.rs" })),
+        },
+        ContentBlockItem::ToolUse {
+            id: None,
+            name: "Read".to_string(),
+            arguments: serde_json::json!("src/main.rs"),
+            result: None,
+            parent_tool_use_id: Some("tool-1".to_string()),
+            diff_context: None,
+        },
+    ];
+
+    persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.items[0].block_index, 1);
+    assert_eq!(
+        page.items[0].text.as_deref(),
+        Some("Working through the change")
+    );
+    assert_eq!(page.items[1].tool_call_id.as_deref(), Some("tool-1"));
+    assert_eq!(page.items[1].tool_name.as_deref(), Some("bash"));
+    assert_eq!(page.items[1].tool_status.as_deref(), Some("completed"));
+    assert_eq!(page.items[2].tool_call_id, None);
+    assert_eq!(page.items[2].tool_name.as_deref(), Some("Read"));
+    assert_eq!(page.items[2].tool_status.as_deref(), Some("pending"));
+    assert_eq!(
+        page.items[2].tool_input_preview.as_deref(),
+        Some("src/main.rs")
+    );
+    assert!(page.items[2].tool_result_preview.is_none());
+
+    persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &message_id,
+        &blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
+
+    let finalized = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load finalized timeline page");
+    assert_eq!(finalized.items.len(), 3);
+    assert!(finalized
+        .items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    assert!(finalized
+        .items
+        .iter()
+        .all(|item| item.finalized_at.is_some()));
+}
+
+#[tokio::test]
+async fn persist_message_text_timeline_item_skips_empty_and_recovery_context_messages() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+
+    let mut empty = ChatMessage::user_in_session(IdeationSessionId::new(), "");
+    empty.conversation_id = Some(conversation_id);
+    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &empty).await;
+
+    let mut recovery = ChatMessage::user_in_session(IdeationSessionId::new(), "recover");
+    recovery.conversation_id = Some(conversation_id);
+    recovery.metadata = Some(r#"{"recovery_context":true}"#.to_string());
+    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &recovery).await;
+
+    let mut normal = ChatMessage::user_in_session(IdeationSessionId::new(), "hello");
+    normal.conversation_id = Some(conversation_id);
+    normal.provider_harness = Some(AgentHarnessKind::Codex);
+    normal.provider_session_id = Some("thread-user".to_string());
+    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &normal).await;
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].role, MessageRole::User);
+    assert_eq!(page.items[0].text.as_deref(), Some("hello"));
+    assert_eq!(
+        page.items[0].provider_harness,
+        Some(AgentHarnessKind::Codex)
+    );
+    assert_eq!(
+        page.items[0].provider_session_id.as_deref(),
+        Some("thread-user")
+    );
+}
+
+#[tokio::test]
+async fn timeline_persistence_helpers_ignore_missing_repo_or_message_identity() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let blocks = vec![ContentBlockItem::Text {
+        text: "ignored".to_string(),
+    }];
+
+    persist_timeline_snapshot(
+        &None,
+        &conversation_id.as_str(),
+        &Some("assistant-message-missing-repo".to_string()),
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+    persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &None,
+        &blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+
+    let mut no_conversation = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
+    no_conversation.conversation_id = None;
+    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &no_conversation)
+        .await;
+    let mut no_repo = ChatMessage::user_in_session(IdeationSessionId::new(), "ignored");
+    no_repo.conversation_id = Some(conversation_id);
+    persist_message_text_timeline_item(&None, &no_repo).await;
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    assert!(page.items.is_empty());
 }
 
 #[test]

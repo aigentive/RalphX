@@ -220,6 +220,7 @@ export function extractDelegationMetadata(
   );
   const agentName =
     getFirstString(resultRecord, "agent_name", "agentName")
+    ?? getFirstString(session, "agent_name", "agentName")
     ?? getFirstString(argRecord, "agent_name", "agentName");
   const prompt = getFirstString(argRecord, "prompt");
   const title = getFirstString(argRecord, "title");
