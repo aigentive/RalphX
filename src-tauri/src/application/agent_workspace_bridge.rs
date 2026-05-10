@@ -860,6 +860,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatches_prepared_wakeup_without_rescanning_events() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        create_project(&state, &project_id).await;
+        let conversation_id = create_workspace(
+            &state,
+            project_id.clone(),
+            "Linked workspace",
+            Some("session-1"),
+        )
+        .await;
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:verified",
+                project_id.as_str(),
+                &json!({ "session_id": "session-1", "gap_score": 1 }).to_string(),
+            )
+            .await
+            .unwrap();
+        let wakeup = prepare_agent_workspace_bridge_wakeup(&state, &conversation_id)
+            .await
+            .unwrap()
+            .expect("wakeup should be prepared");
+        let chat_service = crate::application::MockChatService::new();
+
+        let result = dispatch_prepared_agent_workspace_bridge_wakeup(&state, &chat_service, wakeup)
+            .await
+            .unwrap();
+
+        assert_eq!(result.event_count, 1);
+        assert!(!result.agent_run_id.is_empty());
+        assert_eq!(chat_service.call_count(), 1);
+        let options = chat_service.get_sent_options().await;
+        assert_eq!(options[0].conversation_id_override, Some(conversation_id));
+
+        let messages = state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::System);
+    }
+
+    #[tokio::test]
     async fn does_not_prepare_wakeup_for_unlinked_edit_workspace() {
         let state = AppState::new_test();
         let project_id = ProjectId::from_string("project-1".to_string());
@@ -1099,11 +1145,7 @@ mod tests {
             .get_by_conversation(&conversation_id)
             .await
             .unwrap();
-        assert_eq!(
-            messages.len(),
-            1,
-            "bridge dispatch records one hidden marker"
-        );
+        assert_eq!(messages.len(), 1, "bridge dispatch records one hidden marker");
         assert_eq!(messages[0].role, MessageRole::System);
         assert!(
             !messages[0].content.contains("gap_score"),

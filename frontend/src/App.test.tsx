@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { chatApi } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { chatKeys } from "@/hooks/useChat";
 import { getQueryClient } from "@/lib/queryClient";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
@@ -543,6 +544,46 @@ describe("App", () => {
 
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
       "Workspace/Agents/List worktree directory contents"
+    );
+    expect(getMessagesPage).not.toHaveBeenCalled();
+  });
+
+  it("uses the project agent conversation list cache for the Agents breadcrumb", () => {
+    const queryClient = getQueryClient();
+    const getMessagesPage = vi.spyOn(chatApi, "getConversationMessagesPage");
+    const conversation = {
+      id: "conversation-project-list-cache",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Hydrated from project list",
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:00:00Z",
+      archivedAt: null,
+    } as const;
+
+    useAgentSessionStore.setState({
+      selectedConversationId: conversation.id,
+    });
+    queryClient.setQueryData(agentConversationKeys.projectList("demo-project-1", false, ""), {
+      pages: [
+        {
+          conversations: [conversation],
+          total: 1,
+          offset: 0,
+          hasMore: false,
+        },
+      ],
+      pageParams: [0],
+    });
+
+    render(<App />);
+
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+      "Workspace/Agents/Hydrated from project list"
     );
     expect(getMessagesPage).not.toHaveBeenCalled();
   });

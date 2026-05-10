@@ -27,6 +27,7 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::agent_workspace_bridge::{
     dispatch_prepared_agent_workspace_bridge_wakeup, prepare_agent_workspace_bridge_wakeup,
+    AgentWorkspaceBridgeWakeUp,
 };
 use crate::application::agent_workspace_pr_description::draft_agent_workspace_pr_description;
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
@@ -1260,34 +1261,11 @@ async fn wake_agent_workspace_for_bridge_events_on_read(
     execution_state: &Arc<ExecutionState>,
     conversation_id: &ChatConversationId,
 ) {
-    let prepare_started_at = Instant::now();
-    let wake_up = match prepare_agent_workspace_bridge_wakeup(state, conversation_id).await {
-        Ok(wake_up) => wake_up,
-        Err(error) => {
-            tracing::warn!(
-                conversation_id = %conversation_id,
-                error = %error,
-                "Failed to prepare agent workspace bridge wake-up"
-            );
-            return;
-        }
-    };
-
-    let Some(wake_up) = wake_up else {
-        tracing::debug!(
-            conversation_id = %conversation_id,
-            duration_ms = prepare_started_at.elapsed().as_millis(),
-            "Agent workspace bridge wake-up not needed for conversation read"
-        );
+    let Some(wake_up) =
+        prepare_agent_workspace_bridge_wakeup_on_read_for_app_state(state, conversation_id).await
+    else {
         return;
     };
-
-    tracing::info!(
-        conversation_id = %conversation_id,
-        event_count = wake_up.event_keys.len(),
-        prepare_duration_ms = prepare_started_at.elapsed().as_millis(),
-        "Prepared agent workspace bridge wake-up for conversation read"
-    );
 
     let service = create_chat_service(state, app, execution_state, None);
     if let Err(error) =
@@ -1299,6 +1277,42 @@ async fn wake_agent_workspace_for_bridge_events_on_read(
             "Failed to wake agent workspace for bridge events"
         );
     }
+}
+
+#[doc(hidden)]
+pub async fn prepare_agent_workspace_bridge_wakeup_on_read_for_app_state(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<AgentWorkspaceBridgeWakeUp> {
+    let prepare_started_at = Instant::now();
+    let wake_up = match prepare_agent_workspace_bridge_wakeup(state, conversation_id).await {
+        Ok(wake_up) => wake_up,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                error = %error,
+                "Failed to prepare agent workspace bridge wake-up"
+            );
+            return None;
+        }
+    };
+
+    let Some(wake_up) = wake_up else {
+        tracing::debug!(
+            conversation_id = %conversation_id,
+            duration_ms = prepare_started_at.elapsed().as_millis(),
+            "Agent workspace bridge wake-up not needed for conversation read"
+        );
+        return None;
+    };
+
+    tracing::info!(
+        conversation_id = %conversation_id,
+        event_count = wake_up.event_keys.len(),
+        prepare_duration_ms = prepare_started_at.elapsed().as_millis(),
+        "Prepared agent workspace bridge wake-up for conversation read"
+    );
+    Some(wake_up)
 }
 
 /// Parse context type string to enum
@@ -1540,7 +1554,6 @@ pub async fn start_agent_conversation(
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle,
 ) -> Result<StartAgentConversationResponse, String> {
-    let command_started_at = Instant::now();
     tracing::info!(
         project_id = %input.project_id,
         content_len = input.content.len(),
@@ -1602,7 +1615,6 @@ pub async fn start_agent_conversation(
     };
     conversation.set_agent_mode(Some(mode));
     let should_create_conversation = draft_conversation_id.is_none();
-    let workspace_prepare_started_at = Instant::now();
     let workspace = if agent_mode_requires_workspace(mode) {
         Some(
             prepare_agent_conversation_workspace(
@@ -1627,16 +1639,7 @@ pub async fn start_agent_conversation(
     } else {
         None
     };
-    tracing::info!(
-        conversation_id = %conversation.id,
-        mode = ?mode,
-        has_workspace = workspace.is_some(),
-        duration_ms = workspace_prepare_started_at.elapsed().as_millis(),
-        elapsed_ms = command_started_at.elapsed().as_millis(),
-        "start_agent_conversation workspace preparation phase completed"
-    );
 
-    let conversation_persist_started_at = Instant::now();
     let conversation = if should_create_conversation {
         state
             .chat_conversation_repo
@@ -1667,14 +1670,6 @@ pub async fn start_agent_conversation(
         },
         None => None,
     };
-    tracing::info!(
-        conversation_id = %conversation.id,
-        should_create_conversation,
-        has_workspace = workspace.is_some(),
-        duration_ms = conversation_persist_started_at.elapsed().as_millis(),
-        elapsed_ms = command_started_at.elapsed().as_millis(),
-        "start_agent_conversation conversation persistence phase completed"
-    );
 
     if should_create_conversation {
         let _ = app.emit(
@@ -1699,7 +1694,6 @@ pub async fn start_agent_conversation(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
-    let runtime_selection_started_at = Instant::now();
     let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
         &state,
         harness_override,
@@ -1707,14 +1701,6 @@ pub async fn start_agent_conversation(
         input.logical_effort,
     )
     .await?;
-    tracing::info!(
-        conversation_id = %conversation.id,
-        harness_override = ?harness_override,
-        duration_ms = runtime_selection_started_at.elapsed().as_millis(),
-        elapsed_ms = command_started_at.elapsed().as_millis(),
-        "start_agent_conversation runtime selection phase completed"
-    );
-    let send_started_at = Instant::now();
     let send_result = service
         .send_message(
             ChatContextType::Project,
@@ -1732,14 +1718,6 @@ pub async fn start_agent_conversation(
         .await
         .map(SendAgentMessageResponse::from)
         .map_err(|error| error.to_string())?;
-    tracing::info!(
-        conversation_id = %conversation.id,
-        duration_ms = send_started_at.elapsed().as_millis(),
-        elapsed_ms = command_started_at.elapsed().as_millis(),
-        was_queued = send_result.was_queued,
-        queued_as_pending = send_result.queued_as_pending,
-        "start_agent_conversation send phase completed"
-    );
 
     let workspace_response = match workspace {
         Some(workspace) => {
