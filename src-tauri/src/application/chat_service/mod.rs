@@ -3624,6 +3624,65 @@ mod stale_registry_gate_tests {
 }
 
 #[cfg(test)]
+mod bulk_running_state_tests {
+    use super::{ChatContextType, ChatService};
+    use crate::application::AppState;
+    use crate::commands::ExecutionState;
+    use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_intersects_requested_project_ids() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-running"))
+            .await;
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-unrequested"))
+            .await;
+        registry
+            .set_running(RunningAgentKey::new("ideation", "conv-running"))
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(registry);
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let requested_ids = vec![
+            "conv-running".to_string(),
+            "conv-idle".to_string(),
+            "conv-running".to_string(),
+            String::new(),
+        ];
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &requested_ids)
+            .await;
+
+        assert_eq!(states.get("conv-running"), Some(&true));
+        assert_eq!(states.get("conv-idle"), Some(&false));
+        assert_eq!(states.get("conv-unrequested"), None);
+        assert_eq!(states.get(""), None);
+        assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_returns_empty_for_empty_request() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-running"))
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(registry);
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &[])
+            .await;
+
+        assert!(states.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod chat_service_redaction_tests;
 #[cfg(test)]
 mod freshness_routing_tests;

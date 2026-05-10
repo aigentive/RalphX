@@ -19,7 +19,10 @@ vi.mock("@/api/chat", () => ({
   },
 }));
 
-function conversation(id: string): AgentConversation {
+function conversation(
+  id: string,
+  overrides: Partial<AgentConversation> = {}
+): AgentConversation {
   const now = "2026-05-10T12:00:00.000Z";
   return {
     id,
@@ -35,6 +38,7 @@ function conversation(id: string): AgentConversation {
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
+    ...overrides,
   };
 }
 
@@ -109,5 +113,70 @@ describe("useAgentSidebarRunningStates", () => {
     });
 
     expect(mockGetAgentRunningStates).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates project conversations and ignores non-project conversations", async () => {
+    const projectConversation = conversation("conv-project");
+    const duplicateProjectConversation = conversation("conv-project");
+    const ideationConversation = conversation("conv-ideation", {
+      contextType: "ideation",
+      contextId: "session-1",
+      ideationSessionId: "session-1",
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates(
+        [projectConversation, duplicateProjectConversation, ideationConversation],
+        true
+      )
+    );
+
+    await act(async () => {});
+
+    expect(mockGetAgentRunningStates).toHaveBeenCalledWith("project", [
+      "conv-project",
+    ]);
+  });
+
+  it("does not start a second poll while a previous poll is in flight", async () => {
+    let resolvePoll!: (states: Record<string, boolean>) => void;
+    mockGetAgentRunningStates.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvePoll = resolve;
+        })
+    );
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([conversation("conv-pending")], true)
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    expect(mockGetAgentRunningStates).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolvePoll({ "conv-pending": false });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+
+    expect(mockGetAgentRunningStates).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores bulk polling errors", async () => {
+    mockGetAgentRunningStates.mockRejectedValueOnce(new Error("liveness failed"));
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([conversation("conv-error")], true)
+    );
+
+    await act(async () => {});
+
+    expect(useChatStore.getState().agentStatus).toEqual({});
   });
 });

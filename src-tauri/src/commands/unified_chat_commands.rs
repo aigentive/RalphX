@@ -3996,9 +3996,18 @@ pub async fn get_agent_running_states(
     execution_state: State<'_, Arc<ExecutionState>>,
     app: tauri::AppHandle,
 ) -> Result<HashMap<String, bool>, String> {
-    let context_type = parse_context_type(&context_type)?;
-
     let service = create_chat_service(&state, app, &execution_state, None);
+
+    get_agent_running_states_for_service(&service, context_type, context_ids).await
+}
+
+#[doc(hidden)]
+pub async fn get_agent_running_states_for_service(
+    service: &dyn ChatService,
+    context_type: String,
+    context_ids: Vec<String>,
+) -> Result<HashMap<String, bool>, String> {
+    let context_type = parse_context_type(&context_type)?;
 
     Ok(service
         .get_agent_running_states(context_type, &context_ids)

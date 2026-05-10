@@ -13,12 +13,10 @@ use ralphx_lib::application::pr_startup_recovery::{
     cleanup_terminal_agent_workspace_local_artifacts_on_startup,
     cleanup_terminal_plan_branch_local_artifacts_on_startup,
 };
-use ralphx_lib::application::{
-    AppState, ChatService, MockChatService, PrPollerRegistry, SendResult,
-};
+use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendResult};
 use ralphx_lib::commands::unified_chat_commands::{
-    mark_agent_workspace_publish_failure, parse_context_type,
-    send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
+    get_agent_running_states_for_service, mark_agent_workspace_publish_failure,
+    parse_context_type, send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
     AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse, SendAgentMessageResponse,
 };
 use ralphx_lib::commands::ExecutionState;
@@ -688,9 +686,10 @@ async fn bulk_agent_running_states_returns_requested_context_map() {
         "conv-idle".to_string(),
         "conv-running".to_string(),
     ];
-    let states = service
-        .get_agent_running_states(ChatContextType::Project, &requested_ids)
-        .await;
+    let states =
+        get_agent_running_states_for_service(&service, "project".to_string(), requested_ids)
+            .await
+            .expect("bulk running states should resolve");
 
     assert_eq!(states.get("conv-running"), Some(&true));
     assert_eq!(states.get("conv-idle"), Some(&false));
