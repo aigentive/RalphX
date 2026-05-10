@@ -3994,9 +3994,9 @@ pub async fn get_agent_running_states(
     context_ids: Vec<String>,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
-    app: tauri::AppHandle,
 ) -> Result<HashMap<String, bool>, String> {
-    let service = create_chat_service(&state, app, &execution_state, None);
+    let service =
+        state.build_chat_service_with_execution_state(Arc::clone(execution_state.inner()));
 
     get_agent_running_states_for_service(&service, context_type, context_ids).await
 }

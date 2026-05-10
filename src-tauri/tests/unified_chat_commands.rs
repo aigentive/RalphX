@@ -30,8 +30,9 @@ use ralphx_lib::domain::entities::{
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
 };
-use ralphx_lib::domain::services::QueuedMessage;
+use ralphx_lib::domain::services::{MemoryRunningAgentRegistry, QueuedMessage, RunningAgentKey};
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
+use tauri::Manager;
 
 #[test]
 fn test_parse_context_type() {
@@ -672,7 +673,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
 }
 
 #[tokio::test]
-async fn bulk_agent_running_states_returns_requested_context_map() {
+async fn ipc_contract_bulk_agent_running_states_returns_requested_context_map() {
     let service = MockChatService::new();
     service
         .set_agent_running("project/conv-running".to_string(), true)
@@ -690,6 +691,37 @@ async fn bulk_agent_running_states_returns_requested_context_map() {
         get_agent_running_states_for_service(&service, "project".to_string(), requested_ids)
             .await
             .expect("bulk running states should resolve");
+
+    assert_eq!(states.get("conv-running"), Some(&true));
+    assert_eq!(states.get("conv-idle"), Some(&false));
+    assert_eq!(states.get("conv-unrequested"), None);
+    assert_eq!(states.len(), 2);
+}
+
+#[tokio::test]
+async fn ipc_contract_get_agent_running_states_command_uses_registry_truth() {
+    let registry = Arc::new(MemoryRunningAgentRegistry::new());
+    registry
+        .set_running(RunningAgentKey::new("project", "conv-running"))
+        .await;
+    registry
+        .set_running(RunningAgentKey::new("project", "conv-unrequested"))
+        .await;
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_sqlite_test_with_registry(registry))
+        .manage(Arc::new(ExecutionState::new()))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let states = ralphx_lib::commands::unified_chat_commands::get_agent_running_states(
+        "project".to_string(),
+        vec!["conv-running".to_string(), "conv-idle".to_string()],
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("bulk running states command should resolve");
 
     assert_eq!(states.get("conv-running"), Some(&true));
     assert_eq!(states.get("conv-idle"), Some(&false));

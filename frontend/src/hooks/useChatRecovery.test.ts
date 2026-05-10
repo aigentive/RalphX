@@ -450,6 +450,28 @@ describe("useChatRecovery", () => {
       expect(props.setAgentRunning).toHaveBeenCalledWith("task_execution:task-1", false);
     });
 
+    it("should rehydrate idle state when app becomes visible and agent is still running", async () => {
+      mockIsAgentRunning.mockResolvedValue(true);
+      const props = makeProps({ isAgentRunning: false });
+      renderHook(() => useChatRecovery(props));
+
+      await act(async () => {});
+      mockIsAgentRunning.mockClear();
+      props.setAgentRunning.mockClear();
+
+      await act(async () => {
+        Object.defineProperty(document, "visibilityState", {
+          value: "visible",
+          writable: true,
+          configurable: true,
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(mockIsAgentRunning).toHaveBeenCalledWith("task_execution", "task-1");
+      expect(props.setAgentRunning).toHaveBeenCalledWith("task_execution:task-1", true);
+    });
+
     it("should remove listener on unmount", () => {
       mockIsAgentRunning.mockResolvedValue(true);
       const removeEventSpy = vi.spyOn(document, "removeEventListener");
