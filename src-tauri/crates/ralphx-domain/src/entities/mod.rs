@@ -8,6 +8,7 @@ pub mod artifact;
 pub mod artifact_flow;
 pub mod chat_attachment;
 pub mod chat_conversation;
+pub mod chat_timeline;
 pub mod delegated_session;
 pub mod execution_plan;
 pub mod ideation;
@@ -68,6 +69,10 @@ pub use chat_conversation::{
     legacy_claude_session_alias, normalize_provider_session_compatibility,
     AttributionBackfillStatus, ChatContextType, ChatConversation, ChatConversationId,
     ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+};
+pub use chat_timeline::{
+    ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+    ChatTimelinePage,
 };
 pub use delegated_session::{DelegatedSession, DelegatedSessionId};
 pub use execution_plan::{ExecutionPlan, ExecutionPlanStatus, ParseExecutionPlanStatusError};

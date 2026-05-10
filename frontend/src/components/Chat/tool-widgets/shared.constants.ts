@@ -24,6 +24,7 @@ export interface ToolCallDetailRef {
   messageId: string;
   toolCallId?: string | null;
   contentBlockIndex?: number | null;
+  timelineItemId?: string | null;
 }
 
 /**

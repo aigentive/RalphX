@@ -18,6 +18,7 @@ import {
   mockCreateConversation,
   mockGetAgentConversationWorkspace,
   mockGetConversation,
+  mockGetConversationTimelinePage,
   mockGetConversationStats,
   mockListAgentSidebarConversations,
   mockListAgentConversationWorkspacePublicationEvents,
@@ -39,6 +40,7 @@ import type {
   AgentConversationWorkspace,
   AgentSidebarConversationsInput,
   ChatMessageResponse,
+  ChatTimelineItemResponse,
 } from "@/api/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
 
@@ -253,6 +255,40 @@ function toSnakeMessage(message: ChatMessageResponse) {
     cache_read_tokens: message.cacheReadTokens,
     estimated_usd: message.estimatedUsd,
     created_at: message.createdAt,
+  };
+}
+
+function toSnakeTimelineItem(item: ChatTimelineItemResponse) {
+  return {
+    id: item.id,
+    conversation_id: item.conversationId,
+    message_id: item.messageId,
+    run_id: item.runId,
+    sequence: item.sequence,
+    block_index: item.blockIndex,
+    role: item.role,
+    kind: item.kind,
+    status: item.status,
+    content: item.content,
+    content_blocks: item.contentBlocks,
+    tool_call: item.toolCall,
+    metadata: item.metadata,
+    provider_harness: item.providerHarness,
+    provider_session_id: item.providerSessionId,
+    upstream_provider: item.upstreamProvider,
+    provider_profile: item.providerProfile,
+    logical_model: item.logicalModel,
+    effective_model_id: item.effectiveModelId,
+    logical_effort: item.logicalEffort,
+    effective_effort: item.effectiveEffort,
+    input_tokens: item.inputTokens,
+    output_tokens: item.outputTokens,
+    cache_creation_tokens: item.cacheCreationTokens,
+    cache_read_tokens: item.cacheReadTokens,
+    estimated_usd: item.estimatedUsd,
+    created_at: item.createdAt,
+    updated_at: item.updatedAt,
+    finalized_at: item.finalizedAt,
   };
 }
 
@@ -705,6 +741,38 @@ const commandHandlers: Record<
       offset,
       total_message_count: payload.messages.length,
       has_older: offset + messages.length < payload.messages.length,
+    };
+  },
+  get_agent_conversation_timeline_page: async (args) => {
+    const controller =
+      typeof window !== "undefined" ? window.__mockChatApi : undefined;
+    const limit = (args.limit as number | undefined) ?? 40;
+    const beforeSequence =
+      typeof args.beforeSequence === "number"
+        ? args.beforeSequence
+        : typeof args.before_sequence === "number"
+          ? args.before_sequence
+          : null;
+    const payload = controller
+      ? await controller.getConversationTimelinePage(
+          args.conversationId as string,
+          limit,
+          beforeSequence
+        )
+      : await mockGetConversationTimelinePage(
+          args.conversationId as string,
+          limit,
+          beforeSequence
+        );
+    return {
+      conversation: toSnakeConversation(payload.conversation),
+      items: payload.items.map(toSnakeTimelineItem),
+      limit: payload.limit,
+      before_sequence: payload.beforeSequence,
+      total_item_count: payload.totalItemCount,
+      has_older: payload.hasOlder,
+      oldest_loaded_sequence: payload.oldestLoadedSequence,
+      newest_loaded_sequence: payload.newestLoadedSequence,
     };
   },
   get_agent_conversation_workspace: async (args) => {

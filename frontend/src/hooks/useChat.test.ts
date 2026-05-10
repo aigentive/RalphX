@@ -15,12 +15,17 @@ import {
   useConversations,
   useConversation,
   useConversationHistoryWindow,
+  useConversationTimelineWindow,
   useAgentRunStatus,
   chatKeys,
+  getCachedConversationMessages,
+  addOptimisticUserMessageToConversationCache,
+  removeOptimisticMessageFromConversationCache,
 } from "./useChat";
 import {
   chatApi,
   type ConversationMessagesPageResponse,
+  type ConversationTimelinePageResponse,
   type SendAgentMessageResult,
 } from "@/api/chat";
 import type { ChatMessageResponse } from "@/api/chat";
@@ -57,6 +62,7 @@ vi.mock("@/api/chat", () => ({
     listConversations: vi.fn(),
     getConversation: vi.fn(),
     getConversationMessagesPage: vi.fn(),
+    getConversationTimelinePage: vi.fn(),
     createConversation: vi.fn(),
     getAgentRunStatus: vi.fn(),
   },
@@ -132,6 +138,47 @@ const mockAgentRun: AgentRun = {
   errorMessage: null,
 };
 
+function timelinePage(
+  messages: ChatMessageResponse[],
+  options: Partial<ConversationTimelinePageResponse> = {}
+): ConversationTimelinePageResponse {
+  const items = messages.map((message, index) => ({
+    id: message.id,
+    conversationId: message.conversationId ?? "conv-1",
+    messageId: message.parentMessageId ?? message.id,
+    runId: null,
+    sequence: message.timelineSequence ?? index + 1,
+    blockIndex: index,
+    role: message.role,
+    kind: message.timelineKind ?? "text",
+    status: message.timelineStatus ?? "finalized",
+    content: message.content,
+    contentBlocks: message.contentBlocks ?? [{ type: "text", text: message.content }],
+    toolCall: message.toolCalls?.[0] ?? null,
+    metadata: message.metadata,
+    providerHarness: message.providerHarness ?? null,
+    providerSessionId: message.providerSessionId ?? null,
+    createdAt: message.createdAt,
+    updatedAt: message.createdAt,
+    finalizedAt: message.timelineStatus === "streaming" ? null : message.createdAt,
+    asMessage: message,
+  }));
+
+  return {
+    conversation: mockConversation1,
+    items,
+    messages,
+    limit: options.limit ?? messages.length,
+    beforeSequence: options.beforeSequence ?? null,
+    totalItemCount: options.totalItemCount ?? messages.length,
+    hasOlder: options.hasOlder ?? false,
+    oldestLoadedSequence:
+      options.oldestLoadedSequence ?? items[0]?.sequence ?? null,
+    newestLoadedSequence:
+      options.newestLoadedSequence ?? items[items.length - 1]?.sequence ?? null,
+  };
+}
+
 // Test contexts
 const ideationContext: ChatContext = {
   view: "ideation",
@@ -200,6 +247,15 @@ describe("chatKeys", () => {
       "conversations",
       "ideation",
       "session-1",
+    ]);
+  });
+
+  it("should generate correct key for conversation timeline", () => {
+    expect(chatKeys.conversationTimeline("conv-1")).toEqual([
+      "chat",
+      "conversations",
+      "conv-1",
+      "timeline",
     ]);
   });
 
@@ -409,6 +465,148 @@ describe("useConversationHistoryWindow", () => {
     });
 
     expect(chatApi.getConversationMessagesPage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("useConversationTimelineWindow", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("loads newest visible timeline items and then older pages by sequence", async () => {
+    const newestBlock: ChatMessageResponse = {
+      ...mockMessage2,
+      id: "block:message-2:1",
+      parentMessageId: "message-2",
+      content: "tool block",
+      timelineSequence: 2,
+      timelineKind: "tool_use",
+      timelineStatus: "finalized",
+    };
+    const olderBlock: ChatMessageResponse = {
+      ...mockMessage1,
+      id: "block:message-1:0",
+      parentMessageId: "message-1",
+      timelineSequence: 1,
+      timelineKind: "text",
+      timelineStatus: "finalized",
+    };
+
+    vi.mocked(chatApi.getConversationTimelinePage)
+      .mockResolvedValueOnce(
+        timelinePage([newestBlock], {
+          limit: 1,
+          totalItemCount: 2,
+          hasOlder: true,
+          oldestLoadedSequence: 2,
+          newestLoadedSequence: 2,
+        })
+      )
+      .mockResolvedValueOnce(
+        timelinePage([olderBlock], {
+          limit: 1,
+          beforeSequence: 2,
+          totalItemCount: 2,
+          hasOlder: false,
+          oldestLoadedSequence: 1,
+          newestLoadedSequence: 1,
+        })
+      );
+
+    const { result } = renderHook(
+      () => useConversationTimelineWindow("conv-1", { pageSize: 1 }),
+      {
+        wrapper: createWrapper(),
+      }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+      "block:message-2:1",
+    ]);
+    expect(result.current.loadedStartIndex).toBe(1);
+    expect(result.current.hasOlderMessages).toBe(true);
+    expect(chatApi.getConversationTimelinePage).toHaveBeenCalledWith(
+      "conv-1",
+      1,
+      null
+    );
+
+    await act(async () => {
+      await result.current.fetchOlderMessages();
+    });
+
+    await waitFor(() =>
+      expect(result.current.data?.messages.map((message) => message.id)).toEqual([
+        "block:message-1:0",
+        "block:message-2:1",
+      ])
+    );
+    expect(result.current.loadedStartIndex).toBe(0);
+    expect(chatApi.getConversationTimelinePage).toHaveBeenNthCalledWith(
+      2,
+      "conv-1",
+      1,
+      2
+    );
+  });
+
+  it("merges timeline cache messages and maintains optimistic timeline items", () => {
+    const { queryClient } = createWrapperWithClient();
+    queryClient.setQueryData(chatKeys.conversationTimeline("conv-1"), {
+      pages: [
+        timelinePage([
+          {
+            ...mockMessage2,
+            id: "block:message-2:0",
+            parentMessageId: "message-2",
+            timelineSequence: 4,
+          },
+        ], {
+          totalItemCount: 4,
+          oldestLoadedSequence: 4,
+          newestLoadedSequence: 4,
+        }),
+      ],
+      pageParams: [null],
+    } satisfies InfiniteData<ConversationTimelinePageResponse>);
+
+    expect(
+      getCachedConversationMessages(queryClient, "conv-1").map((message) => message.id)
+    ).toEqual(["block:message-2:0"]);
+
+    const optimistic = addOptimisticUserMessageToConversationCache(
+      queryClient,
+      "conv-1",
+      "hello from user"
+    );
+    const timelineData =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    expect(timelineData?.pages[0]?.messages.map((message) => message.id)).toEqual([
+      "block:message-2:0",
+      `optimistic-timeline:${optimistic.id}`,
+    ]);
+    expect(timelineData?.pages[0]?.newestLoadedSequence).toBe(5);
+
+    removeOptimisticMessageFromConversationCache(
+      queryClient,
+      "conv-1",
+      optimistic.id
+    );
+    const trimmed =
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1")
+      );
+    expect(trimmed?.pages[0]?.messages.map((message) => message.id)).toEqual([
+      "block:message-2:0",
+    ]);
+    expect(trimmed?.pages[0]?.newestLoadedSequence).toBe(4);
   });
 });
 

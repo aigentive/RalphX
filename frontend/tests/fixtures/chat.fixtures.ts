@@ -120,7 +120,7 @@ export async function setupIdeationChatScenario(
 
     const conversations = await mockChatApi.listConversations(contextType, contextId);
     const conversation = await mockChatApi.getConversation(conversationId);
-    const seedConversationCache = (
+    const seedConversationCache = async (
       conversationsPayload: unknown,
       conversationPayload: typeof conversation,
     ) => {
@@ -148,9 +148,18 @@ export async function setupIdeationChatScenario(
           pageParams: [0],
         },
       );
+      queryClient.setQueryData(
+        ["chat", "conversations", conversationId, "timeline"],
+        {
+          pages: [
+            await mockChatApi.getConversationTimelinePage(conversationId, 500, null),
+          ],
+          pageParams: [null],
+        },
+      );
     };
 
-    seedConversationCache(conversations, conversation);
+    await seedConversationCache(conversations, conversation);
 
     chatStore?.getState().setActiveConversation(`session:${contextId}`, conversationId);
   }, replayContext);
@@ -206,7 +215,7 @@ export async function setupTaskChatScenario(page: Page, scenario: TaskChatScenar
       currentContextId,
     );
     const conversation = await mockChatApi.getConversation(currentConversationId);
-    const seedConversationCache = (
+    const seedConversationCache = async (
       conversationsPayload: unknown,
       conversationPayload: typeof conversation,
     ) => {
@@ -234,9 +243,22 @@ export async function setupTaskChatScenario(page: Page, scenario: TaskChatScenar
           pageParams: [0],
         },
       );
+      queryClient.setQueryData(
+        ["chat", "conversations", currentConversationId, "timeline"],
+        {
+          pages: [
+            await mockChatApi.getConversationTimelinePage(
+              currentConversationId,
+              40,
+              null,
+            ),
+          ],
+          pageParams: [null],
+        },
+      );
     };
 
-    seedConversationCache(conversations, conversation);
+    await seedConversationCache(conversations, conversation);
 
     chatStore?.getState().setActiveConversation(
       `${currentContextType}:${currentContextId}`,

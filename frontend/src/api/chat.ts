@@ -65,11 +65,47 @@ export interface ChatMessageResponse {
   cacheCreationTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
+  timelineStatus?: string | null;
+  timelineKind?: string | null;
+  timelineSequence?: number | null;
   createdAt: string;
 }
 
 export interface AgentToolCallDetailResponse {
   toolCall: ToolCall;
+}
+
+export interface ChatTimelineItemResponse {
+  id: string;
+  conversationId: string;
+  messageId: string | null;
+  runId: string | null;
+  sequence: number;
+  blockIndex: number;
+  role: string;
+  kind: string;
+  status: string;
+  content: string;
+  contentBlocks: ContentBlockItem[];
+  toolCall: ToolCall | null;
+  metadata: string | null;
+  providerHarness: string | null;
+  providerSessionId: string | null;
+  upstreamProvider?: string | null;
+  providerProfile?: string | null;
+  logicalModel?: string | null;
+  effectiveModelId?: string | null;
+  logicalEffort?: string | null;
+  effectiveEffort?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  cacheReadTokens?: number | null;
+  estimatedUsd?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  finalizedAt: string | null;
+  asMessage: ChatMessageResponse;
 }
 
 // ============================================================================
@@ -105,6 +141,10 @@ function normalizeToolCallDetailRef(raw: unknown): ToolCallDetailRef | undefined
   }
   if (typeof contentBlockIndex === "number") {
     detailRef.contentBlockIndex = contentBlockIndex;
+  }
+  const timelineItemId = record.timeline_item_id ?? record.timelineItemId;
+  if (typeof timelineItemId === "string") {
+    detailRef.timelineItemId = timelineItemId;
   }
   return detailRef;
 }
@@ -615,6 +655,18 @@ export interface ConversationMessagesPageResponse {
   hasOlder: boolean;
 }
 
+export interface ConversationTimelinePageResponse {
+  conversation: ChatConversation;
+  items: ChatTimelineItemResponse[];
+  messages: ChatMessageResponse[];
+  limit: number;
+  beforeSequence: number | null;
+  totalItemCount: number;
+  hasOlder: boolean;
+  oldestLoadedSequence: number | null;
+  newestLoadedSequence: number | null;
+}
+
 const SnakeUsageTotalsResponseSchema = z.object({
   input_tokens: z.number(),
   output_tokens: z.number(),
@@ -895,6 +947,54 @@ type RawConversationMessagesPage = z.infer<
   typeof ConversationMessagesPageResponseSchema
 >;
 
+const AgentTimelineItemSchema = z.object({
+  id: z.string(),
+  conversation_id: z.string(),
+  message_id: z.string().nullable().optional(),
+  run_id: z.string().nullable().optional(),
+  sequence: z.number().int(),
+  block_index: z.number().int(),
+  role: z.string(),
+  kind: z.string(),
+  status: z.string(),
+  content: z.string(),
+  content_blocks: z.any(),
+  tool_call: z.any().nullable().optional(),
+  metadata: z.string().nullable().optional(),
+  provider_harness: z.string().nullable().optional(),
+  provider_session_id: z.string().nullable().optional(),
+  upstream_provider: z.string().nullable().optional(),
+  provider_profile: z.string().nullable().optional(),
+  logical_model: z.string().nullable().optional(),
+  effective_model_id: z.string().nullable().optional(),
+  logical_effort: z.string().nullable().optional(),
+  effective_effort: z.string().nullable().optional(),
+  input_tokens: z.number().nullable().optional(),
+  output_tokens: z.number().nullable().optional(),
+  cache_creation_tokens: z.number().nullable().optional(),
+  cache_read_tokens: z.number().nullable().optional(),
+  estimated_usd: z.number().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  finalized_at: z.string().nullable().optional(),
+});
+
+const ConversationTimelinePageResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  items: z.array(AgentTimelineItemSchema),
+  limit: z.number().int().nonnegative(),
+  before_sequence: z.number().int().nullable().optional(),
+  total_item_count: z.number().int().nonnegative(),
+  has_older: z.boolean(),
+  oldest_loaded_sequence: z.number().int().nullable().optional(),
+  newest_loaded_sequence: z.number().int().nullable().optional(),
+});
+
+type RawAgentTimelineItem = z.infer<typeof AgentTimelineItemSchema>;
+type RawConversationTimelinePage = z.infer<
+  typeof ConversationTimelinePageResponseSchema
+>;
+
 function transformAgentMessage(
   raw: RawAgentMessage,
   fallbackConversationId?: string
@@ -942,6 +1042,98 @@ function transformConversationMessagesPage(
     offset: raw.offset,
     totalMessageCount: raw.total_message_count,
     hasOlder: raw.has_older,
+  };
+}
+
+function transformTimelineItem(
+  raw: RawAgentTimelineItem,
+  fallbackConversationId?: string
+): ChatTimelineItemResponse {
+  const conversationId = raw.conversation_id ?? fallbackConversationId ?? null;
+  const contentBlocks = parseContentBlocks(raw.content_blocks);
+  const toolCall = raw.tool_call ? normalizeToolCall(raw.tool_call) : null;
+  const asMessage: ChatMessageResponse = {
+    id: raw.id,
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: raw.role,
+    sender: null,
+    attributionSource: null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    timelineStatus: raw.status,
+    timelineKind: raw.kind,
+    timelineSequence: raw.sequence,
+    content: raw.content,
+    metadata: raw.metadata ?? null,
+    parentMessageId: raw.message_id ?? null,
+    conversationId,
+    toolCalls: toolCall ? [toolCall] : null,
+    contentBlocks,
+    createdAt: raw.created_at,
+  };
+
+  return {
+    id: raw.id,
+    conversationId: raw.conversation_id,
+    messageId: raw.message_id ?? null,
+    runId: raw.run_id ?? null,
+    sequence: raw.sequence,
+    blockIndex: raw.block_index,
+    role: raw.role,
+    kind: raw.kind,
+    status: raw.status,
+    content: raw.content,
+    contentBlocks,
+    toolCall,
+    metadata: raw.metadata ?? null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    finalizedAt: raw.finalized_at ?? null,
+    asMessage,
+  };
+}
+
+function transformConversationTimelinePage(
+  raw: RawConversationTimelinePage
+): ConversationTimelinePageResponse {
+  const conversationId = raw.conversation.id;
+  const items = raw.items.map((item) => transformTimelineItem(item, conversationId));
+  return {
+    conversation: transformConversation(raw.conversation),
+    items,
+    messages: items.map((item) => item.asMessage),
+    limit: raw.limit,
+    beforeSequence: raw.before_sequence ?? null,
+    totalItemCount: raw.total_item_count,
+    hasOlder: raw.has_older,
+    oldestLoadedSequence: raw.oldest_loaded_sequence ?? null,
+    newestLoadedSequence: raw.newest_loaded_sequence ?? null,
   };
 }
 
@@ -1034,9 +1226,34 @@ export async function getConversationMessagesPage(
   return transformConversationMessagesPage(raw);
 }
 
+/**
+ * Get a tail-first page of normalized visible timeline items.
+ * `beforeSequence` loads items older than the currently oldest loaded item.
+ */
+export async function getConversationTimelinePage(
+  conversationId: string,
+  limit: number,
+  beforeSequence: number | null = null
+): Promise<ConversationTimelinePageResponse> {
+  const raw = await typedInvoke(
+    "get_agent_conversation_timeline_page",
+    { conversationId, limit, beforeSequence },
+    ConversationTimelinePageResponseSchema
+  );
+
+  return transformConversationTimelinePage(raw);
+}
+
 export async function getAgentMessageToolCallDetail(
   detailRef: ToolCallDetailRef
 ): Promise<AgentToolCallDetailResponse | null> {
+  if (detailRef.timelineItemId) {
+    return getAgentTimelineItemToolCallDetail(
+      detailRef.conversationId,
+      detailRef.timelineItemId
+    );
+  }
+
   const raw = await typedInvoke(
     "get_agent_message_tool_call_detail",
     {
@@ -1045,6 +1262,22 @@ export async function getAgentMessageToolCallDetail(
       toolCallId: detailRef.toolCallId ?? null,
       contentBlockIndex: detailRef.contentBlockIndex ?? null,
     },
+    AgentToolCallDetailResponseSchema.nullable()
+  );
+
+  if (!raw) return null;
+  return {
+    toolCall: normalizeToolCall(raw.tool_call),
+  };
+}
+
+export async function getAgentTimelineItemToolCallDetail(
+  conversationId: string,
+  timelineItemId: string
+): Promise<AgentToolCallDetailResponse | null> {
+  const raw = await typedInvoke(
+    "get_agent_timeline_item_tool_call_detail",
+    { conversationId, timelineItemId },
     AgentToolCallDetailResponseSchema.nullable()
   );
 
@@ -1190,7 +1423,9 @@ export const chatApi = {
   listConversationsPage,
   getConversation,
   getConversationMessagesPage,
+  getConversationTimelinePage,
   getAgentMessageToolCallDetail,
+  getAgentTimelineItemToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,

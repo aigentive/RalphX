@@ -11,9 +11,11 @@ import type {
 import { normalizeConversationProviderMetadata } from "@/types/chat-conversation";
 import type {
   ChatMessageResponse,
+  ChatTimelineItemResponse,
   ChildSessionStatusResponse,
   ConversationListPageResponse,
   ConversationStatsResponse,
+  ConversationTimelinePageResponse,
   AgentConversationWorkspace,
   AgentConversationWorkspacePublicationEvent,
   AgentSidebarConversationGroupsResponse,
@@ -58,6 +60,8 @@ type MockChildSessionStatusOverride = {
   delayMs?: number;
 };
 
+type MockContentBlock = NonNullable<ChatMessageResponse["contentBlocks"]>[number];
+
 export interface MockChatController {
   reset(): void;
   seedScenario(name: MockChatScenarioName): void;
@@ -97,6 +101,11 @@ export interface MockChatController {
   getConversation(
     conversationId: string
   ): Promise<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>;
+  getConversationTimelinePage(
+    conversationId: string,
+    limit: number,
+    beforeSequence?: number | null
+  ): Promise<ConversationTimelinePageResponse>;
   getConversationStats(
     conversationId: string
   ): Promise<ConversationStatsResponse | null>;
@@ -208,6 +217,7 @@ function exposeMockChatController(): void {
     listConversationsPage: mockListConversationsPage,
     listAgentSidebarConversations: mockListAgentSidebarConversations,
     getConversation: mockGetConversation,
+    getConversationTimelinePage: mockGetConversationTimelinePage,
     getConversationStats: mockGetConversationStats,
     seedAgentConversationWorkspace: seedMockAgentConversationWorkspace,
   };
@@ -479,6 +489,155 @@ export async function mockGetConversation(
   return {
     conversation,
     messages: mockMessages.get(conversationId) ?? [],
+  };
+}
+
+function normalizeMockContentBlocks(message: ChatMessageResponse): MockContentBlock[] {
+  if (Array.isArray(message.contentBlocks) && message.contentBlocks.length > 0) {
+    return message.contentBlocks;
+  }
+
+  if (message.content.trim().length === 0) {
+    return [];
+  }
+
+  return [{ type: "text", text: message.content }];
+}
+
+function mockTimelineToolCallFromBlock(block: Record<string, unknown>, index: number) {
+  const id = typeof block.id === "string" ? block.id : `tool-${index}`;
+  const name = typeof block.name === "string" ? block.name : "unknown";
+  const toolCall: NonNullable<ChatTimelineItemResponse["toolCall"]> = {
+    id,
+    name,
+    arguments: block.arguments ?? block.input ?? {},
+  };
+  if ("result" in block) {
+    toolCall.result = block.result;
+  }
+  const parentToolUseId = block.parentToolUseId ?? block.parent_tool_use_id;
+  if (typeof parentToolUseId === "string") {
+    toolCall.parentToolUseId = parentToolUseId;
+  }
+  if (typeof block.error === "string") {
+    toolCall.error = block.error;
+  }
+  return toolCall;
+}
+
+function mockTimelineItemsForMessages(
+  conversationId: string,
+  messages: ChatMessageResponse[]
+): ChatTimelineItemResponse[] {
+  let sequence = 0;
+  return messages.flatMap((message) => {
+    const blocks = normalizeMockContentBlocks(message);
+    return blocks.map((block, blockIndex) => {
+      sequence += 1;
+      const blockRecord =
+        block != null && typeof block === "object"
+          ? (block as unknown as Record<string, unknown>)
+          : {};
+      const isToolCall = blockRecord.type === "tool_use";
+      const status =
+        message.timelineStatus ??
+        (message.id.includes("live") ? "streaming" : "finalized");
+      const carriesParentUsage = blockIndex === 0 && message.role !== "user";
+      const toolCall = isToolCall
+        ? mockTimelineToolCallFromBlock(blockRecord, blockIndex)
+        : null;
+      const text =
+        typeof blockRecord.text === "string"
+          ? blockRecord.text
+          : isToolCall
+            ? ""
+            : message.content;
+      const contentBlocks: MockContentBlock[] = [block];
+      const blockIdentity = isToolCall && toolCall?.id
+        ? toolCall.id
+        : String(blockIndex);
+      const asMessage: ChatMessageResponse = {
+        ...message,
+        id: `block:${message.id}:${blockIdentity}`,
+        content: text,
+        parentMessageId: message.id,
+        conversationId,
+        toolCalls: toolCall ? [toolCall] : null,
+        contentBlocks,
+        inputTokens: carriesParentUsage ? message.inputTokens ?? null : null,
+        outputTokens: carriesParentUsage ? message.outputTokens ?? null : null,
+        cacheCreationTokens: carriesParentUsage ? message.cacheCreationTokens ?? null : null,
+        cacheReadTokens: carriesParentUsage ? message.cacheReadTokens ?? null : null,
+        estimatedUsd: carriesParentUsage ? message.estimatedUsd ?? null : null,
+        effectiveModelId: carriesParentUsage ? message.effectiveModelId ?? null : null,
+        logicalModel: carriesParentUsage ? message.logicalModel ?? null : null,
+        effectiveEffort: carriesParentUsage ? message.effectiveEffort ?? null : null,
+        logicalEffort: carriesParentUsage ? message.logicalEffort ?? null : null,
+        timelineStatus: status,
+        timelineKind: isToolCall ? "tool_use" : "text",
+        timelineSequence: sequence,
+      };
+
+      return {
+        id: asMessage.id,
+        conversationId,
+        messageId: message.id,
+        runId: null,
+        sequence,
+        blockIndex,
+        role: message.role,
+        kind: asMessage.timelineKind ?? "text",
+        status,
+        content: text,
+        contentBlocks,
+        toolCall,
+        metadata: message.metadata,
+        providerHarness: message.providerHarness ?? null,
+        providerSessionId: message.providerSessionId ?? null,
+        upstreamProvider: message.upstreamProvider ?? null,
+        providerProfile: message.providerProfile ?? null,
+        logicalModel: carriesParentUsage ? message.logicalModel ?? null : null,
+        effectiveModelId: carriesParentUsage ? message.effectiveModelId ?? null : null,
+        logicalEffort: carriesParentUsage ? message.logicalEffort ?? null : null,
+        effectiveEffort: carriesParentUsage ? message.effectiveEffort ?? null : null,
+        inputTokens: carriesParentUsage ? message.inputTokens ?? null : null,
+        outputTokens: carriesParentUsage ? message.outputTokens ?? null : null,
+        cacheCreationTokens: carriesParentUsage ? message.cacheCreationTokens ?? null : null,
+        cacheReadTokens: carriesParentUsage ? message.cacheReadTokens ?? null : null,
+        estimatedUsd: carriesParentUsage ? message.estimatedUsd ?? null : null,
+        createdAt: message.createdAt,
+        updatedAt: message.createdAt,
+        finalizedAt: status === "streaming" ? null : message.createdAt,
+        asMessage,
+      };
+    });
+  });
+}
+
+export async function mockGetConversationTimelinePage(
+  conversationId: string,
+  limit: number,
+  beforeSequence: number | null = null
+): Promise<ConversationTimelinePageResponse> {
+  const { conversation, messages } = await mockGetConversation(conversationId);
+  const allItems = mockTimelineItemsForMessages(conversationId, messages);
+  const eligibleItems =
+    beforeSequence == null
+      ? allItems
+      : allItems.filter((item) => item.sequence < beforeSequence);
+  const start = Math.max(0, eligibleItems.length - limit);
+  const items = eligibleItems.slice(start);
+
+  return {
+    conversation,
+    items,
+    messages: items.map((item) => item.asMessage),
+    limit,
+    beforeSequence,
+    totalItemCount: allItems.length,
+    hasOlder: start > 0,
+    oldestLoadedSequence: items[0]?.sequence ?? null,
+    newestLoadedSequence: items[items.length - 1]?.sequence ?? null,
   };
 }
 
@@ -855,6 +1014,7 @@ export const mockChatApi = {
   listConversations: mockListConversations,
   listConversationsPage: mockListConversationsPage,
   getConversation: mockGetConversation,
+  getConversationTimelinePage: mockGetConversationTimelinePage,
   createConversation: mockCreateConversation,
   updateConversationTitle: mockUpdateConversationTitle,
   archiveConversation: mockArchiveConversation,

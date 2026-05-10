@@ -251,7 +251,10 @@ fn test_completion_tool_detection_accepts_codex_double_colon_names() {
         "ralphx::complete_agent_workspace_repair",
         "ralphx::finalize_proposals",
     ] {
-        assert!(is_completion_tool_name(tool_name), "{tool_name} should mark completion");
+        assert!(
+            is_completion_tool_name(tool_name),
+            "{tool_name} should mark completion"
+        );
     }
 }
 
@@ -687,6 +690,7 @@ fn test_turn_completed_payload_shape_matches_run_completed() {
         claude_session_id: Some("session-abc".to_string()),
         provider_harness: Some("claude".to_string()),
         provider_session_id: Some("session-abc".to_string()),
+        run_id: None,
         run_chain_id: None,
     };
 
@@ -714,6 +718,7 @@ fn test_turn_completed_payload_with_no_session_id() {
         claude_session_id: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("thread-7".to_string()),
+        run_id: None,
         run_chain_id: None,
     };
 
@@ -741,6 +746,7 @@ fn test_non_interactive_run_completed_includes_run_chain_id() {
         claude_session_id: Some("session-xyz".to_string()),
         provider_harness: Some("claude".to_string()),
         provider_session_id: Some("session-xyz".to_string()),
+        run_id: None,
         run_chain_id: Some("chain-abc".to_string()),
     };
 
@@ -938,8 +944,9 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         silent_interactive_exit: false,
     };
     let has_session_no_session = outcome_no_session.session_id.is_some();
-    let will_process_queue_no_session =
-        initial_queue_count > 0 && has_session_no_session && !outcome_no_session.silent_interactive_exit;
+    let will_process_queue_no_session = initial_queue_count > 0
+        && has_session_no_session
+        && !outcome_no_session.silent_interactive_exit;
     assert!(
         !will_process_queue_no_session,
         "No session → queue cannot be processed regardless"
@@ -1127,7 +1134,8 @@ fn test_agent_exit_openrouter_key_redacted() {
 /// when redaction is applied before payload assembly.
 #[test]
 fn test_debug_file_payload_contains_redacted_stderr() {
-    let raw_stderr = "fatal: Bearer sk-ant-api03-XxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXx01234567890 rejected";
+    let raw_stderr =
+        "fatal: Bearer sk-ant-api03-XxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXx01234567890 rejected";
     let redacted_stderr = redact(raw_stderr);
 
     // Simulate how the debug file payload is assembled in process_stream_background
@@ -1156,7 +1164,9 @@ fn test_debug_file_payload_contains_redacted_stderr() {
 /// when redaction is applied before constructing the preview slice.
 #[test]
 fn test_stderr_preview_for_warn_contains_redacted_content() {
-    let raw_stderr = "sk-ant-api03-AAABBBCCC111222333444555666777888999000aabbccddee error in provider call".to_string();
+    let raw_stderr =
+        "sk-ant-api03-AAABBBCCC111222333444555666777888999000aabbccddee error in provider call"
+            .to_string();
     let redacted = redact(&raw_stderr);
     let preview = &redacted[..redacted.len().min(2000)];
 
@@ -1190,8 +1200,14 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: false, // slot released at TurnComplete
         silent_interactive_exit: true,
     };
-    assert!(idle_exit.silent_interactive_exit, "Idle between turns → silent exit");
-    assert!(!idle_exit.execution_slot_held, "Slot released at TurnComplete");
+    assert!(
+        idle_exit.silent_interactive_exit,
+        "Idle between turns → silent exit"
+    );
+    assert!(
+        !idle_exit.execution_slot_held,
+        "Slot released at TurnComplete"
+    );
 
     // Process exits mid-turn (active): silent_interactive_exit = false
     let active_exit = StreamOutcome {
@@ -1205,7 +1221,10 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: true, // slot not yet released
         silent_interactive_exit: false,
     };
-    assert!(!active_exit.silent_interactive_exit, "Mid-turn exit → not silent");
+    assert!(
+        !active_exit.silent_interactive_exit,
+        "Mid-turn exit → not silent"
+    );
     assert!(active_exit.execution_slot_held, "Slot still held mid-turn");
 
     // Crash-while-idle path: Ok(Err(e)) branch with between_interactive_turns=true

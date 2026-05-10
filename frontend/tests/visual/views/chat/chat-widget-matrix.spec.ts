@@ -3,6 +3,7 @@ import {
   setupIdeationChatScenario,
   setupTaskChatScenario,
 } from "../../../fixtures/chat.fixtures";
+import { IDEATION_REPLAY_CONTEXTS } from "@/api-mock/chat-scenarios";
 
 async function expandWidget(widget: Locator) {
   await widget.locator('[role="button"]').first().click();
@@ -21,9 +22,90 @@ async function expectAndAttachScreenshot(
   await expect(widget).toHaveScreenshot(snapshotName, { maxDiffPixelRatio: 0.04 });
 }
 
+type ChildSessionStatusOverride = {
+  response?: unknown;
+  error?: string;
+  delayMs?: number;
+};
+
+async function focusIdeationWidgetBlocks(
+  page: Parameters<typeof setupIdeationChatScenario>[0],
+  blockIds: string[],
+  childSessionOverrides?: Record<string, ChildSessionStatusOverride>,
+) {
+  await page.evaluate(async ({ conversationId, selectedBlockIds, overrides }) => {
+    const mockChatApi = (window as Window).__mockChatApi;
+    const queryClient = (window as Window).__queryClient;
+
+    if (!mockChatApi || !queryClient) {
+      throw new Error("Expected mock chat API and query client to be available");
+    }
+
+    mockChatApi.seedScenario("ideation_widget_matrix");
+    for (const [sessionId, override] of Object.entries(overrides ?? {})) {
+      mockChatApi.setChildSessionStatusOverride(sessionId, override);
+    }
+
+    const payload = await mockChatApi.getConversation(conversationId);
+    const selected = new Set(selectedBlockIds);
+    const messages = payload.messages.map((message) => {
+      if (message.id !== "msg-ideation-widget-assistant-1") {
+        return message;
+      }
+      return {
+        ...message,
+        contentBlocks:
+          message.contentBlocks?.filter((block) => {
+            if (!block || typeof block !== "object" || block.type !== "tool_use") {
+              return true;
+            }
+            return typeof block.id === "string" && selected.has(block.id);
+          }) ?? null,
+      };
+    });
+
+    mockChatApi.replaceMessages(conversationId, messages);
+    const focusedPayload = await mockChatApi.getConversation(conversationId);
+    queryClient.setQueryData(["chat", "conversations", conversationId], focusedPayload);
+    queryClient.setQueryData(["chat", "conversations", conversationId, "history"], {
+      pages: [
+        {
+          conversation: focusedPayload.conversation,
+          messages: focusedPayload.messages,
+          limit: 40,
+          offset: 0,
+          totalMessageCount: focusedPayload.messages.length,
+          hasOlder: false,
+        },
+      ],
+      pageParams: [0],
+    });
+    queryClient.setQueryData(["chat", "conversations", conversationId, "timeline"], {
+      pages: [await mockChatApi.getConversationTimelinePage(conversationId, 40, null)],
+      pageParams: [null],
+    });
+  }, {
+    conversationId: IDEATION_REPLAY_CONTEXTS.ideation_widget_matrix.conversationId,
+    selectedBlockIds: blockIds,
+    overrides: childSessionOverrides ?? {},
+  });
+}
+
+const CHILD_SESSION_VISUAL_OVERRIDES = {
+  "child-session-loading-1": { delayMs: 120_000 },
+  "child-session-error-1": {
+    error: "Unable to load child session in visual test",
+  },
+};
+
 test.describe("Chat Widget Matrix", () => {
   test("proposal widget states", async ({ page }, testInfo) => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix");
+    await focusIdeationWidgetBlocks(page, [
+      "proposal-create-1",
+      "proposal-update-1",
+      "proposal-delete-1",
+    ]);
 
     const createWidget = page.locator('[data-testid="proposal-widget-created"]');
     const updateWidget = page.locator('[data-testid="proposal-widget-updated"]');
@@ -55,6 +137,11 @@ test.describe("Chat Widget Matrix", () => {
 
   test("verification widget states", async ({ page }, testInfo) => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix");
+    await focusIdeationWidgetBlocks(page, [
+      "verification-update-1",
+      "verification-get-1",
+      "verification-pending-1",
+    ]);
 
     const roundReportWidget = page.locator('[data-testid="verification-widget-round-report"]');
     const getWidget = page.locator('[data-testid="verification-widget-get"]');
@@ -86,6 +173,12 @@ test.describe("Chat Widget Matrix", () => {
 
   test("send message and ideation widget states", async ({ page }, testInfo) => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix");
+    await focusIdeationWidgetBlocks(page, [
+      "send-message-broadcast-1",
+      "ask-question-1",
+      "plan-create-1",
+      "plan-update-1",
+    ]);
 
     const sendMessageWidget = page.locator('[data-testid="send-message-widget-broadcast"]');
     const askQuestionWidget = page.locator('[data-testid="ideation-widget-ask-question"]');
@@ -125,48 +218,65 @@ test.describe("Chat Widget Matrix", () => {
     );
   });
 
-  test("child session widget states", async ({ page }, testInfo) => {
+  test("active child session widget state", async ({ page }, testInfo) => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix", {
-      childSessionOverrides: {
-        "child-session-loading-1": { delayMs: 10_000 },
-        "child-session-error-1": {
-          error: "Unable to load child session in visual test",
-        },
-      },
+      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
     });
 
+    await focusIdeationWidgetBlocks(page, ["child-session-active-1"]);
     const activeWidget = page.locator('[data-testid="child-session-widget-active"]').first();
-    const pendingWidget = page.locator('[data-testid="child-session-widget-pending"]').first();
-    const loadingWidget = page.locator('[data-testid="child-session-widget-loading"]').first();
-    const errorWidget = page.locator('[data-testid="child-session-widget-error"]').first();
-
     await expect(activeWidget).toBeVisible();
-    await expect(pendingWidget).toBeVisible();
-    await expect(loadingWidget).toBeVisible();
-    await expect(errorWidget).toBeVisible();
-
     await expandWidget(activeWidget);
-    await expandWidget(loadingWidget);
-    await expandWidget(errorWidget);
-
     await expectAndAttachScreenshot(
       activeWidget,
       "child-session-widget-active.png",
       "child-session-widget-active",
       testInfo.attach.bind(testInfo),
     );
+  });
+
+  test("pending child session widget state", async ({ page }, testInfo) => {
+    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
+      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
+    });
+
+    await focusIdeationWidgetBlocks(page, ["child-session-pending-1"]);
+    const pendingWidget = page.locator('[data-testid="child-session-widget-pending"]').first();
+    await expect(pendingWidget).toBeVisible();
     await expectAndAttachScreenshot(
       pendingWidget,
       "child-session-widget-pending.png",
       "child-session-widget-pending",
       testInfo.attach.bind(testInfo),
     );
+  });
+
+  test("loading child session widget state", async ({ page }, testInfo) => {
+    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
+      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
+    });
+
+    await focusIdeationWidgetBlocks(page, ["child-session-loading-1"], CHILD_SESSION_VISUAL_OVERRIDES);
+    const loadingWidget = page.locator('[data-testid="child-session-widget-loading"]').first();
+    await expect(loadingWidget).toBeVisible();
+    await expandWidget(loadingWidget);
     await expectAndAttachScreenshot(
       loadingWidget,
       "child-session-widget-loading.png",
       "child-session-widget-loading",
       testInfo.attach.bind(testInfo),
     );
+  });
+
+  test("error child session widget state", async ({ page }, testInfo) => {
+    await setupIdeationChatScenario(page, "ideation_widget_matrix", {
+      childSessionOverrides: CHILD_SESSION_VISUAL_OVERRIDES,
+    });
+
+    await focusIdeationWidgetBlocks(page, ["child-session-error-1"], CHILD_SESSION_VISUAL_OVERRIDES);
+    const errorWidget = page.locator('[data-testid="child-session-widget-error"]').first();
+    await expect(errorWidget).toBeVisible();
+    await expandWidget(errorWidget);
     await expectAndAttachScreenshot(
       errorWidget,
       "child-session-widget-error.png",
@@ -178,64 +288,18 @@ test.describe("Chat Widget Matrix", () => {
   test("native delegation task card states", async ({ page }, testInfo) => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix");
 
+    await focusIdeationWidgetBlocks(page, ["delegate-wait-1"]);
     const completedDelegationCard = page
       .locator('[data-testid="task-tool-call-card"]')
       .filter({ hasText: "ralphx-execution-reviewer" })
       .first();
-    const failedDelegationCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "ralphx-execution-fixer" })
-      .first();
-    const cancelledDelegationCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "ralphx-merge-auditor" })
-      .first();
-    const agentCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "frontend-researcher" })
-      .first();
-    const taskCard = page
-      .locator('[data-testid="task-tool-call-card"]')
-      .filter({ hasText: "Run repository smoke checks" })
-      .first();
-
     await expect(completedDelegationCard).toBeVisible();
-    await expect(failedDelegationCard).toBeVisible();
-    await expect(cancelledDelegationCard).toBeVisible();
-    await expect(agentCard).toBeVisible();
-    await expect(taskCard).toBeVisible();
-
     await expectAndAttachScreenshot(
       completedDelegationCard,
       "delegation-widget-collapsed.png",
       "delegation-widget-collapsed",
       testInfo.attach.bind(testInfo),
     );
-    await expectAndAttachScreenshot(
-      failedDelegationCard,
-      "delegation-widget-failed.png",
-      "delegation-widget-failed",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      cancelledDelegationCard,
-      "delegation-widget-cancelled.png",
-      "delegation-widget-cancelled",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      agentCard,
-      "agent-widget-collapsed.png",
-      "agent-widget-collapsed",
-      testInfo.attach.bind(testInfo),
-    );
-    await expectAndAttachScreenshot(
-      taskCard,
-      "task-widget-collapsed.png",
-      "task-widget-collapsed",
-      testInfo.attach.bind(testInfo),
-    );
-
     await completedDelegationCard.getByRole("button").click();
     await expectAndAttachScreenshot(
       completedDelegationCard,
@@ -244,6 +308,44 @@ test.describe("Chat Widget Matrix", () => {
       testInfo.attach.bind(testInfo),
     );
 
+    await focusIdeationWidgetBlocks(page, ["delegate-start-failed-1"]);
+    const failedDelegationCard = page
+      .locator('[data-testid="task-tool-call-card"]')
+      .filter({ hasText: "ralphx-execution-fixer" })
+      .first();
+    await expect(failedDelegationCard).toBeVisible();
+    await expectAndAttachScreenshot(
+      failedDelegationCard,
+      "delegation-widget-failed.png",
+      "delegation-widget-failed",
+      testInfo.attach.bind(testInfo),
+    );
+
+    await focusIdeationWidgetBlocks(page, ["delegate-start-cancelled-1"]);
+    const cancelledDelegationCard = page
+      .locator('[data-testid="task-tool-call-card"]')
+      .filter({ hasText: "ralphx-merge-auditor" })
+      .first();
+    await expect(cancelledDelegationCard).toBeVisible();
+    await expectAndAttachScreenshot(
+      cancelledDelegationCard,
+      "delegation-widget-cancelled.png",
+      "delegation-widget-cancelled",
+      testInfo.attach.bind(testInfo),
+    );
+
+    await focusIdeationWidgetBlocks(page, ["agent-card-1"]);
+    const agentCard = page
+      .locator('[data-testid="task-tool-call-card"]')
+      .filter({ hasText: "frontend-researcher" })
+      .first();
+    await expect(agentCard).toBeVisible();
+    await expectAndAttachScreenshot(
+      agentCard,
+      "agent-widget-collapsed.png",
+      "agent-widget-collapsed",
+      testInfo.attach.bind(testInfo),
+    );
     await agentCard.getByRole("button").click();
     await expectAndAttachScreenshot(
       agentCard,
@@ -252,6 +354,19 @@ test.describe("Chat Widget Matrix", () => {
       testInfo.attach.bind(testInfo),
     );
 
+    await focusIdeationWidgetBlocks(page, ["task-card-1"]);
+    const taskCard = page
+      .locator('[data-testid="task-tool-call-card"]')
+      .filter({ hasText: "Run repository smoke checks" })
+      .first();
+
+    await expect(taskCard).toBeVisible();
+    await expectAndAttachScreenshot(
+      taskCard,
+      "task-widget-collapsed.png",
+      "task-widget-collapsed",
+      testInfo.attach.bind(testInfo),
+    );
     await taskCard.getByRole("button").click();
     await expectAndAttachScreenshot(
       taskCard,

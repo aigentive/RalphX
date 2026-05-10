@@ -122,6 +122,28 @@ describe("delegation-tool-calls", () => {
     ).toBe("ralphx-plan-critic-completeness");
   });
 
+  it("extracts the delegated agent name from standalone delegated_status session payloads", () => {
+    const metadata = extractDelegationMetadata(
+      { job_id: "job-standalone" },
+      makeDelegationResult({
+        job_id: "job-standalone",
+        status: "completed",
+        delegated_status: {
+          session: {
+            agent_name: "ralphx-execution-reviewer",
+            status: "completed",
+          },
+          latest_run: {
+            harness: "codex",
+            provider_session_id: "thread-standalone",
+          },
+        },
+      }),
+    );
+
+    expect(metadata.agentName).toBe("ralphx-execution-reviewer");
+  });
+
   it("normalizes persisted delegation transcript payloads with one shared contract", () => {
     const startBlock = makeContentToolUse("delegate_start", {
       id: "toolu-delegate-start",

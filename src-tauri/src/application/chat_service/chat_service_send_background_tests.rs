@@ -136,6 +136,7 @@ async fn queue_processing_leaves_messages_pending_when_execution_paused() {
         "session-cli",
         &app_state.message_queue,
         &app_state.chat_message_repo,
+        None,
         &app_state.chat_attachment_repo,
         &app_state.artifact_repo,
         &app_state.activity_event_repo,
@@ -197,34 +198,36 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
     let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
     let unused_path = Path::new(".");
 
-    let outcome = super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
-        ChatContextType::Ideation,
-        crate::domain::agents::AgentHarnessKind::Claude,
-        "session-spawn-fails",
-        "session-spawn-fails",
-        conversation_id,
-        "session-cli",
-        &message_queue,
-        &chat_message_repo,
-        &chat_attachment_repo,
-        &artifact_repo,
-        &activity_event_repo,
-        &task_repo,
-        &ideation_session_repo,
-        invalid_cli_path,
-        unused_path,
-        unused_path,
-        None,
-        None,
-        Some(app_handle),
-        None,
-        false,
-        tokio_util::sync::CancellationToken::new(),
-        None,
-        None,
-        super::StreamingStateCache::new(),
-    )
-    .await;
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            crate::domain::agents::AgentHarnessKind::Claude,
+            "session-spawn-fails",
+            "session-spawn-fails",
+            conversation_id,
+            "session-cli",
+            &message_queue,
+            &chat_message_repo,
+            None,
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            invalid_cli_path,
+            unused_path,
+            unused_path,
+            None,
+            None,
+            Some(app_handle),
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            super::StreamingStateCache::new(),
+        )
+        .await;
 
     assert_eq!(outcome.total_processed, 1);
     assert!(outcome.last_run_id.is_some());

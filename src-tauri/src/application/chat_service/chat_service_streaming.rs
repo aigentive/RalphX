@@ -18,11 +18,12 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     ActivityEvent, ActivityEventType, AgentRunId, AgentRunUsage, ChatContextType,
-    ChatConversationId, ChatMessageId, TaskId,
+    ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
+    ChatTimelineItemStatus, MessageRole, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ChatConversationRepository, ChatMessageRepository,
-    TaskRepository,
+    ChatTimelineRepository, TaskRepository,
 };
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::stream_timeouts;
@@ -266,6 +267,135 @@ async fn persist_assistant_message_snapshot(
             )
             .await;
     }
+}
+
+async fn persist_timeline_snapshot(
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    conversation_id: &str,
+    assistant_message_id: &Option<String>,
+    content_blocks: &[ContentBlockItem],
+    status: ChatTimelineItemStatus,
+) {
+    let (Some(repo), Some(message_id)) =
+        (chat_timeline_repo.as_ref(), assistant_message_id.as_ref())
+    else {
+        return;
+    };
+
+    let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+    let message_id = ChatMessageId::from_string(message_id.clone());
+    let role = MessageRole::Orchestrator;
+
+    for (index, block) in content_blocks.iter().enumerate() {
+        let kind = match block {
+            ContentBlockItem::Text { text } if text.is_empty() => continue,
+            ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
+            ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
+        };
+
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            index as i64,
+            role,
+            kind,
+        );
+        item.status = status;
+        item.updated_at = chrono::Utc::now();
+        if status == ChatTimelineItemStatus::Finalized {
+            item.finalized_at = Some(item.updated_at);
+        }
+        item.raw_block_json = serde_json::to_string(block).ok();
+
+        match block {
+            ContentBlockItem::Text { text } => {
+                item.text = Some(text.clone());
+            }
+            ContentBlockItem::ToolUse {
+                id,
+                name,
+                arguments,
+                result,
+                ..
+            } => {
+                item.tool_call_id = id.clone();
+                item.tool_name = Some(name.clone());
+                item.tool_status = Some(
+                    if result.is_some() {
+                        "completed"
+                    } else {
+                        "pending"
+                    }
+                    .to_string(),
+                );
+                item.tool_input_preview = Some(json_preview(arguments));
+                item.input_json = Some(arguments.to_string());
+                if let Some(result) = result {
+                    item.tool_result_preview = Some(json_preview(result));
+                    item.result_json = Some(result.to_string());
+                }
+            }
+        }
+
+        let _ = repo.upsert_item(item).await;
+    }
+
+    if status == ChatTimelineItemStatus::Finalized {
+        let _ = repo.mark_message_items_finalized(&message_id).await;
+    }
+}
+
+pub(super) async fn persist_message_text_timeline_item(
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    message: &ChatMessage,
+) {
+    let (Some(repo), Some(conversation_id)) =
+        (chat_timeline_repo.as_ref(), message.conversation_id)
+    else {
+        return;
+    };
+    if message.content.is_empty() {
+        return;
+    }
+    if message
+        .metadata
+        .as_deref()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+        .and_then(|metadata| {
+            metadata
+                .get("recovery_context")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message.id.clone(),
+        conversation_id,
+        0,
+        message.role,
+        ChatTimelineItemKind::Text,
+    );
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.text = Some(message.content.clone());
+    item.metadata = message.metadata.clone();
+    item.provider_harness = message.provider_harness;
+    item.provider_session_id = message.provider_session_id.clone();
+    item.created_at = message.created_at;
+    item.updated_at = message.created_at;
+    item.finalized_at = Some(message.created_at);
+
+    let _ = repo.upsert_item(item).await;
+}
+
+fn json_preview(value: &serde_json::Value) -> String {
+    let raw = value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string());
+    truncate_str(&raw, 1_000).to_string()
 }
 
 fn codex_tool_call_content_block(tool_call: &ToolCall) -> ContentBlockItem {
@@ -740,6 +870,7 @@ impl CompletionSignalTracker {
 /// * `activity_event_repo` - Repository for persisting activity events (optional)
 /// * `task_repo` - Task repository for fetching current status (optional)
 /// * `chat_message_repo` - Chat message repository for incremental persistence (optional)
+/// * `chat_timeline_repo` - Normalized timeline repository for live visible block persistence (optional)
 /// * `assistant_message_id` - Pre-created assistant message ID for incremental updates (optional)
 /// * `question_state` - QuestionState for checking pending questions (optional)
 /// * `streaming_state_cache` - Cache for streaming state to hydrate frontend on navigation
@@ -753,6 +884,7 @@ pub async fn process_stream_background<R: Runtime>(
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
     chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     mut assistant_message_id: Option<String>,
     question_state: Option<Arc<QuestionState>>,
     cancellation_token: CancellationToken,
@@ -777,6 +909,7 @@ pub async fn process_stream_background<R: Runtime>(
             activity_event_repo,
             task_repo,
             chat_message_repo,
+            chat_timeline_repo,
             assistant_message_id,
             question_state,
             cancellation_token,
@@ -2154,6 +2287,14 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.content_blocks,
                             )
                             .await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Streaming,
+                            )
+                            .await;
                         }
 
                         if let Some(ref handle) = app_handle {
@@ -2357,6 +2498,14 @@ pub async fn process_stream_background<R: Runtime>(
                 &processor.content_blocks,
             )
             .await;
+            persist_timeline_snapshot(
+                &chat_timeline_repo,
+                &conversation_id_str,
+                &assistant_message_id,
+                &processor.content_blocks,
+                ChatTimelineItemStatus::Streaming,
+            )
+            .await;
             let current_turn_usage = processor.current_turn_usage();
             persist_assistant_message_usage(
                 &chat_message_repo,
@@ -2472,6 +2621,14 @@ pub async fn process_stream_background<R: Runtime>(
                 &result.content_blocks,
             )
             .await;
+            persist_timeline_snapshot(
+                &chat_timeline_repo,
+                &conversation_id_str,
+                &assistant_message_id,
+                &result.content_blocks,
+                ChatTimelineItemStatus::Error,
+            )
+            .await;
 
             return Err(StreamError::AgentExit {
                 exit_code: exit_details.exit_code,
@@ -2522,6 +2679,14 @@ pub async fn process_stream_background<R: Runtime>(
         &outcome.response_text,
         &outcome.tool_calls,
         &outcome.content_blocks,
+    )
+    .await;
+    persist_timeline_snapshot(
+        &chat_timeline_repo,
+        &conversation_id_str,
+        &assistant_message_id,
+        &outcome.content_blocks,
+        ChatTimelineItemStatus::Finalized,
     )
     .await;
     persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &outcome.usage)
@@ -2668,6 +2833,7 @@ async fn process_codex_stream_background<R: Runtime>(
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
     chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     assistant_message_id: Option<String>,
     question_state: Option<Arc<QuestionState>>,
     cancellation_token: CancellationToken,
@@ -2855,6 +3021,14 @@ async fn process_codex_stream_background<R: Runtime>(
                     &content_blocks,
                 )
                 .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &content_blocks,
+                    ChatTimelineItemStatus::Streaming,
+                )
+                .await;
 
                 if let Some(ref handle) = app_handle {
                     let _ = handle.emit(
@@ -2935,6 +3109,14 @@ async fn process_codex_stream_background<R: Runtime>(
                     &response_text,
                     &tool_calls,
                     &content_blocks,
+                )
+                .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &content_blocks,
+                    ChatTimelineItemStatus::Streaming,
                 )
                 .await;
 
@@ -3063,6 +3245,14 @@ async fn process_codex_stream_background<R: Runtime>(
                 &content_blocks,
             )
             .await;
+            persist_timeline_snapshot(
+                &chat_timeline_repo,
+                &conversation_id_str,
+                &assistant_message_id,
+                &content_blocks,
+                ChatTimelineItemStatus::Streaming,
+            )
+            .await;
             last_flush = std::time::Instant::now();
         }
 
@@ -3101,6 +3291,18 @@ async fn process_codex_stream_background<R: Runtime>(
         &outcome.response_text,
         &outcome.tool_calls,
         &outcome.content_blocks,
+    )
+    .await;
+    persist_timeline_snapshot(
+        &chat_timeline_repo,
+        &conversation_id_str,
+        &assistant_message_id,
+        &outcome.content_blocks,
+        if status.success() || outcome.has_meaningful_output() {
+            ChatTimelineItemStatus::Finalized
+        } else {
+            ChatTimelineItemStatus::Error
+        },
     )
     .await;
     persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &outcome.usage)

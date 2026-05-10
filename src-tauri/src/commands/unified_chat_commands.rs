@@ -52,7 +52,7 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRunId, AgentRunStatus, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessageId, DelegatedSessionId,
+    ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem, DelegatedSessionId,
     IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
     ProjectId, TaskId,
 };
@@ -725,6 +725,42 @@ pub struct AgentConversationMessagesPageResponse {
     pub has_older: bool,
 }
 
+/// Response for a paginated visible conversation timeline window.
+#[derive(Debug, Serialize)]
+pub struct AgentConversationTimelinePageResponse {
+    pub conversation: AgentConversationResponse,
+    pub items: Vec<AgentTimelineItemResponse>,
+    pub limit: u32,
+    pub before_sequence: Option<i64>,
+    pub total_item_count: u32,
+    pub has_older: bool,
+    pub oldest_loaded_sequence: Option<i64>,
+    pub newest_loaded_sequence: Option<i64>,
+}
+
+/// Response for one normalized visible chat timeline item.
+#[derive(Debug, Serialize)]
+pub struct AgentTimelineItemResponse {
+    pub id: String,
+    pub conversation_id: String,
+    pub message_id: Option<String>,
+    pub run_id: Option<String>,
+    pub sequence: i64,
+    pub block_index: i64,
+    pub role: String,
+    pub kind: String,
+    pub status: String,
+    pub content: String,
+    pub content_blocks: serde_json::Value,
+    pub tool_call: Option<serde_json::Value>,
+    pub metadata: Option<String>,
+    pub provider_harness: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finalized_at: Option<String>,
+}
+
 /// Response for a single message
 #[derive(Debug, Serialize)]
 pub struct AgentMessageResponse {
@@ -756,6 +792,98 @@ pub struct AgentMessageResponse {
 #[derive(Debug, Serialize)]
 pub struct AgentToolCallDetailResponse {
     pub tool_call: serde_json::Value,
+}
+
+impl From<ChatTimelineItem> for AgentTimelineItemResponse {
+    fn from(item: ChatTimelineItem) -> Self {
+        let message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
+        let conversation_id = item.conversation_id.as_str();
+        let content = item.text.clone().unwrap_or_default();
+        let content_block =
+            timeline_item_content_block(&item, &conversation_id, message_id.as_deref());
+        let content_blocks = serde_json::Value::Array(vec![content_block.clone()]);
+        let tool_call = if item.kind.to_string() == "tool_use" {
+            Some(content_block)
+        } else {
+            None
+        };
+
+        Self {
+            id: item.id.to_string(),
+            conversation_id,
+            message_id,
+            run_id: item.run_id.map(|id| id.as_str()),
+            sequence: item.sequence,
+            block_index: item.block_index,
+            role: item.role.to_string(),
+            kind: item.kind.to_string(),
+            status: item.status.to_string(),
+            content,
+            content_blocks,
+            tool_call,
+            metadata: item.metadata,
+            provider_harness: item.provider_harness.map(|value| value.to_string()),
+            provider_session_id: item.provider_session_id,
+            created_at: item.created_at.to_rfc3339(),
+            updated_at: item.updated_at.to_rfc3339(),
+            finalized_at: item.finalized_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+fn timeline_item_content_block(
+    item: &ChatTimelineItem,
+    conversation_id: &str,
+    message_id: Option<&str>,
+) -> serde_json::Value {
+    if item.kind.to_string() == "text" {
+        return serde_json::json!({
+            "type": "text",
+            "text": item.text.clone().unwrap_or_default(),
+        });
+    }
+
+    let arguments = item
+        .input_json
+        .as_deref()
+        .or(item.tool_input_preview.as_deref())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let result = item
+        .result_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .or_else(|| {
+            item.tool_result_preview
+                .clone()
+                .map(serde_json::Value::String)
+        });
+    let mut block = serde_json::json!({
+        "type": "tool_use",
+        "id": item.tool_call_id.clone().unwrap_or_else(|| item.id.to_string()),
+        "name": item.tool_name.clone().unwrap_or_else(|| "unknown".to_string()),
+        "arguments": arguments,
+        "result": result,
+        "detail_ref": {
+            "conversation_id": conversation_id,
+            "message_id": message_id.unwrap_or(item.id.as_str()),
+            "tool_call_id": item.tool_call_id.clone(),
+            "content_block_index": item.block_index,
+            "timeline_item_id": item.id.to_string(),
+        }
+    });
+
+    if let Some(raw) = item
+        .raw_block_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    {
+        if let Some(diff_context) = raw.get("diff_context").cloned() {
+            block["diff_context"] = diff_context;
+        }
+    }
+
+    block
 }
 
 /// Response for agent run status
@@ -3840,6 +3968,80 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
     }))
 }
 
+/// Get a tail-first page of normalized visible conversation timeline items.
+/// `before_sequence` loads the page older than the currently oldest loaded item.
+#[tauri::command]
+pub async fn get_agent_conversation_timeline_page(
+    conversation_id: String,
+    limit: Option<u32>,
+    before_sequence: Option<i64>,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+    app: tauri::AppHandle,
+) -> Result<Option<AgentConversationTimelinePageResponse>, String> {
+    let conversation_id = ChatConversationId::from_string(&conversation_id);
+    let limit = limit.unwrap_or(40).clamp(1, 200);
+
+    if let Err(error) = wake_agent_workspace_for_bridge_events_with_service_factory(
+        &state,
+        &conversation_id,
+        || create_chat_service(&state, app, &execution_state, None),
+    )
+    .await
+    {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to wake agent workspace for timeline bridge events"
+        );
+    }
+
+    get_agent_conversation_timeline_page_for_app_state(
+        &state,
+        conversation_id,
+        limit,
+        before_sequence,
+    )
+    .await
+}
+
+pub async fn get_agent_conversation_timeline_page_for_app_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    limit: u32,
+    before_sequence: Option<i64>,
+) -> Result<Option<AgentConversationTimelinePageResponse>, String> {
+    let Some(conversation) = state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, limit, before_sequence)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(Some(AgentConversationTimelinePageResponse {
+        conversation: AgentConversationResponse::from(conversation),
+        items: page
+            .items
+            .into_iter()
+            .map(AgentTimelineItemResponse::from)
+            .collect(),
+        limit: page.limit,
+        before_sequence: page.before_sequence,
+        total_item_count: page.total_item_count,
+        has_older: page.has_older,
+        oldest_loaded_sequence: page.oldest_loaded_sequence,
+        newest_loaded_sequence: page.newest_loaded_sequence,
+    }))
+}
+
 /// Get the full result payload for a previewed tool call in a persisted message.
 #[tauri::command]
 pub async fn get_agent_message_tool_call_detail(
@@ -3879,6 +4081,52 @@ pub async fn get_agent_message_tool_call_detail(
     );
 
     Ok(detail.map(|tool_call| AgentToolCallDetailResponse { tool_call }))
+}
+
+/// Get the full tool-call payload for a normalized timeline item.
+#[tauri::command]
+pub async fn get_agent_timeline_item_tool_call_detail(
+    conversation_id: String,
+    timeline_item_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<AgentToolCallDetailResponse>, String> {
+    let conversation_id = ChatConversationId::from_string(&conversation_id);
+    let timeline_item_id =
+        crate::domain::entities::ChatTimelineItemId::from_string(timeline_item_id);
+
+    get_agent_timeline_item_tool_call_detail_for_app_state(
+        &state,
+        conversation_id,
+        timeline_item_id,
+    )
+    .await
+}
+
+pub async fn get_agent_timeline_item_tool_call_detail_for_app_state(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    timeline_item_id: crate::domain::entities::ChatTimelineItemId,
+) -> Result<Option<AgentToolCallDetailResponse>, String> {
+    let Some(item) = state
+        .chat_timeline_repo
+        .get_by_id(&timeline_item_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+
+    if item.conversation_id != conversation_id {
+        return Ok(None);
+    }
+
+    let detail_message_id = item.message_id.as_ref().map(|id| id.as_str().to_string());
+    let block = timeline_item_content_block(
+        &item,
+        &conversation_id.as_str(),
+        detail_message_id.as_deref(),
+    );
+    Ok(Some(AgentToolCallDetailResponse { tool_call: block }))
 }
 
 /// Get the active agent run for a conversation
@@ -4116,6 +4364,8 @@ mod tests {
     use super::{
         apply_base_resolution_to_publish_target,
         build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
+        get_agent_conversation_timeline_page_for_app_state,
+        get_agent_timeline_item_tool_call_detail_for_app_state,
         get_agent_conversation_workspace_freshness, merge_delegated_snapshot_into_result,
         normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
         normalized_effort_for_supported, parse_wrapped_mcp_result_object,
@@ -4129,8 +4379,8 @@ mod tests {
         update_agent_conversation_workspace_from_base_for_app_state, AgentConversationResponse,
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-        AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
-        SwitchAgentConversationModeInput,
+        AgentTimelineItemResponse, AgentWorkspaceRepairRuntimeOverrides,
+        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -4149,8 +4399,10 @@ mod tests {
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, ArtifactId, ChatConversation,
-        ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
-        PlanBranchId, PlanBranchStatus, Project, ProjectId,
+        ChatConversationId, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+        ChatTimelineItemKind, ChatTimelineItemStatus, IdeationAnalysisBaseRefKind,
+        IdeationSessionId, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+        ProjectId,
     };
     use crate::domain::services::GithubServiceTrait;
     use crate::error::AppError;
@@ -4158,6 +4410,7 @@ mod tests {
     use serde_json::json;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::str::FromStr;
     use std::sync::Arc;
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
@@ -5510,5 +5763,263 @@ mod tests {
                 .map(Vec::len),
             Some(1)
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_timeline_page_limits_visible_items_not_message_rows() {
+        let state = AppState::new_test();
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(ProjectId::new()))
+            .await
+            .expect("create conversation");
+        let message_id = ChatMessageId::from_string("assistant-message-1");
+
+        for index in 0..3 {
+            let mut item = ChatTimelineItem::for_message_block(
+                message_id.clone(),
+                conversation.id,
+                index,
+                MessageRole::Orchestrator,
+                ChatTimelineItemKind::Text,
+            );
+            item.status = ChatTimelineItemStatus::Finalized;
+            item.text = Some(format!("block {index}"));
+            state
+                .chat_timeline_repo
+                .upsert_item(item)
+                .await
+                .expect("upsert timeline item");
+        }
+
+        let newest_page =
+            get_agent_conversation_timeline_page_for_app_state(&state, conversation.id, 2, None)
+                .await
+                .expect("timeline page")
+                .expect("conversation exists");
+
+        assert_eq!(newest_page.items.len(), 2);
+        assert_eq!(newest_page.total_item_count, 3);
+        assert!(newest_page.has_older);
+        assert_eq!(
+            newest_page
+                .items
+                .iter()
+                .map(|item| item.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["block 1", "block 2"]
+        );
+
+        let older_page = get_agent_conversation_timeline_page_for_app_state(
+            &state,
+            conversation.id,
+            2,
+            newest_page.oldest_loaded_sequence,
+        )
+        .await
+        .expect("older timeline page")
+        .expect("conversation exists");
+
+        assert_eq!(older_page.items.len(), 1);
+        assert!(!older_page.has_older);
+        assert_eq!(older_page.items[0].content, "block 0");
+    }
+
+    #[test]
+    fn timeline_item_response_builds_text_message_block() {
+        let conversation_id = ChatConversationId::new();
+        let message_id = ChatMessageId::from_string("assistant-message-text");
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            0,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::Text,
+        );
+        item.sequence = 12;
+        item.status = ChatTimelineItemStatus::Finalized;
+        item.text = Some("final answer".to_string());
+        item.metadata = Some(r#"{"source":"test"}"#.to_string());
+
+        let response = AgentTimelineItemResponse::from(item);
+
+        assert_eq!(response.message_id.as_deref(), Some(message_id.as_str()));
+        assert_eq!(response.content, "final answer");
+        assert_eq!(response.kind, "text");
+        assert!(response.tool_call.is_none());
+        assert_eq!(
+            response.content_blocks,
+            json!([{ "type": "text", "text": "final answer" }])
+        );
+        assert_eq!(response.metadata.as_deref(), Some(r#"{"source":"test"}"#));
+    }
+
+    #[test]
+    fn timeline_item_response_builds_tool_block_with_detail_ref_and_diff_context() {
+        let conversation_id = ChatConversationId::new();
+        let message_id = ChatMessageId::from_string("assistant-message-tool");
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            3,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::ToolUse,
+        );
+        item.sequence = 22;
+        item.status = ChatTimelineItemStatus::Finalized;
+        item.tool_call_id = Some("tool-1".to_string());
+        item.tool_name = Some("bash".to_string());
+        item.input_json = Some(r#"{"command":"cargo test"}"#.to_string());
+        item.result_json = Some(r#""ok""#.to_string());
+        item.raw_block_json =
+            Some(r#"{"type":"tool_use","diff_context":{"file_path":"src/lib.rs"}}"#.to_string());
+        item.provider_harness = Some(AgentHarnessKind::Codex);
+        item.provider_session_id = Some("thread-1".to_string());
+
+        let response = AgentTimelineItemResponse::from(item);
+        let tool = response.tool_call.expect("tool response");
+
+        assert_eq!(response.kind, "tool_use");
+        assert_eq!(response.provider_harness.as_deref(), Some("codex"));
+        assert_eq!(response.provider_session_id.as_deref(), Some("thread-1"));
+        assert_eq!(tool["id"], "tool-1");
+        assert_eq!(tool["name"], "bash");
+        assert_eq!(tool["arguments"]["command"], "cargo test");
+        assert_eq!(tool["result"], "ok");
+        assert_eq!(
+            tool["detail_ref"]["timeline_item_id"].as_str(),
+            Some(response.id.as_str())
+        );
+        assert_eq!(
+            tool["detail_ref"]["message_id"].as_str(),
+            Some(message_id.as_str())
+        );
+        assert_eq!(tool["diff_context"]["file_path"], "src/lib.rs");
+    }
+
+    #[test]
+    fn chat_timeline_domain_values_cover_all_variants_from_app_crate_tests() {
+        let generated_id = ChatTimelineItemId::new();
+        assert!(!generated_id.as_str().is_empty());
+        assert!(!ChatTimelineItemId::default().as_str().is_empty());
+
+        for (raw, kind) in [
+            ("text", ChatTimelineItemKind::Text),
+            ("tool_use", ChatTimelineItemKind::ToolUse),
+            ("task", ChatTimelineItemKind::Task),
+            ("system_notice", ChatTimelineItemKind::SystemNotice),
+            ("error", ChatTimelineItemKind::Error),
+        ] {
+            assert_eq!(kind.to_string(), raw);
+            assert_eq!(ChatTimelineItemKind::from_str(raw), Ok(kind));
+        }
+
+        for (raw, status) in [
+            ("streaming", ChatTimelineItemStatus::Streaming),
+            ("finalized", ChatTimelineItemStatus::Finalized),
+            ("error", ChatTimelineItemStatus::Error),
+        ] {
+            assert_eq!(status.to_string(), raw);
+            assert_eq!(ChatTimelineItemStatus::from_str(raw), Ok(status));
+        }
+
+        assert!(ChatTimelineItemKind::from_str("bogus").is_err());
+        assert!(ChatTimelineItemStatus::from_str("bogus").is_err());
+    }
+
+    #[tokio::test]
+    async fn timeline_item_detail_returns_none_for_missing_or_mismatched_item() {
+        let state = AppState::new_test();
+        let conversation_id = ChatConversationId::new();
+
+        let missing = get_agent_timeline_item_tool_call_detail_for_app_state(
+            &state,
+            conversation_id,
+            ChatTimelineItemId::from_string("missing"),
+        )
+        .await
+        .expect("missing detail lookup");
+        assert!(missing.is_none());
+
+        let other_conversation_id = ChatConversationId::new();
+        let message_id = ChatMessageId::from_string("assistant-message-tool");
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id,
+            other_conversation_id,
+            0,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::ToolUse,
+        );
+        item.tool_call_id = Some("tool-other".to_string());
+        item.tool_name = Some("Read".to_string());
+        item.input_json = Some(r#"{"file_path":"src/lib.rs"}"#.to_string());
+        let item = state
+            .chat_timeline_repo
+            .upsert_item(item)
+            .await
+            .expect("insert mismatched timeline item");
+
+        let mismatched = get_agent_timeline_item_tool_call_detail_for_app_state(
+            &state,
+            conversation_id,
+            item.id,
+        )
+        .await
+        .expect("mismatched detail lookup");
+        assert!(mismatched.is_none());
+    }
+
+    #[tokio::test]
+    async fn timeline_item_detail_uses_preview_fallbacks_for_partial_tool_payload() {
+        let state = AppState::new_test();
+        let conversation_id = ChatConversationId::new();
+        let mut item = ChatTimelineItem {
+            id: ChatTimelineItemId::from_string("timeline-tool-preview"),
+            conversation_id,
+            message_id: None,
+            run_id: None,
+            sequence: 4,
+            block_index: 2,
+            role: MessageRole::Orchestrator,
+            kind: ChatTimelineItemKind::ToolUse,
+            status: ChatTimelineItemStatus::Streaming,
+            text: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_status: Some("pending".to_string()),
+            tool_input_preview: Some(r#"{"path":"src/lib.rs"}"#.to_string()),
+            tool_result_preview: Some("preview result".to_string()),
+            input_json: None,
+            result_json: None,
+            raw_block_json: Some(r#"{"type":"tool_use","extra":true}"#.to_string()),
+            metadata: None,
+            provider_harness: None,
+            provider_session_id: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            finalized_at: None,
+        };
+        item = state
+            .chat_timeline_repo
+            .upsert_item(item)
+            .await
+            .expect("insert preview timeline item");
+
+        let detail = get_agent_timeline_item_tool_call_detail_for_app_state(
+            &state,
+            conversation_id,
+            item.id.clone(),
+        )
+        .await
+        .expect("preview detail lookup")
+        .expect("preview detail");
+        let tool = detail.tool_call;
+
+        assert_eq!(tool["id"], item.id.to_string());
+        assert_eq!(tool["name"], "unknown");
+        assert_eq!(tool["arguments"]["path"], "src/lib.rs");
+        assert_eq!(tool["result"], "preview result");
+        assert_eq!(tool["detail_ref"]["message_id"], item.id.to_string());
+        assert_eq!(tool["detail_ref"]["content_block_index"], 2);
     }
 }

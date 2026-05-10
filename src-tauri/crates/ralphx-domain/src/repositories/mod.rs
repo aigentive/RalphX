@@ -17,6 +17,7 @@ pub mod artifact_repository;
 pub mod chat_attachment_repository;
 pub mod chat_conversation_repository;
 pub mod chat_message_repository;
+pub mod chat_timeline_repository;
 pub mod delegated_session_repository;
 pub mod execution_plan_repository;
 pub mod external_events_repository;
@@ -67,6 +68,7 @@ pub use artifact_repository::{ArtifactRepository, ArtifactVersionSummary};
 pub use chat_attachment_repository::ChatAttachmentRepository;
 pub use chat_conversation_repository::{ChatConversationPage, ChatConversationRepository};
 pub use chat_message_repository::ChatMessageRepository;
+pub use chat_timeline_repository::ChatTimelineRepository;
 pub use delegated_session_repository::DelegatedSessionRepository;
 pub use execution_plan_repository::ExecutionPlanRepository;
 pub use execution_settings_repository::{
