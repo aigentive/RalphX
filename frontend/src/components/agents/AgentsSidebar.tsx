@@ -28,7 +28,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -195,13 +195,29 @@ export function AgentsSidebar({
     () => Object.keys(pinnedConversationIds),
     [pinnedConversationIds]
   );
+  // Visible-row selections are already in the loaded pages; promoting them to
+  // query-priority IDs would restart infinite pagination at page one.
+  const [sidebarSelectedConversationIds, setSidebarSelectedConversationIds] = useState<
+    Record<string, true>
+  >({});
+  const handleSelectVisibleConversation = useCallback(
+    (projectId: string, conversation: AgentConversation) => {
+      setSidebarSelectedConversationIds((selectedIds) =>
+        selectedIds[conversation.id]
+          ? selectedIds
+          : { ...selectedIds, [conversation.id]: true }
+      );
+      onSelectConversation(projectId, conversation);
+    },
+    [onSelectConversation]
+  );
   const priorityConversationIds = useMemo(() => {
     const ids = new Set(pinnedConversationIdList);
-    if (pinnedConversation) {
+    if (pinnedConversation && !sidebarSelectedConversationIds[pinnedConversation.id]) {
       ids.add(pinnedConversation.id);
     }
     return Array.from(ids);
-  }, [pinnedConversation, pinnedConversationIdList]);
+  }, [pinnedConversation, pinnedConversationIdList, sidebarSelectedConversationIds]);
   const selectedProjectFilterIds = useMemo(() => {
     if (showAllProjects) {
       return projects.map((project) => project.id);
@@ -432,7 +448,7 @@ export function AgentsSidebar({
             onArchiveConversation={onArchiveConversation}
             onRenameConversation={onRenameConversation}
             onRestoreConversation={onRestoreConversation}
-            onSelectConversation={onSelectConversation}
+            onSelectConversation={handleSelectVisibleConversation}
             onTogglePinnedConversation={togglePinnedConversation}
             showArchived={showArchived}
           />
@@ -445,7 +461,7 @@ export function AgentsSidebar({
               selectedConversationId={selectedConversationId}
               searchQuery={normalizedSearch}
               onFocusProject={onFocusProject}
-              onSelectConversation={onSelectConversation}
+              onSelectConversation={handleSelectVisibleConversation}
               onArchiveProject={onArchiveProject}
               onRenameConversation={onRenameConversation}
               onArchiveConversation={onArchiveConversation}

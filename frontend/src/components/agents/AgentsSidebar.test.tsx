@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -667,6 +667,86 @@ describe("AgentsSidebar", () => {
 
     fireEvent.click(loadMoreButton);
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a loaded paginated row in place after selecting it", async () => {
+    const user = userEvent.setup();
+    const newer = conversation({
+      id: "conversation-newer",
+      title: "Newer loaded agent",
+      createdAt: "2026-04-22T12:00:00Z",
+    });
+    const older = conversation({
+      id: "conversation-older",
+      title: "Older loaded agent",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [newer, older],
+      total: 8,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    function StatefulSidebar() {
+      const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
+        null
+      );
+      const [pinnedConversation, setPinnedConversation] =
+        useState<AgentConversation | null>(null);
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <AgentsSidebar
+            projects={[project()]}
+            focusedProjectId="project-1"
+            selectedConversationId={selectedConversationId}
+            pinnedConversation={pinnedConversation}
+            onFocusProject={vi.fn()}
+            onSelectConversation={(_projectId, selectedConversation) => {
+              setSelectedConversationId(selectedConversation.id);
+              setPinnedConversation(selectedConversation);
+            }}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<StatefulSidebar />);
+
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-newer",
+      "agents-session-conversation-older",
+    ]);
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-older")).getByRole(
+        "button",
+        { name: /Older loaded agent/ }
+      )
+    );
+
+    expect(
+      within(screen.getByTestId("agents-session-conversation-older")).getByRole(
+        "button",
+        { name: /Older loaded agent/ }
+      )
+    ).toHaveAttribute("aria-current", "true");
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-newer",
+      "agents-session-conversation-older",
+    ]);
+    expect(projectConversationCalls.at(-1)?.pinnedConversationIds).toEqual([]);
   });
 
   it("shows the backend total session count rather than the loaded page size", () => {
