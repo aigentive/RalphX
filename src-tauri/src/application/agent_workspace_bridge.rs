@@ -170,6 +170,25 @@ pub async fn wake_agent_workspace_for_bridge_events_with_deps<S: ChatService + ?
     else {
         return Ok(None);
     };
+    dispatch_prepared_agent_workspace_bridge_wakeup_with_deps(deps, chat_service, wake_up)
+        .await
+        .map(Some)
+}
+
+pub async fn dispatch_prepared_agent_workspace_bridge_wakeup<S: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &S,
+    wake_up: AgentWorkspaceBridgeWakeUp,
+) -> AppResult<AgentWorkspaceBridgeWakeUpResult> {
+    let deps = AgentWorkspaceBridgeDeps::from_app_state(state);
+    dispatch_prepared_agent_workspace_bridge_wakeup_with_deps(&deps, chat_service, wake_up).await
+}
+
+pub async fn dispatch_prepared_agent_workspace_bridge_wakeup_with_deps<S: ChatService + ?Sized>(
+    deps: &AgentWorkspaceBridgeDeps,
+    chat_service: &S,
+    wake_up: AgentWorkspaceBridgeWakeUp,
+) -> AppResult<AgentWorkspaceBridgeWakeUpResult> {
     let event_count = wake_up.event_keys.len();
     let result = chat_service
         .send_message(
@@ -197,13 +216,13 @@ pub async fn wake_agent_workspace_for_bridge_events_with_deps<S: ChatService + ?
         .await?;
     }
 
-    Ok(Some(AgentWorkspaceBridgeWakeUpResult {
+    Ok(AgentWorkspaceBridgeWakeUpResult {
         conversation_id: result.conversation_id,
         agent_run_id: result.agent_run_id,
         was_queued: result.was_queued,
         queued_message_id: result.queued_message_id,
         event_count,
-    }))
+    })
 }
 
 pub async fn prepare_agent_workspace_bridge_wakeup(
@@ -247,8 +266,6 @@ pub async fn prepare_agent_workspace_bridge_wakeup_with_deps(
     if removed_invalid_count > 0 {
         refresh_conversation_stats(deps, conversation_id).await?;
     }
-    collect_queued_bridge_event_keys(deps, conversation_id, &mut delivered_event_keys);
-
     if !workspace_should_receive_bridge_events(&workspace) {
         return Ok(None);
     }
@@ -256,6 +273,8 @@ pub async fn prepare_agent_workspace_bridge_wakeup_with_deps(
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return Ok(None);
     };
+    collect_queued_bridge_event_keys(deps, conversation_id, &mut delivered_event_keys);
+
     let events = deps
         .external_events_repo
         .get_events_after_cursor(
@@ -1080,7 +1099,11 @@ mod tests {
             .get_by_conversation(&conversation_id)
             .await
             .unwrap();
-        assert_eq!(messages.len(), 1, "bridge dispatch records one hidden marker");
+        assert_eq!(
+            messages.len(),
+            1,
+            "bridge dispatch records one hidden marker"
+        );
         assert_eq!(messages[0].role, MessageRole::System);
         assert!(
             !messages[0].content.contains("gap_score"),

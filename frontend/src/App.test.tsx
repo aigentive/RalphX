@@ -509,6 +509,7 @@ describe("App", () => {
 
   it("shows the selected agent conversation in the Agents breadcrumb", () => {
     const queryClient = getQueryClient();
+    const getMessagesPage = vi.spyOn(chatApi, "getConversationMessagesPage");
     useAgentSessionStore.setState({
       selectedConversationId: "conversation-breadcrumb",
     });
@@ -543,6 +544,7 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
       "Workspace/Agents/List worktree directory contents"
     );
+    expect(getMessagesPage).not.toHaveBeenCalled();
   });
 
   it("renames the selected agent conversation from the Agents breadcrumb", async () => {

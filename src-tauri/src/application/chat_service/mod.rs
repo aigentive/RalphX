@@ -71,6 +71,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio_util::sync::CancellationToken;
 
@@ -1587,6 +1588,7 @@ impl<R: Runtime> AppChatService<R> {
             resolve_harness_plugin_dir(effective_harness, working_directory)
         };
 
+        let launch_plan_started_at = Instant::now();
         let launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
             &cli_path,
@@ -1621,13 +1623,31 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        tracing::info!(
+            conversation_id = %conversation.id,
+            %context_type,
+            context_id,
+            harness = %effective_harness,
+            duration_ms = launch_plan_started_at.elapsed().as_millis(),
+            "chat_service.send_message launch plan phase completed"
+        );
 
         let launch_mode = launch_plan.launch_mode();
+        let spawn_started_at = Instant::now();
         tracing::info!(mode = ?launch_mode, plan = ?launch_plan, "Spawning chat harness agent");
         let launched = launch_plan.spawn().await.map_err(|error| {
             tracing::error!(mode = ?launch_mode, error = %error, "chat_service.send_message harness spawn failed");
             ChatServiceError::SpawnFailed(error.to_string())
         })?;
+        tracing::info!(
+            conversation_id = %conversation.id,
+            %context_type,
+            context_id,
+            harness = %effective_harness,
+            mode = ?launch_mode,
+            duration_ms = spawn_started_at.elapsed().as_millis(),
+            "chat_service.send_message harness spawn completed"
+        );
         tracing::debug!(
             mode = ?launch_mode,
             pid = ?launched.child.id(),
