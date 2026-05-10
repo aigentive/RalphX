@@ -281,6 +281,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::is_chat_service_available,
             commands::unified_chat_commands::stop_agent,
             commands::unified_chat_commands::is_agent_running,
+            commands::unified_chat_commands::get_agent_running_states,
             commands::agent_terminal_commands::open_agent_terminal,
             commands::agent_terminal_commands::write_agent_terminal,
             commands::agent_terminal_commands::resize_agent_terminal,

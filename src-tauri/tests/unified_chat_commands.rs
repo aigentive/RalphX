@@ -13,7 +13,9 @@ use ralphx_lib::application::pr_startup_recovery::{
     cleanup_terminal_agent_workspace_local_artifacts_on_startup,
     cleanup_terminal_plan_branch_local_artifacts_on_startup,
 };
-use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendResult};
+use ralphx_lib::application::{
+    AppState, ChatService, MockChatService, PrPollerRegistry, SendResult,
+};
 use ralphx_lib::commands::unified_chat_commands::{
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
@@ -669,6 +671,31 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
     assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
     assert!(branch_exists(&repo_path, &workspace_branch));
     assert_eq!(github.check_calls(), 1);
+}
+
+#[tokio::test]
+async fn bulk_agent_running_states_returns_requested_context_map() {
+    let service = MockChatService::new();
+    service
+        .set_agent_running("project/conv-running".to_string(), true)
+        .await;
+    service
+        .set_agent_running("project/conv-unrequested".to_string(), true)
+        .await;
+
+    let requested_ids = vec![
+        "conv-running".to_string(),
+        "conv-idle".to_string(),
+        "conv-running".to_string(),
+    ];
+    let states = service
+        .get_agent_running_states(ChatContextType::Project, &requested_ids)
+        .await;
+
+    assert_eq!(states.get("conv-running"), Some(&true));
+    assert_eq!(states.get("conv-idle"), Some(&false));
+    assert_eq!(states.get("conv-unrequested"), None);
+    assert_eq!(states.len(), 2);
 }
 
 #[tokio::test]

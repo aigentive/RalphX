@@ -836,6 +836,13 @@ export async function mockIsAgentRunning(
   return false;
 }
 
+export async function mockGetAgentRunningStates(
+  _contextType: ContextType,
+  contextIds: string[]
+): Promise<Record<string, boolean>> {
+  return Object.fromEntries(contextIds.map((contextId) => [contextId, false]));
+}
+
 // ============================================================================
 // Mock Chat API Object
 // ============================================================================
@@ -869,4 +876,5 @@ export const mockChatApi = {
   isChatServiceAvailable: mockIsChatServiceAvailable,
   stopAgent: mockStopAgent,
   isAgentRunning: mockIsAgentRunning,
+  getAgentRunningStates: mockGetAgentRunningStates,
 } as const;

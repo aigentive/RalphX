@@ -68,6 +68,7 @@ use crate::infrastructure::agents::claude::agent_names::{
 };
 use async_trait::async_trait;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -568,6 +569,13 @@ pub trait ChatService: Send + Sync {
 
     /// Check if an agent is running for a context
     async fn is_agent_running(&self, context_type: ChatContextType, context_id: &str) -> bool;
+
+    /// Bulk-check whether agents are running for the given context ids.
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool>;
 
     /// Override team mode at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses AtomicBool.
@@ -3340,6 +3348,76 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         }
 
         true
+    }
+
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool> {
+        let requested_ids: HashSet<String> = context_ids
+            .iter()
+            .filter(|id| !id.is_empty())
+            .cloned()
+            .collect();
+        let mut states: HashMap<String, bool> = requested_ids
+            .iter()
+            .map(|id| (id.clone(), false))
+            .collect();
+
+        if requested_ids.is_empty() {
+            return states;
+        }
+
+        let context_type_name = context_type.to_string();
+        let entries = match self
+            .running_agent_registry
+            .list_by_context_type(&context_type_name)
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    error = %error,
+                    "Failed to bulk-list running-agent registry entries"
+                );
+                return states;
+            }
+        };
+
+        for (key, info) in entries {
+            if !requested_ids.contains(&key.context_id) {
+                continue;
+            }
+
+            let context_id = key.context_id.clone();
+            let cleaned_stale = self
+                .cleanup_stale_registry_block(
+                    &key,
+                    &info,
+                    context_type,
+                    &context_id,
+                    "get_agent_running_states",
+                )
+                .await;
+            let cleaned_inactive = if cleaned_stale {
+                false
+            } else {
+                self.cleanup_inactive_registry_block(
+                    &key,
+                    &info,
+                    context_type,
+                    &context_id,
+                    "get_agent_running_states",
+                )
+                .await
+            };
+
+            states.insert(context_id, !(cleaned_stale || cleaned_inactive));
+        }
+
+        states
     }
 
     fn set_team_mode(&self, mode: bool) {
