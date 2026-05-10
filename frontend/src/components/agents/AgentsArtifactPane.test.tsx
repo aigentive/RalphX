@@ -250,6 +250,16 @@ const conversation = () => ({
   archivedAt: null,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function renderPane(
   activeTab: AgentArtifactTab = "tasks",
   paneWorkspace = workspace(),
@@ -1039,6 +1049,36 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
+  it("shows a submitting state in the publish confirmation dialog", async () => {
+    const publishDeferred = deferred<void>();
+    const publish = vi.fn(() => publishDeferred.promise);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Commit & Publish",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(publish).toHaveBeenCalledWith("conversation-1");
+      expect(
+        within(dialog).getByRole("button", { name: "Publishing..." }),
+      ).toBeDisabled();
+    });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+    publishDeferred.resolve();
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
+  });
+
   it("disables publish when no changed files are detected", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceChangesMock.mockResolvedValue([]);
@@ -1440,6 +1480,69 @@ describe("AgentsArtifactPane", () => {
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
     );
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("shows a submitting state in the Update from base confirmation dialog", async () => {
+    const updateDeferred = deferred<Awaited<ReturnType<typeof updateWorkspaceFromBaseMock>>>();
+    updateWorkspaceFromBaseMock.mockImplementation(() => updateDeferred.promise);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-base-stale")).toHaveTextContent(
+      "feature/agent-screen",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Update branch",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1");
+      expect(
+        within(dialog).getByRole("button", { name: "Updating..." }),
+      ).toBeDisabled();
+    });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+    updateDeferred.resolve({
+      workspace: workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "new-base",
+      }),
+      updated: true,
+      targetRef: "origin/feature/agent-screen",
+      baseCommit: "new-base",
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
   });
 
   it("refreshes workspace facts when Update from base fails", async () => {

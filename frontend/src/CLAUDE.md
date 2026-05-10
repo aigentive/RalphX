@@ -121,6 +121,7 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
+- **Async Confirmations** — pass backend work through `useConfirmation({ onConfirm, pendingText })` so dialogs stay open with disabled actions until settlement.
 
 ### Composition Over Props
 ```tsx
