@@ -663,6 +663,7 @@ export function IntegratedChatPanel({
     isGenerating: agentStatus === "generating",
     isConversationInCurrentContext,
     agentRunStatus: agentRunQuery.data?.status ?? undefined,
+    isVisible,
     setStreamingTasks,
     setAgentRunning,
     selectedTaskId: selectedTaskId ?? undefined,

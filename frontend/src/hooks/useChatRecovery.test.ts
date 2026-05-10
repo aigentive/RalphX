@@ -75,6 +75,7 @@ interface DefaultProps {
   isAgentRunning: boolean;
   isConversationInCurrentContext: boolean;
   agentRunStatus: string | undefined;
+  isVisible: boolean;
   setAgentRunning: ReturnType<typeof vi.fn>;
   setStreamingTasks?: ReturnType<typeof vi.fn>;
   selectedTaskId: string | undefined;
@@ -94,6 +95,7 @@ function makeProps(overrides?: Partial<DefaultProps>): DefaultProps {
     isAgentRunning: false,
     isConversationInCurrentContext: true,
     agentRunStatus: undefined,
+    isVisible: true,
     setAgentRunning: vi.fn(),
     setStreamingTasks: undefined,
     selectedTaskId: "task-1",
@@ -275,11 +277,25 @@ describe("useChatRecovery", () => {
       mockIsAgentRunning.mockClear();
     });
 
-    it("should not start interval when isAgentRunning is false", () => {
+    it("polls selected conversation liveness even when UI state is idle", async () => {
+      mockIsAgentRunning.mockResolvedValue(true);
       const props = makeProps({ isAgentRunning: false });
       renderHook(() => useChatRecovery(props));
 
-      vi.advanceTimersByTime(3000);
+      await act(async () => {});
+
+      expect(mockIsAgentRunning).toHaveBeenCalledWith("task_execution", "task-1");
+      expect(props.setAgentRunning).toHaveBeenCalledWith("task_execution:task-1", true);
+    });
+
+    it("does not poll selected conversation liveness when panel is hidden", async () => {
+      const props = makeProps({ isAgentRunning: false, isVisible: false });
+      renderHook(() => useChatRecovery(props));
+
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+
       expect(mockIsAgentRunning).not.toHaveBeenCalled();
     });
 
@@ -288,16 +304,19 @@ describe("useChatRecovery", () => {
       const props = makeProps({ isAgentRunning: true });
       renderHook(() => useChatRecovery(props));
 
-      await act(async () => {
-        vi.advanceTimersByTime(1500);
-      });
+      await act(async () => {});
       expect(mockIsAgentRunning).toHaveBeenCalledTimes(1);
-      expect(mockIsAgentRunning).toHaveBeenCalledWith("task_execution", "task-1");
 
       await act(async () => {
         vi.advanceTimersByTime(1500);
       });
       expect(mockIsAgentRunning).toHaveBeenCalledTimes(2);
+      expect(mockIsAgentRunning).toHaveBeenCalledWith("task_execution", "task-1");
+
+      await act(async () => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(mockIsAgentRunning).toHaveBeenCalledTimes(3);
     });
 
     it("should clear stuck state when poll returns false", async () => {
@@ -305,9 +324,7 @@ describe("useChatRecovery", () => {
       const props = makeProps({ isAgentRunning: true });
       renderHook(() => useChatRecovery(props));
 
-      await act(async () => {
-        vi.advanceTimersByTime(1500);
-      });
+      await act(async () => {});
 
       expect(props.setAgentRunning).toHaveBeenCalledWith("task_execution:task-1", false);
     });
@@ -317,9 +334,7 @@ describe("useChatRecovery", () => {
       const props = makeProps({ isAgentRunning: true });
       renderHook(() => useChatRecovery(props));
 
-      await act(async () => {
-        vi.advanceTimersByTime(1500);
-      });
+      await act(async () => {});
 
       const falseCalls = props.setAgentRunning.mock.calls.filter(
         (call: [string, boolean]) => call[1] === false
@@ -405,7 +420,7 @@ describe("useChatRecovery", () => {
       mockIsAgentRunning.mockClear();
     });
 
-    it("should not attach listener when isAgentRunning is false", () => {
+    it("should attach listener for selected conversation even when UI state is idle", () => {
       const addEventSpy = vi.spyOn(document, "addEventListener");
       const props = makeProps({ isAgentRunning: false });
       renderHook(() => useChatRecovery(props));
@@ -413,7 +428,7 @@ describe("useChatRecovery", () => {
       const visibilityCalls = addEventSpy.mock.calls.filter(
         ([event]) => event === "visibilitychange"
       );
-      expect(visibilityCalls).toHaveLength(0);
+      expect(visibilityCalls.length).toBeGreaterThan(0);
       addEventSpy.mockRestore();
     });
 
