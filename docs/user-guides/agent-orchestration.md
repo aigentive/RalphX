@@ -107,7 +107,7 @@ RalphX uses specialized agents across execution, review, merge, ideation, QA, an
 | **ralphx-ideation-specialist-frontend** | Researches React/TS frontend patterns | Sonnet | Spawned by team lead |
 | **ralphx-ideation-specialist-infra** | Researches infrastructure and configuration | Sonnet | Spawned by team lead |
 | **deep-researcher** | In-depth codebase or web research | Sonnet | Invoked in research contexts |
-| **ralphx-project-analyzer** | Analyzes project structure for setup/validation commands | Sonnet | Project added or re-analyzed |
+| **ralphx-project-analyzer** | Analyzes project structure for setup/validation commands | Haiku | Project added or re-analyzed |
 | **ralphx-memory-capture** | Saves agent learnings to project memory after execution | Sonnet | After task completes |
 | **ralphx-memory-maintainer** | Organizes and deduplicates project memory | Sonnet | Periodic / on demand |
 | **ralphx-utility-session-namer** | Generates a concise name for a new ideation session | Haiku | Session created |

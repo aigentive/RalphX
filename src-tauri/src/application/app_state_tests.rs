@@ -428,8 +428,8 @@ async fn test_resolve_session_namer_runtime_uses_codex_default_harness_client() 
 
     assert!(Arc::ptr_eq(&runtime.client, &codex_default));
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(
         runtime.approval_policy.as_deref(),
         Some(CODEX_DEFAULT_APPROVAL_POLICY)
@@ -438,6 +438,42 @@ async fn test_resolve_session_namer_runtime_uses_codex_default_harness_client() 
         runtime.sandbox_mode.as_deref(),
         Some(CODEX_DEFAULT_SANDBOX_MODE)
     );
+}
+
+#[tokio::test]
+async fn test_resolve_project_analyzer_runtime_uses_project_harness_with_utility_model_lock() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project = Project::new("Codex Analyzer Project".to_string(), "/tmp".to_string());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut codex_lane = AgentLaneSettings::new(AgentHarnessKind::Codex);
+    codex_lane.model = Some("gpt-5.4".to_string());
+    codex_lane.effort = Some(LogicalEffort::XHigh);
+    state
+        .agent_lane_settings_repo
+        .upsert_for_project(project.id.as_str(), AgentLane::IdeationPrimary, &codex_lane)
+        .await
+        .unwrap();
+
+    let runtime = state
+        .resolve_project_analyzer_runtime_for_project(Some(project.id.as_str()))
+        .await
+        .expect("project analyzer should resolve from the project ideation harness");
+
+    assert!(
+        Arc::ptr_eq(&runtime.client, &codex_mock),
+        "project analyzer should keep using the owning project harness"
+    );
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
+    assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
+    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
 }
 
 #[tokio::test]
@@ -470,13 +506,10 @@ async fn test_resolve_session_namer_runtime_uses_project_ideation_harness() {
         "session namer should follow the owning project's ideation harness when no conversation provider has been persisted"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        runtime.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
 }
 
 #[tokio::test]
@@ -501,13 +534,10 @@ async fn test_resolve_session_namer_runtime_uses_owning_conversation_harness_whe
         "session namer should use the harness that owns the conversation being titled"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        runtime.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
 }
 
 #[tokio::test]
@@ -546,13 +576,10 @@ async fn test_resolve_session_namer_runtime_for_session_prefers_active_conversat
         "active ideation conversation provider should override the project lane fallback"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        runtime.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
 }
 
 #[tokio::test]
@@ -576,7 +603,7 @@ async fn test_resolve_session_namer_runtime_uses_default_without_provider_or_lan
         "legacy session namer should keep using the default helper client without provider or lane metadata"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(runtime.model.as_deref(), Some("sonnet"));
+    assert_eq!(runtime.model.as_deref(), Some("haiku"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
 }
 
@@ -603,13 +630,10 @@ async fn test_resolve_pr_describer_runtime_uses_owning_conversation_harness_when
         "PR describer should use the harness that owns the conversation being published"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(runtime.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        runtime.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
 }
 
 #[tokio::test]
@@ -633,7 +657,7 @@ async fn test_resolve_pr_describer_runtime_uses_default_client_without_provider_
         "conversations without provider_harness should use the enabled default provider client"
     );
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
-    assert_eq!(runtime.model.as_deref(), Some("sonnet"));
+    assert_eq!(runtime.model.as_deref(), Some("haiku"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
 }
 

@@ -43,7 +43,7 @@ Canonical authoring flow: `.claude/rules/agent-authoring.md`
 | `ralphx-ideation` | ideation | opus | Lead for ideation sessions (proposals, plans). Key MCP: `create_child_session`, `get_plan_verification`, `stop_verification`, `revert_and_skip` |
 | `ralphx-ideation-readonly` | ideation | opus | Read-only ideation fallback |
 | `ralphx-ideation-team-lead` | ideation | opus | Team mode lead for ideation. Key MCP: `request_team_plan`, `create_child_session`, `get_plan_verification`, `stop_verification` |
-| `ralphx-utility-session-namer` | ideation | sonnet | Names ideation sessions |
+| `ralphx-utility-session-namer` | ideation | haiku | Names ideation sessions |
 | `ralphx-chat-task` | task | sonnet | Task-level Q&A |
 | `ralphx-chat-project` | project | sonnet | Project-level Q&A |
 | `ralphx-execution-worker` | task_execution | sonnet | Code execution, step management |
@@ -57,7 +57,7 @@ Canonical authoring flow: `.claude/rules/agent-authoring.md`
 | `ralphx-execution-orchestrator` | — | opus | Internal orchestration |
 | `ralphx-qa-prep` | — | sonnet | QA preparation |
 | `ralphx-qa-executor` | — | sonnet | QA execution |
-| `ralphx-project-analyzer` | — | sonnet | Project analysis |
+| `ralphx-project-analyzer` | — | haiku | Project analysis |
 | `ralphx-memory-maintainer` | — | sonnet | Memory management |
 | `ralphx-memory-capture` | — | sonnet | Memory capture |
 | `plan-critic-layer1` | — | opus | Layer 1 completeness critic for plan verification. Returns structured JSON gap analysis only. |

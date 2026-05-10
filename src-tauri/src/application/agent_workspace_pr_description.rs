@@ -493,7 +493,7 @@ mod tests {
 
     use crate::domain::agents::{
         AgentConfig, AgentHandle, AgentHarnessKind, AgentOutput, AgentResponse, AgentResult,
-        AgentRole, AgenticClient, ClientCapabilities, ResponseChunk,
+        AgentRole, AgenticClient, ClientCapabilities, LogicalEffort, ResponseChunk,
     };
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, ChatMessage, IdeationAnalysisBaseRefKind, MessageRole,
@@ -1111,6 +1111,8 @@ mod tests {
             config.agent.as_deref(),
             Some(agent_names::AGENT_PR_DESCRIBER)
         );
+        assert_eq!(config.model.as_deref(), Some("haiku"));
+        assert_eq!(config.logical_effort, Some(LogicalEffort::Medium));
         assert_eq!(config.timeout_secs, Some(120));
         assert!(config
             .prompt
@@ -1176,6 +1178,8 @@ mod tests {
         let configs = codex_client.spawned_configs().await;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].harness, Some(AgentHarnessKind::Codex));
+        assert_eq!(configs[0].model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(configs[0].logical_effort, Some(LogicalEffort::Medium));
         assert_eq!(configs[0].approval_policy.as_deref(), Some("never"));
         assert_eq!(
             configs[0].sandbox_mode.as_deref(),
