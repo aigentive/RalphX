@@ -321,6 +321,7 @@ vi.mock("@/api/chat", () => ({
     updateConversationTitle: (...args: unknown[]) => updateConversationTitleMock(...args),
     archiveConversation: (...args: unknown[]) => archiveConversationMock(...args),
     restoreConversation: (...args: unknown[]) => restoreConversationMock(...args),
+    getAgentRunningStates: vi.fn().mockResolvedValue({}),
   },
 }));
 

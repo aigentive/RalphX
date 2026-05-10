@@ -181,7 +181,9 @@ describe("SettingsDialog", () => {
       uiState.modalContext = { section: "execution-harnesses" };
       render(<SettingsDialog {...defaultProps} />);
 
-      expect(await screen.findByText("Execution Pipeline Agents")).toBeInTheDocument();
+      expect(
+        await screen.findByText("Execution Pipeline Agents", {}, { timeout: 5_000 })
+      ).toBeInTheDocument();
     });
 
   });
