@@ -89,6 +89,7 @@ import {
   useAgentSidebarProjectGroup,
   useAgentSidebarPublicationGroup,
 } from "./useAgentSidebarPublicationGroup";
+import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
@@ -138,6 +139,7 @@ interface AgentsSidebarProps {
   onRestoreConversation: (conversation: AgentConversation) => void;
   showArchived: boolean;
   onShowArchivedChange: (showArchived: boolean) => void;
+  isVisible?: boolean;
   onCollapse?: () => void;
 }
 
@@ -156,6 +158,7 @@ export function AgentsSidebar({
   onRestoreConversation,
   showArchived,
   onShowArchivedChange,
+  isVisible = true,
   onCollapse,
 }: AgentsSidebarProps) {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -439,6 +442,7 @@ export function AgentsSidebar({
         ) : sidebarGroupBy === "publication" ? (
           <PublicationStateGroups
             projects={orderedProjects}
+            isSidebarVisible={isVisible}
             priorityConversationIds={priorityConversationIds}
             pinnedConversationIds={pinnedConversationIds}
             rowSort={projectSort}
@@ -458,6 +462,7 @@ export function AgentsSidebar({
               key={project.id}
               project={project}
               isFocused={focusedProjectId === project.id}
+              isSidebarVisible={isVisible}
               selectedConversationId={selectedConversationId}
               searchQuery={normalizedSearch}
               onFocusProject={onFocusProject}
@@ -908,6 +913,7 @@ function FilterCollapsibleSection({
 
 interface PublicationStateGroupsProps {
   projects: Project[];
+  isSidebarVisible: boolean;
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
   rowSort: AgentProjectSort;
@@ -924,6 +930,7 @@ interface PublicationStateGroupsProps {
 
 function PublicationStateGroups({
   projects,
+  isSidebarVisible,
   priorityConversationIds,
   pinnedConversationIds,
   rowSort,
@@ -959,6 +966,7 @@ function PublicationStateGroups({
         <PublicationStateGroup
           key={publicationState}
           expandedPublicationState={expandedPublicationState}
+          isSidebarVisible={isSidebarVisible}
           projects={projects}
           priorityConversationIds={priorityConversationIds}
           pinnedConversationIds={pinnedConversationIds}
@@ -983,6 +991,7 @@ function PublicationStateGroups({
 
 interface PublicationStateGroupProps {
   expandedPublicationState: AgentSidebarPublicationState | null;
+  isSidebarVisible: boolean;
   projects: Project[];
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
@@ -1004,6 +1013,7 @@ interface PublicationStateGroupProps {
 
 function PublicationStateGroup({
   expandedPublicationState,
+  isSidebarVisible,
   projects,
   priorityConversationIds,
   pinnedConversationIds,
@@ -1059,6 +1069,11 @@ function PublicationStateGroup({
   const groupLabel =
     groupQuery.group.label || getSidebarPublicationGroupLabel(publicationState);
   const totalConversationCount = groupQuery.group.total;
+  const visibleConversations = useMemo(
+    () => groupQuery.group.rows.map((row) => toProjectAgentConversation(row.conversation)),
+    [groupQuery.group.rows]
+  );
+  useAgentSidebarRunningStates(visibleConversations, isSidebarVisible && expanded);
 
   return (
     <div
@@ -1487,6 +1502,7 @@ function AgentSessionRow({
 interface ProjectSessionGroupProps {
   project: Project;
   isFocused: boolean;
+  isSidebarVisible: boolean;
   selectedConversationId: string | null;
   searchQuery: string;
   onFocusProject: (projectId: string) => void;
@@ -1508,6 +1524,7 @@ interface ProjectSessionGroupProps {
 function ProjectSessionGroup({
   project,
   isFocused,
+  isSidebarVisible,
   selectedConversationId,
   searchQuery,
   onFocusProject,
@@ -1551,6 +1568,10 @@ function ProjectSessionGroup({
   const visibleConversations = useMemo(
     () => visibleRows.map((row) => toProjectAgentConversation(row.conversation)),
     [visibleRows]
+  );
+  useAgentSidebarRunningStates(
+    visibleConversations,
+    isSidebarVisible && (showProjectHeader ? expanded : true)
   );
   const totalConversationCount = groupQuery.group.total;
   const activeRuntimeCount = visibleConversations.filter((conversation) => {

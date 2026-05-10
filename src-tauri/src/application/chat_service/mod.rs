@@ -68,6 +68,7 @@ use crate::infrastructure::agents::claude::agent_names::{
 };
 use async_trait::async_trait;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -568,6 +569,13 @@ pub trait ChatService: Send + Sync {
 
     /// Check if an agent is running for a context
     async fn is_agent_running(&self, context_type: ChatContextType, context_id: &str) -> bool;
+
+    /// Bulk-check whether agents are running for the given context ids.
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool>;
 
     /// Override team mode at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses AtomicBool.
@@ -3342,6 +3350,76 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         true
     }
 
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool> {
+        let requested_ids: HashSet<String> = context_ids
+            .iter()
+            .filter(|id| !id.is_empty())
+            .cloned()
+            .collect();
+        let mut states: HashMap<String, bool> = requested_ids
+            .iter()
+            .map(|id| (id.clone(), false))
+            .collect();
+
+        if requested_ids.is_empty() {
+            return states;
+        }
+
+        let context_type_name = context_type.to_string();
+        let entries = match self
+            .running_agent_registry
+            .list_by_context_type(&context_type_name)
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    error = %error,
+                    "Failed to bulk-list running-agent registry entries"
+                );
+                return states;
+            }
+        };
+
+        for (key, info) in entries {
+            if !requested_ids.contains(&key.context_id) {
+                continue;
+            }
+
+            let context_id = key.context_id.clone();
+            let cleaned_stale = self
+                .cleanup_stale_registry_block(
+                    &key,
+                    &info,
+                    context_type,
+                    &context_id,
+                    "get_agent_running_states",
+                )
+                .await;
+            let cleaned_inactive = if cleaned_stale {
+                false
+            } else {
+                self.cleanup_inactive_registry_block(
+                    &key,
+                    &info,
+                    context_type,
+                    &context_id,
+                    "get_agent_running_states",
+                )
+                .await
+            };
+
+            states.insert(context_id, !(cleaned_stale || cleaned_inactive));
+        }
+
+        states
+    }
+
     fn set_team_mode(&self, mode: bool) {
         self.team_mode.store(mode, Ordering::Relaxed);
     }
@@ -3542,6 +3620,65 @@ mod stale_registry_gate_tests {
 
     fn pid_zero() -> u32 {
         0
+    }
+}
+
+#[cfg(test)]
+mod bulk_running_state_tests {
+    use super::{ChatContextType, ChatService};
+    use crate::application::AppState;
+    use crate::commands::ExecutionState;
+    use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_intersects_requested_project_ids() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-running"))
+            .await;
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-unrequested"))
+            .await;
+        registry
+            .set_running(RunningAgentKey::new("ideation", "conv-running"))
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(registry);
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let requested_ids = vec![
+            "conv-running".to_string(),
+            "conv-idle".to_string(),
+            "conv-running".to_string(),
+            String::new(),
+        ];
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &requested_ids)
+            .await;
+
+        assert_eq!(states.get("conv-running"), Some(&true));
+        assert_eq!(states.get("conv-idle"), Some(&false));
+        assert_eq!(states.get("conv-unrequested"), None);
+        assert_eq!(states.get(""), None);
+        assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_returns_empty_for_empty_request() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-running"))
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(registry);
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &[])
+            .await;
+
+        assert!(states.is_empty());
     }
 }
 

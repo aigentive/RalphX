@@ -3987,6 +3987,33 @@ pub async fn is_agent_running(
     Ok(service.is_agent_running(context_type, &context_id).await)
 }
 
+/// Bulk-check whether agents are running for the requested context ids.
+#[tauri::command]
+pub async fn get_agent_running_states(
+    context_type: String,
+    context_ids: Vec<String>,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+) -> Result<HashMap<String, bool>, String> {
+    let service =
+        state.build_chat_service_with_execution_state(Arc::clone(execution_state.inner()));
+
+    get_agent_running_states_for_service(&service, context_type, context_ids).await
+}
+
+#[doc(hidden)]
+pub async fn get_agent_running_states_for_service(
+    service: &dyn ChatService,
+    context_type: String,
+    context_ids: Vec<String>,
+) -> Result<HashMap<String, bool>, String> {
+    let context_type = parse_context_type(&context_type)?;
+
+    Ok(service
+        .get_agent_running_states(context_type, &context_ids)
+        .await)
+}
+
 /// Input for create_agent_conversation command
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

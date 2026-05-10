@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type { ChatConversation } from "@/types/chat-conversation";
 import {
+  mockGetAgentRunningStates,
   mockListAgentSidebarConversations,
   resetMockChatState,
   seedMockAgentConversationWorkspace,
@@ -208,5 +209,16 @@ describe("mockListAgentSidebarConversations", () => {
     expect(archivedOnly.groups[0].rows.map((row) => row.conversation.id)).toEqual([
       "archive",
     ]);
+  });
+});
+
+describe("mockGetAgentRunningStates", () => {
+  it("returns idle bulk running states for requested context ids", async () => {
+    await expect(
+      mockGetAgentRunningStates("project", ["conv-1", "conv-2"])
+    ).resolves.toEqual({
+      "conv-1": false,
+      "conv-2": false,
+    });
   });
 });

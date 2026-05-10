@@ -28,6 +28,7 @@ import {
   isChatServiceAvailable,
   stopAgent,
   isAgentRunning,
+  getAgentRunningStates,
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
@@ -1415,6 +1416,19 @@ describe("chat api", () => {
     expect(await stopAgent("project", "p1")).toBe(false);
   });
 
+  it("bulk-checks running states", async () => {
+    mockInvoke.mockResolvedValueOnce({ c1: true, c2: false });
+
+    await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
+      c1: true,
+      c2: false,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_running_states", {
+      contextType: "project",
+      contextIds: ["c1", "c2"],
+    });
+  });
+
   it("exports chatApi namespace", () => {
     expect(chatApi.sendAgentMessage).toBe(sendAgentMessage);
     expect(chatApi.listConversations).toBe(listConversations);
@@ -1431,6 +1445,7 @@ describe("chat api", () => {
     expect(chatApi.archiveConversation).toBe(archiveConversation);
     expect(chatApi.restoreConversation).toBe(restoreConversation);
     expect(chatApi.getConversationActiveState).toBe(getConversationActiveState);
+    expect(chatApi.getAgentRunningStates).toBe(getAgentRunningStates);
   });
 });
 

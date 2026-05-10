@@ -1206,6 +1206,7 @@ export const chatApi = {
   publishAgentConversationWorkspace,
   closeAgentWorkspacePr,
   getAgentRunStatus,
+  getAgentRunningStates,
   // Message sending & queue
   startAgentConversation,
   switchAgentConversationMode,
@@ -1916,6 +1917,20 @@ export async function isAgentRunning(
     "is_agent_running",
     { contextType, contextId },
     z.boolean()
+  );
+}
+
+/**
+ * Bulk-check whether agents are currently running for multiple context IDs.
+ */
+export async function getAgentRunningStates(
+  contextType: ContextType,
+  contextIds: string[]
+): Promise<Record<string, boolean>> {
+  return typedInvoke(
+    "get_agent_running_states",
+    { contextType, contextIds },
+    z.record(z.string(), z.boolean())
   );
 }
 
