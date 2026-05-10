@@ -333,16 +333,14 @@ export function AgentPublishPanel({
             : changes.length > 0
               ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`
               : "No changed files detected yet.";
-  const confirmUpdateFromBase = async () => {
-    const confirmed = await confirm({
+  const confirmUpdateFromBase = () => {
+    void confirm({
       title: "Update from base branch?",
       description: `This will update ${branch} with the latest changes from ${baseActionLabel}. If conflicts are found, RalphX will route this workspace through repair before publishing can continue.`,
       confirmText: "Update branch",
+      pendingText: "Updating...",
+      onConfirm: () => updateFromBaseMutation.mutateAsync(undefined),
     });
-    if (!confirmed) {
-      return;
-    }
-    updateFromBaseMutation.mutate(undefined);
   };
   const rebaseFromSelectedBase = () => {
     if (!selectedRebaseBase) {
@@ -351,31 +349,27 @@ export function AgentPublishPanel({
     }
     updateFromBaseMutation.mutate(selectedRebaseBase.selection);
   };
-  const confirmClosePr = async () => {
-    const confirmed = await confirm({
+  const confirmClosePr = () => {
+    void confirm({
       title: "Close pull request?",
       description: `This will close ${terminalPrLabel} for ${branch}. The workspace files and conversation history will remain available.`,
       confirmText: "Close PR",
+      pendingText: "Closing...",
       variant: "destructive",
+      onConfirm: () => closePrMutation.mutateAsync(),
     });
-    if (!confirmed) {
-      return;
-    }
-    closePrMutation.mutate();
   };
-  const confirmPublishWorkspace = async () => {
+  const confirmPublishWorkspace = () => {
     if (!onPublishWorkspace) {
       return;
     }
-    const confirmed = await confirm({
+    void confirm({
       title: "Commit and publish workspace?",
       description: `This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`,
       confirmText: "Commit & Publish",
+      pendingText: "Publishing...",
+      onConfirm: () => onPublishWorkspace(workspace.conversationId),
     });
-    if (!confirmed) {
-      return;
-    }
-    await onPublishWorkspace(workspace.conversationId);
   };
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
 
@@ -572,7 +566,7 @@ export function AgentPublishPanel({
                 <Button
                   type="button"
                   className={primaryActionClassName}
-                  onClick={() => void confirmUpdateFromBase()}
+                  onClick={confirmUpdateFromBase}
                   disabled={
                     baseBlocked ||
                     effectivePublishing ||
@@ -606,7 +600,7 @@ export function AgentPublishPanel({
                 <Button
                   type="button"
                   className={primaryActionClassName}
-                  onClick={() => void confirmPublishWorkspace()}
+                  onClick={confirmPublishWorkspace}
                   disabled={publishDisabled || isFreshnessLoading}
                   data-testid="agents-publish-confirm"
                 >
@@ -647,7 +641,7 @@ export function AgentPublishPanel({
                       data-testid="agents-close-pr"
                       onSelect={(event) => {
                         event.preventDefault();
-                        void confirmClosePr();
+                        confirmClosePr();
                       }}
                       disabled={isClosingPr || effectivePublishing}
                     >
@@ -798,7 +792,7 @@ export function AgentPublishPanel({
               ) : (
                 <GitBranch className="h-3.5 w-3.5" />
               )}
-              Rebase branch
+              {isUpdatingFromBase ? "Rebasing..." : "Rebase branch"}
             </Button>
           </div>
         </DialogContent>
