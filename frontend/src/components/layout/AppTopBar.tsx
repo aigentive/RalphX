@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { Check, ChevronDown, GitPullRequest, Search } from "lucide-react";
-import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
@@ -72,7 +72,7 @@ type ConversationQueryData = {
 };
 
 function updateConversationTitleInCache(
-  queryClient: ReturnType<typeof useQueryClient>,
+  queryClient: QueryClient,
   conversation: ChatConversation,
   title: string,
 ) {
@@ -115,6 +115,106 @@ function updateConversationTitleInCache(
     chatKeys.conversationList(conversation.contextType, conversation.contextId),
     (oldData) => oldData?.map(updateConversation),
   );
+}
+
+function isCachedConversation(value: unknown, conversationId: string): value is ChatConversation {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<ChatConversation>;
+  return (
+    candidate.id === conversationId &&
+    typeof candidate.contextType === "string" &&
+    typeof candidate.contextId === "string"
+  );
+}
+
+function findConversationInQueryData(
+  data: unknown,
+  conversationId: string,
+): ChatConversation | null {
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const objectData = data as {
+    conversation?: unknown;
+    conversations?: unknown;
+    pages?: unknown;
+  };
+
+  if (isCachedConversation(objectData.conversation, conversationId)) {
+    return objectData.conversation;
+  }
+
+  if (Array.isArray(objectData.conversations)) {
+    const conversation = objectData.conversations.find((item) =>
+      isCachedConversation(item, conversationId)
+    );
+    if (conversation) {
+      return conversation;
+    }
+  }
+
+  if (Array.isArray(objectData.pages)) {
+    for (const page of objectData.pages) {
+      const conversation = findConversationInQueryData(page, conversationId);
+      if (conversation) {
+        return conversation;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findCachedAgentConversation(
+  queryClient: QueryClient,
+  conversationId: string,
+): ChatConversation | null {
+  const direct = findConversationInQueryData(
+    queryClient.getQueryData(chatKeys.conversation(conversationId)),
+    conversationId,
+  );
+  if (direct) {
+    return direct;
+  }
+
+  const history = findConversationInQueryData(
+    queryClient.getQueryData(chatKeys.conversationHistory(conversationId)),
+    conversationId,
+  );
+  if (history) {
+    return history;
+  }
+
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: agentConversationKeys.all })) {
+    const conversation = findConversationInQueryData(query.state.data, conversationId);
+    if (conversation) {
+      return conversation;
+    }
+  }
+
+  return null;
+}
+
+function useCachedAgentConversation(
+  conversationId: string | null,
+  enabled: boolean,
+): ChatConversation | null {
+  const queryClient = useQueryClient();
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
+    [queryClient],
+  );
+  const getSnapshot = useCallback(() => {
+    if (!enabled || !conversationId) {
+      return null;
+    }
+    return findCachedAgentConversation(queryClient, conversationId);
+  }, [conversationId, enabled, queryClient]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 interface EditableAgentBreadcrumbTitleProps {
@@ -302,14 +402,21 @@ export function AppTopBar({
 }: AppTopBarProps) {
   const activeProject = useProjectStore(selectActiveProject);
   const selectedAgentConversationId = useAgentSessionStore((s) => s.selectedConversationId);
+  const cachedAgentConversation = useCachedAgentConversation(
+    selectedAgentConversationId,
+    currentView === "agents",
+  );
   const selectedAgentConversation = useConversationHistoryWindow(selectedAgentConversationId, {
-    enabled: currentView === "agents" && Boolean(selectedAgentConversationId),
+    enabled:
+      currentView === "agents" &&
+      Boolean(selectedAgentConversationId) &&
+      !cachedAgentConversation,
     pageSize: 1,
   });
   const [activeMenu, setActiveMenu] = useState<"theme" | "font" | null>(null);
   const agentConversation =
     currentView === "agents" && selectedAgentConversationId
-      ? selectedAgentConversation.data?.conversation ?? null
+      ? cachedAgentConversation ?? selectedAgentConversation.data?.conversation ?? null
       : null;
   const agentConversationTitle =
     agentConversation

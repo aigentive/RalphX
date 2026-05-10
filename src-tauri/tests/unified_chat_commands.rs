@@ -839,8 +839,13 @@ fn test_agent_run_status_response_serializes_model_absent() {
 
 #[cfg(test)]
 mod ipc_contract {
+    use ralphx_lib::application::agent_workspace_bridge::{
+        dispatch_prepared_agent_workspace_bridge_wakeup, prepare_agent_workspace_bridge_wakeup,
+        wake_agent_workspace_for_bridge_events,
+        wake_agent_workspace_for_bridge_events_with_service_factory,
+    };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
-    use ralphx_lib::application::AppState;
+    use ralphx_lib::application::{AppState, MockChatService};
     use ralphx_lib::commands::agent_model_commands::{
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
         UpsertCustomAgentModelInput,
@@ -860,7 +865,8 @@ mod ipc_contract {
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspaceStatus, AgentRun, ChatConversation, ChatConversationId,
-        ChatMessage, IdeationAnalysisBaseRefKind, MessageRole, ProjectId,
+        ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionId, MessageRole, Project,
+        ProjectId,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
@@ -1313,6 +1319,172 @@ mod ipc_contract {
             .as_str()
             .unwrap()
             .contains("block line 12"));
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_messages_page_read_short_circuits_bridge_wakeup_when_unlinked() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-read-no-bridge-ipc".to_string());
+        let mut project = Project::new(
+            "Read no bridge".to_string(),
+            "/tmp/project-read-no-bridge-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.title = Some("Read no bridge".to_string());
+        let conversation_id = conversation.id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "main".to_string(),
+            Some("Current branch".to_string()),
+            None,
+            format!("agent-{conversation_id}"),
+            "/tmp/project-read-no-bridge-ipc-workspace".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let wakeup = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            MockChatService::new,
+        )
+        .await
+        .expect("read bridge wake-up should prepare");
+        assert!(wakeup.is_none());
+
+        let page = get_agent_conversation_messages_page_for_app_state(
+            &state,
+            conversation_id.clone(),
+            1,
+            0,
+        )
+        .await
+        .expect("message page command should succeed")
+        .expect("conversation should exist");
+
+        assert_eq!(page.conversation.id, conversation_id.as_str());
+        assert!(page.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_read_bridge_wakeup_dispatches_linked_ideation_events() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-read-bridge-ipc".to_string());
+        let mut project = Project::new(
+            "Read bridge".to_string(),
+            "/tmp/project-read-bridge-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let conversation = ChatConversation::new_project(project_id.clone());
+        let conversation_id = conversation.id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "main".to_string(),
+            Some("Current branch".to_string()),
+            None,
+            format!("agent-{conversation_id}"),
+            "/tmp/project-read-bridge-ipc-workspace".to_string(),
+        );
+        workspace.linked_ideation_session_id =
+            Some(IdeationSessionId::from_string("session-ipc".to_string()));
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:verified",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc", "gap_score": 1 }).to_string(),
+            )
+            .await
+            .expect("event should persist");
+
+        let result = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            MockChatService::new,
+        )
+        .await
+        .expect("read bridge wake-up should prepare")
+        .expect("linked ideation event should dispatch a wake-up");
+
+        assert_eq!(result.event_count, 1);
+        assert!(!result.agent_run_id.is_empty());
+
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:proposals_ready",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc", "proposal_count": 2 })
+                    .to_string(),
+            )
+            .await
+            .expect("event should persist");
+        let prepared = prepare_agent_workspace_bridge_wakeup(&state, &conversation_id)
+            .await
+            .expect("read bridge wake-up should prepare")
+            .expect("new linked ideation event should prepare a wake-up");
+        let dispatch_service = MockChatService::new();
+        let dispatched =
+            dispatch_prepared_agent_workspace_bridge_wakeup(&state, &dispatch_service, prepared)
+                .await
+                .expect("prepared wake-up should dispatch");
+        assert_eq!(dispatched.event_count, 1);
+        assert_eq!(dispatch_service.call_count(), 1);
+
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:session_accepted",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc" }).to_string(),
+            )
+            .await
+            .expect("event should persist");
+        let eager_service = MockChatService::new();
+        let eager =
+            wake_agent_workspace_for_bridge_events(&state, &eager_service, &conversation_id)
+                .await
+                .expect("read bridge wake-up should dispatch")
+                .expect("new linked ideation event should dispatch a wake-up");
+        assert_eq!(eager.event_count, 1);
+        assert_eq!(eager_service.call_count(), 1);
     }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────

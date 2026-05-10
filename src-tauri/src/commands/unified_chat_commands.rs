@@ -25,7 +25,10 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
 };
-use crate::application::agent_workspace_bridge::wake_agent_workspace_for_bridge_events;
+use crate::application::agent_workspace_bridge::{
+    wake_agent_workspace_for_bridge_events,
+    wake_agent_workspace_for_bridge_events_with_service_factory,
+};
 use crate::application::agent_workspace_pr_description::draft_agent_workspace_pr_description;
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::chat_service::tool_result_preview::{
@@ -3741,9 +3744,12 @@ pub async fn get_agent_conversation_messages_page(
     let limit = limit.unwrap_or(40).clamp(1, 200);
     let offset = offset.unwrap_or(0);
 
-    let service = create_chat_service(&state, app, &execution_state, None);
-    if let Err(error) =
-        wake_agent_workspace_for_bridge_events(&state, &service, &conversation_id).await
+    if let Err(error) = wake_agent_workspace_for_bridge_events_with_service_factory(
+        &state,
+        &conversation_id,
+        || create_chat_service(&state, app, &execution_state, None),
+    )
+    .await
     {
         tracing::warn!(
             conversation_id = %conversation_id,
