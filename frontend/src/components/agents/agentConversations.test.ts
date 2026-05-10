@@ -141,11 +141,12 @@ describe("agent conversations", () => {
     expect(result).toBe("session:session-42");
   });
 
-  it("formats recent sidebar timestamps as human-diff labels", () => {
+  it("formats recent sidebar timestamps as compact labels", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));
 
-    expect(formatAgentConversationCreatedAt(new Date(2026, 3, 25, 14, 33, 0))).toBe("2 hours ago");
+    expect(formatAgentConversationCreatedAt(new Date(2026, 3, 25, 14, 33, 0))).toBe("2h");
+    expect(formatAgentConversationCreatedAt(new Date(2026, 3, 23, 16, 33, 0))).toBe("2d");
   });
 
   it("formats old sidebar timestamps as date-only labels", () => {
@@ -159,11 +160,8 @@ describe("agent conversations", () => {
     expect(formatAgentConversationCreatedAtTitle(new Date(2026, 3, 17, 16, 33, 0))).toBe("Apr 17, 2026, 4:33 PM");
   });
 
-  it("falls back to the human-diff label when the input cannot be parsed", () => {
-    expect(formatAgentConversationCreatedAt("not-a-date")).toBe(
-      formatAgentConversationCreatedAt("not-a-date"),
-    );
-    // The branch is exercised — both calls go through the NaN-guard return.
+  it("returns an empty sidebar timestamp label when the input cannot be parsed", () => {
+    expect(formatAgentConversationCreatedAt("not-a-date")).toBe("");
   });
 
   it("includes the year on cross-year sidebar timestamps", () => {

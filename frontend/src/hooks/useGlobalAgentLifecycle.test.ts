@@ -26,11 +26,14 @@ import { renderHook, act } from "@testing-library/react";
 const chatStoreMocks = vi.hoisted(() => ({
   setAgentStatus: vi.fn(),
   agentStatus: {} as Record<string, string>,
+  activeAgentRunIds: {} as Record<string, string>,
   lastAgentEventTimestamp: {} as Record<string, number>,
   updateLastAgentEvent: vi.fn(),
   isTeamActive: {} as Record<string, boolean>,
   activeConversationIds: {} as Record<string, string | null>,
   setActiveConversation: vi.fn(),
+  setActiveAgentRun: vi.fn(),
+  clearActiveAgentRun: vi.fn(),
   setEffectiveModel: vi.fn(),
 }));
 
@@ -182,8 +185,11 @@ describe("useGlobalAgentLifecycle", () => {
     chatStoreMocks.setAgentStatus.mockClear();
     chatStoreMocks.updateLastAgentEvent.mockClear();
     chatStoreMocks.setActiveConversation.mockClear();
+    chatStoreMocks.setActiveAgentRun.mockClear();
+    chatStoreMocks.clearActiveAgentRun.mockClear();
     chatStoreMocks.setEffectiveModel.mockClear();
     chatStoreMocks.agentStatus = {};
+    chatStoreMocks.activeAgentRunIds = {};
     chatStoreMocks.lastAgentEventTimestamp = {};
     chatStoreMocks.isTeamActive = {};
     chatStoreMocks.activeConversationIds = {};
@@ -257,6 +263,23 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.setActiveConversation).toHaveBeenCalledWith(
       "session:session-b",
       "conv-session-b"
+    );
+  });
+
+  it("run_started records the active agent run id for stale terminal event guards", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_started", {
+        ...mkRunStarted("project", "project-1"),
+        conversation_id: "conv-project-1",
+        run_id: "run-new",
+      });
+    });
+
+    expect(chatStoreMocks.setActiveAgentRun).toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "run-new"
     );
   });
 
@@ -400,6 +423,52 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.setAgentStatus).toHaveBeenCalledWith("task_execution:task-1", "idle");
   });
 
+  it("run_completed ignores stale terminal events from an older run on the same conversation", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    chatStoreMocks.agentStatus = { "project:conv-project-1": "generating" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        run_id: "run-old",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "idle"
+    );
+    expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("run_completed clears the active run id when the terminal event matches", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        run_id: "run-new",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "idle"
+    );
+    expect(chatStoreMocks.clearActiveAgentRun).toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "run-new"
+    );
+  });
+
   // --------------------------------------------------------------------------
   // turn_completed
   // --------------------------------------------------------------------------
@@ -465,6 +534,27 @@ describe("useGlobalAgentLifecycle", () => {
     expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
   });
 
+  it("turn_completed ignores stale terminal events from an older run on the same conversation", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    chatStoreMocks.agentStatus = { "project:conv-project-1": "generating" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:turn_completed", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        run_id: "run-old",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "waiting_for_input"
+    );
+  });
+
   // --------------------------------------------------------------------------
   // stopped
   // --------------------------------------------------------------------------
@@ -487,6 +577,27 @@ describe("useGlobalAgentLifecycle", () => {
     });
 
     expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
+  });
+
+  it("stopped ignores stale events using agent_run_id", () => {
+    chatStoreMocks.activeConversationIds = { "project:conv-project-1": "conv-project-1" };
+    chatStoreMocks.activeAgentRunIds = { "project:conv-project-1": "run-new" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:stopped", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conv-project-1",
+        agent_run_id: "run-old",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "project:conv-project-1",
+      "idle"
+    );
+    expect(chatStoreMocks.clearActiveAgentRun).not.toHaveBeenCalled();
   });
 
   // --------------------------------------------------------------------------
@@ -560,6 +671,28 @@ describe("useGlobalAgentLifecycle", () => {
     });
 
     expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("error ignores stale terminal events from an older run", () => {
+    chatStoreMocks.activeConversationIds = { "task_execution:task-1": "conv-task-1" };
+    chatStoreMocks.activeAgentRunIds = { "task_execution:task-1": "run-new" };
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:error", {
+        context_type: "task_execution",
+        context_id: "task-1",
+        conversation_id: "conv-task-1",
+        agent_run_id: "run-old",
+        error: "old run failed after resume",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentStatus).not.toHaveBeenCalledWith(
+      "task_execution:task-1",
+      "idle"
+    );
     expect(toast.error).not.toHaveBeenCalled();
   });
 

@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { useUiStore } from "@/stores/uiStore";
 
 const INITIAL_UPDATE_CHECK_DELAY_MS = 3_000;
 const STARTUP_RELEASE_NOTES_DELAY_MS = 4_000;
@@ -24,6 +25,8 @@ const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 const LIFECYCLE_UPDATE_CHECK_COOLDOWN_MS = 5 * 60 * 1_000;
 const UPDATE_CHECK_EVENT = "ralphx://check-for-updates";
 const RELEASE_NOTES_EVENT = "ralphx://show-release-notes";
+const GITHUB_RELEASE_METADATA_MARKERS =
+  /^[ \t]*<!--\s*github-release-metadata:(?:start|end)\s*-->[ \t]*\n?/gm;
 
 interface ReleaseNotesView {
   version: string;
@@ -45,7 +48,11 @@ const LazyReleaseNotesMarkdown = lazy(async () => {
   return {
     default: function ReleaseNotesMarkdown({ body }: { body: string }) {
       return (
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={markdownComponents}
+          skipHtml
+        >
           {body}
         </ReactMarkdown>
       );
@@ -54,18 +61,59 @@ const LazyReleaseNotesMarkdown = lazy(async () => {
 });
 
 export function UpdateChecker() {
+  const activeModal = useUiStore((s) => s.activeModal);
   const checkInFlight = useRef(false);
   const notifiedVersion = useRef<string | null>(null);
   const lastCheckAt = useRef<number | null>(null);
   const whatsNewVersion = useRef<string | null>(null);
+  const pendingWhatsNew = useRef<ReleaseNotesView | null>(null);
+  const visibleWhatsNew = useRef<ReleaseNotesView | null>(null);
+  const visibleWhatsNewToastId = useRef<string | null>(null);
+  const isGlobalModalOpen = useRef(activeModal !== null);
   const [releaseNotes, setReleaseNotes] = useState<ReleaseNotesView | null>(null);
+
+  const clearVisibleWhatsNew = useCallback((version?: string) => {
+    if (version !== undefined && visibleWhatsNew.current?.version !== version) {
+      return;
+    }
+    visibleWhatsNew.current = null;
+    visibleWhatsNewToastId.current = null;
+  }, []);
+
+  const openReleaseNotes = useCallback(
+    (notes: ReleaseNotesView) => {
+      if (notes.context === "current") {
+        toast.dismiss(whatsNewToastId(notes.version));
+        pendingWhatsNew.current = null;
+        clearVisibleWhatsNew(notes.version);
+      }
+      setReleaseNotes(notes);
+    },
+    [clearVisibleWhatsNew],
+  );
+
+  const presentWhatsNewToast = useCallback(
+    (notes: ReleaseNotesView) => {
+      if (isGlobalModalOpen.current) {
+        pendingWhatsNew.current = notes;
+        return;
+      }
+
+      const toastId = whatsNewToastId(notes.version);
+      pendingWhatsNew.current = null;
+      visibleWhatsNew.current = notes;
+      visibleWhatsNewToastId.current = toastId;
+      showWhatsNewToast(notes, openReleaseNotes, () => clearVisibleWhatsNew(notes.version));
+    },
+    [clearVisibleWhatsNew, openReleaseNotes],
+  );
 
   const openCurrentReleaseNotes = useCallback(async () => {
     try {
       const notes = await getCurrentReleaseNotes();
-      setReleaseNotes({
+      openReleaseNotes({
         version: notes.version,
-        body: notes.body,
+        body: sanitizeReleaseNotesBody(notes.body),
         context: "current",
       });
     } catch (error) {
@@ -74,7 +122,7 @@ export function UpdateChecker() {
         id: "release-notes-error",
       });
     }
-  }, []);
+  }, [openReleaseNotes]);
 
   const checkForUpdates = useCallback(
     async ({ manual = false, force = false }: CheckForUpdatesOptions = {}) => {
@@ -96,7 +144,7 @@ export function UpdateChecker() {
         const update = await check();
         if (update && notifiedVersion.current !== update.version) {
           notifiedVersion.current = update.version;
-          showUpdateNotification(update, (notes) => setReleaseNotes(notes));
+          showUpdateNotification(update, openReleaseNotes);
         } else if (manual && !update) {
           toast.success("RalphX is up to date.", { id: "update-check-result" });
         }
@@ -111,7 +159,7 @@ export function UpdateChecker() {
         checkInFlight.current = false;
       }
     },
-    [],
+    [openReleaseNotes],
   );
 
   const showStartupReleaseNotes = useCallback(async () => {
@@ -120,9 +168,10 @@ export function UpdateChecker() {
         getCurrentReleaseNotes(),
         getLastSeenReleaseNotesVersion(),
       ]);
+      const body = sanitizeReleaseNotesBody(notes.body);
 
       if (
-        !notes.body ||
+        !body ||
         lastSeenVersion === notes.version ||
         whatsNewVersion.current === notes.version
       ) {
@@ -130,14 +179,27 @@ export function UpdateChecker() {
       }
 
       whatsNewVersion.current = notes.version;
-      showWhatsNewToast(
-        { version: notes.version, body: notes.body, context: "current" },
-        (releaseNotes) => setReleaseNotes(releaseNotes),
-      );
+      presentWhatsNewToast({ version: notes.version, body, context: "current" });
     } catch (error) {
       console.debug("Release notes startup check failed:", error);
     }
-  }, []);
+  }, [presentWhatsNewToast]);
+
+  useEffect(() => {
+    isGlobalModalOpen.current = activeModal !== null;
+    if (activeModal !== null) {
+      if (visibleWhatsNew.current && visibleWhatsNewToastId.current) {
+        pendingWhatsNew.current = visibleWhatsNew.current;
+        toast.dismiss(visibleWhatsNewToastId.current);
+        clearVisibleWhatsNew();
+      }
+      return;
+    }
+
+    if (pendingWhatsNew.current) {
+      presentWhatsNewToast(pendingWhatsNew.current);
+    }
+  }, [activeModal, clearVisibleWhatsNew, presentWhatsNewToast]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(
@@ -221,7 +283,7 @@ function showUpdateNotification(
   update: Update,
   onOpenReleaseNotes: (notes: ReleaseNotesView) => void,
 ) {
-  const notes = typeof update.body === "string" ? update.body.trim() : "";
+  const notes = sanitizeReleaseNotesBody(typeof update.body === "string" ? update.body : null);
   const releaseNotes = notes
     ? { version: update.version, body: notes, context: "update" as const }
     : null;
@@ -291,8 +353,9 @@ function showUpdateNotification(
 function showWhatsNewToast(
   releaseNotes: ReleaseNotesView,
   onOpenReleaseNotes: (notes: ReleaseNotesView) => void,
+  onDismiss: () => void,
 ) {
-  const toastId = `whats-new-${releaseNotes.version}`;
+  const toastId = whatsNewToastId(releaseNotes.version);
 
   toast(
     <div className="flex flex-col gap-2" data-testid="whats-new-toast">
@@ -328,6 +391,7 @@ function showWhatsNewToast(
               console.debug("Failed to mark release notes as seen:", error);
             });
             toast.dismiss(toastId);
+            onDismiss();
           }}
         >
           Dismiss
@@ -340,6 +404,23 @@ function showWhatsNewToast(
       className: "git-auth-startup-toast",
     },
   );
+}
+
+function whatsNewToastId(version: string): string {
+  return `whats-new-${version}`;
+}
+
+function sanitizeReleaseNotesBody(body: string | null): string | null {
+  if (!body) {
+    return null;
+  }
+
+  const sanitized = body
+    .replace(GITHUB_RELEASE_METADATA_MARKERS, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return sanitized.length > 0 ? sanitized : null;
 }
 
 function releaseNotesPreview(body: string | null): string {

@@ -90,9 +90,9 @@ pub use chat_service_context::{
     resolve_working_directory, ProviderResumeMode,
 };
 pub use chat_service_errors::{
-    classify_agent_error, classify_provider_error, parse_retry_after_from_message,
-    truncate_error_message, PauseReason, ProviderErrorCategory, ProviderErrorMetadata, StreamError,
-    STALE_SESSION_ERROR,
+    classify_agent_error, classify_codex_stream_failure, classify_provider_error,
+    parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
+    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
 };
 pub use chat_service_helpers::harness_supports_team_mode;
 pub use chat_service_helpers::{
@@ -3278,7 +3278,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "agent:stopped",
                     serde_json::json!({
                         "conversation_id": info.conversation_id,
-                        "agent_run_id": info.agent_run_id,
+                        "agent_run_id": info.agent_run_id.clone(),
                         "context_type": context_type.to_string(),
                         "context_id": context_id,
                     }),
@@ -3296,7 +3296,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 // Also emit run_completed so frontend knows agent is no longer running
                 self.emit_event(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(info.agent_run_id.clone()),
                         info.conversation_id,
                         context_type.to_string(),
                         context_id.to_string(),

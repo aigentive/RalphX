@@ -140,6 +140,9 @@ pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
     execution_settings_repo: Arc<dyn ExecutionSettingsRepository>,
     /// Phase 105: Persisted agent registry for killing orphaned OS processes on restart
     running_agent_registry: Arc<dyn crate::domain::services::RunningAgentRegistry>,
+    /// App boot cutoff used to distinguish previous-session rows from agents spawned
+    /// by this process while earlier startup recovery phases are still running.
+    previous_session_cutoff: chrono::DateTime<chrono::Utc>,
     /// Plan branch repository for resolving plan branch during deferred cleanup
     plan_branch_repo: Option<Arc<dyn crate::domain::repositories::PlanBranchRepository>>,
     reconciler: ReconciliationRunner<R>,
@@ -240,6 +243,7 @@ impl<R: Runtime> StartupJobRunner<R> {
             app_state_repo,
             execution_settings_repo,
             running_agent_registry,
+            previous_session_cutoff: chrono::Utc::now(),
             plan_branch_repo,
             reconciler,
             task_scheduler: None,
@@ -504,6 +508,15 @@ impl<R: Runtime> StartupJobRunner<R> {
         self
     }
 
+    /// Set the app boot cutoff for previous-session cleanup.
+    pub fn with_previous_session_cutoff(
+        mut self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        self.previous_session_cutoff = cutoff;
+        self
+    }
+
     /// Set the chat service for Phase N+1 ideation recovery (builder pattern).
     ///
     /// When set, orphaned ideation sessions captured in Phase 0 are re-spawned
@@ -538,18 +551,9 @@ impl<R: Runtime> StartupJobRunner<R> {
             return HashSet::new();
         }
 
-        // Kill orphaned MCP server node processes from previous session.
-        // Pattern-based cleanup catches leaked processes that escaped PID tracking
-        // (e.g. app crashed before registering PID, or child survived parent kill).
-        let mcp_killed =
-            crate::domain::services::running_agent_registry::kill_orphaned_mcp_servers();
-        if mcp_killed > 0 {
-            info!(count = mcp_killed, "Killed orphaned MCP server processes");
-        }
-
-        // Phase 0: Snapshot ideation agents BEFORE stop_all() clears the table.
+        // Phase 0: Snapshot ideation agents BEFORE previous-session cleanup clears old rows.
         // This captures orphaned ideation session PIDs for Phase N+1 recovery.
-        // Must be called before stop_all() — after that, the table is empty.
+        // Must be called before cleanup — after that, old previous-session rows are gone.
         let ideation_snapshot = match self
             .running_agent_registry
             .list_by_context_type("ideation")
@@ -582,23 +586,32 @@ impl<R: Runtime> StartupJobRunner<R> {
 
         // Phase 105: Kill orphaned agent OS processes from previous session.
         // The SQLite-backed registry persists PIDs across restarts, so we can
-        // SIGTERM old processes before spawning new ones.
-        // Now uses process-tree kill (children first, then parent).
-        let killed = self.running_agent_registry.stop_all().await;
+        // SIGTERM old processes before spawning new ones. Scope by app boot time:
+        // delayed PR/workspace recovery must not stop agents spawned by this process.
+        let killed = self
+            .running_agent_registry
+            .stop_all_started_before(self.previous_session_cutoff)
+            .await;
         let interrupted_agent_contexts: HashSet<RunningAgentKey> = killed.iter().cloned().collect();
         if !killed.is_empty() {
             info!(
                 count = killed.len(),
+                cutoff = %self.previous_session_cutoff,
                 "Killed orphaned agent processes from previous session"
             );
         }
 
         // Clean up orphaned agent runs from previous sessions
         // These are runs that were left in "running" status when the app was closed/crashed
-        match self.agent_run_repo.cancel_all_running().await {
+        match self
+            .agent_run_repo
+            .cancel_running_started_before(self.previous_session_cutoff)
+            .await
+        {
             Ok(count) if count > 0 => {
                 info!(
                     count = count,
+                    cutoff = %self.previous_session_cutoff,
                     "Cancelled orphaned agent runs from previous session"
                 );
             }

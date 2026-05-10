@@ -18,6 +18,7 @@ import {
   getAgentConversationWorkspaceFreshness,
   listAgentConversationWorkspacePublicationEvents,
   listAgentConversationWorkspacesByProject,
+  listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
   startAgentConversation,
   switchAgentConversationMode,
@@ -889,6 +890,97 @@ describe("chat api", () => {
     });
   });
 
+  it("lists grouped agent sidebar conversations", async () => {
+    mockInvoke.mockResolvedValue({
+      groups: [
+        {
+          key: "merged",
+          label: "Merged",
+          total: 1,
+          offset: 0,
+          limit: 20,
+          has_more: false,
+          rows: [
+            {
+              conversation: {
+                id: "conversation-1",
+                context_type: "project",
+                context_id: "project-1",
+                claude_session_id: null,
+                provider_session_id: "thread-1",
+                provider_harness: "codex",
+                title: "Merged sidebar work",
+                message_count: 2,
+                last_message_at: null,
+                created_at: "2026-01-24T10:00:00Z",
+                updated_at: "2026-01-24T10:00:00Z",
+                archived_at: null,
+              },
+              workspace: {
+                conversation_id: "conversation-1",
+                project_id: "project-1",
+                mode: "edit",
+                base_ref_kind: "project_default",
+                base_ref: "main",
+                base_display_name: "Project default (main)",
+                base_commit: null,
+                branch_name: "ralphx/demo/agent-conversation-1",
+                worktree_path: "/tmp/ralphx/conversation-1",
+                linked_ideation_session_id: null,
+                linked_plan_branch_id: null,
+                publication_pr_number: 123,
+                publication_pr_url: "https://github.com/acme/demo/pull/123",
+                publication_pr_status: "merged",
+                publication_push_status: "published",
+                status: "active",
+                created_at: "2026-01-24T10:00:00Z",
+                updated_at: "2026-01-24T10:01:00Z",
+              },
+              ref_kind: "pull_request",
+              ref_label: "PR #123",
+              publication_state: "merged",
+              publication_label: "merged",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await listAgentSidebarConversations({
+      projectIds: ["project-1"],
+      groupBy: "publication",
+      publicationStates: ["merged", "closed"],
+      limitPerGroup: 20,
+      offsets: { merged: 0 },
+      search: " merged ",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("list_agent_sidebar_conversations", {
+      input: {
+        projectIds: ["project-1"],
+        includeArchived: false,
+        archivedOnly: false,
+        search: "merged",
+        publicationStates: ["merged", "closed"],
+        groupBy: "publication",
+        limitPerGroup: 20,
+        offsets: { merged: 0 },
+      },
+    });
+    expect(result.groups[0]).toMatchObject({
+      key: "merged",
+      hasMore: false,
+      rows: [
+        {
+          refKind: "pull-request",
+          refLabel: "PR #123",
+          publicationState: "merged",
+          publicationLabel: "merged",
+        },
+      ],
+    });
+  });
+
   it("lists agent conversation workspace publication events", async () => {
     mockInvoke.mockResolvedValue([
       {
@@ -1328,6 +1420,9 @@ describe("chat api", () => {
     expect(chatApi.listConversations).toBe(listConversations);
     expect(chatApi.listAgentConversationWorkspacesByProject).toBe(
       listAgentConversationWorkspacesByProject
+    );
+    expect(chatApi.listAgentSidebarConversations).toBe(
+      listAgentSidebarConversations
     );
     expect(chatApi.listAgentConversationWorkspacePublicationEvents).toBe(
       listAgentConversationWorkspacePublicationEvents

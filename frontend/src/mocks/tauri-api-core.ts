@@ -19,6 +19,7 @@ import {
   mockGetAgentConversationWorkspace,
   mockGetConversation,
   mockGetConversationStats,
+  mockListAgentSidebarConversations,
   mockListAgentConversationWorkspacePublicationEvents,
   mockListConversations,
   mockListConversationsPage,
@@ -34,7 +35,11 @@ import { mockPlanApi } from "@/api-mock/plan";
 import type { IdeationSessionResponse } from "@/api/ideation.types";
 import type { ContextType } from "@/types/chat-conversation";
 import type { ChatConversation } from "@/types/chat-conversation";
-import type { ChatMessageResponse } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentSidebarConversationsInput,
+  ChatMessageResponse,
+} from "@/api/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
 
 const mockReviewSettings = {
@@ -197,6 +202,30 @@ function toSnakeConversation(conversation: ChatConversation) {
     created_at: conversation.createdAt,
     updated_at: conversation.updatedAt,
     archived_at: conversation.archivedAt,
+  };
+}
+
+function toSnakeAgentWorkspace(workspace: AgentConversationWorkspace | null) {
+  if (!workspace) return null;
+  return {
+    conversation_id: workspace.conversationId,
+    project_id: workspace.projectId,
+    mode: workspace.mode,
+    base_ref_kind: workspace.baseRefKind,
+    base_ref: workspace.baseRef,
+    base_display_name: workspace.baseDisplayName,
+    base_commit: workspace.baseCommit,
+    branch_name: workspace.branchName,
+    worktree_path: workspace.worktreePath,
+    linked_ideation_session_id: workspace.linkedIdeationSessionId,
+    linked_plan_branch_id: workspace.linkedPlanBranchId,
+    publication_pr_number: workspace.publicationPrNumber,
+    publication_pr_url: workspace.publicationPrUrl,
+    publication_pr_status: workspace.publicationPrStatus,
+    publication_push_status: workspace.publicationPushStatus,
+    status: workspace.status,
+    created_at: workspace.createdAt,
+    updated_at: workspace.updatedAt,
   };
 }
 
@@ -626,6 +655,33 @@ const commandHandlers: Record<
       offset: response.offset,
       total: response.total,
       has_more: response.hasMore,
+    };
+  },
+  list_agent_sidebar_conversations: async (args) => {
+    const controller =
+      typeof window !== "undefined" ? window.__mockChatApi : undefined;
+    const input = args.input as AgentSidebarConversationsInput;
+    const response = controller
+      ? await controller.listAgentSidebarConversations(input)
+      : await mockListAgentSidebarConversations(input);
+
+    return {
+      groups: response.groups.map((group) => ({
+        key: group.key,
+        label: group.label,
+        total: group.total,
+        offset: group.offset,
+        limit: group.limit,
+        has_more: group.hasMore,
+        rows: group.rows.map((row) => ({
+          conversation: toSnakeConversation(row.conversation),
+          workspace: toSnakeAgentWorkspace(row.workspace),
+          ref_kind: row.refKind === "pull-request" ? "pull_request" : "branch",
+          ref_label: row.refLabel,
+          publication_state: row.publicationState,
+          publication_label: row.publicationLabel,
+        })),
+      })),
     };
   },
   get_conversation: async (args) => {

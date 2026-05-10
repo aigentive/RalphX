@@ -539,3 +539,33 @@ async fn test_cancel_all_running() {
     let r3u = repo.get_by_id(&r3_id).await.unwrap().unwrap();
     assert_eq!(r3u.status, AgentRunStatus::Completed);
 }
+
+#[tokio::test]
+async fn test_cancel_running_started_before_preserves_current_boot_run() {
+    let (db, repo) = setup_repo();
+    let conv = db.seed_ideation_conversation();
+    let cutoff = Utc::now();
+    let mut old_run = AgentRun::new(conv.id);
+    let mut current_run = AgentRun::new(conv.id);
+    old_run.started_at = cutoff - chrono::Duration::seconds(5);
+    current_run.started_at = cutoff + chrono::Duration::seconds(5);
+    let old_run_id = old_run.id;
+    let current_run_id = current_run.id;
+
+    repo.create(old_run).await.unwrap();
+    repo.create(current_run).await.unwrap();
+
+    let cancelled_count = repo.cancel_running_started_before(cutoff).await.unwrap();
+
+    assert_eq!(cancelled_count, 1);
+    let old = repo.get_by_id(&old_run_id).await.unwrap().unwrap();
+    assert_eq!(old.status, AgentRunStatus::Cancelled);
+    assert_eq!(
+        old.error_message,
+        Some("Orphaned on app restart".to_string())
+    );
+
+    let current = repo.get_by_id(&current_run_id).await.unwrap().unwrap();
+    assert_eq!(current.status, AgentRunStatus::Running);
+    assert_eq!(current.error_message, None);
+}

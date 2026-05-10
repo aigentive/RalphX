@@ -1704,6 +1704,24 @@ fn resolve_project_root_from_external_generated_plugin_dir_follows_runtime_symli
 }
 
 #[test]
+fn resolve_project_root_from_profiled_generated_plugin_dir_follows_runtime_symlinks() {
+    let root = project_root();
+    let temp = tempdir().expect("tempdir");
+    let generated_plugin_dir = temp.path().join("generated/release/claude-plugin");
+    fs::create_dir_all(&generated_plugin_dir).expect("create profiled generated plugin dir");
+    symlink_dir(
+        root.join("plugins/app/ralphx-mcp-server"),
+        generated_plugin_dir.join("ralphx-mcp-server"),
+    );
+
+    assert_eq!(
+        resolve_project_root_from_plugin_dir(&generated_plugin_dir),
+        root,
+        "profile-scoped generated plugin dirs should resolve through symlinked runtime entries back to the RalphX app resource root"
+    );
+}
+
+#[test]
 fn invalid_agent_names_do_not_escape_canonical_agent_tree() {
     let root = project_root();
 

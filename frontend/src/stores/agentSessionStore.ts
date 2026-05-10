@@ -13,6 +13,14 @@ export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/ag
 export type AgentArtifactTab = "plan" | "verification" | "proposal" | "tasks" | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";
+export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarPublicationState =
+  | "active"
+  | "draft"
+  | "merged"
+  | "closed"
+  | "uncommitted"
+  | "unpushed";
 
 export interface AgentArtifactState {
   isOpen: boolean;
@@ -34,6 +42,10 @@ interface AgentSessionState {
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
   projectSort: AgentProjectSort;
+  sidebarGroupBy: AgentSidebarGroupBy;
+  sidebarProjectFilterIds: string[];
+  sidebarPublicationStateFilters: AgentSidebarPublicationState[];
+  pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
@@ -49,6 +61,16 @@ interface AgentSessionActions {
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
   setProjectSort: (projectSort: AgentProjectSort) => void;
+  setSidebarGroupBy: (groupBy: AgentSidebarGroupBy) => void;
+  setSidebarProjectFilterIds: (projectIds: string[]) => void;
+  toggleSidebarProjectFilter: (projectId: string) => void;
+  setSidebarPublicationStateFilters: (
+    states: AgentSidebarPublicationState[]
+  ) => void;
+  toggleSidebarPublicationStateFilter: (
+    state: AgentSidebarPublicationState
+  ) => void;
+  togglePinnedConversation: (conversationId: string) => void;
   setArtifactOpen: (conversationId: string, isOpen: boolean) => void;
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
@@ -73,7 +95,15 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   taskMode: "graph",
 };
 const DEFAULT_SHOW_ALL_PROJECTS = true;
-const AGENT_SESSION_STORE_VERSION = 3;
+export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationState[] = [
+  "active",
+  "draft",
+  "merged",
+  "closed",
+  "uncommitted",
+  "unpushed",
+];
+const AGENT_SESSION_STORE_VERSION = 4;
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
   if (!value || typeof value !== "object") {
@@ -120,6 +150,15 @@ export function migrateAgentSessionStore(
     nextState.lastBranchBaseSelectionByProjectId = {};
   }
 
+  if (version < 4) {
+    nextState.sidebarGroupBy = "project";
+    nextState.sidebarProjectFilterIds = [];
+    nextState.sidebarPublicationStateFilters = [
+      ...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
+    ];
+    nextState.pinnedConversationIds = {};
+  }
+
   return nextState;
 }
 
@@ -147,6 +186,10 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
       projectSort: "latest",
+      sidebarGroupBy: "project",
+      sidebarProjectFilterIds: [],
+      sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
+      pinnedConversationIds: {},
       artifactByConversationId: {},
       runtimeByConversationId: {},
       lastRuntimeByProjectId: {},
@@ -204,6 +247,53 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setProjectSort: (projectSort) =>
         set((state) => {
           state.projectSort = projectSort;
+        }),
+
+      setSidebarGroupBy: (groupBy) =>
+        set((state) => {
+          state.sidebarGroupBy = groupBy;
+        }),
+
+      setSidebarProjectFilterIds: (projectIds) =>
+        set((state) => {
+          state.sidebarProjectFilterIds = Array.from(new Set(projectIds));
+        }),
+
+      toggleSidebarProjectFilter: (projectId) =>
+        set((state) => {
+          state.showAllProjects = false;
+          const current = new Set(state.sidebarProjectFilterIds);
+          if (current.has(projectId)) {
+            current.delete(projectId);
+          } else {
+            current.add(projectId);
+          }
+          state.sidebarProjectFilterIds = Array.from(current);
+        }),
+
+      setSidebarPublicationStateFilters: (states) =>
+        set((state) => {
+          state.sidebarPublicationStateFilters = Array.from(new Set(states));
+        }),
+
+      toggleSidebarPublicationStateFilter: (publicationState) =>
+        set((state) => {
+          const current = new Set(state.sidebarPublicationStateFilters);
+          if (current.has(publicationState)) {
+            current.delete(publicationState);
+          } else {
+            current.add(publicationState);
+          }
+          state.sidebarPublicationStateFilters = Array.from(current);
+        }),
+
+      togglePinnedConversation: (conversationId) =>
+        set((state) => {
+          if (state.pinnedConversationIds[conversationId]) {
+            delete state.pinnedConversationIds[conversationId];
+          } else {
+            state.pinnedConversationIds[conversationId] = true;
+          }
         }),
 
       setArtifactOpen: (conversationId, isOpen) =>
@@ -271,6 +361,10 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         expandedProjectIds: state.expandedProjectIds,
         showAllProjects: state.showAllProjects,
         projectSort: state.projectSort,
+        sidebarGroupBy: state.sidebarGroupBy,
+        sidebarProjectFilterIds: state.sidebarProjectFilterIds,
+        sidebarPublicationStateFilters: state.sidebarPublicationStateFilters,
+        pinnedConversationIds: state.pinnedConversationIds,
         artifactByConversationId: state.artifactByConversationId,
         runtimeByConversationId: state.runtimeByConversationId,
         lastRuntimeByProjectId: state.lastRuntimeByProjectId,

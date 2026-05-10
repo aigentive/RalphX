@@ -16,6 +16,7 @@ import { renderHook, act } from "@testing-library/react";
 const chatStoreMocks = vi.hoisted(() => ({
   setAgentStatus: vi.fn(),
   agentStatus: {} as Record<string, string>,
+  activeAgentRunIds: {} as Record<string, string>,
   activeConversationIds: {} as Record<string, string | null>,
   lastAgentEventTimestamp: {} as Record<string, number>,
   toolCallStartTimes: {} as Record<string, Record<string, number>>,
@@ -25,6 +26,8 @@ const chatStoreMocks = vi.hoisted(() => ({
   deleteQueuedMessage: vi.fn(),
   queueMessage: vi.fn(),
   setActiveConversation: vi.fn(),
+  setActiveAgentRun: vi.fn(),
+  clearActiveAgentRun: vi.fn(),
 }));
 
 vi.mock("@/stores/chatStore", () => ({
@@ -141,7 +144,10 @@ describe("useAgentEvents — child termination reverse lookup (PO6)", () => {
     mockGetQueryData.mockReturnValue(undefined);
     chatStoreMocks.setAgentStatus.mockClear();
     chatStoreMocks.updateLastAgentEvent.mockClear();
+    chatStoreMocks.setActiveAgentRun.mockClear();
+    chatStoreMocks.clearActiveAgentRun.mockClear();
     chatStoreMocks.agentStatus = {};
+    chatStoreMocks.activeAgentRunIds = {};
     chatStoreMocks.activeConversationIds = {};
     chatStoreMocks.lastAgentEventTimestamp = {};
     chatStoreMocks.toolCallStartTimes = {};

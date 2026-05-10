@@ -430,7 +430,7 @@ fn emit_workspace_changed_when_done(
     }
 }
 
-async fn agent_workspace_response_for_state(
+pub(crate) async fn agent_workspace_response_for_state(
     state: &AppState,
     workspace: AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceResponse, String> {

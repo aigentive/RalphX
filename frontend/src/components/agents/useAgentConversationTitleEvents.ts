@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { invalidateConversationDataQueries } from "@/hooks/useChat";
 import { useEventBus } from "@/providers/EventProvider";
+import { agentSidebarConversationKeys } from "./useAgentSidebarPublicationGroup";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 
 const AgentConversationTitleUpdatedSchema = z.object({
@@ -37,6 +38,9 @@ export function useAgentConversationTitleEvents(projectId: string | null | undef
       invalidateConversationDataQueries(queryClient, parsed.data.conversationId);
       void queryClient.invalidateQueries({
         queryKey: agentConversationKeys.project(projectId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: agentSidebarConversationKeys.all,
       });
     });
   }, [bus, projectId, queryClient]);

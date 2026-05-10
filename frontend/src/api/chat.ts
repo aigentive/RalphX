@@ -268,6 +268,53 @@ export interface ConversationListPageResponse {
   hasMore: boolean;
 }
 
+export type AgentSidebarPublicationState =
+  | "active"
+  | "draft"
+  | "merged"
+  | "closed"
+  | "uncommitted"
+  | "unpushed";
+
+export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarSort = "latest" | "az" | "za";
+
+export interface AgentSidebarConversationsInput {
+  projectIds: string[];
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+  search?: string;
+  publicationStates?: AgentSidebarPublicationState[];
+  groupBy?: AgentSidebarGroupBy;
+  sort?: AgentSidebarSort;
+  limitPerGroup?: number;
+  offsets?: Record<string, number>;
+  pinnedConversationIds?: string[];
+}
+
+export interface AgentSidebarConversationRow {
+  conversation: ChatConversation;
+  workspace: AgentConversationWorkspace | null;
+  refKind: "pull-request" | "branch";
+  refLabel: string;
+  publicationState: AgentSidebarPublicationState;
+  publicationLabel: string | null;
+}
+
+export interface AgentSidebarConversationGroup {
+  key: string;
+  label: string;
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  rows: AgentSidebarConversationRow[];
+}
+
+export interface AgentSidebarConversationGroupsResponse {
+  groups: AgentSidebarConversationGroup[];
+}
+
 /**
  * A streaming task in the active state HTTP response from GET /api/conversations/:id/active-state.
  * Mirrors the Rust ActiveStreamingTask struct (snake_case — no rename_all on the Rust struct).
@@ -1152,6 +1199,7 @@ export const chatApi = {
   restoreConversation,
   getAgentConversationWorkspace,
   listAgentConversationWorkspacesByProject,
+  listAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents,
   getAgentConversationWorkspaceFreshness,
   updateAgentConversationWorkspaceFromBase,
@@ -1333,6 +1381,33 @@ const AgentConversationWorkspaceResponseSchema = z.object({
 const AgentConversationWorkspaceListResponseSchema = z.array(
   AgentConversationWorkspaceResponseSchema
 );
+const AgentSidebarConversationRowResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  workspace: AgentConversationWorkspaceResponseSchema.nullable(),
+  ref_kind: z.enum(["pull_request", "branch"]),
+  ref_label: z.string(),
+  publication_state: z.enum([
+    "active",
+    "draft",
+    "merged",
+    "closed",
+    "uncommitted",
+    "unpushed",
+  ]),
+  publication_label: z.string().nullable(),
+});
+const AgentSidebarConversationGroupResponseSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  total: z.number(),
+  offset: z.number(),
+  limit: z.number(),
+  has_more: z.boolean(),
+  rows: z.array(AgentSidebarConversationRowResponseSchema),
+});
+const AgentSidebarConversationGroupsResponseSchema = z.object({
+  groups: z.array(AgentSidebarConversationGroupResponseSchema),
+});
 const AgentConversationWorkspacePublicationEventResponseSchema = z.object({
   id: z.string(),
   conversation_id: z.string(),
@@ -1392,6 +1467,9 @@ const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
 type RawAgentConversationWorkspace = z.infer<
   typeof AgentConversationWorkspaceResponseSchema
 >;
+type RawAgentSidebarConversationGroups = z.infer<
+  typeof AgentSidebarConversationGroupsResponseSchema
+>;
 type RawStartAgentConversationResponse = z.infer<
   typeof StartAgentConversationResponseSchema
 >;
@@ -1444,6 +1522,29 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformAgentSidebarConversationGroups(
+  raw: RawAgentSidebarConversationGroups
+): AgentSidebarConversationGroupsResponse {
+  return {
+    groups: raw.groups.map((group) => ({
+      key: group.key,
+      label: group.label,
+      total: group.total,
+      offset: group.offset,
+      limit: group.limit,
+      hasMore: group.has_more,
+      rows: group.rows.map((row) => ({
+        conversation: transformConversation(row.conversation),
+        workspace: row.workspace ? transformAgentConversationWorkspace(row.workspace) : null,
+        refKind: row.ref_kind === "pull_request" ? "pull-request" : "branch",
+        refLabel: row.ref_label,
+        publicationState: row.publication_state,
+        publicationLabel: row.publication_label,
+      })),
+    })),
   };
 }
 
@@ -1546,6 +1647,33 @@ export async function listAgentConversationWorkspacesByProject(
     AgentConversationWorkspaceListResponseSchema
   );
   return raw.map(transformAgentConversationWorkspace);
+}
+
+export async function listAgentSidebarConversations(
+  input: AgentSidebarConversationsInput
+): Promise<AgentSidebarConversationGroupsResponse> {
+  const normalizedSearch = input.search?.trim();
+  const raw = await typedInvoke(
+    "list_agent_sidebar_conversations",
+    {
+      input: {
+        projectIds: input.projectIds,
+        includeArchived: input.includeArchived ?? false,
+        archivedOnly: input.archivedOnly ?? false,
+        ...(normalizedSearch ? { search: normalizedSearch } : {}),
+        ...(input.publicationStates ? { publicationStates: input.publicationStates } : {}),
+        ...(input.groupBy ? { groupBy: input.groupBy } : {}),
+        ...(input.sort ? { sort: input.sort } : {}),
+        ...(input.limitPerGroup != null ? { limitPerGroup: input.limitPerGroup } : {}),
+        ...(input.offsets ? { offsets: input.offsets } : {}),
+        ...(input.pinnedConversationIds
+          ? { pinnedConversationIds: input.pinnedConversationIds }
+          : {}),
+      },
+    },
+    AgentSidebarConversationGroupsResponseSchema
+  );
+  return transformAgentSidebarConversationGroups(raw);
 }
 
 export async function listAgentConversationWorkspacePublicationEvents(
