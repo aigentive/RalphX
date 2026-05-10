@@ -582,7 +582,7 @@ pub async fn spawn_project_analyzer(
     };
 
     let runtime = match state
-        .resolve_ideation_background_agent_runtime(Some(project_id))
+        .resolve_project_analyzer_runtime_for_project(Some(project_id))
         .await
     {
         Ok(runtime) => runtime,

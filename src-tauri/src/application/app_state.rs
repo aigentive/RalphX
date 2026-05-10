@@ -23,8 +23,9 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
-    default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
-    AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness,
+    lightweight_model_for_provider, AgentHarnessKind, AgenticClient, LogicalEffort,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
@@ -282,6 +283,17 @@ impl AppState {
         }
     }
 
+    fn lock_utility_agent_runtime_model(
+        runtime: ResolvedBackgroundAgentRuntime,
+    ) -> ResolvedBackgroundAgentRuntime {
+        let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        ResolvedBackgroundAgentRuntime {
+            model: Some(lightweight_model_for_provider(harness).to_string()),
+            logical_effort: Some(LogicalEffort::Medium),
+            ..runtime
+        }
+    }
+
     async fn resolve_background_agent_runtime_for_harness(
         &self,
         harness: AgentHarnessKind,
@@ -458,8 +470,20 @@ impl AppState {
         &self,
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        self.resolve_ideation_background_agent_runtime(project_id)
-            .await
+        let runtime = self
+            .resolve_ideation_background_agent_runtime(project_id)
+            .await?;
+        Ok(Self::lock_utility_agent_runtime_model(runtime))
+    }
+
+    pub(crate) async fn resolve_project_analyzer_runtime_for_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let runtime = self
+            .resolve_ideation_background_agent_runtime(project_id)
+            .await?;
+        Ok(Self::lock_utility_agent_runtime_model(runtime))
     }
 
     pub(crate) async fn resolve_session_namer_runtime_for_session(
@@ -489,12 +513,13 @@ impl AppState {
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if let Some(harness) = conversation.provider_harness {
-            return self
+            let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "session namer owning conversation",
                 )
-                .await;
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
         }
 
         self.resolve_session_namer_runtime_for_project(project_id)
@@ -506,12 +531,13 @@ impl AppState {
         conversation: &ChatConversation,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if let Some(harness) = conversation.provider_harness {
-            return self
+            let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "PR describer owning conversation",
                 )
-                .await;
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
         }
 
         let default_provider = crate::application::resolve_enabled_default_provider(
@@ -520,11 +546,13 @@ impl AppState {
         )
         .await
         .map_err(AppError::Infrastructure)?;
-        self.resolve_background_agent_runtime_for_harness(
-            default_provider.provider,
-            "PR describer default provider",
-        )
-        .await
+        let runtime = self
+            .resolve_background_agent_runtime_for_harness(
+                default_provider.provider,
+                "PR describer default provider",
+            )
+            .await?;
+        Ok(Self::lock_utility_agent_runtime_model(runtime))
     }
 
     /// Create AppState for production use with SQLite repositories.

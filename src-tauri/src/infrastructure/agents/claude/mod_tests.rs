@@ -680,7 +680,7 @@ description: Generates concise ideation session titles from user or plan context
             .expect("read generated session namer prompt");
 
     assert!(
-        generated_prompt.contains("model: sonnet"),
+        generated_prompt.contains("model: haiku"),
         "expected runtime-derived model in generated frontmatter"
     );
     assert!(

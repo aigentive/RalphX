@@ -75,7 +75,7 @@ Steps 1-3 same, but step 5 uses the harness-native continuation path when provid
 | 14 | `ralphx-qa-prep` | `SHORT_QA_PREP` | qa | sonnet | Task enters "ready" | fire-and-forget |
 | 15 | `ralphx-qa-executor` | `SHORT_QA_EXECUTOR` | qa | sonnet | QA execution phase | -- |
 | 16 | `ralphx-research-deep-researcher` | `SHORT_DEEP_RESEARCHER` | research | opus | Research tasks | -- |
-| 17 | `ralphx-project-analyzer` | `SHORT_PROJECT_ANALYZER` | analysis | default | Project analysis (build/validation detection) | fire-and-forget |
+| 17 | `ralphx-project-analyzer` | `SHORT_PROJECT_ANALYZER` | analysis | haiku | Project analysis (build/validation detection) | fire-and-forget |
 | 18 | `ralphx-memory-capture` | `SHORT_MEMORY_CAPTURE` | memory | haiku | Post-session knowledge extraction | fire-and-forget |
 | 19 | `ralphx-memory-maintainer` | `SHORT_MEMORY_MAINTAINER` | memory | default | Memory ingestion/dedup/index maintenance | -- |
 
