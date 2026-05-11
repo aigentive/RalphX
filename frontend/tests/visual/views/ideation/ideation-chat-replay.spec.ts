@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 import { setupIdeationChatScenario } from "../../../fixtures/chat.fixtures";
 
 test.describe("Ideation Chat Replay", () => {
+  // The seeded fixture uses absolute UTC timestamps; pin the browser timezone so
+  // snapshots do not depend on the runner's local timezone.
+  test.use({ timezoneId: "UTC" });
+
   test.beforeEach(async ({ page }) => {
     await setupIdeationChatScenario(page, "ideation_db_widget_mix");
   });
@@ -34,6 +38,20 @@ test.describe("Ideation Chat Replay", () => {
     await expect(page.getByTestId("chat-session-provider-badge")).toHaveText(/Claude/i);
     await expect(panel.getByText("Preferred default for automatic PR creation?")).toBeVisible();
     await expect(panel.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeVisible();
+    await panel.evaluate(async (element) => {
+      const scrollableElements = [element, ...Array.from(element.querySelectorAll<HTMLElement>("*"))]
+        .filter((node): node is HTMLElement => node instanceof HTMLElement)
+        .filter((node) => node.scrollHeight > node.clientHeight);
+
+      for (const node of scrollableElements) {
+        node.scrollTop = node.scrollHeight;
+        node.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+    });
     await expect(panel).toHaveScreenshot("ideation-chat-replay.png", {
       maxDiffPixelRatio: 0.01,
     });
