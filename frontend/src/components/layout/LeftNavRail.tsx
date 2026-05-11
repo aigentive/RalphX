@@ -62,14 +62,11 @@ function RailItem({
             "relative grid h-[44px] w-[44px] place-items-center rounded-[10px] border p-0",
             "transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] active:scale-[0.98]",
             "outline-none ring-0 focus:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]",
-            !isActive && "hover:bg-[var(--bg-hover)]",
             isActive
-              ? "text-[var(--nav-rail-active-color)]"
-              : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+              ? "bg-[var(--bg-hover)] text-[var(--nav-rail-active-color)]"
+              : "bg-transparent text-[var(--nav-rail-inactive-color)] hover:bg-[var(--bg-hover)] hover:text-[var(--nav-rail-active-color)]"
           )}
           style={{
-            color: isActive ? "var(--nav-rail-active-color)" : "var(--nav-rail-inactive-color)",
-            backgroundColor: isActive ? "var(--bg-hover)" : "transparent",
             borderColor: "transparent",
             borderStyle: "solid",
             borderWidth: "1px",

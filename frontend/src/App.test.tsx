@@ -421,16 +421,16 @@ describe("App", () => {
     expect(activeButton.className).toContain(
       "focus-visible:[outline:2px_solid_var(--border-focus)]"
     );
+    expect(activeButton.className).toContain("bg-[var(--bg-hover)]");
+    expect(activeButton.className).toContain("text-[var(--nav-rail-active-color)]");
     expect(activeButton).toHaveStyle({
-      backgroundColor: "var(--bg-hover)",
-      color: "var(--nav-rail-active-color)",
       boxShadow: "var(--nav-rail-active-shadow)",
     });
     expect(activeButton.querySelector(".left-nav-rail__active-border")).toBeInTheDocument();
 
-    expect(screen.getByTestId("nav-kanban")).toHaveStyle({
-      color: "var(--nav-rail-inactive-color)",
-    });
+    expect(screen.getByTestId("nav-kanban").className).toContain(
+      "text-[var(--nav-rail-inactive-color)]"
+    );
   });
 
   it("should display theme selector", () => {
