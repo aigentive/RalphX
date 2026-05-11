@@ -461,26 +461,14 @@ pub async fn get_git_default_branch(working_directory: String) -> Result<String,
 /// Get the currently checked-out local branch for a git repository.
 #[tauri::command]
 pub async fn get_git_current_branch(working_directory: String) -> Result<String, String> {
-    if !std::path::Path::new(&working_directory).exists() {
+    let repo_path = Path::new(&working_directory);
+    if !repo_path.exists() {
         return Err(format!("Directory does not exist: {}", working_directory));
     }
 
-    if !is_git_initialized(&working_directory) {
-        return Err("Not a git repository".to_string());
-    }
-
-    let output = Command::new(resolve_git_cli_path())
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&working_directory)
-        .output()
-        .map_err(|e| format!("Failed to execute git: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git current branch failed: {}", stderr));
-    }
-
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let branch = GitService::get_current_branch(repo_path)
+        .await
+        .map_err(|e| e.to_string())?;
     if branch.is_empty() || branch == "HEAD" {
         return Err("Repository is not currently on a local branch".to_string());
     }
@@ -491,48 +479,14 @@ pub async fn get_git_current_branch(working_directory: String) -> Result<String,
 /// Executes `git branch -a` in the specified directory and parses the output
 #[tauri::command]
 pub async fn get_git_branches(working_directory: String) -> Result<Vec<String>, String> {
-    let output = Command::new(resolve_git_cli_path())
-        .args(["branch", "-a"])
-        .current_dir(&working_directory)
-        .output()
-        .map_err(|e| format!("Failed to execute git: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git branch failed: {}", stderr));
+    let repo_path = Path::new(&working_directory);
+    if !repo_path.exists() {
+        return Err(format!("Directory does not exist: {}", working_directory));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let branches: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| {
-            // Remove Git's leading branch markers:
-            // '*' = current branch, '+' = branch checked out in another worktree.
-            let trimmed = line.trim().trim_start_matches(&['*', '+'][..]).trim_start();
-            // Handle remote branches like "remotes/origin/main" -> just "main"
-            if let Some(remote_branch) = trimmed.strip_prefix("remotes/origin/") {
-                // Skip HEAD pointer
-                if remote_branch.starts_with("HEAD") {
-                    return None;
-                }
-                Some(remote_branch.to_string())
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .collect::<std::collections::HashSet<_>>() // Deduplicate
-        .into_iter()
-        .collect();
-
-    // Sort branches with main/master first
-    let mut sorted: Vec<String> = branches;
-    sorted.sort_by(|a, b| {
-        let a_priority = if a == "main" || a == "master" { 0 } else { 1 };
-        let b_priority = if b == "main" || b == "master" { 0 } else { 1 };
-        a_priority.cmp(&b_priority).then(a.cmp(b))
-    });
-
-    Ok(sorted)
+    GitService::list_branches(repo_path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Spawn the ralphx-project-analyzer agent to auto-detect build systems and validation commands.

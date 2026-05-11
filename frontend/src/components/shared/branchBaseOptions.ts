@@ -72,10 +72,12 @@ export async function loadBranchBaseOptions({
         : Promise.resolve([]),
     ]);
 
+  const configuredProjectBase = projectBaseBranch?.trim();
   const projectDefault = normalizeGitBranchName(
-    defaultResult.status === "fulfilled" && defaultResult.value
-      ? defaultResult.value
-      : projectBaseBranch ?? "main"
+    configuredProjectBase ||
+      (defaultResult.status === "fulfilled" && defaultResult.value
+        ? defaultResult.value
+        : "main")
   );
   const currentBranch = normalizeGitBranchName(
     currentResult.status === "fulfilled" && currentResult.value

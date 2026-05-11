@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::domain::services::GithubServiceTrait;
 use crate::domain::state_machine::transition_handler::{
-    classify_commit_hook_failure_text, update_source_from_target, CommitHookFailureKind,
-    SourceUpdateResult,
+    classify_commit_hook_failure_text, update_plan_from_main_isolated, update_source_from_target,
+    CommitHookFailureKind, PlanUpdateResult, SourceUpdateResult,
 };
 use crate::error::AppResult;
 use crate::{application::GitService, domain::entities::Project};
@@ -171,6 +171,46 @@ pub async fn ensure_publish_branch_fresh(
     publish_branch_freshness_outcome_from_source_update(result, &target_ref, &target_sha)
 }
 
+pub async fn ensure_plan_publish_branch_fresh(
+    repo_path: &Path,
+    project: &Project,
+    plan_branch: &str,
+    base_ref: &str,
+    conversation_id: &str,
+    app_handle: Option<&tauri::AppHandle>,
+) -> PublishBranchFreshnessOutcome {
+    if let Err(error) = GitService::fetch_origin(repo_path).await {
+        return PublishBranchFreshnessOutcome::OperationalError {
+            message: format!("Failed to refresh git remotes before publishing: {error}"),
+        };
+    }
+
+    let target_ref = resolve_publish_freshness_target(repo_path, base_ref).await;
+    let target_sha = match GitService::get_branch_sha(repo_path, &target_ref).await {
+        Ok(sha) => sha,
+        Err(error) => {
+            return PublishBranchFreshnessOutcome::OperationalError {
+                message: format!(
+                    "Failed to resolve publish base ref '{}' before publishing: {}",
+                    target_ref, error
+                ),
+            };
+        }
+    };
+
+    let result = update_plan_from_main_isolated(
+        repo_path,
+        plan_branch,
+        &target_ref,
+        project,
+        conversation_id,
+        app_handle,
+    )
+    .await;
+
+    publish_branch_freshness_outcome_from_plan_update(result, &target_ref, &target_sha)
+}
+
 pub async fn inspect_publish_branch_freshness(
     repo_path: &Path,
     base_ref: &str,
@@ -193,7 +233,42 @@ pub async fn inspect_publish_branch_freshness_for_source(
     source_branch: &str,
     captured_base_commit: Option<&str>,
 ) -> AppResult<PublishBranchFreshnessStatus> {
-    GitService::fetch_origin(repo_path).await?;
+    inspect_publish_branch_freshness_for_source_with_fetch(
+        repo_path,
+        base_ref,
+        source_branch,
+        captured_base_commit,
+        true,
+    )
+    .await
+}
+
+pub async fn inspect_publish_branch_freshness_for_source_after_fetch(
+    repo_path: &Path,
+    base_ref: &str,
+    source_branch: &str,
+    captured_base_commit: Option<&str>,
+) -> AppResult<PublishBranchFreshnessStatus> {
+    inspect_publish_branch_freshness_for_source_with_fetch(
+        repo_path,
+        base_ref,
+        source_branch,
+        captured_base_commit,
+        false,
+    )
+    .await
+}
+
+async fn inspect_publish_branch_freshness_for_source_with_fetch(
+    repo_path: &Path,
+    base_ref: &str,
+    source_branch: &str,
+    captured_base_commit: Option<&str>,
+    should_fetch: bool,
+) -> AppResult<PublishBranchFreshnessStatus> {
+    if should_fetch {
+        GitService::fetch_origin(repo_path).await?;
+    }
     let target_ref = resolve_publish_freshness_target(repo_path, base_ref).await;
     let target_sha = GitService::get_branch_sha(repo_path, &target_ref).await?;
     let source_contains_target =
@@ -350,6 +425,47 @@ pub(crate) fn publish_branch_freshness_outcome_from_source_update(
             }
         }
         SourceUpdateResult::Error(message) => {
+            PublishBranchFreshnessOutcome::OperationalError { message }
+        }
+    }
+}
+
+pub(crate) fn publish_branch_freshness_outcome_from_plan_update(
+    result: PlanUpdateResult,
+    target_ref: &str,
+    target_sha: &str,
+) -> PublishBranchFreshnessOutcome {
+    match result {
+        PlanUpdateResult::AlreadyUpToDate | PlanUpdateResult::NotPlanBranch => {
+            PublishBranchFreshnessOutcome::AlreadyFresh {
+                base_commit: target_sha.to_string(),
+                target_ref: target_ref.to_string(),
+            }
+        }
+        PlanUpdateResult::Updated => PublishBranchFreshnessOutcome::Updated {
+            base_commit: target_sha.to_string(),
+            target_ref: target_ref.to_string(),
+        },
+        PlanUpdateResult::Conflicts { conflict_files } => {
+            let conflict_files = conflict_files
+                .into_iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            let files_label = if conflict_files.is_empty() {
+                "unknown files".to_string()
+            } else {
+                conflict_files.join(", ")
+            };
+            PublishBranchFreshnessOutcome::NeedsAgent {
+                message: format!(
+                    "Merge conflict updating plan branch from {target_ref}: {files_label}"
+                ),
+                conflict_files,
+                base_commit: target_sha.to_string(),
+                target_ref: target_ref.to_string(),
+            }
+        }
+        PlanUpdateResult::Error(message) => {
             PublishBranchFreshnessOutcome::OperationalError { message }
         }
     }

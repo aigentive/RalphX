@@ -12,7 +12,11 @@
 // - agent:error - Agent failed
 // - agent:queue_sent - Queued message sent
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -38,8 +42,9 @@ use crate::application::chat_service::{AgentConversationCreatedPayload, SendMess
 use crate::application::git_service::GitService;
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits, count_unpublished_publish_commits,
-    ensure_publish_branch_fresh, inspect_publish_branch_freshness_for_source,
-    publish_push_status_for_failure, push_publish_branch, review_base_for_publish,
+    ensure_plan_publish_branch_fresh, ensure_publish_branch_fresh,
+    inspect_publish_branch_freshness_for_source_after_fetch, publish_push_status_for_failure,
+    push_publish_branch, remote_tracking_ref_for_publish, review_base_for_publish,
     PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus, PublishFailureClass,
 };
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
@@ -407,6 +412,33 @@ fn normalize_explicit_publish_base_selection(
         base_ref,
         display_name,
     }))
+}
+
+async fn validate_explicit_publish_base_ref(
+    repo_path: &Path,
+    base_ref: &str,
+) -> Result<(), String> {
+    let base_ref = base_ref.trim();
+    if base_ref.is_empty() {
+        return Err("Selected base branch is empty".to_string());
+    }
+
+    let selected_ref_exists = GitService::ref_exists(repo_path, base_ref)
+        .await
+        .map_err(|e| e.to_string())?;
+    let remote_ref = remote_tracking_ref_for_publish(base_ref);
+    let remote_ref_exists = remote_ref != base_ref
+        && GitService::ref_exists(repo_path, &remote_ref)
+            .await
+            .map_err(|e| e.to_string())?;
+    if !selected_ref_exists && !remote_ref_exists {
+        return Err(format!(
+            "Selected base branch '{}' does not exist in the project repository",
+            base_ref
+        ));
+    }
+
+    Ok(())
 }
 
 struct WorkspaceChangedEventGuard {
@@ -2399,7 +2431,7 @@ pub async fn get_agent_conversation_workspace_freshness(
             ));
         }
         apply_base_resolution_to_publish_target(&mut target, &base_resolution)?;
-        let status = inspect_publish_branch_freshness_for_source(
+        let status = inspect_publish_branch_freshness_for_source_after_fetch(
             &target.worktree_path,
             &target.base_ref,
             &target.branch_name,
@@ -2452,7 +2484,7 @@ pub async fn get_agent_conversation_workspace_freshness(
     let effective_base_ref = base_resolution
         .effective_checkout_ref()
         .map_err(|e| e.to_string())?;
-    let status = inspect_publish_branch_freshness_for_source(
+    let status = inspect_publish_branch_freshness_for_source_after_fetch(
         &worktree_path,
         effective_base_ref,
         &workspace.branch_name,
@@ -2503,15 +2535,6 @@ pub async fn get_agent_conversation_workspace_freshness(
             .await
             .map_err(|e| e.to_string())?
             .unwrap_or(workspace);
-    }
-
-    if status.is_base_ahead {
-        if let Some(app_handle) = state.app_handle.clone() {
-            crate::commands::agent_workspace_auto_publish::schedule_agent_workspace_auto_publish_after_freshness_detected(
-                app_handle,
-                workspace.conversation_id.clone(),
-            );
-        }
     }
 
     let has_uncommitted_changes = GitService::has_uncommitted_changes(&worktree_path)
@@ -2618,6 +2641,23 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     let base_resolution = if let Some(explicit_base) = explicit_base.as_ref() {
         publish_target.base_ref = explicit_base.base_ref.clone();
         publish_target.base_display_name = Some(explicit_base.display_name.clone());
+        if let Err(message) = validate_explicit_publish_base_ref(
+            &publish_target.worktree_path,
+            &explicit_base.base_ref,
+        )
+        .await
+        {
+            mark_agent_workspace_publish_failure_with_target(
+                state,
+                &workspace,
+                &message,
+                None,
+                &repair_service,
+                &publish_target.repair_target(),
+            )
+            .await;
+            return Err(message);
+        }
         let retargeted_base = BaseResolutionResult {
             status: BaseStatus::Retargeted,
             old_base_ref: workspace.base_ref.clone(),
@@ -2695,15 +2735,27 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         .map_err(|e| e.to_string())?;
 
     let freshness_conversation_id = workspace.conversation_id.as_str();
-    let outcome = ensure_publish_branch_fresh(
-        &publish_target.worktree_path,
-        &project,
-        &publish_target.branch_name,
-        &publish_target.base_ref,
-        &freshness_conversation_id,
-        None,
-    )
-    .await;
+    let outcome = if publish_target.plan_branch.is_some() {
+        ensure_plan_publish_branch_fresh(
+            &publish_target.worktree_path,
+            &project,
+            &publish_target.branch_name,
+            &publish_target.base_ref,
+            &freshness_conversation_id,
+            None,
+        )
+        .await
+    } else {
+        ensure_publish_branch_fresh(
+            &publish_target.worktree_path,
+            &project,
+            &publish_target.branch_name,
+            &publish_target.base_ref,
+            &freshness_conversation_id,
+            None,
+        )
+        .await
+    };
     let (updated, target_ref, base_commit) = match outcome {
         PublishBranchFreshnessOutcome::AlreadyFresh {
             base_commit,
@@ -5329,6 +5381,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_ideation_workspace_from_base_refuses_primary_checkout_plan_branch() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        let base_sha = setup_publish_repo(&repo_path);
+        let plan_branch_name = "feature/plan-primary-checkout";
+
+        git(&repo_path, &["checkout", "-b", plan_branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+        std::fs::write(repo_path.join("fix.txt"), "base fix\n")
+            .expect("fixture file should be written");
+        git(&repo_path, &["add", "fix.txt"]);
+        git(&repo_path, &["commit", "-m", "base fix"]);
+        let main_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(&repo_path, &["checkout", plan_branch_name]);
+
+        let mut project = Project::new(
+            "Primary Checkout Plan Update".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id = ChatConversationId::from_string("conversation-plan-primary-checkout");
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-primary-checkout"),
+            IdeationSessionId::from_string("session-primary-checkout"),
+            project.id.clone(),
+            plan_branch_name.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Active;
+        let plan_branch_id = plan_branch.id.clone();
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha.clone()),
+            "agent-shell-primary-checkout".to_string(),
+            temp.path()
+                .join("agent-shell-primary-checkout")
+                .to_string_lossy()
+                .to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(plan_branch.session_id.clone());
+        workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+
+        let state = AppState::new_test();
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should be persisted");
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should be persisted");
+        state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be persisted");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                base_ref: None,
+                display_name: None,
+            },
+        )
+        .await
+        .expect_err("primary checkout plan branch should not be updated in place");
+
+        assert!(error.contains("Refusing to update plan branch"));
+        assert_eq!(
+            git(&repo_path, &["branch", "--show-current"]),
+            plan_branch_name
+        );
+        assert!(!repo_path.join("fix.txt").exists());
+        assert_eq!(git(&repo_path, &["rev-parse", "main"]), main_sha);
+        assert_eq!(git(&repo_path, &["rev-parse", plan_branch_name]), base_sha);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
     async fn update_workspace_from_saved_base_blocks_when_base_commit_is_missing() {
         let (_temp, state, conversation_id, github) = setup_publish_command_state(
             "update-missing-base",
@@ -5375,9 +5536,12 @@ mod tests {
             github.state().update_pr_base_result =
                 Some(Err(AppError::Infrastructure("denied".to_string())));
         }
-        let (_temp, state, conversation_id, github) =
+        let (temp, state, conversation_id, github) =
             setup_publish_command_state("update-explicit-retarget-fails", true, Some(988), github)
                 .await;
+        let repo_path = temp.path().join("repo");
+        git(&repo_path, &["checkout", "-b", "release/0.8"]);
+        git(&repo_path, &["checkout", "main"]);
         let execution_state = Arc::new(ExecutionState::new());
         let team_service = Arc::new(TeamService::new_without_events(Arc::new(
             TeamStateTracker::new(),
@@ -5402,6 +5566,46 @@ mod tests {
             github.state().last_update_pr_base_args,
             Some((988, "release/0.8".to_string()))
         );
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.base_ref, "feature/deleted-base");
+        assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn update_workspace_from_explicit_base_blocks_when_selection_is_missing() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "update-explicit-missing-branch",
+            true,
+            Some(989),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+
+        let error = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                base_ref: Some("release/missing".to_string()),
+                display_name: Some("release/missing".to_string()),
+            },
+        )
+        .await
+        .expect_err("missing explicit branch should block before PR retarget");
+
+        assert!(error.contains("Selected base branch 'release/missing' does not exist"));
+        assert_eq!(github.state().update_pr_base_calls, 0);
         let stored = state
             .agent_conversation_workspace_repo
             .get_by_conversation_id(&conversation_id)
