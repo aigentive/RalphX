@@ -18,6 +18,8 @@ mod rebase;
 mod state_query;
 mod worktree;
 
+pub(crate) use rebase::FetchOriginOutcome;
+
 #[cfg(test)]
 mod tests;
 

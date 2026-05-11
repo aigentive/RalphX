@@ -347,6 +347,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
+        Arc::clone(&state.running_agent_registry),
     )
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
@@ -354,6 +355,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
+        Arc::clone(&state.running_agent_registry),
     )
     .await;
 
@@ -483,6 +485,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
+        Arc::clone(&state.running_agent_registry),
     )
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
@@ -490,6 +493,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
         Arc::clone(&state.project_repo),
         None,
         Arc::new(HashSet::new()),
+        Arc::clone(&state.running_agent_registry),
     )
     .await;
 
