@@ -1,5 +1,6 @@
 use super::agent_conversation_workspace_base::{
-    apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
+    apply_workspace_base_resolution, resolve_workspace_base,
+    resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
     BLOCK_REASON_MISSING_BASE_COMMIT, BLOCK_REASON_NOT_CONTAINED,
 };
 use crate::domain::entities::{
@@ -230,6 +231,50 @@ async fn resolve_workspace_base_keeps_existing_remote_base_valid() {
     assert_eq!(
         resolution.effective_checkout_ref.as_deref(),
         Some("origin/feature/existing-base")
+    );
+}
+
+#[tokio::test]
+async fn resolve_workspace_base_from_local_snapshot_does_not_fetch_origin() {
+    let (temp, project, main_sha) = setup_remote_repo();
+    let repo = Path::new(&project.working_directory);
+    let remote_url = git(repo, &["remote", "get-url", "origin"]);
+    let other_repo = temp.path().join("other");
+    Command::new("git")
+        .args(["clone", remote_url.as_str(), other_repo.to_str().unwrap()])
+        .output()
+        .expect("second clone should be created");
+    git(&other_repo, &["config", "user.email", "test@example.com"]);
+    git(&other_repo, &["config", "user.name", "Test User"]);
+    git(&other_repo, &["checkout", "-b", "feature/remote-only"]);
+    std::fs::write(other_repo.join("remote-only.txt"), "remote\n")
+        .expect("remote-only file should be written");
+    git(&other_repo, &["add", "remote-only.txt"]);
+    git(&other_repo, &["commit", "-m", "remote-only branch"]);
+    git(
+        &other_repo,
+        &["push", "-u", "origin", "feature/remote-only"],
+    );
+
+    let mut target = workspace("feature/remote-only", Some(main_sha));
+    target.project_id = project.id.clone();
+
+    let local_resolution = resolve_workspace_base_from_local_snapshot(&project, &target)
+        .await
+        .expect("local snapshot should resolve without fetching");
+
+    assert_eq!(local_resolution.status, BaseStatus::Retargeted);
+    assert_eq!(local_resolution.old_base_ref, "feature/remote-only");
+    assert_eq!(local_resolution.effective_base_ref.as_deref(), Some("main"));
+
+    let fresh_resolution = resolve_workspace_base(&project, &target)
+        .await
+        .expect("fresh resolution should fetch remote refs");
+
+    assert_eq!(fresh_resolution.status, BaseStatus::Valid);
+    assert_eq!(
+        fresh_resolution.effective_checkout_ref.as_deref(),
+        Some("origin/feature/remote-only")
     );
 }
 

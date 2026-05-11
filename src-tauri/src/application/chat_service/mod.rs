@@ -157,13 +157,27 @@ pub(crate) fn has_meaningful_output(
     false
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistryCleanupCaller {
+    SendGate,
+    ReadOnly,
+}
+
+impl RegistryCleanupCaller {
+    fn permits_pid_zero_cleanup(self) -> bool {
+        matches!(self, Self::SendGate)
+    }
+}
+
 fn registry_entry_blocks_send_but_is_stale(
     info: &RunningAgentInfo,
     now: chrono::DateTime<chrono::Utc>,
+    cleanup_caller: RegistryCleanupCaller,
 ) -> bool {
     if info.pid == 0 {
         let age = now.signed_duration_since(info.started_at);
-        return age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS);
+        return cleanup_caller.permits_pid_zero_cleanup()
+            && age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS);
     }
 
     !is_process_alive(info.pid)
@@ -173,6 +187,7 @@ fn registry_entry_blocks_send_because_run_inactive(
     info: &RunningAgentInfo,
     run_status: Option<AgentRunStatus>,
     now: chrono::DateTime<chrono::Utc>,
+    cleanup_caller: RegistryCleanupCaller,
 ) -> bool {
     if info.agent_run_id.is_empty() {
         return false;
@@ -183,6 +198,9 @@ fn registry_entry_blocks_send_because_run_inactive(
         Some(_) => true,
         None => {
             let age = now.signed_duration_since(info.started_at);
+            if info.pid == 0 && !cleanup_caller.permits_pid_zero_cleanup() {
+                return false;
+            }
             age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS)
         }
     }
@@ -929,8 +947,13 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         source: &'static str,
+        cleanup_caller: RegistryCleanupCaller,
     ) -> bool {
-        if !registry_entry_blocks_send_but_is_stale(existing, chrono::Utc::now()) {
+        if !registry_entry_blocks_send_but_is_stale(
+            existing,
+            chrono::Utc::now(),
+            cleanup_caller,
+        ) {
             return false;
         }
 
@@ -981,6 +1004,7 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         source: &'static str,
+        cleanup_caller: RegistryCleanupCaller,
     ) -> bool {
         let run = match self
             .agent_run_repo
@@ -1007,6 +1031,7 @@ impl<R: Runtime> AppChatService<R> {
             existing,
             run_status,
             chrono::Utc::now(),
+            cleanup_caller,
         ) {
             return false;
         }
@@ -2199,6 +2224,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     &runtime_context_id,
                     "send_message_gate_2",
+                    RegistryCleanupCaller::SendGate,
                 )
                 .await;
             let cleaned_inactive_entry = if cleaned_stale_entry {
@@ -2210,6 +2236,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     &runtime_context_id,
                     "send_message_gate_2",
+                    RegistryCleanupCaller::SendGate,
                 )
                 .await
             };
@@ -3363,7 +3390,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         };
 
         if self
-            .cleanup_stale_registry_block(&key, &info, context_type, context_id, "is_agent_running")
+            .cleanup_stale_registry_block(
+                &key,
+                &info,
+                context_type,
+                context_id,
+                "is_agent_running",
+                RegistryCleanupCaller::ReadOnly,
+            )
             .await
             || self
                 .cleanup_inactive_registry_block(
@@ -3372,6 +3406,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     context_id,
                     "is_agent_running",
+                    RegistryCleanupCaller::ReadOnly,
                 )
                 .await
         {
@@ -3430,6 +3465,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     &context_id,
                     "get_agent_running_states",
+                    RegistryCleanupCaller::ReadOnly,
                 )
                 .await;
             let cleaned_inactive = if cleaned_stale {
@@ -3441,6 +3477,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     &context_id,
                     "get_agent_running_states",
+                    RegistryCleanupCaller::ReadOnly,
                 )
                 .await
             };
@@ -3473,7 +3510,7 @@ mod stale_registry_gate_tests {
     use super::{
         claude_launches_paused, registry_entry_blocks_send_because_run_inactive,
         registry_entry_blocks_send_but_is_stale, runtime_context_id_for_send, AgentRunStatus,
-        ChatContextType, ChatConversationId, RunningAgentInfo,
+        ChatContextType, ChatConversationId, RegistryCleanupCaller, RunningAgentInfo,
     };
     use crate::commands::ExecutionState;
     use std::sync::Arc;
@@ -3576,15 +3613,35 @@ mod stale_registry_gate_tests {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(5));
 
-        assert!(!registry_entry_blocks_send_but_is_stale(&info, now));
+        assert!(!registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
     }
 
     #[test]
-    fn old_pid_zero_registry_entry_is_treated_as_stale() {
+    fn old_pid_zero_registry_entry_is_not_cleaned_by_read_paths() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
 
-        assert!(registry_entry_blocks_send_but_is_stale(&info, now));
+        assert!(!registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::ReadOnly,
+        ));
+    }
+
+    #[test]
+    fn old_pid_zero_registry_entry_unblocks_send_gate() {
+        let now = chrono::Utc::now();
+        let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
+
+        assert!(registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
     }
 
     #[test]
@@ -3592,7 +3649,11 @@ mod stale_registry_gate_tests {
         let now = chrono::Utc::now();
         let info = registry_info(std::process::id(), now - chrono::Duration::minutes(5));
 
-        assert!(!registry_entry_blocks_send_but_is_stale(&info, now));
+        assert!(!registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
     }
 
     #[test]
@@ -3604,6 +3665,7 @@ mod stale_registry_gate_tests {
             &info,
             Some(AgentRunStatus::Running),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
     }
 
@@ -3616,16 +3678,19 @@ mod stale_registry_gate_tests {
             &info,
             Some(AgentRunStatus::Completed),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Failed),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Cancelled),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
     }
 
@@ -3635,17 +3700,36 @@ mod stale_registry_gate_tests {
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(5));
 
         assert!(!registry_entry_blocks_send_because_run_inactive(
-            &info, None, now
+            &info,
+            None,
+            now,
+            RegistryCleanupCaller::SendGate,
         ));
     }
 
     #[test]
-    fn old_missing_agent_run_unblocks_registry_entry() {
+    fn old_missing_agent_run_does_not_unblock_read_paths() {
+        let now = chrono::Utc::now();
+        let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
+
+        assert!(!registry_entry_blocks_send_because_run_inactive(
+            &info,
+            None,
+            now,
+            RegistryCleanupCaller::ReadOnly,
+        ));
+    }
+
+    #[test]
+    fn old_missing_agent_run_unblocks_send_gate() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
 
         assert!(registry_entry_blocks_send_because_run_inactive(
-            &info, None, now
+            &info,
+            None,
+            now,
+            RegistryCleanupCaller::SendGate,
         ));
     }
 
