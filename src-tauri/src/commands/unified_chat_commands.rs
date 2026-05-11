@@ -24,7 +24,9 @@ use tauri::{Emitter, State};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
+    prepare_agent_conversation_workspace_with_setup_mode,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
+    AgentConversationWorkspaceSetupMode,
 };
 use crate::application::agent_conversation_workspace_base::{
     apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
@@ -130,7 +132,8 @@ pub struct StartAgentConversationInput {
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
-    /// Agent mode: "chat" routes to read-only explorer; all modes create a selected-base workspace for the runtime CWD.
+    /// Agent mode: "chat" routes to a read-only explorer in the project root;
+    /// edit/ideation modes create a selected-base workspace for runtime CWD.
     pub mode: Option<String>,
     /// Optional base ref kind using ideation naming: project_default, current_branch, local_branch.
     pub base_ref_kind: Option<String>,
@@ -1444,9 +1447,7 @@ fn parse_agent_workspace_base_kind(
 fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     matches!(
         mode,
-        AgentConversationWorkspaceMode::Chat
-            | AgentConversationWorkspaceMode::Edit
-            | AgentConversationWorkspaceMode::Ideation
+        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
     )
 }
 
@@ -1478,8 +1479,8 @@ mod agent_mode_workspace_tests {
     use super::*;
 
     #[test]
-    fn all_agent_conversation_modes_require_workspace() {
-        assert!(agent_mode_requires_workspace(
+    fn only_write_capable_agent_conversation_modes_require_workspace() {
+        assert!(!agent_mode_requires_workspace(
             AgentConversationWorkspaceMode::Chat
         ));
         assert!(agent_mode_requires_workspace(
@@ -1717,7 +1718,7 @@ pub async fn start_agent_conversation(
     let should_create_conversation = draft_conversation_id.is_none();
     let workspace = if agent_mode_requires_workspace(mode) {
         Some(
-            prepare_agent_conversation_workspace(
+            prepare_agent_conversation_workspace_with_setup_mode(
                 &project,
                 &conversation.id,
                 mode,
@@ -1732,6 +1733,7 @@ pub async fn start_agent_conversation(
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty()),
                 },
+                AgentConversationWorkspaceSetupMode::Deferred,
             )
             .await
             .map_err(|error| error.to_string())?,

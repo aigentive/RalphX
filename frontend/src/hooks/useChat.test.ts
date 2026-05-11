@@ -18,6 +18,8 @@ import {
   useConversationTimelineWindow,
   useAgentRunStatus,
   chatKeys,
+  createOptimisticConversationId,
+  isOptimisticConversationId,
   getCachedConversationMessages,
   addOptimisticUserMessageToConversationCache,
   removeOptimisticMessageFromConversationCache,
@@ -268,6 +270,40 @@ describe("chatKeys", () => {
   });
 });
 
+describe("optimistic conversation ids", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("creates query-safe optimistic ids with crypto randomUUID when available", () => {
+    vi.stubGlobal("crypto", {
+      randomUUID: vi.fn(() => "uuid-123"),
+    });
+
+    const conversationId = createOptimisticConversationId();
+
+    expect(conversationId).toBe("optimistic-conversation:uuid-123");
+    expect(isOptimisticConversationId(conversationId)).toBe(true);
+    expect(isOptimisticConversationId("conversation-real")).toBe(false);
+    expect(isOptimisticConversationId(null)).toBe(false);
+  });
+
+  it("falls back to timestamp and random suffix when crypto ids are unavailable", () => {
+    vi.stubGlobal("crypto", {});
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(12345);
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    try {
+      expect(createOptimisticConversationId()).toBe(
+        "optimistic-conversation:12345-i"
+      );
+    } finally {
+      dateNowSpy.mockRestore();
+      randomSpy.mockRestore();
+    }
+  });
+});
+
 describe("useConversations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -345,6 +381,18 @@ describe("useConversation", () => {
     const { result } = renderHook(() => useConversation(null), {
       wrapper: createWrapper(),
     });
+
+    expect(result.current.isLoading).toBe(false);
+    expect(chatApi.getConversation).not.toHaveBeenCalled();
+  });
+
+  it("should not fetch backend data for optimistic conversation ids", async () => {
+    const { result } = renderHook(
+      () => useConversation("optimistic-conversation:test"),
+      {
+        wrapper: createWrapper(),
+      }
+    );
 
     expect(result.current.isLoading).toBe(false);
     expect(chatApi.getConversation).not.toHaveBeenCalled();

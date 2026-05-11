@@ -80,6 +80,18 @@ type SendMessageMutationContext = {
 };
 
 const DEFAULT_HISTORY_MAX_PAGES = 3;
+export const OPTIMISTIC_CONVERSATION_ID_PREFIX = "optimistic-conversation:";
+
+export function createOptimisticConversationId() {
+  const randomId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${OPTIMISTIC_CONVERSATION_ID_PREFIX}${randomId}`;
+}
+
+export function isOptimisticConversationId(conversationId: string | null | undefined) {
+  return Boolean(conversationId?.startsWith(OPTIMISTIC_CONVERSATION_ID_PREFIX));
+}
 
 export type ConversationHistoryWindowData = ConversationQueryData & {
   totalMessageCount: number;
@@ -394,6 +406,7 @@ export function useConversation(
   conversationId: string | null,
   options?: { enabled?: boolean }
 ) {
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useQuery<
     ConversationQueryData,
     Error
@@ -405,7 +418,7 @@ export function useConversation(
       }
       return chatApi.getConversation(conversationId);
     },
-    enabled: (options?.enabled ?? true) && !!conversationId,
+    enabled: (options?.enabled ?? true) && canFetchConversation,
   });
 
   return query;
@@ -417,6 +430,7 @@ export function useConversationHistoryWindow(
 ) {
   const pageSize = options?.pageSize ?? 40;
   const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useInfiniteQuery<
     ConversationMessagesPageResponse,
     Error,
@@ -435,7 +449,7 @@ export function useConversationHistoryWindow(
         pageParam
       );
     },
-    enabled: (options?.enabled ?? true) && !!conversationId,
+    enabled: (options?.enabled ?? true) && canFetchConversation,
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
       if (!lastPage.hasOlder) {
@@ -477,6 +491,7 @@ export function useConversationTimelineWindow(
 ) {
   const pageSize = options?.pageSize ?? 40;
   const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useInfiniteQuery<
     ConversationTimelinePageResponse,
     Error,
@@ -495,7 +510,7 @@ export function useConversationTimelineWindow(
         pageParam
       );
     },
-    enabled: (options?.enabled ?? true) && !!conversationId,
+    enabled: (options?.enabled ?? true) && canFetchConversation,
     initialPageParam: null,
     getNextPageParam: (lastPage, allPages) => {
       if (!lastPage.hasOlder) {
@@ -535,6 +550,7 @@ export function useConversationTimelineWindow(
  * Hook to fetch agent run status for a conversation
  */
 export function useAgentRunStatus(conversationId: string | null) {
+  const canFetchRunStatus = !!conversationId && !isOptimisticConversationId(conversationId);
   return useQuery<AgentRun | null, Error>({
     queryKey: chatKeys.agentRun(conversationId ?? ""),
     queryFn: () => {
@@ -543,7 +559,7 @@ export function useAgentRunStatus(conversationId: string | null) {
       }
       return chatApi.getAgentRunStatus(conversationId);
     },
-    enabled: !!conversationId,
+    enabled: canFetchRunStatus,
     refetchInterval: (query) => {
       // Poll every 2 seconds if agent is running
       const agentRun = query.state.data;
