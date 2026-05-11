@@ -729,6 +729,10 @@ const commandHandlers: Record<
   },
   get_agent_conversation: async (args) =>
     getMockConversationPayload(args.conversationId as string),
+  get_agent_conversation_summary: async (args) => {
+    const payload = await getMockConversationPayload(args.conversationId as string);
+    return payload.conversation;
+  },
   get_agent_conversation_messages_page: async (args) => {
     const limit = (args.limit as number | undefined) ?? 50;
     const offset = (args.offset as number | undefined) ?? 0;

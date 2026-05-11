@@ -3857,6 +3857,28 @@ pub async fn get_agent_conversation(
     }))
 }
 
+/// Get lightweight conversation metadata without loading any messages.
+#[tauri::command]
+pub async fn get_agent_conversation_summary(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<AgentConversationResponse>, String> {
+    get_agent_conversation_summary_for_app_state(&state, conversation_id).await
+}
+
+pub async fn get_agent_conversation_summary_for_app_state(
+    state: &AppState,
+    conversation_id: String,
+) -> Result<Option<AgentConversationResponse>, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    state
+        .chat_conversation_repo
+        .get_by_id(&conversation_id)
+        .await
+        .map(|conversation| conversation.map(AgentConversationResponse::from))
+        .map_err(|e| e.to_string())
+}
+
 /// Get a tail-first page of conversation messages for fast conversation switching.
 /// `offset` counts how many newest messages to skip before loading older history.
 #[tauri::command]
@@ -4365,11 +4387,11 @@ mod tests {
         apply_base_resolution_to_publish_target,
         build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
         get_agent_conversation_timeline_page_for_app_state,
+        get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
-        get_agent_conversation_workspace_freshness, merge_delegated_snapshot_into_result,
-        normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
-        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
-        persist_workspace_base_resolution_if_retargeted,
+        merge_delegated_snapshot_into_result, normalize_agent_runtime_selection,
+        normalize_explicit_publish_base_selection, normalized_effort_for_supported,
+        parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
         project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state,

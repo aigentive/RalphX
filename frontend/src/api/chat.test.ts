@@ -6,6 +6,7 @@ import {
   listConversations,
   listConversationsPage,
   getConversation,
+  getConversationSummary,
   getConversationMessagesPage,
   getConversationTimelinePage,
   getAgentMessageToolCallDetail,
@@ -598,6 +599,36 @@ describe("chat api", () => {
     const result = await getConversationMessagesPage("c-legacy", 40, 0);
 
     expect(result.messages[0]?.conversationId).toBe("c-legacy");
+  });
+
+  it("gets a lightweight conversation summary", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "c-summary",
+      context_type: "project",
+      context_id: "p1",
+      claude_session_id: null,
+      provider_session_id: "thread-summary",
+      provider_harness: "codex",
+      title: "Breadcrumb title",
+      message_count: 9,
+      last_message_at: "2026-01-24T10:05:00Z",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:05:00Z",
+      archived_at: null,
+    });
+
+    const result = await getConversationSummary("c-summary");
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_conversation_summary", {
+      conversationId: "c-summary",
+    });
+    expect(result).toMatchObject({
+      id: "c-summary",
+      contextType: "project",
+      contextId: "p1",
+      title: "Breadcrumb title",
+      providerHarness: "codex",
+    });
   });
 
   it("transforms normalized conversation timeline pages into renderable messages", async () => {
@@ -1500,6 +1531,7 @@ describe("chat api", () => {
       listConversationsPage: vi.fn(),
       listAgentSidebarConversations: vi.fn(),
       getConversation: vi.fn(),
+      getConversationSummary: vi.fn(),
       getConversationTimelinePage: vi.fn(),
       getConversationStats: vi.fn(),
       seedAgentConversationWorkspace: vi.fn(),

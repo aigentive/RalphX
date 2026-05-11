@@ -44,6 +44,8 @@ export const chatKeys = {
   conversations: () => [...chatKeys.all, "conversations"] as const,
   conversation: (conversationId: string) =>
     [...chatKeys.conversations(), conversationId] as const,
+  conversationSummary: (conversationId: string) =>
+    [...chatKeys.conversation(conversationId), "summary"] as const,
   conversationHistory: (conversationId: string) =>
     [...chatKeys.conversation(conversationId), "history"] as const,
   conversationTimeline: (conversationId: string) =>
@@ -274,6 +276,9 @@ export function invalidateConversationDataQueries(
   queryClient.invalidateQueries({
     queryKey: chatKeys.conversation(conversationId),
     exact: true,
+  });
+  queryClient.invalidateQueries({
+    queryKey: chatKeys.conversationSummary(conversationId),
   });
   queryClient.invalidateQueries({
     queryKey: chatKeys.conversationHistory(conversationId),

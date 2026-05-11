@@ -1186,6 +1186,20 @@ export async function listConversationsPage(
 }
 
 /**
+ * Get lightweight conversation metadata without loading messages.
+ */
+export async function getConversationSummary(
+  conversationId: string
+): Promise<ChatConversation | null> {
+  const raw = await typedInvoke(
+    "get_agent_conversation_summary",
+    { conversationId },
+    ChatConversationResponseSchema.nullable()
+  );
+  return raw ? transformConversation(raw) : null;
+}
+
+/**
  * Get a conversation with its messages
  * @param conversationId The conversation ID
  * @returns The conversation with messages
@@ -1421,6 +1435,7 @@ export const chatApi = {
   // Conversation management
   listConversations,
   listConversationsPage,
+  getConversationSummary,
   getConversation,
   getConversationMessagesPage,
   getConversationTimelinePage,
