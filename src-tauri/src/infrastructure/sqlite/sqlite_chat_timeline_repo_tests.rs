@@ -7,6 +7,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{ChatConversationRepository, ChatTimelineRepository};
 use crate::testing::SqliteTestDb;
+use serde_json::json;
 
 fn setup_repos() -> (
     SqliteTestDb,
@@ -177,6 +178,97 @@ async fn page_returns_visible_tail_and_older_cursor_without_eager_payloads() {
     assert_eq!(older.items.len(), 1);
     assert!(!older.has_older);
     assert_eq!(older.items[0].text.as_deref(), Some("block 0"));
+}
+
+#[tokio::test]
+async fn page_hydrates_diff_tool_payloads_without_eager_loading_other_tools() {
+    let (db, conversation_repo, timeline_repo) = setup_repos();
+    let conversation_id = create_conversation(&conversation_repo).await;
+    let message_id = ChatMessageId::from_string("assistant-message-diff-tool");
+    insert_parent_message(&db, conversation_id, &message_id);
+
+    let mut bash = ChatTimelineItem::for_message_block(
+        message_id.clone(),
+        conversation_id,
+        0,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    bash.tool_call_id = Some("tool-bash".to_string());
+    bash.tool_name = Some("bash".to_string());
+    bash.tool_status = Some("completed".to_string());
+    bash.tool_input_preview = Some(r#"{"command":"cargo test"}"#.to_string());
+    bash.input_json = Some(r#"{"command":"cargo test"}"#.to_string());
+    bash.raw_block_json = Some(r#"{"type":"tool_use","id":"tool-bash"}"#.to_string());
+    timeline_repo
+        .upsert_item(bash)
+        .await
+        .expect("insert bash item");
+
+    let edit_args = json!({
+        "file_path": "src/lib.rs",
+        "old_string": "old",
+        "new_string": "new"
+    });
+    let mut edit = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        1,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    edit.tool_call_id = Some("tool-edit".to_string());
+    edit.tool_name = Some("edit".to_string());
+    edit.tool_status = Some("completed".to_string());
+    edit.tool_input_preview = Some(r#"{"file_path":"src/lib.rs","old_string":"old""#.to_string());
+    edit.input_json = Some(edit_args.to_string());
+    edit.raw_block_json = Some(
+        json!({
+            "type": "tool_use",
+            "id": "tool-edit",
+            "name": "edit",
+            "arguments": edit_args,
+            "diff_context": {
+                "file_path": "src/lib.rs",
+                "old_content": "old"
+            }
+        })
+        .to_string(),
+    );
+    timeline_repo
+        .upsert_item(edit)
+        .await
+        .expect("insert edit item");
+
+    let page = timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("timeline page");
+
+    let bash = page
+        .items
+        .iter()
+        .find(|item| item.tool_name.as_deref() == Some("bash"))
+        .expect("bash row");
+    assert!(bash.input_json.is_none());
+    assert!(bash.raw_block_json.is_none());
+
+    let edit = page
+        .items
+        .iter()
+        .find(|item| item.tool_name.as_deref() == Some("edit"))
+        .expect("edit row");
+    let hydrated_args: serde_json::Value =
+        serde_json::from_str(edit.input_json.as_deref().expect("edit input_json"))
+            .expect("edit input json should parse");
+    assert_eq!(hydrated_args["file_path"], "src/lib.rs");
+    assert_eq!(hydrated_args["old_string"], "old");
+    assert_eq!(hydrated_args["new_string"], "new");
+    assert!(edit
+        .raw_block_json
+        .as_deref()
+        .expect("edit raw block json")
+        .contains("diff_context"));
 }
 
 #[tokio::test]
