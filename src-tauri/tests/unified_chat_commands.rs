@@ -15,8 +15,8 @@ use ralphx_lib::application::pr_startup_recovery::{
 };
 use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendResult};
 use ralphx_lib::commands::unified_chat_commands::{
-    get_agent_running_states_for_service, mark_agent_workspace_publish_failure,
-    parse_context_type, send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
+    get_agent_running_states_for_service, mark_agent_workspace_publish_failure, parse_context_type,
+    send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
     AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse, SendAgentMessageResponse,
 };
 use ralphx_lib::commands::ExecutionState;
@@ -909,7 +909,8 @@ mod ipc_contract {
         UpsertCustomAgentModelInput,
     };
     use ralphx_lib::commands::unified_chat_commands::{
-        get_agent_conversation_messages_page_for_app_state, get_agent_conversation_workspace,
+        get_agent_conversation_messages_page_for_app_state, get_agent_conversation_summary,
+        get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
         publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
         QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
@@ -1377,6 +1378,46 @@ mod ipc_contract {
             .as_str()
             .unwrap()
             .contains("block line 12"));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_summary_returns_metadata_without_message_window() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-summary-ipc".to_string());
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.set_title("Cheap breadcrumb title");
+        let conversation_id = conversation.id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let summary = get_agent_conversation_summary(
+            conversation_id.as_str().to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("summary command should succeed")
+        .expect("conversation should exist");
+
+        assert_eq!(summary.id, conversation_id.as_str());
+        assert_eq!(summary.context_type, "project");
+        assert_eq!(summary.context_id, "project-summary-ipc");
+        assert_eq!(summary.title.as_deref(), Some("Cheap breadcrumb title"));
+        assert_eq!(summary.message_count, 0);
+
+        let missing = get_agent_conversation_summary_for_app_state(
+            app.state::<AppState>().inner(),
+            "missing-summary-conversation".to_string(),
+        )
+        .await
+        .expect("summary helper should succeed for a missing conversation");
+        assert!(missing.is_none());
     }
 
     #[tokio::test]

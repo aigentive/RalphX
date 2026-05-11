@@ -588,27 +588,21 @@ describe("App", () => {
     expect(getMessagesPage).not.toHaveBeenCalled();
   });
 
-  it("falls back to the one-message history lookup when agent caches miss", async () => {
+  it("falls back to a cheap conversation summary lookup when agent caches miss", async () => {
     const queryClient = getQueryClient();
-    const getMessagesPage = vi.spyOn(chatApi, "getConversationMessagesPage").mockResolvedValue({
-      conversation: {
-        id: "conversation-cache-miss",
-        contextType: "project",
-        contextId: "demo-project-1",
-        providerSessionId: null,
-        providerHarness: null,
-        title: "Fetched after cache miss",
-        messageCount: 0,
-        lastMessageAt: null,
-        createdAt: "2026-05-07T00:00:00Z",
-        updatedAt: "2026-05-07T00:00:00Z",
-        archivedAt: null,
-      },
-      messages: [],
-      limit: 1,
-      offset: 0,
-      totalMessageCount: 0,
-      hasOlder: false,
+    const getMessagesPage = vi.spyOn(chatApi, "getConversationMessagesPage");
+    const getConversationSummary = vi.spyOn(chatApi, "getConversationSummary").mockResolvedValue({
+      id: "conversation-cache-miss",
+      contextType: "project",
+      contextId: "demo-project-1",
+      providerSessionId: null,
+      providerHarness: null,
+      title: "Fetched after cache miss",
+      messageCount: 42,
+      lastMessageAt: "2026-05-07T00:02:00Z",
+      createdAt: "2026-05-07T00:00:00Z",
+      updatedAt: "2026-05-07T00:02:00Z",
+      archivedAt: null,
     });
 
     useAgentSessionStore.setState({
@@ -642,8 +636,20 @@ describe("App", () => {
 
     render(<App />);
 
-    await waitFor(() => {
-      expect(getMessagesPage).toHaveBeenCalledWith("conversation-cache-miss", 1, 0);
+    await waitFor(() =>
+      expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
+        "Workspace/Agents/Fetched after cache miss"
+      )
+    );
+    expect(getConversationSummary).toHaveBeenCalledWith("conversation-cache-miss");
+    expect(getMessagesPage).not.toHaveBeenCalled();
+    expect(
+      queryClient.getQueryData(chatKeys.conversationHistory("conversation-cache-miss"))
+    ).toBeUndefined();
+    expect(
+      queryClient.getQueryData(chatKeys.conversationSummary("conversation-cache-miss"))
+    ).toMatchObject({
+      title: "Fetched after cache miss",
     });
   });
 
@@ -672,6 +678,7 @@ describe("App", () => {
     useAgentSessionStore.setState({
       selectedConversationId: conversation.id,
     });
+    queryClient.setQueryData(chatKeys.conversationSummary(conversation.id), conversation);
     queryClient.setQueryData(chatKeys.conversationHistory(conversation.id), {
       pages: [
         {
@@ -705,6 +712,9 @@ describe("App", () => {
     expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(
       "Workspace/Agents/Renamed agent run"
     );
+    expect(queryClient.getQueryData(chatKeys.conversationSummary(conversation.id))).toMatchObject({
+      title: "Renamed agent run",
+    });
   });
 
   it("renames ideation-backed agent conversations from the Agents breadcrumb", async () => {
