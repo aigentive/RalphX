@@ -1,8 +1,9 @@
 use super::{
-    codex_tool_call_content_block, flush_content_before_error, format_agent_exit_stderr,
-    persist_assistant_message_snapshot, persist_message_text_timeline_item,
-    persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
-    process_stream_background, provider_session_ref_for_harness,
+    agent_run_usage_from_codex_usage, codex_tool_call_content_block, flush_content_before_error,
+    format_agent_exit_stderr, normalize_codex_cumulative_usage_for_persistence,
+    normalize_codex_stream_usage_for_persistence, persist_assistant_message_snapshot,
+    persist_message_text_timeline_item, persist_timeline_snapshot, process_codex_stream_background,
+    process_exit_details, process_stream_background, provider_session_ref_for_harness,
     resolve_codex_file_change_tool_call_snapshots, stream_mode_for_harness,
     upsert_codex_tool_call_snapshot, ProcessExitDetails, StreamOutcome, StreamingStateCache,
 };
@@ -11,15 +12,21 @@ use crate::application::chat_service::chat_service_errors::{ProviderErrorCategor
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
-    ChatContextType, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItemStatus,
-    IdeationSessionId, MessageRole,
+    AgentRun, AgentRunUsage, ChatContextType, ChatConversationId, ChatMessage, ChatMessageId,
+    ChatTimelineItemStatus, IdeationSessionId, MessageRole,
 };
+use crate::domain::repositories::AgentRunRepository;
 use crate::infrastructure::agents::claude::{
     AssistantContent, AssistantMessage, ContentBlockItem, StreamMessage, StreamProcessor, ToolCall,
 };
-use crate::infrastructure::agents::{CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase};
+use crate::infrastructure::agents::{
+    CodexFileChange, CodexFileChangeSnapshot, CodexToolCallPhase, CodexUsage, CodexUsageSource,
+};
+use crate::infrastructure::memory::MemoryAgentRunRepository;
+use chrono::{Duration, Utc};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
+use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -343,6 +350,215 @@ fn provider_session_ref_for_harness_keeps_harness_and_id() {
 
     assert_eq!(session_ref.harness, AgentHarnessKind::Codex);
     assert_eq!(session_ref.provider_session_id, "thread-123");
+}
+
+#[test]
+fn agent_run_usage_from_codex_usage_maps_cached_input_as_cache_read() {
+    let usage = agent_run_usage_from_codex_usage(CodexUsage {
+        input_tokens: Some(50),
+        cached_input_tokens: Some(40),
+        output_tokens: Some(10),
+    });
+
+    assert_eq!(usage.input_tokens, Some(50));
+    assert_eq!(usage.cache_read_tokens, Some(40));
+    assert_eq!(usage.output_tokens, Some(10));
+    assert_eq!(usage.cache_creation_tokens, None);
+    assert_eq!(usage.estimated_usd, None);
+}
+
+#[test]
+fn normalize_codex_cumulative_usage_subtracts_per_turn_prior_runs() {
+    let conversation_id = ChatConversationId::new();
+    let prior_runs = vec![
+        codex_usage_run(&conversation_id, "thread-1", 120, 30, 80, 0),
+        codex_usage_run(&conversation_id, "thread-1", 200, 40, 150, 1),
+    ];
+    let current = AgentRunUsage {
+        input_tokens: Some(500),
+        output_tokens: Some(90),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(300),
+        estimated_usd: None,
+    };
+
+    let normalized = normalize_codex_cumulative_usage_for_persistence(
+        current,
+        &prior_runs,
+        None,
+        Some("thread-1"),
+    );
+
+    assert_eq!(normalized.input_tokens, Some(180));
+    assert_eq!(normalized.output_tokens, Some(20));
+    assert_eq!(normalized.cache_read_tokens, Some(70));
+}
+
+#[test]
+fn normalize_codex_cumulative_usage_uses_latest_prior_when_existing_rows_are_cumulative() {
+    let conversation_id = ChatConversationId::new();
+    let prior_runs = vec![
+        codex_usage_run(
+            &conversation_id,
+            "thread-1",
+            10_000_000,
+            10_000,
+            9_000_000,
+            0,
+        ),
+        codex_usage_run(
+            &conversation_id,
+            "thread-1",
+            30_000_000,
+            40_000,
+            29_000_000,
+            1,
+        ),
+        codex_usage_run(
+            &conversation_id,
+            "thread-1",
+            65_000_000,
+            100_000,
+            63_000_000,
+            2,
+        ),
+    ];
+    let current = AgentRunUsage {
+        input_tokens: Some(67_362_753),
+        output_tokens: Some(109_831),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(65_914_240),
+        estimated_usd: None,
+    };
+
+    let normalized = normalize_codex_cumulative_usage_for_persistence(
+        current,
+        &prior_runs,
+        None,
+        Some("thread-1"),
+    );
+
+    assert_eq!(normalized.input_tokens, Some(2_362_753));
+    assert_eq!(normalized.output_tokens, Some(9_831));
+    assert_eq!(normalized.cache_read_tokens, Some(2_914_240));
+}
+
+#[test]
+fn normalize_codex_cumulative_usage_filters_current_run_and_other_sessions() {
+    let conversation_id = ChatConversationId::new();
+    let mut prior_same_session = codex_usage_run(&conversation_id, "thread-1", 100, 30, 80, 0);
+    prior_same_session.cache_creation_tokens = Some(7);
+    prior_same_session.estimated_usd = Some(0.50);
+
+    let mut prior_other_session = codex_usage_run(&conversation_id, "thread-2", 900, 900, 900, 1);
+    prior_other_session.cache_creation_tokens = Some(900);
+    prior_other_session.estimated_usd = Some(9.00);
+
+    let mut current_run = codex_usage_run(&conversation_id, "thread-1", 300, 100, 200, 2);
+    let current_run_id = current_run.id.as_str();
+    current_run.cache_creation_tokens = Some(20);
+    current_run.estimated_usd = Some(1.25);
+
+    let normalized = normalize_codex_cumulative_usage_for_persistence(
+        AgentRunUsage {
+            input_tokens: Some(300),
+            output_tokens: Some(100),
+            cache_creation_tokens: Some(20),
+            cache_read_tokens: Some(200),
+            estimated_usd: Some(1.25),
+        },
+        &[prior_same_session, prior_other_session, current_run],
+        Some(current_run_id.as_str()),
+        Some("thread-1"),
+    );
+
+    assert_eq!(normalized.input_tokens, Some(200));
+    assert_eq!(normalized.output_tokens, Some(70));
+    assert_eq!(normalized.cache_creation_tokens, Some(13));
+    assert_eq!(normalized.cache_read_tokens, Some(120));
+    assert_eq!(normalized.estimated_usd, Some(0.75));
+}
+
+#[tokio::test]
+async fn normalize_codex_stream_usage_keeps_turn_delta_without_repo_lookup() {
+    let conversation_id = ChatConversationId::new();
+    let raw = AgentRunUsage {
+        input_tokens: Some(75),
+        output_tokens: Some(15),
+        cache_creation_tokens: None,
+        cache_read_tokens: Some(60),
+        estimated_usd: None,
+    };
+
+    let normalized = normalize_codex_stream_usage_for_persistence(
+        raw.clone(),
+        CodexUsageSource::TurnDelta,
+        &None,
+        &conversation_id,
+        None,
+        Some("thread-1"),
+    )
+    .await;
+
+    assert_eq!(normalized, raw);
+}
+
+#[tokio::test]
+async fn normalize_codex_stream_usage_uses_prior_repo_runs_for_cumulative_snapshots() {
+    let conversation_id = ChatConversationId::new();
+    let repo_impl = Arc::new(MemoryAgentRunRepository::new());
+    let prior = codex_usage_run(&conversation_id, "thread-1", 120, 30, 80, 0);
+    repo_impl.create(prior).await.expect("seed prior run");
+    let other_session = codex_usage_run(&conversation_id, "thread-2", 900, 900, 900, 1);
+    repo_impl
+        .create(other_session)
+        .await
+        .expect("seed other-session run");
+    let current_run = codex_usage_run(&conversation_id, "thread-1", 500, 90, 300, 2);
+    let current_run_id = current_run.id.as_str();
+    repo_impl
+        .create(current_run)
+        .await
+        .expect("seed current run");
+
+    let repo: Arc<dyn AgentRunRepository> = repo_impl;
+    let normalized = normalize_codex_stream_usage_for_persistence(
+        AgentRunUsage {
+            input_tokens: Some(500),
+            output_tokens: Some(90),
+            cache_creation_tokens: None,
+            cache_read_tokens: Some(300),
+            estimated_usd: None,
+        },
+        CodexUsageSource::CumulativeTotal,
+        &Some(repo),
+        &conversation_id,
+        Some(current_run_id.as_str()),
+        Some("thread-1"),
+    )
+    .await;
+
+    assert_eq!(normalized.input_tokens, Some(380));
+    assert_eq!(normalized.output_tokens, Some(60));
+    assert_eq!(normalized.cache_read_tokens, Some(220));
+}
+
+fn codex_usage_run(
+    conversation_id: &ChatConversationId,
+    provider_session_id: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    started_offset_secs: i64,
+) -> AgentRun {
+    let mut run = AgentRun::new(*conversation_id);
+    run.harness = Some(AgentHarnessKind::Codex);
+    run.provider_session_id = Some(provider_session_id.to_string());
+    run.input_tokens = Some(input_tokens);
+    run.output_tokens = Some(output_tokens);
+    run.cache_read_tokens = Some(cache_read_tokens);
+    run.started_at = Utc::now() + Duration::seconds(started_offset_secs);
+    run
 }
 
 #[tokio::test]

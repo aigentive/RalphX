@@ -9,6 +9,50 @@ pub struct CodexUsage {
     pub output_tokens: Option<u64>,
 }
 
+impl CodexUsage {
+    fn is_empty(&self) -> bool {
+        self.input_tokens.is_none()
+            && self.cached_input_tokens.is_none()
+            && self.output_tokens.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexUsagePayload {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_token_usage: Option<CodexUsage>,
+    #[serde(default)]
+    pub last_token_usage: Option<CodexUsage>,
+}
+
+impl CodexUsagePayload {
+    fn direct_usage(&self) -> CodexUsage {
+        CodexUsage {
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            output_tokens: self.output_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexUsageSource {
+    TurnDelta,
+    CumulativeTotal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexUsageSnapshot {
+    pub usage: CodexUsage,
+    pub source: CodexUsageSource,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexItemError {
     pub message: Option<String>,
@@ -78,7 +122,7 @@ pub struct CodexStreamEvent {
     #[serde(default)]
     pub item: Option<CodexItem>,
     #[serde(default)]
-    pub usage: Option<CodexUsage>,
+    pub usage: Option<CodexUsagePayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,12 +327,39 @@ pub fn is_non_fatal_mcp_resource_probe_error(
     error_message.contains("Method not found")
 }
 
-pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsage> {
+pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsageSnapshot> {
     if event.event_type != "turn.completed" {
         return None;
     }
 
-    event.usage.clone()
+    let payload = event.usage.as_ref()?;
+    if let Some(usage) = payload
+        .last_token_usage
+        .as_ref()
+        .filter(|usage| !usage.is_empty())
+    {
+        return Some(CodexUsageSnapshot {
+            usage: usage.clone(),
+            source: CodexUsageSource::TurnDelta,
+        });
+    }
+
+    let direct_usage = payload.direct_usage();
+    if !direct_usage.is_empty() {
+        return Some(CodexUsageSnapshot {
+            usage: direct_usage,
+            source: CodexUsageSource::CumulativeTotal,
+        });
+    }
+
+    payload
+        .total_token_usage
+        .as_ref()
+        .filter(|usage| !usage.is_empty())
+        .map(|usage| CodexUsageSnapshot {
+            usage: usage.clone(),
+            source: CodexUsageSource::CumulativeTotal,
+        })
 }
 
 #[cfg(test)]
@@ -323,10 +394,12 @@ mod tests {
             event_type: "item.completed".to_string(),
             thread_id: None,
             item: None,
-            usage: Some(CodexUsage {
+            usage: Some(CodexUsagePayload {
                 input_tokens: Some(10),
                 cached_input_tokens: Some(3),
                 output_tokens: Some(5),
+                total_token_usage: None,
+                last_token_usage: None,
             }),
         };
 
@@ -339,21 +412,95 @@ mod tests {
             event_type: "turn.completed".to_string(),
             thread_id: Some("thread-123".to_string()),
             item: None,
-            usage: Some(CodexUsage {
+            usage: Some(CodexUsagePayload {
                 input_tokens: Some(101),
                 cached_input_tokens: Some(22),
                 output_tokens: Some(33),
+                total_token_usage: None,
+                last_token_usage: None,
             }),
         };
 
         assert_eq!(
             extract_codex_usage(&event),
-            Some(CodexUsage {
-                input_tokens: Some(101),
-                cached_input_tokens: Some(22),
-                output_tokens: Some(33),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(101),
+                    cached_input_tokens: Some(22),
+                    output_tokens: Some(33),
+                },
+                source: CodexUsageSource::CumulativeTotal,
             })
         );
+    }
+
+    #[test]
+    fn extract_codex_usage_prefers_last_token_usage_over_session_total() {
+        let event = parse_codex_event_line(
+            r#"{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":67362753,"cached_input_tokens":65914240,"output_tokens":109831},"last_token_usage":{"input_tokens":202091,"cached_input_tokens":201600,"output_tokens":673}}}"#,
+        )
+        .expect("Codex usage event should parse");
+
+        assert_eq!(
+            extract_codex_usage(&event),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(202091),
+                    cached_input_tokens: Some(201600),
+                    output_tokens: Some(673),
+                },
+                source: CodexUsageSource::TurnDelta,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_codex_usage_returns_total_when_only_total_is_available() {
+        let event = parse_codex_event_line(
+            r#"{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":800,"output_tokens":70}}}"#,
+        )
+        .expect("Codex total-only usage event should parse");
+
+        assert_eq!(
+            extract_codex_usage(&event),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(900),
+                    cached_input_tokens: Some(800),
+                    output_tokens: Some(70),
+                },
+                source: CodexUsageSource::CumulativeTotal,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_codex_usage_uses_direct_usage_when_last_snapshot_is_empty() {
+        let event = parse_codex_event_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":7,"output_tokens":3,"last_token_usage":{}}}"#,
+        )
+        .expect("Codex direct usage event should parse");
+
+        assert_eq!(
+            extract_codex_usage(&event),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(12),
+                    cached_input_tokens: Some(7),
+                    output_tokens: Some(3),
+                },
+                source: CodexUsageSource::CumulativeTotal,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_codex_usage_ignores_empty_usage_payload() {
+        let event =
+            parse_codex_event_line(r#"{"type":"turn.completed","usage":{"last_token_usage":{}}}"#)
+                .expect("Codex empty usage event should parse");
+
+        assert_eq!(extract_codex_usage(&event), None);
     }
 
     #[test]
