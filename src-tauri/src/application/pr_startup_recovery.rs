@@ -724,6 +724,16 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
     };
 
     for project in projects {
+        if terminal_cleanup_should_pause_for_user_work(
+            &running_agent_registry,
+            "plan_branch",
+            project.id.as_str(),
+        )
+        .await
+        {
+            return;
+        }
+
         if blocked_git_project_ids.contains(&project.id) {
             tracing::warn!(
                 project_id = project.id.as_str(),
@@ -793,6 +803,16 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     };
 
     for project in projects {
+        if terminal_cleanup_should_pause_for_user_work(
+            &running_agent_registry,
+            "agent_workspace",
+            project.id.as_str(),
+        )
+        .await
+        {
+            return;
+        }
+
         if blocked_git_project_ids.contains(&project.id) {
             tracing::warn!(
                 project_id = project.id.as_str(),
@@ -844,6 +864,23 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             }
         }
     }
+}
+
+async fn terminal_cleanup_should_pause_for_user_work(
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    cleanup_scope: &'static str,
+    cleanup_context: &str,
+) -> bool {
+    if running_agent_registry.list_all().await.is_empty() {
+        return false;
+    }
+
+    tracing::info!(
+        cleanup_scope,
+        cleanup_context,
+        "Terminal cleanup: paused local artifact cleanup because user work is active"
+    );
+    true
 }
 
 async fn terminal_cleanup_should_skip_maintenance_fetch(
@@ -1468,7 +1505,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_terminal_plan_cleanup_skips_maintenance_fetch_when_agent_running() {
+    async fn startup_terminal_plan_cleanup_pauses_when_agent_running() {
         let app_state = AppState::new_test();
         let repo = init_cleanup_repo();
         let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -1528,7 +1565,7 @@ mod tests {
         )
         .await;
 
-        assert!(!branch_exists(repo.path(), branch));
+        assert!(branch_exists(repo.path(), branch));
         assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
@@ -1636,6 +1673,62 @@ mod tests {
             0,
             "startup cleanup should use GitService maintenance fetches, not GithubService fetch_remote"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_agent_workspace_cleanup_pauses_when_agent_running() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = startup_workspace_branch(&project);
+        let workspace = startup_workspace(&project, &branch);
+        let worktree_path = Path::new(&workspace.worktree_path);
+
+        GitService::create_worktree(repo.path(), worktree_path, &branch, "main")
+            .await
+            .expect("create worktree");
+        std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+        run_git(worktree_path, &["add", "."]);
+        run_git(worktree_path, &["commit", "-m", "agent work"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", &branch, "-m", "merge agent"],
+        );
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .unwrap();
+        app_state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", project.id.as_str()),
+                0,
+                "startup-active-conversation".to_string(),
+                "startup-active-run".to_string(),
+                None,
+                None,
+            )
+            .await;
+        let github = Arc::new(MockGithubService::new());
+
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(worktree_path.exists());
+        assert!(branch_exists(repo.path(), &branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
     #[tokio::test]

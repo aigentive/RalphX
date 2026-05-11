@@ -7,7 +7,8 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 use crate::application::agent_conversation_workspace_base::{
-    apply_workspace_base_resolution, is_commit_contained_in, resolve_workspace_base, BaseStatus,
+    apply_workspace_base_resolution, is_commit_contained_in,
+    resolve_workspace_base_from_local_snapshot, BaseStatus,
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
@@ -248,7 +249,7 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
     }
 
     let base_resolution_started = Instant::now();
-    let base_resolution = resolve_workspace_base(project, workspace).await?;
+    let base_resolution = resolve_workspace_base_from_local_snapshot(project, workspace).await?;
     log_agent_workspace_phase(
         &workspace.conversation_id,
         "rollover_resolve_base",

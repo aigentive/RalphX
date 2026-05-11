@@ -124,8 +124,37 @@ pub async fn resolve_workspace_base(
     project: &Project,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<BaseResolutionResult> {
+    resolve_workspace_base_with_fetch_mode(project, workspace, WorkspaceBaseFetchMode::Fresh).await
+}
+
+/// Resolve the workspace base using only local refs already present in the repo.
+///
+/// This is used on the hot path before spawning a continuation agent. It avoids
+/// blocking first response on remote fetch latency; later publish/PR paths still
+/// perform fresh remote checks through `resolve_workspace_base`.
+pub async fn resolve_workspace_base_from_local_snapshot(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<BaseResolutionResult> {
+    resolve_workspace_base_with_fetch_mode(project, workspace, WorkspaceBaseFetchMode::LocalOnly)
+        .await
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceBaseFetchMode {
+    Fresh,
+    LocalOnly,
+}
+
+async fn resolve_workspace_base_with_fetch_mode(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    fetch_mode: WorkspaceBaseFetchMode,
+) -> AppResult<BaseResolutionResult> {
     let repo_path = PathBuf::from(&project.working_directory);
-    GitService::fetch_origin(&repo_path).await?;
+    if fetch_mode == WorkspaceBaseFetchMode::Fresh {
+        GitService::fetch_origin(&repo_path).await?;
+    }
 
     let has_origin = GitService::has_origin_remote(&repo_path).await;
     let old_base_ref = canonical_base_ref(&workspace.base_ref);
