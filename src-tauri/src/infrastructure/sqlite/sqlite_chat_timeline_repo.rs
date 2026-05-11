@@ -114,6 +114,7 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
                     rows.collect::<Result<Vec<_>, _>>()?
                 };
                 items.reverse();
+                hydrate_diff_tool_payloads(conn, &mut items)?;
 
                 let oldest_loaded_sequence = items.first().map(|item| item.sequence);
                 let newest_loaded_sequence = items.last().map(|item| item.sequence);
@@ -175,6 +176,62 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
             })
             .await
     }
+}
+
+fn hydrate_diff_tool_payloads(
+    conn: &Connection,
+    items: &mut [ChatTimelineItem],
+) -> rusqlite::Result<()> {
+    if !items.iter().any(should_hydrate_diff_tool_payload) {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT input_json, result_json, raw_block_json
+        FROM chat_message_block_payloads
+        WHERE block_id = ?1
+        "#,
+    )?;
+
+    for item in items
+        .iter_mut()
+        .filter(|item| should_hydrate_diff_tool_payload(item))
+    {
+        let payload = stmt
+            .query_row(params![item.id.as_str()], |row| {
+                Ok((
+                    row.get::<_, Option<String>>("input_json")?,
+                    row.get::<_, Option<String>>("result_json")?,
+                    row.get::<_, Option<String>>("raw_block_json")?,
+                ))
+            })
+            .optional()?;
+
+        if let Some((input_json, result_json, raw_block_json)) = payload {
+            item.input_json = input_json;
+            item.result_json = result_json;
+            item.raw_block_json = raw_block_json;
+        }
+    }
+
+    Ok(())
+}
+
+fn should_hydrate_diff_tool_payload(item: &ChatTimelineItem) -> bool {
+    item.kind == ChatTimelineItemKind::ToolUse
+        && item.tool_name.as_deref().is_some_and(is_diff_tool_name)
+}
+
+fn is_diff_tool_name(name: &str) -> bool {
+    matches!(
+        name.rsplit("::")
+            .next()
+            .unwrap_or(name)
+            .to_ascii_lowercase()
+            .as_str(),
+        "edit" | "write"
+    )
 }
 
 fn upsert_item(conn: &Connection, item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
