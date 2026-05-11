@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tracing::info;
 
@@ -243,6 +243,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
     if let Some(github_service) = github_service.as_ref() {
         tracing::info!("Running startup PR creation recovery...");
+        let phase_started_at = Instant::now();
         crate::application::pr_startup_recovery::recover_missing_draft_prs(
             Arc::clone(&task_repo),
             Arc::clone(&plan_branch_repo),
@@ -254,10 +255,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&blocked_git_project_ids),
         )
         .await;
+        tracing::info!(
+            elapsed_ms = phase_started_at.elapsed().as_millis(),
+            "Startup phase completed: PR creation recovery"
+        );
     }
 
     tracing::info!("Running PR startup recovery...");
     tracing::info!("Running terminal PR local git cleanup...");
+    let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::cleanup_terminal_plan_branch_local_artifacts_on_startup(
         Arc::clone(&plan_branch_repo),
         Arc::clone(&project_repo),
@@ -266,7 +272,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&running_agent_registry),
     )
     .await;
+    tracing::info!(
+        elapsed_ms = phase_started_at.elapsed().as_millis(),
+        "Startup phase completed: terminal PR local git cleanup"
+    );
 
+    let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::recover_pr_pollers(
         Arc::clone(&task_repo),
         Arc::clone(&plan_branch_repo),
@@ -276,6 +287,10 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&blocked_git_project_ids),
     )
     .await;
+    tracing::info!(
+        elapsed_ms = phase_started_at.elapsed().as_millis(),
+        "Startup phase completed: PR poller recovery"
+    );
 
     let recovery_chat_service_deps = ChatRuntimeFactoryDeps::from_core(
         Arc::clone(&chat_message_repo),
@@ -311,6 +326,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     );
 
     tracing::info!("Running agent workspace PR startup recovery...");
+    let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
@@ -319,7 +335,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&running_agent_registry),
     )
     .await;
+    tracing::info!(
+        elapsed_ms = phase_started_at.elapsed().as_millis(),
+        "Startup phase completed: terminal agent workspace local cleanup"
+    );
 
+    let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
@@ -328,6 +349,10 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&blocked_git_project_ids),
     )
     .await;
+    tracing::info!(
+        elapsed_ms = phase_started_at.elapsed().as_millis(),
+        "Startup phase completed: agent workspace PR poller recovery"
+    );
 
     let runner = StartupJobRunner::new(
         Arc::clone(&task_repo),

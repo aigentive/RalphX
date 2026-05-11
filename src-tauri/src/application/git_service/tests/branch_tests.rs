@@ -144,6 +144,53 @@ async fn test_list_branches_normalizes_remote_and_worktree_markers() {
         .any(|branch| branch.starts_with('*') || branch.starts_with('+')));
 }
 
+#[tokio::test]
+async fn test_list_local_branch_names_excludes_remote_refs() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path().join("repo");
+    let remote = temp_dir.path().join("remote.git");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&remote).unwrap();
+    super::init_test_repo(&repo);
+    Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(&remote)
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("tracked.txt"), "initial").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["branch", "feature/local"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["remote", "add", "origin", remote.to_str().unwrap()])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["push", "origin", "main"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    let branches = GitService::list_local_branch_names(&repo).await.unwrap();
+
+    assert!(branches.contains("main"));
+    assert!(branches.contains("feature/local"));
+    assert!(!branches.contains("origin/main"));
+}
+
 // =========================================================================
 // clean_working_tree Tests
 // =========================================================================

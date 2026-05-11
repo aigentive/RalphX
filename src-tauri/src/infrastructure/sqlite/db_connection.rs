@@ -93,49 +93,66 @@ impl DbConnection {
     /// `impl From<rusqlite::Error> for AppError`.
     ///
     /// JoinError from `spawn_blocking` is mapped to `AppError::Database`.
-    pub async fn run<F, T>(&self, f: F) -> AppResult<T>
+    #[track_caller]
+    pub fn run<F, T>(
+        &self,
+        f: F,
+    ) -> impl std::future::Future<Output = AppResult<T>> + Send + 'static
     where
         F: FnOnce(&Connection) -> AppResult<T> + Send + 'static,
         T: Send + 'static,
     {
-        let conn = self.pick_connection();
-        tokio::task::spawn_blocking(move || {
-            #[cfg(debug_assertions)]
-            let lock_start = std::time::Instant::now();
+        let caller = std::panic::Location::caller();
+        let caller_file = caller.file().to_string();
+        let caller_line = caller.line();
+        let (conn, connection_backend, connection_index) = self.pick_connection();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                #[cfg(debug_assertions)]
+                let lock_start = std::time::Instant::now();
 
-            let guard = conn.blocking_lock();
+                let guard = conn.blocking_lock();
 
-            #[cfg(debug_assertions)]
-            let lock_acquired = std::time::Instant::now();
+                #[cfg(debug_assertions)]
+                let lock_acquired = std::time::Instant::now();
 
-            let result = f(&guard);
+                let result = f(&guard);
 
-            #[cfg(debug_assertions)]
-            {
-                let lock_wait_ms = lock_acquired.duration_since(lock_start).as_millis();
-                let lock_hold_ms = lock_acquired.elapsed().as_millis();
-                if lock_wait_ms > 100 {
-                    tracing::warn!(
-                        target: "ralphx::db",
-                        lock_wait_ms,
-                        lock_hold_ms,
-                        method = "run",
-                        "DB lock contention: lock wait exceeded 100ms"
-                    );
-                } else {
-                    tracing::debug!(
-                        target: "ralphx::db",
-                        lock_wait_ms,
-                        lock_hold_ms,
-                        method = "run",
-                    );
+                #[cfg(debug_assertions)]
+                {
+                    let lock_wait_ms = lock_acquired.duration_since(lock_start).as_millis();
+                    let lock_hold_ms = lock_acquired.elapsed().as_millis();
+                    if lock_wait_ms > 100 {
+                        tracing::warn!(
+                            target: "ralphx::db",
+                            lock_wait_ms,
+                            lock_hold_ms,
+                            method = "run",
+                            caller_file = caller_file.as_str(),
+                            caller_line,
+                            connection_backend,
+                            connection_index,
+                            "DB lock contention: lock wait exceeded 100ms"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "ralphx::db",
+                            lock_wait_ms,
+                            lock_hold_ms,
+                            method = "run",
+                            caller_file = caller_file.as_str(),
+                            caller_line,
+                            connection_backend,
+                            connection_index,
+                        );
+                    }
                 }
-            }
 
-            result
-        })
-        .await
-        .map_err(|e| AppError::Database(format!("spawn_blocking join error: {e}")))?
+                result
+            })
+            .await
+            .map_err(|e| AppError::Database(format!("spawn_blocking join error: {e}")))?
+        }
     }
 
     /// Run a closure inside a SQLite transaction (BEGIN IMMEDIATE/COMMIT/ROLLBACK).
@@ -155,63 +172,80 @@ impl DbConnection {
     ///
     /// Returns `AppError::Database` on BEGIN/COMMIT failure or if the closure errors
     /// (which triggers automatic ROLLBACK).
-    pub async fn run_transaction<F, T>(&self, f: F) -> AppResult<T>
+    #[track_caller]
+    pub fn run_transaction<F, T>(
+        &self,
+        f: F,
+    ) -> impl std::future::Future<Output = AppResult<T>> + Send + 'static
     where
         F: FnOnce(&Connection) -> AppResult<T> + Send + 'static,
         T: Send + 'static,
     {
-        let conn = self.pick_connection();
-        tokio::task::spawn_blocking(move || {
-            #[cfg(debug_assertions)]
-            let lock_start = std::time::Instant::now();
+        let caller = std::panic::Location::caller();
+        let caller_file = caller.file().to_string();
+        let caller_line = caller.line();
+        let (conn, connection_backend, connection_index) = self.pick_connection();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                #[cfg(debug_assertions)]
+                let lock_start = std::time::Instant::now();
 
-            let guard = conn.blocking_lock();
+                let guard = conn.blocking_lock();
 
-            #[cfg(debug_assertions)]
-            let lock_acquired = std::time::Instant::now();
+                #[cfg(debug_assertions)]
+                let lock_acquired = std::time::Instant::now();
 
-            guard
-                .execute_batch("BEGIN IMMEDIATE")
-                .map_err(|e| AppError::Database(format!("BEGIN IMMEDIATE failed: {e}")))?;
-            let result = match f(&guard) {
-                Ok(result) => {
-                    guard
-                        .execute_batch("COMMIT")
-                        .map_err(|e| AppError::Database(format!("COMMIT failed: {e}")))?;
-                    Ok(result)
+                guard
+                    .execute_batch("BEGIN IMMEDIATE")
+                    .map_err(|e| AppError::Database(format!("BEGIN IMMEDIATE failed: {e}")))?;
+                let result = match f(&guard) {
+                    Ok(result) => {
+                        guard
+                            .execute_batch("COMMIT")
+                            .map_err(|e| AppError::Database(format!("COMMIT failed: {e}")))?;
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        let _ = guard.execute_batch("ROLLBACK");
+                        Err(e)
+                    }
+                };
+
+                #[cfg(debug_assertions)]
+                {
+                    let lock_wait_ms = lock_acquired.duration_since(lock_start).as_millis();
+                    let lock_hold_ms = lock_acquired.elapsed().as_millis();
+                    if lock_wait_ms > 100 {
+                        tracing::warn!(
+                            target: "ralphx::db",
+                            lock_wait_ms,
+                            lock_hold_ms,
+                            method = "run_transaction",
+                            caller_file = caller_file.as_str(),
+                            caller_line,
+                            connection_backend,
+                            connection_index,
+                            "DB lock contention: lock wait exceeded 100ms"
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "ralphx::db",
+                            lock_wait_ms,
+                            lock_hold_ms,
+                            method = "run_transaction",
+                            caller_file = caller_file.as_str(),
+                            caller_line,
+                            connection_backend,
+                            connection_index,
+                        );
+                    }
                 }
-                Err(e) => {
-                    let _ = guard.execute_batch("ROLLBACK");
-                    Err(e)
-                }
-            };
 
-            #[cfg(debug_assertions)]
-            {
-                let lock_wait_ms = lock_acquired.duration_since(lock_start).as_millis();
-                let lock_hold_ms = lock_acquired.elapsed().as_millis();
-                if lock_wait_ms > 100 {
-                    tracing::warn!(
-                        target: "ralphx::db",
-                        lock_wait_ms,
-                        lock_hold_ms,
-                        method = "run_transaction",
-                        "DB lock contention: lock wait exceeded 100ms"
-                    );
-                } else {
-                    tracing::debug!(
-                        target: "ralphx::db",
-                        lock_wait_ms,
-                        lock_hold_ms,
-                        method = "run_transaction",
-                    );
-                }
-            }
-
-            result
-        })
-        .await
-        .map_err(|e| AppError::Database(format!("spawn_blocking join error: {e}")))?
+                result
+            })
+            .await
+            .map_err(|e| AppError::Database(format!("spawn_blocking join error: {e}")))?
+        }
     }
 
     /// Query that may return zero rows — maps `QueryReturnedNoRows` to `Ok(None)`.
@@ -219,7 +253,11 @@ impl DbConnection {
     /// The closure receives a `&Connection` and should return `Result<T, rusqlite::Error>`.
     /// `QueryReturnedNoRows` is treated as `Ok(None)`, all other errors become
     /// `AppError::Database`.
-    pub async fn query_optional<F, T>(&self, f: F) -> AppResult<Option<T>>
+    #[track_caller]
+    pub fn query_optional<F, T>(
+        &self,
+        f: F,
+    ) -> impl std::future::Future<Output = AppResult<Option<T>>> + Send + 'static
     where
         F: FnOnce(&Connection) -> Result<T, rusqlite::Error> + Send + 'static,
         T: Send + 'static,
@@ -229,15 +267,14 @@ impl DbConnection {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Database(e.to_string())),
         })
-        .await
     }
 
-    fn pick_connection(&self) -> Arc<Mutex<Connection>> {
+    fn pick_connection(&self) -> (Arc<Mutex<Connection>>, &'static str, usize) {
         match self.backend.as_ref() {
-            DbBackend::Single(conn) => Arc::clone(conn),
+            DbBackend::Single(conn) => (Arc::clone(conn), "single", 0),
             DbBackend::Pool(pool) => {
                 let idx = pool.next_index.fetch_add(1, Ordering::Relaxed) % pool.connections.len();
-                Arc::clone(&pool.connections[idx])
+                (Arc::clone(&pool.connections[idx]), "pool", idx)
             }
         }
     }
