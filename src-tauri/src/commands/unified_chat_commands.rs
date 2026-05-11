@@ -4450,7 +4450,8 @@ mod tests {
         retarget_existing_workspace_pr_base_if_needed,
         send_agent_workspace_publish_repair_message_for_target,
         switch_agent_conversation_mode_for_state,
-        update_agent_conversation_workspace_from_base_for_app_state, AgentConversationResponse,
+        update_agent_conversation_workspace_from_base_for_app_state,
+        validate_explicit_publish_base_ref, AgentConversationResponse,
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
         AgentTimelineItemResponse, AgentWorkspaceRepairRuntimeOverrides,
@@ -4870,6 +4871,26 @@ mod tests {
             })
             .expect_err("pull-request bases should be rejected");
         assert!(error.contains("Pull-request base refs are not supported"));
+    }
+
+    #[tokio::test]
+    async fn validate_explicit_publish_base_ref_accepts_remote_tracking_ref() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        setup_publish_repo(&repo_path);
+        let head = git(&repo_path, &["rev-parse", "HEAD"]);
+        git(
+            &repo_path,
+            &["update-ref", "refs/remotes/origin/release/0.8", &head],
+        );
+
+        validate_explicit_publish_base_ref(&repo_path, "release/0.8")
+            .await
+            .expect("remote-tracking branch should validate");
+        let error = validate_explicit_publish_base_ref(&repo_path, "release/missing")
+            .await
+            .expect_err("missing branch should fail validation");
+        assert!(error.contains("Selected base branch 'release/missing' does not exist"));
     }
 
     fn command_test_workspace() -> AgentConversationWorkspace {

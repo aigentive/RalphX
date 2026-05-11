@@ -1319,4 +1319,82 @@ mod git_auth_command_tests {
         assert!(url.code.is_none());
         assert_eq!(url.url.as_deref(), Some("https://github.com/login/device"));
     }
+
+    #[tokio::test]
+    async fn git_branch_commands_use_async_git_service_paths() {
+        let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+        let repo = temp_dir.path();
+        Command::new(resolve_git_cli_path())
+            .args(["init", "-b", "main"])
+            .current_dir(repo)
+            .output()
+            .expect("git init should run");
+        Command::new(resolve_git_cli_path())
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo)
+            .output()
+            .expect("git config should run");
+        Command::new(resolve_git_cli_path())
+            .args(["config", "user.name", "Test User"])
+            .current_dir(repo)
+            .output()
+            .expect("git config should run");
+        std::fs::write(repo.join("README.md"), "base\n").expect("fixture should be written");
+        Command::new(resolve_git_cli_path())
+            .args(["add", "."])
+            .current_dir(repo)
+            .output()
+            .expect("git add should run");
+        Command::new(resolve_git_cli_path())
+            .args(["commit", "-m", "base"])
+            .current_dir(repo)
+            .output()
+            .expect("git commit should run");
+        Command::new(resolve_git_cli_path())
+            .args(["branch", "feature/current"])
+            .current_dir(repo)
+            .output()
+            .expect("git branch should run");
+
+        let current = get_git_current_branch(repo.to_string_lossy().to_string())
+            .await
+            .expect("current branch should load");
+        let branches = get_git_branches(repo.to_string_lossy().to_string())
+            .await
+            .expect("branches should load");
+
+        assert_eq!(current, "main");
+        assert_eq!(branches.first().map(String::as_str), Some("main"));
+        assert!(branches.contains(&"feature/current".to_string()));
+
+        Command::new(resolve_git_cli_path())
+            .args(["checkout", "--detach", "HEAD"])
+            .current_dir(repo)
+            .output()
+            .expect("git detached checkout should run");
+        assert!(
+            get_git_current_branch(repo.to_string_lossy().to_string())
+                .await
+                .expect_err("detached HEAD should not return a local branch")
+                .contains("Repository is not currently on a local branch")
+        );
+    }
+
+    #[tokio::test]
+    async fn git_branch_commands_report_missing_directory() {
+        let missing = tempfile::tempdir()
+            .expect("tempdir should be created")
+            .path()
+            .join("missing");
+        let missing = missing.to_string_lossy().to_string();
+
+        assert!(get_git_current_branch(missing.clone())
+            .await
+            .expect_err("missing current branch directory should fail")
+            .contains("Directory does not exist"));
+        assert!(get_git_branches(missing)
+            .await
+            .expect_err("missing branches directory should fail")
+            .contains("Directory does not exist"));
+    }
 }

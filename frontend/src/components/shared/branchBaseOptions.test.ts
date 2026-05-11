@@ -194,4 +194,22 @@ describe("branchBaseOptions", () => {
     );
     expect(result.selectedKey).toBe("current_branch:feature/current");
   });
+
+  it("falls back to Git's detected default when configured base is blank", async () => {
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "   ",
+      includePlanBranches: false,
+      includeAgentBranches: false,
+    });
+
+    expect(result.options[0]).toEqual(
+      expect.objectContaining({
+        key: "project_default:main",
+        label: "Project default (main)",
+        source: "project",
+      })
+    );
+  });
 });
