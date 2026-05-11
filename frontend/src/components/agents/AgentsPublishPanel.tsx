@@ -19,6 +19,7 @@ import {
   chatApi,
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 import type {
   Commit as DiffViewerCommit,
@@ -67,6 +68,46 @@ import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
 );
+
+const PUBLISH_EVENT_START_SKEW_MS = 5_000;
+const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
+  "checking",
+  "committing",
+  "refreshing",
+  "refreshed",
+  "describing",
+  "description_failed",
+  "pushing",
+  "pushed",
+  "published",
+]);
+
+function latestPublicationEventForActivePublish(
+  events: AgentConversationWorkspacePublicationEvent[],
+  publishStartedAtMs: number | null,
+): AgentConversationWorkspacePublicationEvent | null {
+  const candidates =
+    publishStartedAtMs === null
+      ? events
+      : events.filter((event) => {
+          const createdAtMs = new Date(event.createdAt).getTime();
+          return (
+            Number.isNaN(createdAtMs) ||
+            createdAtMs >= publishStartedAtMs - PUBLISH_EVENT_START_SKEW_MS
+          );
+        });
+  return candidates.length > 0 ? candidates[candidates.length - 1] ?? null : null;
+}
+
+function pipelineStatusFromPublicationEvent(
+  event: AgentConversationWorkspacePublicationEvent | null,
+): string | null {
+  if (!event || !PUBLISH_PIPELINE_EVENT_STEPS.has(event.step)) {
+    return null;
+  }
+  return event.step === "published" ? "pushed" : event.step;
+}
+
 export function AgentPublishPanel({
   workspace,
   projectBaseBranch,
@@ -87,6 +128,9 @@ export function AgentPublishPanel({
   const [publishDialogPhase, setPublishDialogPhase] =
     useState<PublishWorkspaceDialogPhase>("confirm");
   const [localPublishInFlight, setLocalPublishInFlight] = useState(false);
+  const [localPublishStartedAtMs, setLocalPublishStartedAtMs] = useState<number | null>(
+    null,
+  );
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
@@ -275,23 +319,21 @@ export function AgentPublishPanel({
   const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
   const isRepairPending = workspace.publicationPushStatus === "needs_agent";
   const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
-  const pipelineStatus = isUpdatingFromBase
-    ? "refreshing"
-    : isPublishingThisWorkspace &&
-        ![
-          "checking",
-          "committing",
-          "refreshing",
-          "refreshed",
-          "describing",
-          "description_failed",
-          "pushing",
-          "pushed",
-        ].includes(
-          workspace.publicationPushStatus ?? "",
-        )
+  const latestActivePublishEvent = latestPublicationEventForActivePublish(
+    publicationEvents,
+    localPublishStartedAtMs,
+  );
+  const eventPipelineStatus = isPublishingThisWorkspace
+    ? pipelineStatusFromPublicationEvent(latestActivePublishEvent)
+    : null;
+  const workspacePipelineStatus =
+    isPublishingThisWorkspace &&
+    !PUBLISH_PIPELINE_EVENT_STEPS.has(workspace.publicationPushStatus ?? "")
       ? "checking"
       : workspace.publicationPushStatus;
+  const pipelineStatus = isUpdatingFromBase
+    ? "refreshing"
+    : eventPipelineStatus ?? workspacePipelineStatus;
   const baseActionLabel =
     freshness?.effectiveBaseDisplayName ??
     freshness?.effectiveBaseRef ??
@@ -383,6 +425,7 @@ export function AgentPublishPanel({
   };
   const handleConfirmPublishWorkspace = () => {
     setPublishDialogPhase("publishing");
+    setLocalPublishStartedAtMs(Date.now());
     setLocalPublishInFlight(true);
     void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
       .catch((error) => {
@@ -392,6 +435,7 @@ export function AgentPublishPanel({
       })
       .finally(() => {
         setLocalPublishInFlight(false);
+        setLocalPublishStartedAtMs(null);
         setPublishDialogOpen(false);
         setPublishDialogPhase("confirm");
       });
