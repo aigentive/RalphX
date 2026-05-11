@@ -2,6 +2,7 @@ import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/stores/uiStore";
+import { POST_UPDATE_PREPARING_STORAGE_KEY } from "@/lib/postUpdatePreparing";
 import { UpdateChecker } from "./UpdateChecker";
 
 const mocks = vi.hoisted(() => ({
@@ -91,9 +92,11 @@ describe("UpdateChecker", () => {
     mocks.getLastSeenReleaseNotesVersion.mockReset();
     mocks.markReleaseNotesSeen.mockReset();
     update.downloadAndInstall.mockReset();
+    localStorage.clear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
 
     mocks.check.mockResolvedValue(update);
+    mocks.relaunch.mockResolvedValue(undefined);
     mocks.listen.mockImplementation(async (event: string, handler: (event: unknown) => unknown) => {
       eventListeners.set(event, handler);
       return vi.fn();
@@ -176,9 +179,44 @@ describe("UpdateChecker", () => {
       expect.stringContaining("Update installed"),
       expect.objectContaining({ id: "update-progress" }),
     );
+    expect(localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY)).toBeNull();
 
     await vi.advanceTimersByTimeAsync(2_000);
+    const marker = JSON.parse(
+      localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY) ?? "null",
+    ) as { startedAt?: unknown; version?: unknown } | null;
+    expect(marker).toMatchObject({ version: "0.7.1" });
+    expect(typeof marker?.startedAt).toBe("number");
     expect(mocks.relaunch).toHaveBeenCalled();
+  });
+
+  it("clears the preparing marker and reports when relaunch fails", async () => {
+    const restartError = new Error("restart denied");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.relaunch.mockRejectedValue(restartError);
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const versioned = { ...update, version: "0.7.3", downloadAndInstall };
+    mocks.check.mockResolvedValue(versioned);
+
+    try {
+      render(<UpdateChecker />);
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      const toastUi = renderToastById("update-available");
+      await fireEvent.click(toastUi.getByTestId("update-install-button"));
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      await flushAsyncWork();
+
+      expect(localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY)).toBeNull();
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "Failed to restart RalphX. Please reopen the app manually.",
+        expect.objectContaining({ id: "update-progress" }),
+      );
+      expect(consoleError).toHaveBeenCalledWith("Update relaunch failed:", restartError);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("install failure shows an error toast and does not relaunch", async () => {

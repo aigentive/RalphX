@@ -26,6 +26,7 @@ import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
+import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
 import { useUiStore } from "@/stores/uiStore";
@@ -58,6 +59,7 @@ import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
+import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
@@ -253,6 +255,11 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings &&
     providerSettings.requiresOnboarding;
+  const postUpdateAppReady =
+    !isLoadingProjects &&
+    !isLoadingProviderSettings &&
+    !isPlaceholderProviderSettings;
+  const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";
@@ -817,24 +824,28 @@ function AppContent() {
       {/* Update checker - runs on mount, shows toast if update available */}
       <UpdateChecker />
 
-      <AppTopBar
-        currentView={currentView}
-        pendingReviewCount={pendingReviewCount}
-        reviewsPanelOpen={reviewsPanelOpen}
-        onToggleReviewsPanel={toggleReviewsPanel}
-      />
+      {isPostUpdatePreparing ? (
+        <PostUpdatePreparingScreen />
+      ) : (
+        <>
+          <AppTopBar
+            currentView={currentView}
+            pendingReviewCount={pendingReviewCount}
+            reviewsPanelOpen={reviewsPanelOpen}
+            onToggleReviewsPanel={toggleReviewsPanel}
+          />
 
-      {/* Spacer for fixed header */}
-      <div className="h-12 flex-shrink-0" />
+          {/* Spacer for fixed header */}
+          <div className="h-12 flex-shrink-0" />
 
-      {/* App body: left nav rail + main content */}
-      <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
-        <LeftNavRail
-          currentView={currentView}
-          onViewChange={handleViewChange}
-          onOpenSettings={handleOpenSettings}
-          hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
-        />
+          {/* App body: left nav rail + main content */}
+          <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
+            <LeftNavRail
+              currentView={currentView}
+              onViewChange={handleViewChange}
+              onOpenSettings={handleOpenSettings}
+              hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
+            />
 
       {/* Main content area - shows WelcomeScreen or normal content */}
       {(hasNoProjects || showWelcomeOverlay || providerSetupRequired) ? (
@@ -1039,6 +1050,8 @@ function AppContent() {
         </div>
       )}
       </div>
+        </>
+      )}
 
       {/* Project Creation Wizard */}
       <ProjectCreationWizard
