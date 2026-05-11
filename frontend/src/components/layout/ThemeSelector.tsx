@@ -65,12 +65,12 @@ export function ThemeSelector({
     >
       <button
         type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
-        style={{
-          backgroundColor: open ? "var(--bg-hover)" : "var(--bg-elevated)",
-          borderColor: open ? "var(--border-strong)" : "var(--border-default)",
-          color: open ? "var(--text-primary)" : "var(--text-secondary)",
-        }}
+        className={cn(
+          "inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]",
+          open
+            ? "bg-[var(--bg-hover)] border-[var(--border-strong)] text-[var(--text-primary)]"
+            : "bg-[var(--bg-elevated)] border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+        )}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Theme · ${current.label}`}

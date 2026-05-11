@@ -26,15 +26,10 @@ describe("ThemeSelector", () => {
     render(<ThemeSelector />);
 
     await user.click(screen.getByTestId("theme-selector-trigger"));
-    expect(screen.getByTestId("theme-selector-trigger").getAttribute("style")).toContain(
-      "background-color: var(--bg-hover)"
-    );
-    expect(screen.getByTestId("theme-selector-trigger").getAttribute("style")).toContain(
-      "border-color: var(--border-strong)"
-    );
-    expect(screen.getByTestId("theme-selector-trigger").getAttribute("style")).toContain(
-      "color: var(--text-primary)"
-    );
+    const triggerClass = screen.getByTestId("theme-selector-trigger").className;
+    expect(triggerClass).toContain("bg-[var(--bg-hover)]");
+    expect(triggerClass).toContain("border-[var(--border-strong)]");
+    expect(triggerClass).toContain("text-[var(--text-primary)]");
     expect(screen.getByTestId("theme-option-dark")).toHaveAttribute("aria-checked", "true");
     expect(screen.getByTestId("theme-option-light")).toHaveAttribute("aria-checked", "false");
 
