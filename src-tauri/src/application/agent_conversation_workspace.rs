@@ -27,11 +27,34 @@ pub struct AgentConversationWorkspaceBaseSelection {
     pub display_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentConversationWorkspaceSetupMode {
+    Blocking,
+    Deferred,
+}
+
 pub async fn prepare_agent_conversation_workspace(
     project: &Project,
     conversation_id: &ChatConversationId,
     mode: AgentConversationWorkspaceMode,
     selection: AgentConversationWorkspaceBaseSelection,
+) -> AppResult<AgentConversationWorkspace> {
+    prepare_agent_conversation_workspace_with_setup_mode(
+        project,
+        conversation_id,
+        mode,
+        selection,
+        AgentConversationWorkspaceSetupMode::Blocking,
+    )
+    .await
+}
+
+pub async fn prepare_agent_conversation_workspace_with_setup_mode(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+    selection: AgentConversationWorkspaceBaseSelection,
+    setup_mode: AgentConversationWorkspaceSetupMode,
 ) -> AppResult<AgentConversationWorkspace> {
     let repo_path = PathBuf::from(&project.working_directory);
     let current_branch = GitService::get_current_branch(&repo_path)
@@ -100,8 +123,14 @@ pub async fn prepare_agent_conversation_workspace(
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
 
     ensure_agent_conversation_worktree(&repo_path, &worktree_path, &branch_name, &base_ref).await?;
-    run_agent_conversation_workspace_setup(project, conversation_id, &worktree_path, &branch_name)
-        .await;
+    run_or_defer_agent_conversation_workspace_setup(
+        project,
+        conversation_id,
+        &worktree_path,
+        &branch_name,
+        setup_mode,
+    )
+    .await;
     let base_commit = GitService::get_head_sha(&worktree_path).await?;
 
     Ok(AgentConversationWorkspace {
@@ -129,6 +158,19 @@ pub async fn prepare_agent_conversation_workspace(
 pub async fn rollover_agent_conversation_workspace(
     project: &Project,
     workspace: &AgentConversationWorkspace,
+) -> AppResult<AgentConversationWorkspace> {
+    rollover_agent_conversation_workspace_with_setup_mode(
+        project,
+        workspace,
+        AgentConversationWorkspaceSetupMode::Blocking,
+    )
+    .await
+}
+
+pub async fn rollover_agent_conversation_workspace_with_setup_mode(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    setup_mode: AgentConversationWorkspaceSetupMode,
 ) -> AppResult<AgentConversationWorkspace> {
     if !is_terminal_agent_conversation_publication_status(
         workspace.publication_pr_status.as_deref(),
@@ -219,11 +261,12 @@ pub async fn rollover_agent_conversation_workspace(
         &base_checkout_ref,
     )
     .await?;
-    run_agent_conversation_workspace_setup(
+    run_or_defer_agent_conversation_workspace_setup(
         project,
         &workspace.conversation_id,
         &expected_path,
         &branch_name,
+        setup_mode,
     )
     .await;
     let base_commit = GitService::get_head_sha(&expected_path).await?;
@@ -243,6 +286,41 @@ pub async fn rollover_agent_conversation_workspace(
 
 pub fn is_terminal_agent_conversation_publication_status(status: Option<&str>) -> bool {
     matches!(status, Some("merged" | "closed"))
+}
+
+async fn run_or_defer_agent_conversation_workspace_setup(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    worktree_path: &Path,
+    branch_name: &str,
+    setup_mode: AgentConversationWorkspaceSetupMode,
+) {
+    match setup_mode {
+        AgentConversationWorkspaceSetupMode::Blocking => {
+            run_agent_conversation_workspace_setup(
+                project,
+                conversation_id,
+                worktree_path,
+                branch_name,
+            )
+            .await;
+        }
+        AgentConversationWorkspaceSetupMode::Deferred => {
+            let project = project.clone();
+            let conversation_id = conversation_id.clone();
+            let worktree_path = worktree_path.to_path_buf();
+            let branch_name = branch_name.to_string();
+            tokio::spawn(async move {
+                run_agent_conversation_workspace_setup(
+                    &project,
+                    &conversation_id,
+                    &worktree_path,
+                    &branch_name,
+                )
+                .await;
+            });
+        }
+    }
 }
 
 async fn run_agent_conversation_workspace_setup(

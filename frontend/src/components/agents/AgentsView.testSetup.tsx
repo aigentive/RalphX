@@ -279,6 +279,12 @@ vi.mock("@/hooks/useChat", () => ({
       conversationId,
       "history",
     ],
+    conversationTimeline: (conversationId: string) => [
+      "chat",
+      "conversations",
+      conversationId,
+      "timeline",
+    ],
     conversationList: (contextType: string, contextId: string) => [
       "chat",
       "conversations",
@@ -286,6 +292,10 @@ vi.mock("@/hooks/useChat", () => ({
       contextId,
     ],
   },
+  createOptimisticConversationId: () =>
+    `optimistic-conversation:test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  isOptimisticConversationId: (conversationId: string | null | undefined) =>
+    Boolean(conversationId?.startsWith("optimistic-conversation:")),
   invalidateConversationDataQueries: vi.fn(),
   useConversation: (conversationId: string | null) => useConversationMock(conversationId),
   useConversationHistoryWindow: (conversationId: string | null) => {

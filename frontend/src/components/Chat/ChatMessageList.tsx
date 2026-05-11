@@ -1421,7 +1421,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             </MessageItem>
           )}
           {shouldShowActiveTypingIndicator && (
-            <TypingIndicator />
+            <TypingIndicator label={isSending ? "Starting agent" : undefined} />
           )}
         </>
       );
@@ -1432,6 +1432,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       normalizedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
+      isSending,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,

@@ -31,8 +31,9 @@ pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
     is_terminal_agent_conversation_publication_status,
-    resolve_valid_agent_conversation_workspace_path, rollover_agent_conversation_workspace,
-    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    resolve_valid_agent_conversation_workspace_path,
+    rollover_agent_conversation_workspace_with_setup_mode,
+    AgentConversationWorkspaceSetupMode, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
@@ -1457,7 +1458,12 @@ impl<R: Runtime> AppChatService<R> {
             )));
         }
 
-        let rollover_result = rollover_agent_conversation_workspace(&project, &workspace).await;
+        let rollover_result = rollover_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &workspace,
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await;
         self.emit_event(
             "agent:workspace_changed",
             serde_json::json!({ "conversation_id": conversation_id.as_str() }),

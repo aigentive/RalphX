@@ -166,6 +166,92 @@ describe("AgentsView start conversation", () => {
     invalidateSpy.mockRestore();
   });
 
+  it("paints the conversation shell before the draft conversation IPC resolves", async () => {
+    mockAgentViewData();
+    const reservedConversation = conversation({
+      id: "conversation-reserved",
+      contextId: "project-1",
+      title: null,
+    });
+    let resolveCreate: ((value: unknown) => void) | null = null;
+    createConversationMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: reservedConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-reserved",
+      }),
+      sendResult: {
+        conversationId: "conversation-reserved",
+        agentRunId: "run-reserved",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+
+    const { queryClient } = renderAgentsView();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "start without waiting" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+    );
+    const optimisticConversationId =
+      useAgentSessionStore.getState().selectedConversationId;
+    expect(optimisticConversationId).toMatch(/^optimistic-conversation:/);
+    expect(integratedChatPanelRenderMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        conversationIdOverride: optimisticConversationId,
+        storeContextKeyOverride: `project:${optimisticConversationId}`,
+        agentProcessContextIdOverride: optimisticConversationId,
+        sendOptions: expect.objectContaining({
+          conversationId: optimisticConversationId,
+        }),
+      })
+    );
+    expect(
+      queryClient.getQueryData(["chat", "conversations", optimisticConversationId])
+    ).toEqual({
+      conversation: expect.objectContaining({
+        id: optimisticConversationId,
+        contextType: "project",
+        contextId: "project-1",
+      }),
+      messages: [
+        expect.objectContaining({
+          conversationId: optimisticConversationId,
+          role: "user",
+          content: "start without waiting",
+        }),
+      ],
+    });
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
+
+    resolveCreate?.(reservedConversation);
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-reserved",
+          content: "start without waiting",
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+        "conversation-reserved"
+      )
+    );
+  });
+
   it("renders a queued starter prompt and paused explanation when global execution is paused", async () => {
     mockAgentViewData();
     useUiStore.getState().setExecutionPaused(true);
