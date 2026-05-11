@@ -1,5 +1,6 @@
 use super::super::*;
 use super::init_test_repo;
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -1065,6 +1066,71 @@ async fn test_maintenance_fetch_origin_ref_skips_when_fetch_lock_busy() {
         .unwrap();
 
     assert_eq!(outcome, FetchOriginOutcome::SkippedBusy);
+}
+
+async fn maintenance_fetch_until_not_busy(repo: &Path, ref_name: &str) -> FetchOriginOutcome {
+    let mut outcome = FetchOriginOutcome::SkippedBusy;
+    for _ in 0..50 {
+        outcome = GitService::try_fetch_origin_ref_for_maintenance(repo, ref_name)
+            .await
+            .unwrap();
+        if outcome != FetchOriginOutcome::SkippedBusy {
+            return outcome;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    outcome
+}
+
+#[tokio::test]
+async fn test_maintenance_fetch_origin_ref_returns_no_origin_remote() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path().to_path_buf();
+    init_test_repo(&repo);
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    let outcome = GitService::try_fetch_origin_ref_for_maintenance(&repo, "main")
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, FetchOriginOutcome::NoOriginRemote);
+}
+
+#[tokio::test]
+async fn test_maintenance_fetch_origin_ref_fetches_ref() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let remote = temp_dir.path().join("origin.git");
+    let repo = temp_dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+
+    Command::new("git")
+        .args(["init", "--bare", remote.to_str().unwrap()])
+        .output()
+        .unwrap();
+    init_test_repo(&repo);
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["remote", "add", "origin", remote.to_str().unwrap()])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["push", "-u", "origin", "main"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    let outcome = maintenance_fetch_until_not_busy(&repo, "main").await;
+
+    assert_eq!(outcome, FetchOriginOutcome::Fetched);
 }
 
 #[tokio::test]

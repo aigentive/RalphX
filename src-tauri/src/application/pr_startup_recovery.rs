@@ -1198,6 +1198,7 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::LazyLock;
 
     use crate::application::agent_conversation_workspace::{
         agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
@@ -1214,7 +1215,12 @@ mod tests {
     use crate::domain::services::github_service::{
         PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
     };
+    use crate::domain::services::RunningAgentKey;
     use crate::tests::mock_github_service::MockGithubService;
+    use tokio::sync::Mutex as TokioMutex;
+
+    static TERMINAL_CLEANUP_FETCH_TEST_LOCK: LazyLock<TokioMutex<()>> =
+        LazyLock::new(|| TokioMutex::new(()));
 
     fn run_git(repo: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -1241,6 +1247,17 @@ mod tests {
         run_git(dir.path(), &["add", "."]);
         run_git(dir.path(), &["commit", "-m", "initial"]);
         dir
+    }
+
+    fn add_origin_remote(repo: &Path) -> tempfile::TempDir {
+        let remote = tempfile::tempdir().expect("remote");
+        run_git(remote.path(), &["init", "--bare"]);
+        run_git(
+            repo,
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        run_git(repo, &["push", "-u", "origin", "main"]);
+        remote
     }
 
     fn branch_exists(repo: &Path, branch: &str) -> bool {
@@ -1391,6 +1408,185 @@ mod tests {
             0,
             "startup cleanup should use GitService maintenance fetches, not GithubService fetch_remote"
         );
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_plan_cleanup_fetches_base_through_git_service_when_origin_available()
+    {
+        let _fetch_test_guard = TERMINAL_CLEANUP_FETCH_TEST_LOCK.lock().await;
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let _remote = add_origin_remote(repo.path());
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/plan-fetches-origin";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan-origin.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge plan"],
+        );
+        run_git(repo.path(), &["push", "origin", "main"]);
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-plan-fetch-origin-artifact"),
+            IdeationSessionId::from_string("startup-plan-fetch-origin-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(120);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(!branch_exists(repo.path(), branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_plan_cleanup_skips_maintenance_fetch_when_agent_running() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/plan-active-agent";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan-active-agent.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge plan"],
+        );
+
+        app_state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", project.id.as_str()),
+                0,
+                "startup-active-conversation".to_string(),
+                "startup-active-run".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-plan-active-agent-artifact"),
+            IdeationSessionId::from_string("startup-plan-active-agent-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(121);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(!branch_exists(repo.path(), branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_plan_cleanup_skips_maintenance_fetch_when_fetch_lock_busy() {
+        let _fetch_test_guard = TERMINAL_CLEANUP_FETCH_TEST_LOCK.lock().await;
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let _remote = add_origin_remote(repo.path());
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = "ralphx/startup-cleanup/plan-fetch-busy";
+
+        run_git(repo.path(), &["checkout", "-b", branch]);
+        std::fs::write(repo.path().join("plan-fetch-busy.txt"), "plan\n").expect("write plan");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "plan work"]);
+        run_git(repo.path(), &["checkout", "main"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", branch, "-m", "merge plan"],
+        );
+        run_git(repo.path(), &["push", "origin", "main"]);
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("startup-plan-fetch-busy-artifact"),
+            IdeationSessionId::from_string("startup-plan-fetch-busy-session"),
+            project.id.clone(),
+            branch.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Merged;
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(122);
+        plan_branch.pr_status = Some(DbPrStatus::Merged);
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+        let _guard = GitService::fetch_lock_guard_for_test().await;
+
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(!branch_exists(repo.path(), branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
     #[tokio::test]
