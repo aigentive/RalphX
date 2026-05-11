@@ -1084,6 +1084,15 @@ describe("AgentsArtifactPane", () => {
       within(progressDialog).getByTestId("agents-publish-dialog-pipeline"),
     ).toBeInTheDocument();
     expect(
+      within(progressDialog).queryByText(
+        "Progress is also available in Commit & Publish.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      within(progressDialog).getByTestId("agents-publish-dialog-pipeline-steps")
+        .className,
+    ).toContain("repeat(auto-fit,minmax(9.5rem,1fr))");
+    expect(
       within(progressDialog).getByTestId("agents-publish-dialog-step-checking"),
     ).toHaveTextContent("Check workspace");
     const closeButton = within(progressDialog).getByTestId(
@@ -1236,6 +1245,7 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("keeps publish enabled for a pushed current branch until a PR exists", async () => {
+    const user = userEvent.setup();
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -1262,16 +1272,20 @@ describe("AgentsArtifactPane", () => {
 
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
+    await screen.findByText("1 changed file ready for review.");
     expect(publishButton).toBeEnabled();
     expect(publishButton).not.toHaveTextContent("PR is up to date");
 
-    fireEvent.click(publishButton);
+    await user.click(publishButton);
     expect(publish).not.toHaveBeenCalled();
-    fireEvent.click(
-      within(await screen.findByRole("dialog")).getByRole("button", {
-        name: "Commit & Publish",
-      })
-    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Commit and publish workspace?",
+    });
+    const confirmButton = within(dialog).getByRole("button", {
+      name: "Commit & Publish",
+    });
+    await waitFor(() => expect(confirmButton).toBeEnabled());
+    await user.click(confirmButton);
 
     await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
