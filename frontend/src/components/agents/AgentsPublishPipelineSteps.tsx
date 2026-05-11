@@ -12,9 +12,11 @@ const PUBLISH_STEPS = [
 export function PublishPipelineSteps({
   status,
   isPublishing,
+  testIdPrefix = "agents-publish",
 }: {
   status: string | null;
   isPublishing: boolean;
+  testIdPrefix?: string;
 }) {
   const normalizedStatus = status ?? "idle";
   const activeIndex = (() => {
@@ -50,7 +52,7 @@ export function PublishPipelineSteps({
         background: "var(--bg-subtle)",
         borderColor: "var(--border-subtle)",
       }}
-      data-testid="agents-publish-pipeline"
+      data-testid={`${testIdPrefix}-pipeline`}
     >
       <div className="mb-2 text-[0.6875rem] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
         Publish pipeline
@@ -64,7 +66,7 @@ export function PublishPipelineSteps({
             <div
               key={step.id}
               className="flex items-center gap-2 text-xs"
-              data-testid={`agents-publish-step-${step.id}`}
+              data-testid={`${testIdPrefix}-step-${step.id}`}
               style={{
                 color:
                   isDone || isActive || isFailed
