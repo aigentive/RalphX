@@ -153,6 +153,7 @@ function writeSelectedTaskForConversation(
 interface AgentsArtifactPaneProps {
   conversation: AgentConversation | null;
   workspace?: AgentConversationWorkspace | null;
+  projectBaseBranch?: string | null;
   focusedIdeationSessionId?: string | null;
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
@@ -167,6 +168,7 @@ interface AgentsArtifactPaneProps {
 export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   conversation,
   workspace = null,
+  projectBaseBranch = null,
   focusedIdeationSessionId = null,
   activeTab,
   taskMode,
@@ -536,6 +538,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         <ArtifactContent
           activeTab={effectiveActiveTab}
           workspace={workspace}
+          projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
           projectId={conversation?.projectId ?? null}
@@ -562,6 +565,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
   workspace: AgentConversationWorkspace | null;
+  projectBaseBranch: string | null;
   isLoading: boolean;
   attachedSessionId: string | null;
   projectId: string | null;
@@ -587,6 +591,7 @@ type ArtifactContentProps = {
 function ArtifactContent({
   activeTab,
   workspace,
+  projectBaseBranch,
   isLoading,
   attachedSessionId,
   projectId,
@@ -645,6 +650,7 @@ function ArtifactContent({
     return (
       <AgentPublishPanel
         workspace={workspace}
+        projectBaseBranch={projectBaseBranch}
         onPublishWorkspace={onPublishWorkspace}
         isPublishingWorkspace={isPublishingWorkspace}
       />
