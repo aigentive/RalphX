@@ -300,16 +300,12 @@ export function AgentsSidebar({
       >
         <button
           type="button"
-          className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border px-2 pr-2.5 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+          className="inline-flex h-7 items-center gap-1.5 rounded-[6px] border bg-[var(--bg-elevated)] border-[var(--border-subtle)] px-2 pr-2.5 text-[0.7812rem] font-medium text-[var(--text-primary)] transition-[background-color,border-color,color,box-shadow] duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:border-[var(--accent-primary)] hover:shadow-[var(--shadow-glow-accent-soft)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
           onClick={onCreateAgent}
           aria-label="New agent"
           data-testid="agents-new-agent"
           style={{
-            backgroundColor: "var(--bg-elevated)",
-            borderColor: "var(--border-subtle)",
-            color: "var(--text-primary)",
             letterSpacing: "-0.005em",
-            boxShadow: "none",
           }}
         >
           <Plus className="h-[13px] w-[13px]" style={{ color: "var(--text-muted)" }} />
@@ -507,13 +503,7 @@ export function AgentsSidebar({
           type="button"
           onClick={onCreateProject}
           data-testid="agents-add-project"
-          className="inline-flex w-full items-center justify-center gap-2 rounded-[6px] border border-dashed px-3 py-2 text-[0.7812rem] font-medium transition-colors duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-          style={{
-            color: "var(--text-muted)",
-            borderColor: "var(--border-strong)",
-            backgroundColor: "transparent",
-            boxShadow: "none",
-          }}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-[6px] border border-dashed border-[var(--border-strong)] bg-transparent px-3 py-2 text-[0.7812rem] font-medium text-[var(--text-muted)] transition-[background-color,border-color,color,box-shadow] duration-[120ms] ease-[cubic-bezier(.2,.8,.2,1)] outline-none hover:border-[var(--accent-primary)] hover:bg-[var(--bg-elevated)] hover:text-[var(--text-primary)] hover:shadow-[var(--shadow-glow-accent-soft)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
         >
           <Plus className="h-[13px] w-[13px]" />
           Add project
@@ -621,13 +611,7 @@ function AgentsSidebarToolbar({
           <button
             type="button"
             data-testid="agents-filters-trigger"
-            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-            style={{
-              backgroundColor: "transparent",
-              borderColor: "transparent",
-              color: "var(--text-muted)",
-              boxShadow: "none",
-            }}
+            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent bg-transparent px-2 text-[0.7188rem] font-medium text-[var(--text-muted)] transition-colors duration-[120ms] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
           >
             <span>Filters</span>
             <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
@@ -782,13 +766,7 @@ function AgentsSidebarToolbar({
             type="button"
             data-testid="agents-sort-trigger"
             aria-label={`Sort ${sortTarget}: ${PROJECT_SORT_LABELS[projectSort]}`}
-            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent px-2 text-[0.7188rem] font-medium transition-colors duration-[120ms] outline-none hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
-            style={{
-              backgroundColor: "transparent",
-              borderColor: "transparent",
-              color: "var(--text-muted)",
-              boxShadow: "none",
-            }}
+            className="inline-flex h-full min-w-0 shrink-0 items-center gap-1.5 rounded-[4px] border border-transparent bg-transparent px-2 text-[0.7188rem] font-medium text-[var(--text-muted)] transition-colors duration-[120ms] outline-none hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
           >
             <span>Sort</span>
             <ArrowDownUp className="h-3.5 w-3.5" aria-hidden="true" />
