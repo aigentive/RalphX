@@ -504,6 +504,15 @@ pub(super) async fn run_setup_phase(
                 }
             };
 
+            tracing::info!(
+                command = %resolved_cmd,
+                cwd = %cmd_cwd.display(),
+                status = %log_entry.status,
+                exit_code = ?log_entry.exit_code,
+                duration_ms = log_entry.duration_ms,
+                "Worktree setup command completed"
+            );
+
             if let Some(handle) = app_handle {
                 let mut event_data = serde_json::json!({
                     "task_id": task_id_str,

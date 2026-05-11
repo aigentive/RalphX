@@ -73,6 +73,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio_util::sync::CancellationToken;
 
@@ -1621,7 +1622,9 @@ impl<R: Runtime> AppChatService<R> {
         ),
         ChatServiceError,
     > {
+        let spawn_total_started = Instant::now();
         let effective_harness = resolved_spawn_settings.effective_harness;
+        let bootstrap_started = Instant::now();
         let cli_path = if effective_harness == DEFAULT_AGENT_HARNESS {
             self.cli_path.clone()
         } else {
@@ -1632,7 +1635,18 @@ impl<R: Runtime> AppChatService<R> {
         } else {
             resolve_harness_plugin_dir(effective_harness, working_directory)
         };
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            cli_path = %cli_path.display(),
+            plugin_dir = %plugin_dir.display(),
+            elapsed_ms = bootstrap_started.elapsed().as_millis() as u64,
+            "chat_service.send_message spawn bootstrap resolved"
+        );
 
+        let build_plan_started = Instant::now();
         let launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
             &cli_path,
@@ -1667,13 +1681,32 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            elapsed_ms = build_plan_started.elapsed().as_millis() as u64,
+            "chat_service.send_message launch plan built"
+        );
 
         let launch_mode = launch_plan.launch_mode();
         tracing::info!(mode = ?launch_mode, plan = ?launch_plan, "Spawning chat harness agent");
+        let process_spawn_started = Instant::now();
         let launched = launch_plan.spawn().await.map_err(|error| {
             tracing::error!(mode = ?launch_mode, error = %error, "chat_service.send_message harness spawn failed");
             ChatServiceError::SpawnFailed(error.to_string())
         })?;
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            mode = ?launch_mode,
+            pid = ?launched.child.id(),
+            elapsed_ms = process_spawn_started.elapsed().as_millis() as u64,
+            "chat_service.send_message harness process spawned"
+        );
         tracing::debug!(
             mode = ?launch_mode,
             pid = ?launched.child.id(),
@@ -1681,6 +1714,7 @@ impl<R: Runtime> AppChatService<R> {
         );
 
         if let Some(child_stdin) = launched.child_stdin {
+            let ipr_register_started = Instant::now();
             let interactive_key_for_register =
                 InteractiveProcessKey::new(context_type.to_string(), runtime_context_id);
             tracing::info!(
@@ -1699,9 +1733,26 @@ impl<R: Runtime> AppChatService<R> {
                     },
                 )
                 .await;
+            tracing::info!(
+                %context_type,
+                context_id,
+                runtime_context_id,
+                harness = %effective_harness,
+                elapsed_ms = ipr_register_started.elapsed().as_millis() as u64,
+                total_elapsed_ms = spawn_total_started.elapsed().as_millis() as u64,
+                "chat_service.send_message interactive process registered"
+            );
 
             Ok((launched.cli_path, launched.child, Some(self.ipr())))
         } else {
+            tracing::info!(
+                %context_type,
+                context_id,
+                runtime_context_id,
+                harness = %effective_harness,
+                total_elapsed_ms = spawn_total_started.elapsed().as_millis() as u64,
+                "chat_service.send_message spawn process completed"
+            );
             Ok((launched.cli_path, launched.child, None))
         }
     }
@@ -2287,6 +2338,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             gate = "GATE_3_SPAWN",
             "[GATE_TRACE] Gate 3 reached — no IPR entry, no running agent. Will spawn new process."
         );
+        let post_gate_started = Instant::now();
         let mut running_incremented = false;
 
         // Cleanup macro: unregisters slot + decrements running count on failure.
@@ -2879,6 +2931,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         } else {
             (vec![], 0usize)
         };
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id = %runtime_context_id,
+            elapsed_ms = post_gate_started.elapsed().as_millis() as u64,
+            "chat_service.send_message pre-spawn preparation completed"
+        );
         let (selected_cli_path, child, interactive_process_registry) = match self
             .spawn_process_for_harness(
                 &conversation,

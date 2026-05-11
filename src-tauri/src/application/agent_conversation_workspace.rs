@@ -62,10 +62,47 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
 ) -> AppResult<AgentConversationWorkspace> {
     let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
+    tracing::info!(
+        conversation_id = %conversation_id,
+        project_id = %project.id,
+        mode = %mode,
+        setup_mode = ?setup_mode,
+        selected_base_kind = ?selection.kind,
+        selected_base_ref = ?selection.base_ref,
+        "Agent conversation workspace prepare started"
+    );
+
     let branch_probe_started = Instant::now();
+    let current_branch_probe_started = Instant::now();
+    let project_default_probe_started = Instant::now();
     let (current_branch, project_default) = tokio::join!(
-        GitService::get_current_branch(&repo_path),
-        GitService::resolve_project_default_branch(&repo_path, project.base_branch.as_deref())
+        async {
+            let result = GitService::get_current_branch(&repo_path).await;
+            log_agent_workspace_probe_result(
+                conversation_id,
+                "resolve_current_branch",
+                current_branch_probe_started,
+                result.as_ref().ok().map(String::as_str),
+                result.as_ref().err().map(ToString::to_string),
+            );
+            result
+        },
+        async {
+            let branch = GitService::resolve_project_default_branch(
+                &repo_path,
+                project.base_branch.as_deref(),
+            )
+            .await;
+            tracing::info!(
+                conversation_id = %conversation_id,
+                phase = "resolve_project_default_branch",
+                elapsed_ms = project_default_probe_started.elapsed().as_millis() as u64,
+                configured_base_branch = ?project.base_branch,
+                branch = %branch,
+                "Agent conversation workspace probe completed"
+            );
+            branch
+        }
     );
     let current_branch = current_branch.ok().filter(|branch| branch != "HEAD");
     log_agent_workspace_phase(
@@ -132,7 +169,16 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
             IdeationAnalysisBaseRefKind::PullRequest => base_ref.clone(),
         });
     let branch_name = agent_conversation_branch_name(project, conversation_id);
+    let workspace_path_started = Instant::now();
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
+    tracing::info!(
+        conversation_id = %conversation_id,
+        phase = "resolve_workspace_path",
+        elapsed_ms = workspace_path_started.elapsed().as_millis() as u64,
+        branch_name = %branch_name,
+        worktree_path = %worktree_path.display(),
+        "Agent conversation workspace path resolved"
+    );
 
     let worktree_started = Instant::now();
     ensure_agent_conversation_worktree(&repo_path, &worktree_path, &branch_name, &base_ref).await?;
@@ -360,6 +406,23 @@ fn log_agent_workspace_phase(
     );
 }
 
+fn log_agent_workspace_probe_result(
+    conversation_id: &ChatConversationId,
+    phase: &'static str,
+    started: Instant,
+    result: Option<&str>,
+    error: Option<String>,
+) {
+    tracing::info!(
+        conversation_id = %conversation_id,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        result = ?result,
+        error = ?error,
+        "Agent conversation workspace probe completed"
+    );
+}
+
 async fn run_or_defer_agent_conversation_workspace_setup(
     project: &Project,
     conversation_id: &ChatConversationId,
@@ -481,14 +544,33 @@ async fn ensure_agent_conversation_worktree(
     branch_name: &str,
     base_ref: &str,
 ) -> AppResult<()> {
-    if workspace_path.exists() {
+    let exists_started = Instant::now();
+    let workspace_exists = workspace_path.exists();
+    tracing::info!(
+        branch_name,
+        base_ref,
+        worktree_path = %workspace_path.display(),
+        elapsed_ms = exists_started.elapsed().as_millis() as u64,
+        workspace_exists,
+        "Agent conversation worktree path probe completed"
+    );
+
+    if workspace_exists {
         if !workspace_path.is_dir() {
             return Err(AppError::Validation(format!(
                 "Agent conversation workspace path exists but is not a directory: {}",
                 workspace_path.display()
             )));
         }
+        let branch_check_started = Instant::now();
         let checked_out = GitService::get_current_branch(workspace_path).await?;
+        tracing::info!(
+            branch_name,
+            checked_out = %checked_out,
+            worktree_path = %workspace_path.display(),
+            elapsed_ms = branch_check_started.elapsed().as_millis() as u64,
+            "Agent conversation existing worktree branch check completed"
+        );
         if checked_out != branch_name {
             return Err(AppError::Validation(format!(
                 "Existing agent conversation workspace {} is checked out at '{}' instead of '{}'",
@@ -500,7 +582,19 @@ async fn ensure_agent_conversation_worktree(
         return Ok(());
     }
 
-    GitService::create_worktree(repo_path, workspace_path, branch_name, base_ref).await
+    let create_started = Instant::now();
+    let result =
+        GitService::create_worktree(repo_path, workspace_path, branch_name, base_ref).await;
+    tracing::info!(
+        branch_name,
+        base_ref,
+        worktree_path = %workspace_path.display(),
+        elapsed_ms = create_started.elapsed().as_millis() as u64,
+        success = result.is_ok(),
+        error = ?result.as_ref().err().map(ToString::to_string),
+        "Agent conversation worktree creation completed"
+    );
+    result
 }
 
 pub fn resolve_agent_conversation_workspace_path(

@@ -22,8 +22,9 @@ pub(super) const VALIDATE_RETRY_DELAY_MS: u64 = 2000;
 /// Status string for failed validation/install log entries.
 /// Used in ValidationLogEntry.status and compared in retry logic.
 const STATUS_FAILED: &str = "failed";
+const SLOW_SHELL_COMMAND_MS: u64 = 500;
 
-use std::path::Path;
+use std::{path::Path, time::Instant};
 
 use tauri::Emitter;
 use tokio::io::AsyncReadExt;
@@ -83,6 +84,7 @@ pub(crate) async fn spawn_cancellable_command(
     cwd: &Path,
     cancel: &CancellationToken,
 ) -> CancellableCommandResult {
+    let started = Instant::now();
     let mut child = match tokio::process::Command::new(resolve_shell_cli_path())
         .arg("-c")
         .arg(cmd)
@@ -93,7 +95,17 @@ pub(crate) async fn spawn_cancellable_command(
         .spawn()
     {
         Ok(child) => child,
-        Err(e) => return CancellableCommandResult::SpawnError(e),
+        Err(e) => {
+            log_cancellable_command_result(
+                cmd,
+                cwd,
+                started,
+                "spawn_error",
+                None,
+                Some(e.to_string()),
+            );
+            return CancellableCommandResult::SpawnError(e);
+        }
     };
 
     // Capture PID before taking stdout/stderr handles.
@@ -135,6 +147,7 @@ pub(crate) async fn spawn_cancellable_command(
             // Explicit kill + reap to avoid zombie processes.
             let _ = child.kill().await;
             let _ = child.wait().await;
+            log_cancellable_command_result(cmd, cwd, started, "cancelled", None, None);
             CancellableCommandResult::Cancelled
         }
 
@@ -143,15 +156,66 @@ pub(crate) async fn spawn_cancellable_command(
         } => {
             match status {
                 Ok(exit_status) => {
+                    let success = exit_status.success();
+                    let exit_code = exit_status.code();
+                    log_cancellable_command_result(
+                        cmd,
+                        cwd,
+                        started,
+                        if success { "success" } else { STATUS_FAILED },
+                        exit_code,
+                        None,
+                    );
                     CancellableCommandResult::Completed(std::process::Output {
                         status: exit_status,
                         stdout: stdout_bytes,
                         stderr: stderr_bytes,
                     })
                 }
-                Err(e) => CancellableCommandResult::SpawnError(e),
+                Err(e) => {
+                    log_cancellable_command_result(
+                        cmd,
+                        cwd,
+                        started,
+                        "wait_error",
+                        None,
+                        Some(e.to_string()),
+                    );
+                    CancellableCommandResult::SpawnError(e)
+                }
             }
         }
+    }
+}
+
+fn log_cancellable_command_result(
+    command: &str,
+    cwd: &Path,
+    started: Instant,
+    status: &'static str,
+    exit_code: Option<i32>,
+    error: Option<String>,
+) {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    if elapsed_ms >= SLOW_SHELL_COMMAND_MS || error.is_some() || status != "success" {
+        tracing::warn!(
+            command,
+            cwd = %cwd.display(),
+            elapsed_ms,
+            status,
+            exit_code,
+            error = ?error,
+            "Shell command completed with noteworthy timing or status"
+        );
+    } else {
+        tracing::debug!(
+            command,
+            cwd = %cwd.display(),
+            elapsed_ms,
+            status,
+            exit_code,
+            "Shell command completed"
+        );
     }
 }
 
