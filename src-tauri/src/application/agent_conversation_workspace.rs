@@ -705,6 +705,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_agent_conversation_workspace_deferred_setup_runs_in_background() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Deferred Setup".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        project.custom_analysis = Some(
+            r#"[{"path": ".", "label": "Agent setup", "worktree_setup": ["touch .agent_deferred_setup_marker"]}]"#
+                .to_string(),
+        );
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-deferred-setup-test".to_string());
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("workspace should be prepared before deferred setup completes");
+
+        let marker_path = Path::new(&workspace.worktree_path).join(".agent_deferred_setup_marker");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if marker_path.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("deferred setup should complete in the background");
+    }
+
+    #[tokio::test]
     async fn rollover_agent_conversation_workspace_creates_new_branch_after_terminal_pr() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");

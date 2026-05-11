@@ -613,6 +613,101 @@ describe("AgentsView start conversation", () => {
     ).toBeUndefined();
   });
 
+  it("moves running state when the backend resolves a different conversation id", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const handleAutoManagedTitle = vi.fn();
+    createConversationMock.mockResolvedValue(
+      conversation({
+        id: "conversation-seeded-remap",
+        contextId: "project-1",
+        title: null,
+      })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({
+        id: "conversation-resolved-remap",
+        contextId: "project-1",
+        title: null,
+      }),
+      workspace: conversationWorkspace({
+        conversationId: "conversation-resolved-remap",
+      }),
+      sendResult: {
+        conversationId: "conversation-resolved-remap",
+        agentRunId: "run-remap",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle,
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start then remap",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+    });
+
+    expect(
+      useChatStore.getState().agentStatus["project:conversation-seeded-remap"]
+    ).toBeUndefined();
+    expect(
+      useChatStore.getState().isSending["project:conversation-seeded-remap"]
+    ).toBeUndefined();
+    expect(
+      useChatStore.getState().agentStatus["project:conversation-resolved-remap"]
+    ).toBe("generating");
+    expect(
+      queryClient.getQueryData(["chat", "conversations", "conversation-resolved-remap"])
+    ).toEqual({
+      conversation: expect.objectContaining({ id: "conversation-resolved-remap" }),
+      messages: [
+        expect.objectContaining({
+          conversationId: "conversation-resolved-remap",
+          role: "user",
+          content: "start then remap",
+        }),
+      ],
+    });
+    expect(handleAutoManagedTitle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: "conversation-resolved-remap",
+        content: "start then remap",
+      })
+    );
+  });
+
   it("falls back to the project default when the remembered branch selection is empty", async () => {
     mockAgentViewData();
     resetAgentSessionState({
