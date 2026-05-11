@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,6 +36,8 @@ const {
   loginGhWithBrowserMock,
   resumeDeferredGitStartupMock,
   openUrlMock,
+  toastErrorMock,
+  toastSuccessMock,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
@@ -60,6 +62,8 @@ const {
   loginGhWithBrowserMock: vi.fn(),
   resumeDeferredGitStartupMock: vi.fn(),
   openUrlMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+  toastSuccessMock: vi.fn(),
 }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -206,6 +210,13 @@ vi.mock("@/hooks/useGithubSettings", () => ({
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+  },
 }));
 
 const workspace = (
@@ -402,6 +413,8 @@ describe("AgentsArtifactPane", () => {
       refetch: vi.fn(),
     });
     openUrlMock.mockResolvedValue(undefined);
+    toastErrorMock.mockClear();
+    toastSuccessMock.mockClear();
   });
 
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
@@ -1041,7 +1054,7 @@ describe("AgentsArtifactPane", () => {
 
     expect(publish).not.toHaveBeenCalled();
     fireEvent.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", {
+      within(await screen.findByRole("dialog")).getByRole("button", {
         name: "Commit & Publish",
       })
     );
@@ -1049,33 +1062,123 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
-  it("shows a submitting state in the publish confirmation dialog", async () => {
+  it("turns the publish confirmation into dismissible progress after confirming", async () => {
     const publishDeferred = deferred<void>();
     const publish = vi.fn(() => publishDeferred.promise);
 
     renderPane("publish", workspace({ mode: "edit" }), publish);
 
     fireEvent.click(screen.getByTestId("agents-publish-confirm"));
-    const dialog = await screen.findByRole("alertdialog");
+    const dialog = await screen.findByRole("dialog");
     fireEvent.click(
       within(dialog).getByRole("button", {
         name: "Commit & Publish",
       }),
     );
 
-    await waitFor(() => {
-      expect(publish).toHaveBeenCalledWith("conversation-1");
-      expect(
-        within(dialog).getByRole("button", { name: "Publishing..." }),
-      ).toBeDisabled();
+    const progressDialog = await screen.findByRole("dialog", {
+      name: "Publishing workspace",
     });
-    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(publish).toHaveBeenCalledWith("conversation-1");
+    expect(
+      within(progressDialog).getByTestId("agents-publish-dialog-pipeline"),
+    ).toBeInTheDocument();
+    expect(
+      within(progressDialog).getByTestId("agents-publish-dialog-step-checking"),
+    ).toHaveTextContent("Check workspace");
+    const closeButton = within(progressDialog).getByTestId(
+      "agents-publish-dialog-close",
+    );
+    expect(closeButton).toBeEnabled();
 
-    publishDeferred.resolve();
+    fireEvent.click(closeButton);
 
     await waitFor(() => {
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("dialog", { name: "Publishing workspace" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      publishDeferred.resolve();
+      await publishDeferred.promise;
+    });
+  });
+
+  it("cancels the publish confirmation without starting publish", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Commit and publish workspace?",
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "Commit and publish workspace?" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("closes publish progress and reports errors when publishing fails", async () => {
+    const publishDeferred = deferred<void>();
+    const publish = vi.fn(() => publishDeferred.promise);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Commit & Publish",
+      }),
+    );
+
+    await screen.findByRole("dialog", { name: "Publishing workspace" });
+    await act(async () => {
+      publishDeferred.reject(new Error("Publish failed"));
+      await publishDeferred.promise.catch(() => undefined);
+    });
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith("Publish failed");
+      expect(
+        screen.queryByRole("dialog", { name: "Publishing workspace" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("closes the publish progress dialog once publishing settles", async () => {
+    const publishDeferred = deferred<void>();
+    const publish = vi.fn(() => publishDeferred.promise);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Commit & Publish",
+      }),
+    );
+
+    await screen.findByRole("dialog", { name: "Publishing workspace" });
+    await act(async () => {
+      publishDeferred.resolve();
+      await publishDeferred.promise;
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "Publishing workspace" }),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -1165,7 +1268,7 @@ describe("AgentsArtifactPane", () => {
     fireEvent.click(publishButton);
     expect(publish).not.toHaveBeenCalled();
     fireEvent.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", {
+      within(await screen.findByRole("dialog")).getByRole("button", {
         name: "Commit & Publish",
       })
     );
@@ -1206,7 +1309,7 @@ describe("AgentsArtifactPane", () => {
     fireEvent.click(publishButton);
     expect(publish).not.toHaveBeenCalled();
     fireEvent.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", {
+      within(await screen.findByRole("dialog")).getByRole("button", {
         name: "Commit & Publish",
       })
     );

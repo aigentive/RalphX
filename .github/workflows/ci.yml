@@ -137,7 +137,7 @@ jobs:
     name: Rust IPC Contracts
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
-    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       RALPHX_TEST_MODE: "1"
@@ -145,7 +145,6 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
 
@@ -183,7 +182,7 @@ jobs:
     name: Rust Lib Tests (Shard ${{ matrix.partition }})
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
-    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -195,7 +194,6 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
 
@@ -397,7 +395,7 @@ jobs:
     name: Frontend Tests (Shard 1/2)
     needs: changes
     if: needs.changes.outputs.run_frontend == 'true'
-    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -421,7 +419,7 @@ jobs:
     name: Frontend Tests (Shard 2/2)
     needs: changes
     if: needs.changes.outputs.run_frontend == 'true'
-    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -480,7 +478,7 @@ jobs:
     name: Frontend Visual Snapshots
     needs: changes
     if: needs.changes.outputs.run_visual == 'true'
-    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
+    runs-on: macos-15
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6

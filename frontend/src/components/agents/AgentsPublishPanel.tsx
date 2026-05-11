@@ -49,6 +49,10 @@ import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishFact } from "./AgentsPublishFact";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
+import {
+  PublishWorkspaceDialog,
+  type PublishWorkspaceDialogPhase,
+} from "./AgentsPublishWorkspaceDialog";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   getAgentWorkspaceTerminalPublicationLabel,
@@ -77,6 +81,10 @@ export function AgentPublishPanel({
   const [commitFiles, setCommitFiles] = useState<DiffViewerFileChange[]>([]);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
   const [rebaseDialogOpen, setRebaseDialogOpen] = useState(false);
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [publishDialogPhase, setPublishDialogPhase] =
+    useState<PublishWorkspaceDialogPhase>("confirm");
+  const [localPublishInFlight, setLocalPublishInFlight] = useState(false);
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
@@ -93,7 +101,7 @@ export function AgentPublishPanel({
       chatApi.listAgentConversationWorkspacePublicationEvents(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
-    refetchInterval: isPublishingWorkspace ? 1_500 : false,
+    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 1_500 : false,
   });
   const commitsQuery = useQuery({
     queryKey: ["agents", "workspace-commits", conversationId],
@@ -257,12 +265,13 @@ export function AgentPublishPanel({
     !baseBlocked && !terminalPublicationStatus && Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isUpdatingFromBase = updateFromBaseMutation.isPending;
-  const effectivePublishing = isPublishingWorkspace || isUpdatingFromBase;
+  const isPublishingThisWorkspace = isPublishingWorkspace || localPublishInFlight;
+  const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
   const isRepairPending = workspace.publicationPushStatus === "needs_agent";
   const isDescriptionFailed = workspace.publicationPushStatus === "description_failed";
   const pipelineStatus = isUpdatingFromBase
     ? "refreshing"
-    : isPublishingWorkspace &&
+    : isPublishingThisWorkspace &&
         ![
           "checking",
           "committing",
@@ -363,13 +372,29 @@ export function AgentPublishPanel({
     if (!onPublishWorkspace) {
       return;
     }
-    void confirm({
-      title: "Commit and publish workspace?",
-      description: `This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`,
-      confirmText: "Commit & Publish",
-      pendingText: "Publishing...",
-      onConfirm: () => onPublishWorkspace(workspace.conversationId),
-    });
+    setPublishDialogPhase("confirm");
+    setPublishDialogOpen(true);
+  };
+  const handleConfirmPublishWorkspace = () => {
+    setPublishDialogPhase("publishing");
+    setLocalPublishInFlight(true);
+    void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
+      .catch((error) => {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to publish branch",
+        );
+      })
+      .finally(() => {
+        setLocalPublishInFlight(false);
+        setPublishDialogOpen(false);
+        setPublishDialogPhase("confirm");
+      });
+  };
+  const handlePublishDialogOpenChange = (open: boolean) => {
+    setPublishDialogOpen(open);
+    if (!open && !isPublishingThisWorkspace) {
+      setPublishDialogPhase("confirm");
+    }
   };
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
 
@@ -604,7 +629,7 @@ export function AgentPublishPanel({
                   disabled={publishDisabled || isFreshnessLoading}
                   data-testid="agents-publish-confirm"
                 >
-                  {isPublishingWorkspace || isFreshnessLoading ? (
+                  {isPublishingThisWorkspace || isFreshnessLoading ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : isPublishCurrent || terminalPublicationStatus ? (
                     <CheckCircle2 className="h-3.5 w-3.5" />
@@ -797,6 +822,17 @@ export function AgentPublishPanel({
           </div>
         </DialogContent>
       </Dialog>
+      <PublishWorkspaceDialog
+        open={publishDialogOpen}
+        phase={publishDialogPhase}
+        branch={branch}
+        base={base}
+        status={pipelineStatus}
+        isPublishing={isPublishingThisWorkspace}
+        confirmDisabled={publishDisabled || isFreshnessLoading}
+        onConfirm={handleConfirmPublishWorkspace}
+        onOpenChange={handlePublishDialogOpenChange}
+      />
       <ConfirmationDialog {...confirmationDialogProps} />
     </div>
   );
