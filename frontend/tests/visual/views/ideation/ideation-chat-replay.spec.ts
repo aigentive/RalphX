@@ -38,20 +38,11 @@ test.describe("Ideation Chat Replay", () => {
     await expect(page.getByTestId("chat-session-provider-badge")).toHaveText(/Claude/i);
     await expect(panel.getByText("Preferred default for automatic PR creation?")).toBeVisible();
     await expect(panel.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeVisible();
-    await panel.evaluate(async (element) => {
-      const scrollableElements = [element, ...Array.from(element.querySelectorAll<HTMLElement>("*"))]
-        .filter((node): node is HTMLElement => node instanceof HTMLElement)
-        .filter((node) => node.scrollHeight > node.clientHeight);
-
-      for (const node of scrollableElements) {
-        node.scrollTop = node.scrollHeight;
-        node.dispatchEvent(new Event("scroll", { bubbles: true }));
-      }
-
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
-    });
+    const scrollToBottom = panel.getByRole("button", { name: /scroll to bottom/i });
+    if (await scrollToBottom.isVisible()) {
+      await scrollToBottom.click();
+    }
+    await expect(scrollToBottom).toBeHidden();
     await expect(panel).toHaveScreenshot("ideation-chat-replay.png", {
       maxDiffPixelRatio: 0.01,
     });

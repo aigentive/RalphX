@@ -1,5 +1,12 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { setupTaskChatScenario } from "../../../fixtures/chat.fixtures";
+
+async function visibleY(locator: Locator, label: string) {
+  await expect(locator, `${label} should be visible`).toBeVisible();
+  const box = await locator.boundingBox();
+  expect(box, `${label} should have a layout box`).not.toBeNull();
+  return box!.y;
+}
 
 const executionContractContextId = "task-mock-4";
 const executionContractConversationId = "conv-execution-contract";
@@ -556,12 +563,12 @@ test.describe("Task Chat Replay", () => {
     const secondText = page.getByText(
       "The target is main, and the merge conflict is isolated to src/commands/gateway.ts.",
     );
-    const firstBox = await firstText.boundingBox();
-    const widgetBox = await widget.boundingBox();
-    const secondBox = await secondText.boundingBox();
+    const firstY = await visibleY(firstText, "first merge text");
+    const widgetY = await visibleY(widget, "merge widget");
+    const secondY = await visibleY(secondText, "second merge text");
 
-    expect(firstBox?.y).toBeLessThan(widgetBox?.y ?? Number.POSITIVE_INFINITY);
-    expect(widgetBox?.y).toBeLessThan(secondBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(firstY).toBeLessThan(widgetY);
+    expect(widgetY).toBeLessThan(secondY);
   });
 
   test("keeps live and finalized execution turns deduplicated with stable task-tool ordering", async ({ page }) => {
@@ -613,12 +620,12 @@ test.describe("Task Chat Replay", () => {
     const secondText = page.getByText(
       "The provider metadata row is isolated to MessageItem and remains safe to adjust.",
     );
-    const firstBox = await firstText.boundingBox();
-    const widgetBox = await widget.boundingBox();
-    const secondBox = await secondText.boundingBox();
+    const firstY = await visibleY(firstText, "first execution text");
+    const widgetY = await visibleY(widget, "execution widget");
+    const secondY = await visibleY(secondText, "second execution text");
 
-    expect(firstBox?.y).toBeLessThan(widgetBox?.y ?? Number.POSITIVE_INFINITY);
-    expect(widgetBox?.y).toBeLessThan(secondBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(firstY).toBeLessThan(widgetY);
+    expect(widgetY).toBeLessThan(secondY);
   });
 
   test("keeps live and finalized review turns deduplicated with stable widget order", async ({ page }) => {
@@ -670,12 +677,12 @@ test.describe("Task Chat Replay", () => {
     const firstText = page.getByText("I am completing the review now.");
     const widget = page.locator('[data-testid="review-widget-complete"]');
     const secondText = page.getByText("Changes are still required before approval.");
-    const firstBox = await firstText.boundingBox();
-    const widgetBox = await widget.boundingBox();
-    const secondBox = await secondText.boundingBox();
+    const firstY = await visibleY(firstText, "first review text");
+    const widgetY = await visibleY(widget, "review widget");
+    const secondY = await visibleY(secondText, "second review text");
 
-    expect(firstBox?.y).toBeLessThan(widgetBox?.y ?? Number.POSITIVE_INFINITY);
-    expect(widgetBox?.y).toBeLessThan(secondBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(firstY).toBeLessThan(widgetY);
+    expect(widgetY).toBeLessThan(secondY);
   });
 
   test("keeps persisted review widgets visible when raw content includes cancelled-tool noise", async ({ page }) => {
