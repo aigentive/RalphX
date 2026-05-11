@@ -1,4 +1,7 @@
-use std::path::{Component, Path, PathBuf};
+use std::{
+    path::{Component, Path, PathBuf},
+    time::Instant,
+};
 
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -56,14 +59,20 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
     selection: AgentConversationWorkspaceBaseSelection,
     setup_mode: AgentConversationWorkspaceSetupMode,
 ) -> AppResult<AgentConversationWorkspace> {
+    let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
-    let current_branch = GitService::get_current_branch(&repo_path)
-        .await
-        .ok()
-        .filter(|branch| branch != "HEAD");
-    let project_default =
+    let branch_probe_started = Instant::now();
+    let (current_branch, project_default) = tokio::join!(
+        GitService::get_current_branch(&repo_path),
         GitService::resolve_project_default_branch(&repo_path, project.base_branch.as_deref())
-            .await;
+    );
+    let current_branch = current_branch.ok().filter(|branch| branch != "HEAD");
+    log_agent_workspace_phase(
+        conversation_id,
+        "resolve_base_context",
+        branch_probe_started,
+    );
+
     let kind = selection.kind.unwrap_or_else(|| {
         if current_branch
             .as_deref()
@@ -103,12 +112,14 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
     };
 
+    let ref_check_started = Instant::now();
     if !GitService::ref_exists(&repo_path, &base_ref).await? {
         return Err(AppError::Validation(format!(
             "Agent conversation base ref '{}' does not exist in the project repository",
             base_ref
         )));
     }
+    log_agent_workspace_phase(conversation_id, "validate_base_ref", ref_check_started);
 
     let display_name = selection
         .display_name
@@ -122,7 +133,11 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
     let branch_name = agent_conversation_branch_name(project, conversation_id);
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
 
+    let worktree_started = Instant::now();
     ensure_agent_conversation_worktree(&repo_path, &worktree_path, &branch_name, &base_ref).await?;
+    log_agent_workspace_phase(conversation_id, "ensure_worktree", worktree_started);
+
+    let setup_started = Instant::now();
     run_or_defer_agent_conversation_workspace_setup(
         project,
         conversation_id,
@@ -131,7 +146,12 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         setup_mode,
     )
     .await;
-    let base_commit = GitService::get_head_sha(&worktree_path).await?;
+    log_agent_workspace_phase(conversation_id, "workspace_setup", setup_started);
+
+    let base_commit_started = Instant::now();
+    let base_commit = GitService::get_branch_sha(&repo_path, &branch_name).await?;
+    log_agent_workspace_phase(conversation_id, "capture_base_commit", base_commit_started);
+    log_agent_workspace_phase(conversation_id, "prepare_total", total_started);
 
     Ok(AgentConversationWorkspace {
         conversation_id: conversation_id.clone(),
@@ -172,6 +192,7 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
     workspace: &AgentConversationWorkspace,
     setup_mode: AgentConversationWorkspaceSetupMode,
 ) -> AppResult<AgentConversationWorkspace> {
+    let total_started = Instant::now();
     if !is_terminal_agent_conversation_publication_status(
         workspace.publication_pr_status.as_deref(),
     ) {
@@ -212,15 +233,27 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
             )));
         }
 
+        let dirty_check_started = Instant::now();
         if GitService::has_uncommitted_changes(&expected_path).await? {
             return Err(AppError::Validation(format!(
                 "Cannot continue agent conversation {} on a new branch because the old workspace has uncommitted changes",
                 workspace.conversation_id
             )));
         }
+        log_agent_workspace_phase(
+            &workspace.conversation_id,
+            "rollover_dirty_check",
+            dirty_check_started,
+        );
     }
 
+    let base_resolution_started = Instant::now();
     let base_resolution = resolve_workspace_base(project, workspace).await?;
+    log_agent_workspace_phase(
+        &workspace.conversation_id,
+        "rollover_resolve_base",
+        base_resolution_started,
+    );
     if base_resolution.status == BaseStatus::Blocked {
         return Err(AppError::Validation(
             base_resolution
@@ -247,13 +280,20 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
     }
 
     if expected_path.exists() {
+        let delete_started = Instant::now();
         GitService::delete_worktree(&repo_path, &expected_path).await?;
+        log_agent_workspace_phase(
+            &workspace.conversation_id,
+            "rollover_delete_old_worktree",
+            delete_started,
+        );
     }
 
     let base_checkout_ref = base_resolution.effective_checkout_ref()?.to_string();
     let branch_name =
         agent_conversation_continuation_branch_name(project, &workspace.conversation_id);
 
+    let worktree_started = Instant::now();
     ensure_agent_conversation_worktree(
         &repo_path,
         &expected_path,
@@ -261,6 +301,12 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
         &base_checkout_ref,
     )
     .await?;
+    log_agent_workspace_phase(
+        &workspace.conversation_id,
+        "rollover_ensure_worktree",
+        worktree_started,
+    );
+    let setup_started = Instant::now();
     run_or_defer_agent_conversation_workspace_setup(
         project,
         &workspace.conversation_id,
@@ -269,7 +315,18 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
         setup_mode,
     )
     .await;
-    let base_commit = GitService::get_head_sha(&expected_path).await?;
+    log_agent_workspace_phase(
+        &workspace.conversation_id,
+        "rollover_workspace_setup",
+        setup_started,
+    );
+    let base_commit_started = Instant::now();
+    let base_commit = GitService::get_branch_sha(&repo_path, &branch_name).await?;
+    log_agent_workspace_phase(
+        &workspace.conversation_id,
+        "rollover_capture_base_commit",
+        base_commit_started,
+    );
     let mut updated = workspace.clone();
     apply_workspace_base_resolution(&mut updated, &base_resolution)?;
     updated.base_commit = Some(base_commit);
@@ -281,11 +338,25 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
     updated.publication_push_status = None;
     updated.status = crate::domain::entities::AgentConversationWorkspaceStatus::Active;
     updated.updated_at = Utc::now();
+    log_agent_workspace_phase(&workspace.conversation_id, "rollover_total", total_started);
     Ok(updated)
 }
 
 pub fn is_terminal_agent_conversation_publication_status(status: Option<&str>) -> bool {
     matches!(status, Some("merged" | "closed"))
+}
+
+fn log_agent_workspace_phase(
+    conversation_id: &ChatConversationId,
+    phase: &'static str,
+    started: Instant,
+) {
+    tracing::info!(
+        conversation_id = %conversation_id,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Agent conversation workspace phase completed"
+    );
 }
 
 async fn run_or_defer_agent_conversation_workspace_setup(
@@ -428,11 +499,7 @@ async fn ensure_agent_conversation_worktree(
         return Ok(());
     }
 
-    if GitService::branch_exists(repo_path, branch_name).await? {
-        GitService::checkout_existing_branch_worktree(repo_path, workspace_path, branch_name).await
-    } else {
-        GitService::create_worktree(repo_path, workspace_path, branch_name, base_ref).await
-    }
+    GitService::create_worktree(repo_path, workspace_path, branch_name, base_ref).await
 }
 
 pub fn resolve_agent_conversation_workspace_path(
