@@ -118,7 +118,7 @@ jobs:
     name: Rust Lib Coverage
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: never
@@ -127,6 +127,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
 
@@ -183,7 +184,7 @@ jobs:
     name: Rust IPC Coverage
     needs: changes
     if: needs.changes.outputs.run_rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: never
@@ -192,6 +193,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
 
@@ -255,7 +257,7 @@ jobs:
     name: Frontend Coverage
     needs: changes
     if: needs.changes.outputs.run_frontend == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64, ralphx-release, ralphx-release-arm64]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
