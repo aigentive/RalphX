@@ -8,12 +8,8 @@ export interface PostUpdatePreparingMarker {
 }
 
 function getLocalStorage(): Storage | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
   try {
-    return window.localStorage;
+    return globalThis.localStorage ?? null;
   } catch {
     return null;
   }
