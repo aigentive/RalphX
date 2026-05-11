@@ -1084,6 +1084,15 @@ describe("AgentsArtifactPane", () => {
       within(progressDialog).getByTestId("agents-publish-dialog-pipeline"),
     ).toBeInTheDocument();
     expect(
+      within(progressDialog).queryByText(
+        "Progress is also available in Commit & Publish.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      within(progressDialog).getByTestId("agents-publish-dialog-pipeline-steps")
+        .className,
+    ).toContain("repeat(auto-fit,minmax(9.5rem,1fr))");
+    expect(
       within(progressDialog).getByTestId("agents-publish-dialog-step-checking"),
     ).toHaveTextContent("Check workspace");
     const closeButton = within(progressDialog).getByTestId(

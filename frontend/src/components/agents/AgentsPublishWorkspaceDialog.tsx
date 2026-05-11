@@ -40,33 +40,48 @@ export function PublishWorkspaceDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="w-[min(460px,calc(100vw-2rem))] p-4"
+        className="w-[min(520px,calc(100vw-2rem))] overflow-hidden p-0"
         data-testid="agents-publish-workspace-dialog"
         style={{
           backgroundColor: "var(--bg-surface)",
-          border: "1px solid var(--border-subtle)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
         }}
       >
-        <DialogHeader className="block space-y-1.5">
-          <DialogTitle>
+        <DialogHeader
+          className={
+            isProgress
+              ? "block border-b-0 px-5 pb-0 pt-5"
+              : "block border-b-0 px-5 pb-3 pt-5"
+          }
+        >
+          <DialogTitle className="pr-8 text-base leading-6 tracking-normal">
             {isProgress ? "Publishing workspace" : "Commit and publish workspace?"}
           </DialogTitle>
-          <DialogDescription>
-            {isProgress
-              ? "Progress is also available in Commit & Publish."
-              : `This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`}
-          </DialogDescription>
+          {isProgress ? (
+            <DialogDescription className="sr-only">
+              Workspace publishing is in progress.
+            </DialogDescription>
+          ) : (
+            <DialogDescription className="mt-1.5 max-w-[28rem] text-sm leading-5 text-[var(--text-secondary)]">
+              {`This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`}
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         {isProgress && (
-          <PublishPipelineSteps
-            status={status}
-            isPublishing={isPublishing}
-            testIdPrefix="agents-publish-dialog"
-          />
+          <div className="px-5 pb-4">
+            <PublishPipelineSteps
+              className="mt-3"
+              status={status}
+              isPublishing={isPublishing}
+              testIdPrefix="agents-publish-dialog"
+            />
+          </div>
         )}
 
-        <DialogFooter className="gap-2 sm:gap-2">
+        <DialogFooter className="gap-2 border-t-0 px-5 pb-5 pt-0 sm:gap-2">
           {isProgress ? (
             <Button
               type="button"
