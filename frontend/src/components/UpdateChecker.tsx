@@ -10,6 +10,10 @@ import {
   markReleaseNotesSeen,
 } from "@/api/release-notes";
 import {
+  clearPostUpdatePreparing,
+  markPostUpdatePreparing,
+} from "@/lib/postUpdatePreparing";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -514,8 +518,15 @@ async function installUpdate(update: Update) {
     toast.success("Update installed! Restarting...", { id: toastId });
 
     // Give user a moment to see the success message
-    setTimeout(async () => {
-      await relaunch();
+    setTimeout(() => {
+      markPostUpdatePreparing(update.version);
+      void relaunch().catch((error) => {
+        clearPostUpdatePreparing();
+        toast.error("Failed to restart RalphX. Please reopen the app manually.", {
+          id: toastId,
+        });
+        console.error("Update relaunch failed:", error);
+      });
     }, 1500);
   } catch (error) {
     toast.error("Failed to install update. Please try again later.", {

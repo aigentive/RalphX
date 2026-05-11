@@ -2,6 +2,7 @@ import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/stores/uiStore";
+import { POST_UPDATE_PREPARING_STORAGE_KEY } from "@/lib/postUpdatePreparing";
 import { UpdateChecker } from "./UpdateChecker";
 
 const mocks = vi.hoisted(() => ({
@@ -91,9 +92,11 @@ describe("UpdateChecker", () => {
     mocks.getLastSeenReleaseNotesVersion.mockReset();
     mocks.markReleaseNotesSeen.mockReset();
     update.downloadAndInstall.mockReset();
+    localStorage.clear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
 
     mocks.check.mockResolvedValue(update);
+    mocks.relaunch.mockResolvedValue(undefined);
     mocks.listen.mockImplementation(async (event: string, handler: (event: unknown) => unknown) => {
       eventListeners.set(event, handler);
       return vi.fn();
@@ -176,8 +179,14 @@ describe("UpdateChecker", () => {
       expect.stringContaining("Update installed"),
       expect.objectContaining({ id: "update-progress" }),
     );
+    expect(localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY)).toBeNull();
 
     await vi.advanceTimersByTimeAsync(2_000);
+    const marker = JSON.parse(
+      localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY) ?? "null",
+    ) as { startedAt?: unknown; version?: unknown } | null;
+    expect(marker).toMatchObject({ version: "0.7.1" });
+    expect(typeof marker?.startedAt).toBe("number");
     expect(mocks.relaunch).toHaveBeenCalled();
   });
 

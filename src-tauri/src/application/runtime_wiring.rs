@@ -52,6 +52,8 @@ pub fn create_main_window<R: tauri::Runtime + 'static, M: tauri::Manager<R>>(
     #[cfg(target_os = "macos")]
     install_macos_traffic_light_centering(&webview_window);
 
+    let _ = webview_window.set_focus();
+
     Ok(())
 }
 
