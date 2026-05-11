@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { Check, ChevronDown, GitPullRequest, Search } from "lucide-react";
-import { useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { chatKeys, useConversationHistoryWindow } from "@/hooks/useChat";
+import { chatKeys } from "@/hooks/useChat";
 import { cn } from "@/lib/utils";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
@@ -97,6 +97,11 @@ function updateConversationTitleInCache(
         : oldData,
   );
 
+  queryClient.setQueryData<ChatConversation | null>(
+    chatKeys.conversationSummary(conversation.id),
+    (oldData) => oldData ? updateConversation(oldData) : oldData,
+  );
+
   queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
     chatKeys.conversationHistory(conversation.id),
     (oldData) =>
@@ -133,6 +138,10 @@ function findConversationInQueryData(
   data: unknown,
   conversationId: string,
 ): ChatConversation | null {
+  if (isCachedConversation(data, conversationId)) {
+    return data;
+  }
+
   if (!data || typeof data !== "object") {
     return null;
   }
@@ -178,6 +187,14 @@ function findCachedAgentConversation(
   );
   if (direct) {
     return direct;
+  }
+
+  const summary = findConversationInQueryData(
+    queryClient.getQueryData(chatKeys.conversationSummary(conversationId)),
+    conversationId,
+  );
+  if (summary) {
+    return summary;
   }
 
   const history = findConversationInQueryData(
@@ -406,17 +423,19 @@ export function AppTopBar({
     selectedAgentConversationId,
     currentView === "agents",
   );
-  const selectedAgentConversation = useConversationHistoryWindow(selectedAgentConversationId, {
+  const selectedAgentConversationSummary = useQuery({
+    queryKey: chatKeys.conversationSummary(selectedAgentConversationId ?? ""),
+    queryFn: () => chatApi.getConversationSummary(selectedAgentConversationId ?? ""),
     enabled:
       currentView === "agents" &&
       Boolean(selectedAgentConversationId) &&
       !cachedAgentConversation,
-    pageSize: 1,
+    staleTime: 30 * 1000,
   });
   const [activeMenu, setActiveMenu] = useState<"theme" | "font" | null>(null);
   const agentConversation =
     currentView === "agents" && selectedAgentConversationId
-      ? cachedAgentConversation ?? selectedAgentConversation.data?.conversation ?? null
+      ? cachedAgentConversation ?? selectedAgentConversationSummary.data ?? null
       : null;
   const agentConversationTitle =
     agentConversation

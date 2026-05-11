@@ -69,10 +69,12 @@ const LazyDiffViewer = lazy(() =>
 );
 export function AgentPublishPanel({
   workspace,
+  projectBaseBranch,
   onPublishWorkspace,
   isPublishingWorkspace,
 }: {
   workspace: AgentConversationWorkspace | null;
+  projectBaseBranch?: string | null;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
 }) {
@@ -141,7 +143,10 @@ export function AgentPublishPanel({
   const freshness = freshnessQuery.data;
   const baseStatus = freshness?.baseStatus ?? "valid";
   const baseBlocked = baseStatus === "blocked";
-  const fallbackRebaseOptions = useMemo(() => fallbackBranchBaseOptions("main"), []);
+  const fallbackRebaseOptions = useMemo(
+    () => fallbackBranchBaseOptions(projectBaseBranch),
+    [projectBaseBranch],
+  );
   const rebaseBaseOptionsQuery = useQuery({
     queryKey: [
       "agents",
@@ -149,12 +154,13 @@ export function AgentPublishPanel({
       conversationId,
       workspace?.worktreePath,
       workspace?.branchName,
+      projectBaseBranch,
     ],
     queryFn: async () => {
       const result = await loadBranchBaseOptions({
         projectId: workspace!.projectId,
         workingDirectory: workspace!.worktreePath,
-        projectBaseBranch: "main",
+        projectBaseBranch,
         includeAgentBranches: false,
       });
       const options = result.options.filter(

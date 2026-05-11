@@ -68,6 +68,49 @@ impl GitService {
         ))
     }
 
+    /// List local and remote branches, normalized to branch names with `main`/`master` first.
+    pub async fn list_branches(repo: &Path) -> AppResult<Vec<String>> {
+        let output = git_cmd::run(&["branch", "-a"], repo).await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::GitOperation(format!(
+                "git branch failed: {}",
+                stderr
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let branches: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim().trim_start_matches(&['*', '+'][..]).trim_start();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                if let Some(remote_branch) = trimmed.strip_prefix("remotes/origin/") {
+                    if remote_branch.starts_with("HEAD") {
+                        return None;
+                    }
+                    Some(remote_branch.to_string())
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let mut sorted = branches;
+        sorted.sort_by(|a, b| {
+            let a_priority = if a == "main" || a == "master" { 0 } else { 1 };
+            let b_priority = if b == "main" || b == "master" { 0 } else { 1 };
+            a_priority.cmp(&b_priority).then(a.cmp(b))
+        });
+
+        Ok(sorted)
+    }
+
     /// Resolve the default branch for project workflows.
     ///
     /// Explicit project settings win; otherwise this uses the same automatic
@@ -333,12 +376,12 @@ impl GitService {
     /// Conservative failure mode: git errors (timeout, IO) return `Ok(false)` — callers
     /// use `.unwrap_or(false)` so failures safely skip operations that require the branch.
     pub async fn branch_exists(repo_path: &Path, branch: &str) -> AppResult<bool> {
-        let output = git_cmd::run(
+        git_cmd::run_status(
             &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
             repo_path,
         )
-        .await;
-        Ok(output.map_or(false, |o| o.status.success()))
+        .await
+        .or_else(|_| Ok(false))
     }
 
     /// Check if any commit-ish git ref exists in the repo.
@@ -347,7 +390,7 @@ impl GitService {
     /// `origin/main`, which are valid merge sources but not local branches.
     pub async fn ref_exists(repo_path: &Path, ref_name: &str) -> AppResult<bool> {
         let commit_ref = format!("{ref_name}^{{commit}}");
-        let output = git_cmd::run(
+        git_cmd::run_status(
             &[
                 "rev-parse",
                 "--verify",
@@ -357,8 +400,8 @@ impl GitService {
             ],
             repo_path,
         )
-        .await;
-        Ok(output.map_or(false, |o| o.status.success()))
+        .await
+        .or_else(|_| Ok(false))
     }
 
     /// Check if `commit` is an ancestor of `target` in the given repo.

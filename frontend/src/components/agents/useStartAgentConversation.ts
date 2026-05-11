@@ -9,8 +9,13 @@ import {
   type AgentConversationWorkspaceMode,
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
+  type ConversationTimelinePageResponse,
 } from "@/api/chat";
-import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
+import {
+  chatKeys,
+  createOptimisticConversationId,
+  invalidateConversationDataQueries,
+} from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { getModelLabel } from "@/lib/model-utils";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
@@ -37,7 +42,7 @@ interface UseStartAgentConversationArgs {
   invalidateProjectConversations: (targetProjectId: string) => Promise<unknown>;
   queryClient: QueryClient;
   selectConversation: (projectId: string, conversationId: string) => void;
-  setActiveConversation: (contextKey: string, conversationId: string) => void;
+  setActiveConversation: (contextKey: string, conversationId: string | null) => void;
   setFocusedProject: (projectId: string | null) => void;
   setOptimisticConversationsById: Dispatch<SetStateAction<Record<string, AgentConversation>>>;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
@@ -89,7 +94,7 @@ export function useStartAgentConversation({
         conversation: ChatConversation,
         workspace: AgentConversationWorkspace | null | undefined,
         optimisticMessages: ChatMessageResponse[] = [],
-      ) => {
+      ): string => {
         const conversationId = conversation.id;
         const optimisticConversation = toProjectAgentConversation(conversation);
         const storeKey = getAgentConversationStoreKey(optimisticConversation);
@@ -125,6 +130,25 @@ export function useStartAgentConversation({
               pageParams: [0],
             }
           );
+          queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+            chatKeys.conversationTimeline(conversationId),
+            {
+              pages: [
+                {
+                  conversation,
+                  items: [],
+                  messages: optimisticMessages,
+                  limit: 40,
+                  beforeSequence: null,
+                  totalItemCount: optimisticMessages.length,
+                  hasOlder: false,
+                  oldestLoadedSequence: null,
+                  newestLoadedSequence: null,
+                },
+              ],
+              pageParams: [null],
+            }
+          );
         }
         queryClient.setQueryData(
           ["agents", "conversation-workspace", conversationId],
@@ -135,34 +159,93 @@ export function useStartAgentConversation({
         setRuntimeForConversation(conversationId, targetProjectId, normalizedRuntime);
         selectConversation(targetProjectId, conversationId);
         setActiveConversation(storeKey, conversationId);
+        return storeKey;
       };
-      const resultConversationSeed = await chatApi.createConversation(
-        "project",
-        targetProjectId
-      );
-      const seededConversation: ChatConversation = {
-        ...resultConversationSeed,
-        agentMode: mode,
+      const removeOptimisticConversation = (conversationId: string, storeKey: string) => {
+        setOptimisticConversationsById((current) => {
+          if (!(conversationId in current)) return current;
+          const next = { ...current };
+          delete next[conversationId];
+          return next;
+        });
+        setOptimisticWorkspacesByConversationId((current) => {
+          if (!(conversationId in current)) return current;
+          const next = { ...current };
+          delete next[conversationId];
+          return next;
+        });
+        setOptimisticSelectedConversationId((current) =>
+          current === conversationId ? null : current
+        );
+        queryClient.removeQueries({ queryKey: chatKeys.conversation(conversationId) });
+        setActiveConversation(storeKey, null);
+        setAgentRunning(storeKey, false);
+        setSending(storeKey, false);
       };
-      const storeKey = getAgentConversationStoreKey({
-        id: seededConversation.id,
+
+      const now = new Date().toISOString();
+      const initialConversation: ChatConversation = {
+        id: createOptimisticConversationId(),
         contextType: "project",
         contextId: targetProjectId,
-      });
+        claudeSessionId: null,
+        providerSessionId: null,
+        providerHarness: normalizedRuntime.provider,
+        upstreamProvider: null,
+        providerProfile: null,
+        agentMode: mode,
+        title: null,
+        messageCount: 1,
+        lastMessageAt: now,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      };
       const optimisticUserMessage = buildOptimisticUserMessage({
-        conversation: seededConversation,
+        conversation: initialConversation,
         content,
         runtime: normalizedRuntime,
       });
-      seedConversationState(seededConversation, null, [optimisticUserMessage]);
-      setEffectiveModel(storeKey, {
+      const optimisticStoreKey = seedConversationState(initialConversation, null, [
+        optimisticUserMessage,
+      ]);
+      setEffectiveModel(optimisticStoreKey, {
         id: normalizedRuntime.modelId,
         label: getModelLabel(normalizedRuntime.modelId),
       });
-      setAgentRunning(storeKey, true);
-      setSending(storeKey, true);
+      setAgentRunning(optimisticStoreKey, true);
+      setSending(optimisticStoreKey, true);
 
+      let seededStoreKey: string | null = null;
       try {
+        const resultConversationSeed = await chatApi.createConversation(
+          "project",
+          targetProjectId
+        );
+        const seededConversation: ChatConversation = {
+          ...resultConversationSeed,
+          agentMode: mode,
+        };
+        const storeKey = getAgentConversationStoreKey({
+          id: seededConversation.id,
+          contextType: "project",
+          contextId: targetProjectId,
+        });
+        seededStoreKey = storeKey;
+        const seededOptimisticUserMessage = buildOptimisticUserMessage({
+          conversation: seededConversation,
+          content,
+          runtime: normalizedRuntime,
+        });
+        seedConversationState(seededConversation, null, [seededOptimisticUserMessage]);
+        removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
+        setEffectiveModel(storeKey, {
+          id: normalizedRuntime.modelId,
+          label: getModelLabel(normalizedRuntime.modelId),
+        });
+        setAgentRunning(storeKey, true);
+        setSending(storeKey, true);
+
         if (files.length > 0) {
           await Promise.all(
             files.map((file) => uploadDraftAttachment(seededConversation.id, file))
@@ -188,7 +271,7 @@ export function useStartAgentConversation({
         const resolvedStoreKey = getAgentConversationStoreKey(resolvedConversation);
         const resolvedOptimisticUserMessage =
           resolvedConversationId === seededConversation.id
-            ? optimisticUserMessage
+            ? seededOptimisticUserMessage
             : buildOptimisticUserMessage({
                 conversation: resolvedConversation,
                 content,
@@ -231,8 +314,11 @@ export function useStartAgentConversation({
           shouldSpawnSessionNamer: true,
         });
       } catch (err) {
-        setAgentRunning(storeKey, false);
-        setSending(storeKey, false);
+        if (seededStoreKey) {
+          setAgentRunning(seededStoreKey, false);
+          setSending(seededStoreKey, false);
+        }
+        removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
         throw err;
       }
     },

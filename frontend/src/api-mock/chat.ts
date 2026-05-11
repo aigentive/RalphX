@@ -101,6 +101,7 @@ export interface MockChatController {
   getConversation(
     conversationId: string
   ): Promise<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>;
+  getConversationSummary(conversationId: string): Promise<ChatConversation | null>;
   getConversationTimelinePage(
     conversationId: string,
     limit: number,
@@ -217,6 +218,7 @@ function exposeMockChatController(): void {
     listConversationsPage: mockListConversationsPage,
     listAgentSidebarConversations: mockListAgentSidebarConversations,
     getConversation: mockGetConversation,
+    getConversationSummary: mockGetConversationSummary,
     getConversationTimelinePage: mockGetConversationTimelinePage,
     getConversationStats: mockGetConversationStats,
     seedAgentConversationWorkspace: seedMockAgentConversationWorkspace,
@@ -490,6 +492,12 @@ export async function mockGetConversation(
     conversation,
     messages: mockMessages.get(conversationId) ?? [],
   };
+}
+
+export async function mockGetConversationSummary(
+  conversationId: string
+): Promise<ChatConversation | null> {
+  return (await mockGetConversation(conversationId)).conversation;
 }
 
 function normalizeMockContentBlocks(message: ChatMessageResponse): MockContentBlock[] {
@@ -1014,6 +1022,7 @@ export const mockChatApi = {
   listConversations: mockListConversations,
   listConversationsPage: mockListConversationsPage,
   getConversation: mockGetConversation,
+  getConversationSummary: mockGetConversationSummary,
   getConversationTimelinePage: mockGetConversationTimelinePage,
   createConversation: mockCreateConversation,
   updateConversationTitle: mockUpdateConversationTitle,

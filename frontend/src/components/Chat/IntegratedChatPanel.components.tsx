@@ -30,7 +30,7 @@ export const animationStyles = `
 // Sub-components
 // ============================================================================
 
-export function TypingIndicator() {
+export function TypingIndicator({ label }: { label?: string | undefined }) {
   return (
     <div
       data-testid="chat-typing-indicator"
@@ -47,7 +47,15 @@ export function TypingIndicator() {
           backgroundColor: "var(--bg-elevated)",
         }}
       >
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2">
+          {label ? (
+            <span
+              className="text-[0.75rem] font-medium"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {label}
+            </span>
+          ) : null}
           <div
             className="typing-dot w-1.5 h-1.5 rounded-full"
             style={{ backgroundColor: "var(--text-muted)" }}

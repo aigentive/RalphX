@@ -174,4 +174,42 @@ describe("branchBaseOptions", () => {
       )
     ).toBe(false);
   });
+
+  it("uses the configured project base before Git's detected default", async () => {
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "develop",
+      includePlanBranches: false,
+      includeAgentBranches: false,
+    });
+
+    expect(getGitDefaultBranchMock).toHaveBeenCalledWith("/tmp/ralphx");
+    expect(result.options[0]).toEqual(
+      expect.objectContaining({
+        key: "project_default:develop",
+        label: "Project default (develop)",
+        source: "project",
+      })
+    );
+    expect(result.selectedKey).toBe("current_branch:feature/current");
+  });
+
+  it("falls back to Git's detected default when configured base is blank", async () => {
+    const result = await loadBranchBaseOptions({
+      projectId: "project-1",
+      workingDirectory: "/tmp/ralphx",
+      projectBaseBranch: "   ",
+      includePlanBranches: false,
+      includeAgentBranches: false,
+    });
+
+    expect(result.options[0]).toEqual(
+      expect.objectContaining({
+        key: "project_default:main",
+        label: "Project default (main)",
+        source: "project",
+      })
+    );
+  });
 });

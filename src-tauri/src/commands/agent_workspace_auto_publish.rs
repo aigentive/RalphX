@@ -14,7 +14,7 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_conversation_workspace_base::{resolve_workspace_base, BaseStatus};
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
 use crate::application::publish_resilience::{
-    count_unpublished_publish_commits, inspect_publish_branch_freshness_for_source,
+    count_unpublished_publish_commits, inspect_publish_branch_freshness_for_source_after_fetch,
 };
 use crate::application::{AppState, GitService, TeamService};
 use crate::commands::unified_chat_commands::publish_agent_conversation_workspace_for_app_state;
@@ -119,20 +119,6 @@ where
             event.payload(),
         );
     });
-}
-
-pub(crate) fn schedule_agent_workspace_auto_publish_after_freshness_detected<R>(
-    app_handle: tauri::AppHandle<R>,
-    conversation_id: ChatConversationId,
-) where
-    R: Runtime,
-{
-    spawn_auto_publish_existing_pr(
-        app_handle,
-        "agent_workspace_freshness",
-        AutoPublishTrigger::BaseFreshness,
-        conversation_id,
-    );
 }
 
 fn spawn_auto_publish_from_completion_event<R>(
@@ -452,7 +438,7 @@ async fn collect_auto_publish_facts(
         let effective_base_ref = base_resolution
             .effective_checkout_ref()
             .map_err(|error| error.to_string())?;
-        inspect_publish_branch_freshness_for_source(
+        inspect_publish_branch_freshness_for_source_after_fetch(
             &worktree_path,
             effective_base_ref,
             &workspace.branch_name,
@@ -825,18 +811,6 @@ mod tests {
             app.handle().clone(),
             "test_event",
             r#"{"conversation_id":"44444444-4444-4444-4444-444444444444","context_type":"project"}"#,
-        );
-
-        wait_for_spawned_auto_publish().await;
-    }
-
-    #[tokio::test]
-    async fn freshness_detected_schedules_auto_publish_task() {
-        let app = mock_app(AppState::new_test(), Arc::new(ExecutionState::new()));
-
-        schedule_agent_workspace_auto_publish_after_freshness_detected(
-            app.handle().clone(),
-            ChatConversationId::from_string("55555555-5555-5555-5555-555555555555"),
         );
 
         wait_for_spawned_auto_publish().await;

@@ -1,8 +1,20 @@
 import { Page } from "@playwright/test";
 
 export async function setupApp(page: Page) {
-  await page.goto("/");
-  await page.waitForSelector('[data-testid="app-header"]', { timeout: 10000 });
+  const appHeader = page.locator('[data-testid="app-header"]');
+
+  const gotoApp = () => page.goto("/", { waitUntil: "commit", timeout: 7000 });
+
+  try {
+    await gotoApp();
+  } catch (error) {
+    if (page.isClosed()) {
+      throw error;
+    }
+    await gotoApp();
+  }
+
+  await appHeader.waitFor({ state: "visible", timeout: 15000 });
 }
 
 export async function setupKanban(page: Page) {

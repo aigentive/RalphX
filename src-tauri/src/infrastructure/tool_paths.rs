@@ -417,6 +417,7 @@ pub(crate) fn launchable_cli_path_from_shell_output(
     })
 }
 
+#[cfg(test)]
 fn safe_cli_path_from_shell_output(tool_name: &str, output: &str) -> Option<PathBuf> {
     output.lines().rev().find_map(|line| {
         let candidate = PathBuf::from(line.trim());

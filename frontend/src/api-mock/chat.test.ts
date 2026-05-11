@@ -5,6 +5,7 @@ import type { ChatConversation } from "@/types/chat-conversation";
 import {
   mockChatApi,
   mockGetAgentRunningStates,
+  mockGetConversationSummary,
   mockGetConversationTimelinePage,
   mockListAgentSidebarConversations,
   resetMockChatState,
@@ -223,6 +224,20 @@ describe("mockGetAgentRunningStates", () => {
       "conv-1": false,
       "conv-2": false,
     });
+  });
+});
+
+describe("mockGetConversationSummary", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("returns seeded conversation metadata without requiring messages", async () => {
+    const seeded = conversation("summary-1", "Summary title");
+    seedMockConversation(seeded, []);
+
+    await expect(mockGetConversationSummary("summary-1")).resolves.toEqual(seeded);
+    await expect(mockChatApi.getConversationSummary("summary-1")).resolves.toEqual(seeded);
   });
 });
 

@@ -40,6 +40,7 @@ interface AgentsArtifactPaneRegionProps {
   conversationId: string;
   conversation: AgentConversation;
   workspace: AgentConversationWorkspace | null;
+  projectBaseBranch: string | null;
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
   artifactWidthCss: string;
@@ -60,6 +61,7 @@ export function AgentsArtifactPaneRegion({
   conversationId,
   conversation,
   workspace,
+  projectBaseBranch,
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
   artifactWidthCss,
@@ -120,6 +122,7 @@ export function AgentsArtifactPaneRegion({
                   <LazyAgentsArtifactPane
                     conversation={conversation}
                     workspace={workspace}
+                    projectBaseBranch={projectBaseBranch}
                     focusedIdeationSessionId={focusedIdeationSessionId}
                     activeTab={artifactState.activeTab}
                     taskMode={artifactState.taskMode}
