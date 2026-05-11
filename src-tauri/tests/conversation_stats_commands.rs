@@ -1,3 +1,4 @@
+use chrono::{Duration, Utc};
 use ralphx_lib::commands::conversation_stats_commands::{
     build_conversation_stats_response, build_scope_stats_response,
 };
@@ -55,6 +56,42 @@ fn test_conversation_stats_prefers_message_usage_when_available() {
 }
 
 #[test]
+fn test_conversation_stats_collapses_codex_cumulative_message_usage() {
+    let session_id = IdeationSessionId::new();
+    let mut conversation = ChatConversation::new_ideation(session_id.clone());
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "thread-cumulative".to_string(),
+    });
+
+    let now = Utc::now();
+    let messages: Vec<ChatMessage> = [1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000]
+        .into_iter()
+        .enumerate()
+        .map(|(index, input_tokens)| {
+            let mut message = ChatMessage::orchestrator_in_session(session_id.clone(), "done");
+            message.conversation_id = Some(conversation.id);
+            message.provider_harness = Some(AgentHarnessKind::Codex);
+            message.provider_session_id = Some("thread-cumulative".to_string());
+            message.input_tokens = Some(input_tokens);
+            message.output_tokens = Some(input_tokens / 100);
+            message.cache_read_tokens = Some(input_tokens - 1_000);
+            message.created_at = now + Duration::seconds(index as i64);
+            message
+        })
+        .collect();
+
+    let response = build_conversation_stats_response(&conversation, &messages, &[]);
+
+    assert_eq!(response.usage_coverage.effective_totals_source, "messages");
+    assert_eq!(response.message_usage_totals.input_tokens, 5_000_000);
+    assert_eq!(response.message_usage_totals.output_tokens, 50_000);
+    assert_eq!(response.message_usage_totals.cache_read_tokens, 4_999_000);
+    assert_eq!(response.effective_usage_totals.input_tokens, 5_000_000);
+    assert_eq!(response.by_harness[0].usage.input_tokens, 5_000_000);
+}
+
+#[test]
 fn test_conversation_stats_falls_back_to_run_usage_when_messages_lack_usage() {
     let session_id = IdeationSessionId::new();
     let mut conversation = ChatConversation::new_ideation(session_id.clone());
@@ -87,7 +124,12 @@ fn test_conversation_stats_falls_back_to_run_usage_when_messages_lack_usage() {
     assert_eq!(response.effective_usage_totals.input_tokens, 300);
     assert_eq!(response.by_upstream_provider[0].key, "z_ai");
     assert_eq!(response.by_model[0].key, "glm-4.7");
-    assert_eq!(response.attribution_coverage.provider_messages_with_attribution, 1);
+    assert_eq!(
+        response
+            .attribution_coverage
+            .provider_messages_with_attribution,
+        1
+    );
 }
 
 #[test]

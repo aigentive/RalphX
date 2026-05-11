@@ -17,7 +17,7 @@ use crate::domain::agents::{
     standard_harness_behavior, AgentHarnessKind, HarnessStreamMode, ProviderSessionRef,
 };
 use crate::domain::entities::{
-    ActivityEvent, ActivityEventType, AgentRunId, AgentRunUsage, ChatContextType,
+    ActivityEvent, ActivityEventType, AgentRun, AgentRunId, AgentRunUsage, ChatContextType,
     ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
     ChatTimelineItemStatus, MessageRole, TaskId,
 };
@@ -34,7 +34,8 @@ use crate::infrastructure::agents::{
     extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
     extract_codex_file_change_snapshot, extract_codex_thread_id, extract_codex_tool_call_snapshot,
     extract_codex_usage, parse_codex_event_line, CodexErrorSource, CodexFileChange,
-    CodexFileChangeSnapshot, CodexToolCallPhase, CodexToolCallSnapshot,
+    CodexFileChangeSnapshot, CodexToolCallPhase, CodexToolCallSnapshot, CodexUsage,
+    CodexUsageSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -679,19 +680,148 @@ fn resolve_codex_file_change_tool_call_snapshots(
         .collect()
 }
 
-fn add_usage_u64(total: &mut Option<u64>, value: Option<u64>) {
-    if let Some(value) = value {
-        *total = Some(total.unwrap_or(0) + value);
+fn agent_run_usage_from_codex_usage(usage: CodexUsage) -> AgentRunUsage {
+    AgentRunUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_creation_tokens: None,
+        cache_read_tokens: usage.cached_input_tokens,
+        estimated_usd: None,
     }
 }
 
-fn accumulate_codex_usage(
-    total: &mut AgentRunUsage,
-    usage: crate::infrastructure::agents::CodexUsage,
-) {
-    add_usage_u64(&mut total.input_tokens, usage.input_tokens);
-    add_usage_u64(&mut total.cache_read_tokens, usage.cached_input_tokens);
-    add_usage_u64(&mut total.output_tokens, usage.output_tokens);
+fn token_baseline_from_prior_runs(
+    current: Option<u64>,
+    prior_values: impl Iterator<Item = Option<u64>>,
+) -> Option<u64> {
+    let current = current?;
+    let values: Vec<u64> = prior_values.flatten().collect();
+    if values.is_empty() {
+        return Some(0);
+    }
+
+    let sum = values.iter().copied().sum::<u64>();
+    if sum <= current {
+        return Some(sum);
+    }
+
+    Some(values.iter().copied().max().unwrap_or(0).min(current))
+}
+
+fn cost_baseline_from_prior_runs(
+    current: Option<f64>,
+    prior_values: impl Iterator<Item = Option<f64>>,
+) -> Option<f64> {
+    let current = current?;
+    let values: Vec<f64> = prior_values.flatten().collect();
+    if values.is_empty() {
+        return Some(0.0);
+    }
+
+    let sum = values.iter().copied().sum::<f64>();
+    if sum <= current {
+        return Some(sum);
+    }
+
+    Some(values.iter().copied().fold(0.0, f64::max).min(current))
+}
+
+#[doc(hidden)]
+pub(crate) fn normalize_codex_cumulative_usage_for_persistence(
+    current: AgentRunUsage,
+    prior_runs: &[AgentRun],
+    current_run_id: Option<&str>,
+    provider_session_id: Option<&str>,
+) -> AgentRunUsage {
+    let matching_prior_runs: Vec<&AgentRun> = prior_runs
+        .iter()
+        .filter(|run| run.harness == Some(AgentHarnessKind::Codex))
+        .filter(|run| {
+            current_run_id
+                .map(|id| run.id.as_str() != id)
+                .unwrap_or(true)
+        })
+        .filter(|run| {
+            provider_session_id
+                .map(|session_id| run.provider_session_id.as_deref() == Some(session_id))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let input_baseline = token_baseline_from_prior_runs(
+        current.input_tokens,
+        matching_prior_runs.iter().map(|run| run.input_tokens),
+    );
+    let output_baseline = token_baseline_from_prior_runs(
+        current.output_tokens,
+        matching_prior_runs.iter().map(|run| run.output_tokens),
+    );
+    let cache_creation_baseline = token_baseline_from_prior_runs(
+        current.cache_creation_tokens,
+        matching_prior_runs
+            .iter()
+            .map(|run| run.cache_creation_tokens),
+    );
+    let cache_read_baseline = token_baseline_from_prior_runs(
+        current.cache_read_tokens,
+        matching_prior_runs.iter().map(|run| run.cache_read_tokens),
+    );
+    let estimated_usd_baseline = cost_baseline_from_prior_runs(
+        current.estimated_usd,
+        matching_prior_runs.iter().map(|run| run.estimated_usd),
+    );
+
+    AgentRunUsage {
+        input_tokens: current
+            .input_tokens
+            .map(|value| value.saturating_sub(input_baseline.unwrap_or(0))),
+        output_tokens: current
+            .output_tokens
+            .map(|value| value.saturating_sub(output_baseline.unwrap_or(0))),
+        cache_creation_tokens: current
+            .cache_creation_tokens
+            .map(|value| value.saturating_sub(cache_creation_baseline.unwrap_or(0))),
+        cache_read_tokens: current
+            .cache_read_tokens
+            .map(|value| value.saturating_sub(cache_read_baseline.unwrap_or(0))),
+        estimated_usd: current
+            .estimated_usd
+            .map(|value| (value - estimated_usd_baseline.unwrap_or(0.0)).max(0.0)),
+    }
+}
+
+async fn normalize_codex_stream_usage_for_persistence(
+    event_usage: AgentRunUsage,
+    source: CodexUsageSource,
+    agent_run_repo: &Option<Arc<dyn AgentRunRepository>>,
+    conversation_id: &ChatConversationId,
+    agent_run_id: Option<&str>,
+    provider_session_id: Option<&str>,
+) -> AgentRunUsage {
+    if source != CodexUsageSource::CumulativeTotal {
+        return event_usage;
+    }
+
+    let Some(repo) = agent_run_repo else {
+        return event_usage;
+    };
+
+    match repo.get_by_conversation(conversation_id).await {
+        Ok(prior_runs) => normalize_codex_cumulative_usage_for_persistence(
+            event_usage,
+            &prior_runs,
+            agent_run_id,
+            provider_session_id,
+        ),
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                error = %error,
+                "Failed to load prior Codex run usage; persisting raw stream usage"
+            );
+            event_usage
+        }
+    }
 }
 
 /// Per-context-type timeout thresholds for stream processing.
@@ -3204,7 +3334,15 @@ async fn process_codex_stream_background<R: Runtime>(
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
-                accumulate_codex_usage(&mut usage, event_usage);
+                usage = normalize_codex_stream_usage_for_persistence(
+                    agent_run_usage_from_codex_usage(event_usage.usage),
+                    event_usage.source,
+                    &agent_run_repo,
+                    conversation_id,
+                    agent_run_id.as_deref(),
+                    session_id.as_deref(),
+                )
+                .await;
                 persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &usage)
                     .await;
                 persist_agent_run_usage(&agent_run_repo, &agent_run_id, &usage).await;
