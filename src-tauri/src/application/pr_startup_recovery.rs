@@ -15,6 +15,7 @@ use futures::StreamExt as _;
 
 use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::chat_service::ChatService;
+use crate::application::git_service::{FetchOriginOutcome, GitService};
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
@@ -27,7 +28,9 @@ use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, ExecutionPlanRepository,
     IdeationSessionRepository, PlanBranchRepository, ProjectRepository, TaskRepository,
 };
-use crate::domain::services::{GithubServiceTrait, PlanPrPublisher, PrReviewState};
+use crate::domain::services::{
+    GithubServiceTrait, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
+};
 use crate::domain::state_machine::transition_handler::{
     create_draft_pr_if_needed, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
     sync_plan_branch_pr_if_needed,
@@ -710,6 +713,7 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
     project_repo: Arc<dyn ProjectRepository>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
@@ -721,7 +725,10 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
 
     for project in projects {
         if blocked_git_project_ids.contains(&project.id) {
-            tracing::warn!(project_id = project.id.as_str(), "Terminal PR local cleanup: skipping plan branches due to Git auth preflight");
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                "Terminal PR local cleanup: skipping plan branches due to Git auth preflight"
+            );
             continue;
         }
 
@@ -740,18 +747,20 @@ pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
                 continue;
             }
 
-            if let Some(github) = github_service.as_ref() {
+            if github_service.is_some() {
                 let base_ref =
                     crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(
                         &project,
                         &plan_branch,
                     );
-                if let Err(error) = github
-                    .fetch_remote(std::path::Path::new(&project.working_directory), &base_ref)
-                    .await
-                {
-                    tracing::warn!(project_id = project.id.as_str(), branch = %plan_branch.branch_name, base_ref = base_ref.as_str(), error = %error, "Terminal PR local cleanup: failed to fetch plan base before cleanup");
-                }
+                try_terminal_cleanup_maintenance_fetch(
+                    std::path::Path::new(&project.working_directory),
+                    &base_ref,
+                    &running_agent_registry,
+                    "plan_branch",
+                    plan_branch.branch_name.as_str(),
+                )
+                .await;
             }
 
             match crate::application::git_artifact_cleanup::cleanup_merged_plan_branch_local_artifacts(
@@ -773,6 +782,7 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
     project_repo: Arc<dyn ProjectRepository>,
     github_service: Option<Arc<dyn GithubServiceTrait>>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
@@ -784,7 +794,10 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
 
     for project in projects {
         if blocked_git_project_ids.contains(&project.id) {
-            tracing::warn!(project_id = project.id.as_str(), "Terminal agent workspace cleanup: skipping project due to Git auth preflight");
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                "Terminal agent workspace cleanup: skipping project due to Git auth preflight"
+            );
             continue;
         }
 
@@ -806,16 +819,16 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             let delete_branch_if_merged = pr_status == "merged";
 
             if delete_branch_if_merged {
-                if let Some(github) = github_service.as_ref() {
-                    if let Err(error) = github
-                        .fetch_remote(
-                            std::path::Path::new(&project.working_directory),
-                            &workspace.base_ref,
-                        )
-                        .await
-                    {
-                        tracing::warn!(conversation_id = workspace.conversation_id.as_str(), base_ref = workspace.base_ref.as_str(), error = %error, "Terminal agent workspace cleanup: failed to fetch base before cleanup");
-                    }
+                if github_service.is_some() {
+                    let cleanup_context = workspace.conversation_id.as_str();
+                    try_terminal_cleanup_maintenance_fetch(
+                        std::path::Path::new(&project.working_directory),
+                        &workspace.base_ref,
+                        &running_agent_registry,
+                        "agent_workspace",
+                        cleanup_context.as_ref(),
+                    )
+                    .await;
                 }
             }
 
@@ -829,6 +842,66 @@ pub async fn cleanup_terminal_agent_workspace_local_artifacts_on_startup(
                 Ok(report) => tracing::info!(conversation_id = workspace.conversation_id.as_str(), worktree_removed = report.worktree_removed, branch_deleted = report.branch_deleted, skipped_reason = report.skipped_reason.as_deref(), "Terminal agent workspace cleanup: local artifact cleanup completed"),
                 Err(error) => tracing::warn!(conversation_id = workspace.conversation_id.as_str(), error = %error, "Terminal agent workspace cleanup: local artifact cleanup failed"),
             }
+        }
+    }
+}
+
+async fn terminal_cleanup_should_skip_maintenance_fetch(
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+) -> bool {
+    !running_agent_registry.list_all().await.is_empty()
+}
+
+async fn try_terminal_cleanup_maintenance_fetch(
+    repo_path: &std::path::Path,
+    base_ref: &str,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    cleanup_scope: &'static str,
+    cleanup_context: &str,
+) {
+    if terminal_cleanup_should_skip_maintenance_fetch(running_agent_registry).await {
+        tracing::info!(
+            cleanup_scope,
+            cleanup_context,
+            base_ref,
+            "Terminal cleanup: skipped low-priority base fetch because user work is active"
+        );
+        return;
+    }
+
+    match GitService::try_fetch_origin_ref_for_maintenance(repo_path, base_ref).await {
+        Ok(FetchOriginOutcome::Fetched) => {
+            tracing::debug!(
+                cleanup_scope,
+                cleanup_context,
+                base_ref,
+                "Terminal cleanup: fetched base before cleanup"
+            )
+        }
+        Ok(FetchOriginOutcome::NoOriginRemote) => {
+            tracing::debug!(
+                cleanup_scope,
+                cleanup_context,
+                base_ref,
+                "Terminal cleanup: skipped base fetch because origin is not configured"
+            )
+        }
+        Ok(FetchOriginOutcome::SkippedBusy) => {
+            tracing::info!(
+                cleanup_scope,
+                cleanup_context,
+                base_ref,
+                "Terminal cleanup: skipped low-priority base fetch because git fetch is busy"
+            )
+        }
+        Err(error) => {
+            tracing::warn!(
+                cleanup_scope,
+                cleanup_context,
+                base_ref,
+                error = %error,
+                "Terminal cleanup: failed to fetch base before cleanup"
+            );
         }
     }
 }
@@ -1141,7 +1214,6 @@ mod tests {
     use crate::domain::services::github_service::{
         PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
     };
-    use crate::error::AppError;
     use crate::tests::mock_github_service::MockGithubService;
 
     fn run_git(repo: &Path, args: &[&str]) {
@@ -1309,13 +1381,16 @@ mod tests {
             Arc::clone(&app_state.project_repo),
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
         )
         .await;
 
         assert!(!branch_exists(repo.path(), branch));
-        let state = github.state();
-        assert_eq!(state.fetch_remote_calls, 1);
-        assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+        assert_eq!(
+            github.state().fetch_remote_calls,
+            0,
+            "startup cleanup should use GitService maintenance fetches, not GithubService fetch_remote"
+        );
     }
 
     #[tokio::test]
@@ -1354,18 +1429,21 @@ mod tests {
             Arc::clone(&app_state.project_repo),
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
         )
         .await;
 
         assert!(!worktree_path.exists());
         assert!(!branch_exists(repo.path(), &branch));
-        let state = github.state();
-        assert_eq!(state.fetch_remote_calls, 1);
-        assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+        assert_eq!(
+            github.state().fetch_remote_calls,
+            0,
+            "startup cleanup should use GitService maintenance fetches, not GithubService fetch_remote"
+        );
     }
 
     #[tokio::test]
-    async fn startup_terminal_agent_workspace_cleanup_continues_after_fetch_failure() {
+    async fn startup_terminal_agent_workspace_cleanup_continues_without_origin_fetch() {
         let app_state = AppState::new_test();
         let repo = init_cleanup_repo();
         let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -1394,21 +1472,19 @@ mod tests {
             .await
             .unwrap();
         let github = Arc::new(MockGithubService::new());
-        github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
-            "simulated fetch failure".to_string(),
-        )));
 
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
             Arc::clone(&app_state.agent_conversation_workspace_repo),
             Arc::clone(&app_state.project_repo),
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
         )
         .await;
 
         assert!(!worktree_path.exists());
         assert!(!branch_exists(repo.path(), &branch));
-        assert_eq!(github.state().fetch_remote_calls, 1);
+        assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
     #[tokio::test]
@@ -1461,6 +1537,7 @@ mod tests {
             Arc::clone(&app_state.project_repo),
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::clone(&blocked),
+            Arc::clone(&app_state.running_agent_registry),
         )
         .await;
         cleanup_terminal_agent_workspace_local_artifacts_on_startup(
@@ -1468,6 +1545,7 @@ mod tests {
             Arc::clone(&app_state.project_repo),
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             blocked,
+            Arc::clone(&app_state.running_agent_registry),
         )
         .await;
 
@@ -1477,7 +1555,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_terminal_cleanup_continues_after_fetch_failure() {
+    async fn startup_terminal_plan_cleanup_continues_without_origin_fetch() {
         let app_state = AppState::new_test();
         let repo = init_cleanup_repo();
         let worktrees = tempfile::tempdir().expect("worktree parent");
@@ -1528,20 +1606,18 @@ mod tests {
             .await
             .unwrap();
         let github = Arc::new(MockGithubService::new());
-        github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
-            "simulated fetch failure".to_string(),
-        )));
 
         cleanup_terminal_plan_branch_local_artifacts_on_startup(
             Arc::clone(&app_state.plan_branch_repo),
             Arc::clone(&app_state.project_repo),
             Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
             Arc::new(HashSet::new()),
+            Arc::clone(&app_state.running_agent_registry),
         )
         .await;
 
         assert!(!branch_exists(repo.path(), branch));
-        assert_eq!(github.state().fetch_remote_calls, 1);
+        assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
     #[tokio::test]

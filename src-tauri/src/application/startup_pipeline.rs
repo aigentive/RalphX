@@ -263,6 +263,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&project_repo),
         github_service.as_ref().map(Arc::clone),
         Arc::clone(&blocked_git_project_ids),
+        Arc::clone(&running_agent_registry),
     )
     .await;
 
@@ -315,6 +316,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&project_repo),
         github_service.as_ref().map(Arc::clone),
         Arc::clone(&blocked_git_project_ids),
+        Arc::clone(&running_agent_registry),
     )
     .await;
 

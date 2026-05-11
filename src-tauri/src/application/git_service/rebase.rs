@@ -23,6 +23,18 @@ static FETCH_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 /// Maximum time to wait for `FETCH_LOCK` before giving up and skipping the fetch.
 const FETCH_LOCK_TIMEOUT_SECS: u64 = 60;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FetchOriginOutcome {
+    Fetched,
+    NoOriginRemote,
+    SkippedBusy,
+}
+
+enum FetchLockMode {
+    Wait,
+    TryMaintenance,
+}
+
 impl GitService {
     // =========================================================================
     // Rebase Operations (Phase 1 - fast path)
@@ -38,35 +50,69 @@ impl GitService {
     /// # Arguments
     /// * `repo` - Path to the git repository
     pub async fn fetch_origin(repo: &Path) -> AppResult<()> {
-        debug!("Fetching from origin in {:?}", repo);
+        Self::fetch_origin_with_lock(repo, &["fetch", "--prune", "origin"], FetchLockMode::Wait)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn try_fetch_origin_ref_for_maintenance(
+        repo: &Path,
+        ref_name: &str,
+    ) -> AppResult<FetchOriginOutcome> {
+        Self::fetch_origin_with_lock(
+            repo,
+            &["fetch", "origin", ref_name],
+            FetchLockMode::TryMaintenance,
+        )
+        .await
+    }
+
+    async fn fetch_origin_with_lock(
+        repo: &Path,
+        args: &[&str],
+        lock_mode: FetchLockMode,
+    ) -> AppResult<FetchOriginOutcome> {
+        debug!(args = ?args, "Fetching from origin in {:?}", repo);
 
         if !Self::has_origin_remote(repo).await {
             debug!("No origin remote configured, skipping fetch");
-            return Ok(());
+            return Ok(FetchOriginOutcome::NoOriginRemote);
         }
 
-        // Acquire the global fetch serialization lock with a timeout.
-        // If we can't get the lock in time, skip fetch rather than blocking forever.
-        let lock_result = timeout(
-            Duration::from_secs(FETCH_LOCK_TIMEOUT_SECS),
-            FETCH_LOCK.lock(),
-        )
-        .await;
-
-        let _guard = match lock_result {
-            Ok(guard) => guard,
-            Err(_elapsed) => {
-                warn!(
-                    "fetch_origin: could not acquire FETCH_LOCK within {}s, skipping fetch for {:?}",
-                    FETCH_LOCK_TIMEOUT_SECS, repo
-                );
-                return Ok(());
+        let _guard = match lock_mode {
+            FetchLockMode::Wait => {
+                match timeout(
+                    Duration::from_secs(FETCH_LOCK_TIMEOUT_SECS),
+                    FETCH_LOCK.lock(),
+                )
+                .await
+                {
+                    Ok(guard) => guard,
+                    Err(_elapsed) => {
+                        warn!(
+                            "fetch_origin: could not acquire FETCH_LOCK within {}s, skipping fetch for {:?}",
+                            FETCH_LOCK_TIMEOUT_SECS, repo
+                        );
+                        return Ok(FetchOriginOutcome::SkippedBusy);
+                    }
+                }
             }
+            FetchLockMode::TryMaintenance => match FETCH_LOCK.try_lock() {
+                Ok(guard) => guard,
+                Err(_busy) => {
+                    debug!(
+                        args = ?args,
+                        "fetch_origin: FETCH_LOCK busy, skipping low-priority maintenance fetch for {:?}",
+                        repo
+                    );
+                    return Ok(FetchOriginOutcome::SkippedBusy);
+                }
+            },
         };
 
-        debug!("fetch_origin: acquired FETCH_LOCK, fetching {:?}", repo);
+        debug!(args = ?args, "fetch_origin: acquired FETCH_LOCK, fetching {:?}", repo);
 
-        let output = git_cmd::run(&["fetch", "--prune", "origin"], repo).await?;
+        let output = git_cmd::run(args, repo).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -78,7 +124,12 @@ impl GitService {
             warn!("Git fetch failed (non-fatal): {}", stderr);
         }
 
-        Ok(())
+        Ok(FetchOriginOutcome::Fetched)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fetch_lock_guard_for_test() -> tokio::sync::MutexGuard<'static, ()> {
+        FETCH_LOCK.lock().await
     }
 
     /// Check whether the repository has an `origin` remote configured.
