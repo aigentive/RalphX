@@ -1115,6 +1115,54 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
+  it("advances publish progress from durable events while the workspace status is stale", async () => {
+    const publishDeferred = deferred<void>();
+    const publish = vi.fn(() => publishDeferred.promise);
+    listPublicationEventsMock.mockResolvedValue([
+      {
+        id: "event-describing",
+        conversationId: "conversation-1",
+        step: "describing",
+        status: "started",
+        summary: "Drafting pull request description",
+        classification: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    await waitFor(() => expect(listPublicationEventsMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled());
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Commit & Publish",
+      }),
+    );
+
+    const progressDialog = await screen.findByRole("dialog", {
+      name: "Publishing workspace",
+    });
+    await waitFor(() => {
+      expect(
+        within(progressDialog)
+          .getByTestId("agents-publish-dialog-step-describing")
+          .querySelector(".animate-spin"),
+      ).not.toBeNull();
+    });
+    expect(
+      within(progressDialog)
+        .getByTestId("agents-publish-dialog-step-checking")
+        .querySelector(".animate-spin"),
+    ).toBeNull();
+
+    await act(async () => {
+      publishDeferred.resolve();
+      await publishDeferred.promise;
+    });
+  });
+
   it("cancels the publish confirmation without starting publish", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
 
