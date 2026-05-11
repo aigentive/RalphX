@@ -2000,6 +2000,92 @@ describe("AgentsSidebar", () => {
     expect(onArchiveConversation).toHaveBeenCalledWith(active);
   });
 
+  it("opens the selected conversation destination group when publication state changes", async () => {
+    const selected = conversation({
+      id: "conversation-selected-publish",
+      title: "Selected publish run",
+    });
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active", "draft"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [selected],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({ conversationId: selected.id }),
+    ]);
+
+    const sidebarProps: Partial<ComponentProps<typeof AgentsSidebar>> = {
+      selectedConversationId: selected.id,
+    };
+    const { rerender } = renderSidebar([project()], sidebarProps);
+
+    expect(screen.getByTestId("agents-publication-row-active")).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByTestId("agents-session-conversation-selected-publish"))
+      .toBeInTheDocument();
+    expect(screen.getByTestId("agents-publication-row-draft")).not.toHaveAttribute(
+      "aria-current",
+    );
+
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: selected.id,
+        publicationPrNumber: 194,
+        publicationPrStatus: "draft",
+        publicationPushStatus: "pushed",
+      }),
+    ]);
+
+    rerender(
+      <TooltipProvider delayDuration={0}>
+        <AgentsSidebar
+          projects={[project()]}
+          focusedProjectId="project-1"
+          selectedConversationId={selected.id}
+          onFocusProject={vi.fn()}
+          onSelectConversation={vi.fn()}
+          onCreateAgent={vi.fn()}
+          onCreateProject={vi.fn()}
+          onArchiveProject={vi.fn()}
+          onRenameConversation={vi.fn()}
+          onArchiveConversation={vi.fn()}
+          onRestoreConversation={vi.fn()}
+          showArchived={false}
+          onShowArchivedChange={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publication-row-draft")).toHaveAttribute(
+        "aria-current",
+        "true",
+      )
+    );
+    expect(screen.getByTestId("agents-publication-row-active")).not.toHaveAttribute(
+      "aria-current",
+    );
+    expect(screen.getByTestId("agents-session-conversation-selected-publish"))
+      .toBeInTheDocument();
+    expect(publicationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          publicationState: "draft",
+          pinnedConversationIds: [selected.id],
+        }),
+      ])
+    );
+  });
+
   it("hides publication groups when every publication state is filtered out", async () => {
     const user = userEvent.setup();
     useAgentSessionStore.setState({

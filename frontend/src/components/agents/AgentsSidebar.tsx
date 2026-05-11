@@ -198,8 +198,8 @@ export function AgentsSidebar({
     () => Object.keys(pinnedConversationIds),
     [pinnedConversationIds]
   );
-  // Visible-row selections are already in the loaded pages; promoting them to
-  // query-priority IDs would restart infinite pagination at page one.
+  // Visible project-group selections are already in loaded pages; publication
+  // grouping also prioritizes the current selection so state moves keep it visible.
   const [sidebarSelectedConversationIds, setSidebarSelectedConversationIds] = useState<
     Record<string, true>
   >({});
@@ -216,11 +216,20 @@ export function AgentsSidebar({
   );
   const priorityConversationIds = useMemo(() => {
     const ids = new Set(pinnedConversationIdList);
+    if (sidebarGroupBy === "publication" && selectedConversationId) {
+      ids.add(selectedConversationId);
+    }
     if (pinnedConversation && !sidebarSelectedConversationIds[pinnedConversation.id]) {
       ids.add(pinnedConversation.id);
     }
     return Array.from(ids);
-  }, [pinnedConversation, pinnedConversationIdList, sidebarSelectedConversationIds]);
+  }, [
+    pinnedConversation,
+    pinnedConversationIdList,
+    selectedConversationId,
+    sidebarGroupBy,
+    sidebarSelectedConversationIds,
+  ]);
   const selectedProjectFilterIds = useMemo(() => {
     if (showAllProjects) {
       return projects.map((project) => project.id);
@@ -946,6 +955,14 @@ function PublicationStateGroups({
 }: PublicationStateGroupsProps) {
   const [expandedPublicationState, setExpandedPublicationState] =
     useState<AgentSidebarPublicationState | null>(() => selectedPublicationStates[0] ?? null);
+  const handleSelectedConversationPublicationState = useCallback(
+    (publicationState: AgentSidebarPublicationState) => {
+      setExpandedPublicationState((current) =>
+        current === publicationState ? current : publicationState
+      );
+    },
+    []
+  );
 
   useEffect(() => {
     if (selectedPublicationStates.length === 0) {
@@ -983,6 +1000,9 @@ function PublicationStateGroups({
           onTogglePublicationState={(state, expanded) =>
             setExpandedPublicationState(expanded ? state : null)
           }
+          onSelectedConversationPublicationState={
+            handleSelectedConversationPublicationState
+          }
         />
       ))}
     </>
@@ -1009,6 +1029,9 @@ interface PublicationStateGroupProps {
     publicationState: AgentSidebarPublicationState,
     expanded: boolean,
   ) => void;
+  onSelectedConversationPublicationState: (
+    publicationState: AgentSidebarPublicationState
+  ) => void;
 }
 
 function PublicationStateGroup({
@@ -1028,6 +1051,7 @@ function PublicationStateGroup({
   onSelectConversation,
   onTogglePinnedConversation,
   onTogglePublicationState,
+  onSelectedConversationPublicationState,
 }: PublicationStateGroupProps) {
   const projectIds = useMemo(() => projects.map((project) => project.id), [projects]);
   const projectById = useMemo(
@@ -1073,6 +1097,23 @@ function PublicationStateGroup({
     () => groupQuery.group.rows.map((row) => toProjectAgentConversation(row.conversation)),
     [groupQuery.group.rows]
   );
+  const selectedConversationInGroup = useMemo(
+    () =>
+      selectedConversationId !== null &&
+      groupQuery.group.rows.some(
+        (row) => row.conversation.id === selectedConversationId
+      ),
+    [groupQuery.group.rows, selectedConversationId]
+  );
+  useEffect(() => {
+    if (selectedConversationInGroup) {
+      onSelectedConversationPublicationState(publicationState);
+    }
+  }, [
+    onSelectedConversationPublicationState,
+    publicationState,
+    selectedConversationInGroup,
+  ]);
   useAgentSidebarRunningStates(visibleConversations, isSidebarVisible && expanded);
 
   return (
