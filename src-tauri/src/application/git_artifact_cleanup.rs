@@ -132,7 +132,6 @@ async fn remove_clean_agent_worktree(
         "agent workspace cleanup",
     )?;
     if !safe_path.exists() {
-        GitService::delete_worktree(repo_path, &safe_path).await?;
         return Ok(());
     }
 
@@ -146,7 +145,24 @@ async fn remove_clean_agent_worktree(
         return Ok(());
     }
 
-    GitService::delete_worktree(repo_path, &safe_path).await?;
+    let safe_path_for_compare = safe_path
+        .canonicalize()
+        .unwrap_or_else(|_| safe_path.clone());
+    let is_registered_worktree = GitService::list_worktrees(repo_path)
+        .await
+        .map(|worktrees| {
+            worktrees.iter().any(|worktree| {
+                let worktree_path = PathBuf::from(&worktree.path);
+                worktree_path.canonicalize().unwrap_or(worktree_path) == safe_path_for_compare
+            })
+        })
+        .unwrap_or(true);
+
+    if is_registered_worktree {
+        GitService::delete_worktree(repo_path, &safe_path).await?;
+    } else {
+        crate::utils::path_safety::checked_remove_dir_all(&safe_path, "agent workspace").await?;
+    }
     report.worktree_removed = true;
     Ok(())
 }

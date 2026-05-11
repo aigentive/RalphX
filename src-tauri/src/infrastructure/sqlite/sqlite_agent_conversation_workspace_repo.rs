@@ -232,6 +232,53 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn get_terminal_local_cleanup_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE project_id = ?1
+                       AND local_cleanup_status IS NULL
+                       AND publication_pr_status IN ('closed', 'merged')
+                     ORDER BY created_at DESC",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![project_id], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn mark_local_cleanup_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let status = status.to_string();
+        let checked_at = checked_at.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET local_cleanup_status = ?1, local_cleanup_checked_at = ?2,
+                         updated_at = ?2
+                     WHERE conversation_id = ?3",
+                    rusqlite::params![status, checked_at, conversation_id],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn list_active_direct_published_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {

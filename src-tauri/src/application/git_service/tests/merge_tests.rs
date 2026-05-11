@@ -1134,6 +1134,34 @@ async fn test_maintenance_fetch_origin_ref_fetches_ref() {
 }
 
 #[tokio::test]
+async fn test_maintenance_fetch_origin_ref_reports_missing_remote_ref() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let remote = temp_dir.path().join("origin.git");
+    let repo = temp_dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+
+    Command::new("git")
+        .args(["init", "--bare", remote.to_str().unwrap()])
+        .output()
+        .unwrap();
+    init_test_repo(&repo);
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["remote", "add", "origin", remote.to_str().unwrap()])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    let outcome = maintenance_fetch_until_not_busy(&repo, "deleted-branch").await;
+
+    assert_eq!(outcome, FetchOriginOutcome::RemoteRefMissing);
+}
+
+#[tokio::test]
 async fn test_fetch_origin_prunes_deleted_remote_tracking_refs() {
     let temp_dir = tempfile::tempdir().unwrap();
     let remote = temp_dir.path().join("origin.git");

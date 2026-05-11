@@ -93,6 +93,19 @@ fn run_startup_orphan_mcp_cleanup(kill_orphans: impl FnOnce() -> u32) -> u32 {
     mcp_killed
 }
 
+fn startup_phase_started(phase: &'static str) -> Instant {
+    tracing::info!(phase, "Startup phase starting");
+    Instant::now()
+}
+
+fn startup_phase_completed(phase: &'static str, started_at: Instant) {
+    tracing::info!(
+        phase,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "Startup phase completed"
+    );
+}
+
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
     let previous_session_cutoff = startup_previous_session_cutoff();
 
@@ -153,13 +166,17 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         mode,
     } = deps;
 
+    let phase_started_at = startup_phase_started("git_auth_preflight");
     let startup_git_preflight =
         crate::application::startup_git_auth_preflight::run_startup_git_auth_preflight(
             Arc::clone(&project_repo),
             Arc::clone(&app_state_repo),
+            Some(Arc::clone(&plan_branch_repo)),
+            Some(Arc::clone(&agent_conversation_workspace_repo)),
             &app_handle,
         )
         .await;
+    startup_phase_completed("git_auth_preflight", phase_started_at);
     let active_git_startup_blocked = startup_git_preflight.active_project_blocked();
     let has_git_startup_blocked_projects = startup_git_preflight.has_blocked_projects();
     let blocked_git_project_ids = Arc::new(startup_git_preflight.blocked_project_ids());
@@ -262,20 +279,24 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     }
 
     tracing::info!("Running PR startup recovery...");
-    tracing::info!("Running terminal PR local git cleanup...");
-    let phase_started_at = Instant::now();
-    crate::application::pr_startup_recovery::cleanup_terminal_plan_branch_local_artifacts_on_startup(
-        Arc::clone(&plan_branch_repo),
-        Arc::clone(&project_repo),
-        github_service.as_ref().map(Arc::clone),
-        Arc::clone(&blocked_git_project_ids),
-        Arc::clone(&running_agent_registry),
-    )
-    .await;
-    tracing::info!(
-        elapsed_ms = phase_started_at.elapsed().as_millis(),
-        "Startup phase completed: terminal PR local git cleanup"
-    );
+    tracing::info!("Scheduling terminal PR local git cleanup...");
+    {
+        let plan_branch_repo = Arc::clone(&plan_branch_repo);
+        let project_repo = Arc::clone(&project_repo);
+        let github_service = github_service.as_ref().map(Arc::clone);
+        let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+        let running_agent_registry = Arc::clone(&running_agent_registry);
+        tauri::async_runtime::spawn(async move {
+            crate::application::pr_startup_recovery::cleanup_terminal_plan_branch_local_artifacts_on_startup(
+                plan_branch_repo,
+                project_repo,
+                github_service,
+                blocked_git_project_ids,
+                running_agent_registry,
+            )
+            .await;
+        });
+    }
 
     let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::recover_pr_pollers(
@@ -326,19 +347,24 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     );
 
     tracing::info!("Running agent workspace PR startup recovery...");
-    let phase_started_at = Instant::now();
-    crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
-        Arc::clone(&agent_conversation_workspace_repo),
-        Arc::clone(&project_repo),
-        github_service.as_ref().map(Arc::clone),
-        Arc::clone(&blocked_git_project_ids),
-        Arc::clone(&running_agent_registry),
-    )
-    .await;
-    tracing::info!(
-        elapsed_ms = phase_started_at.elapsed().as_millis(),
-        "Startup phase completed: terminal agent workspace local cleanup"
-    );
+    tracing::info!("Scheduling terminal agent workspace local cleanup...");
+    {
+        let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let project_repo = Arc::clone(&project_repo);
+        let github_service = github_service.as_ref().map(Arc::clone);
+        let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+        let running_agent_registry = Arc::clone(&running_agent_registry);
+        tauri::async_runtime::spawn(async move {
+            crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+                agent_conversation_workspace_repo,
+                project_repo,
+                github_service,
+                blocked_git_project_ids,
+                running_agent_registry,
+            )
+            .await;
+        });
+    }
 
     let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
@@ -382,21 +408,27 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_previous_session_cutoff(previous_session_cutoff)
     .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids));
 
+    let phase_started_at = startup_phase_started("startup_job_runner");
     let startup_ideation_recovery_claims = runner.run().await;
+    startup_phase_completed("startup_job_runner", phase_started_at);
 
+    let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&agent_run_repo),
     )
     .await;
+    startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
 
     if mode == StartupPipelineMode::Full {
+        let phase_started_at = startup_phase_started("memory_archive_recovery");
         startup_background::recover_memory_archive_jobs_on_startup(
             Arc::clone(&memory_archive_repo),
             Arc::clone(&memory_entry_repo),
             Arc::clone(&project_repo),
         )
         .await;
+        startup_phase_completed("memory_archive_recovery", phase_started_at);
     }
 
     if active_git_startup_blocked {
@@ -417,7 +449,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             app_handle: app_handle.clone(),
         });
+        let phase_started_at = startup_phase_started("chat_resumption");
         chat_resumption.run().await;
+        startup_phase_completed("chat_resumption", phase_started_at);
     }
 
     let reconcile_transition_service = startup_transition_factory
@@ -453,9 +487,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             "Startup Git auth preflight blocked active-project reconciliation and ready-task watchdog until user repair"
         );
     } else {
+        let phase_started_at = startup_phase_started("timeout_failure_recovery");
         reconcile_runner.recover_timeout_failures().await;
-        reconcile_runner.reconcile_stuck_tasks().await;
+        startup_phase_completed("timeout_failure_recovery", phase_started_at);
 
+        let phase_started_at = startup_phase_started("stuck_task_reconciliation");
+        reconcile_runner.reconcile_stuck_tasks().await;
+        startup_phase_completed("stuck_task_reconciliation", phase_started_at);
+
+        let phase_started_at = startup_phase_started("stuck_task_reconciliation_loop_spawn");
         tauri::async_runtime::spawn(async move {
             let interval = Duration::from_secs(30);
             loop {
@@ -463,12 +503,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 reconcile_runner.reconcile_stuck_tasks().await;
             }
         });
+        startup_phase_completed("stuck_task_reconciliation_loop_spawn", phase_started_at);
 
+        let phase_started_at = startup_phase_started("watchdog_spawn");
         startup_background::spawn_watchdog(
             Arc::clone(&task_scheduler),
             Arc::clone(&task_repo),
             Arc::clone(&project_repo),
         );
+        startup_phase_completed("watchdog_spawn", phase_started_at);
     }
 
     if mode == StartupPipelineMode::Full {
@@ -494,7 +537,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             recovery_config,
         );
         let recovery_queue = Arc::new(recovery_queue);
+        let phase_started_at = startup_phase_started("verification_recovery_queue_spawn");
         startup_background::spawn_recovery_queue_processor(recovery_processor);
+        startup_phase_completed("verification_recovery_queue_spawn", phase_started_at);
 
         let verification_config = default_verification_reconciliation_config();
         let svc = Arc::new(
@@ -506,11 +551,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             .with_recovery_queue(Arc::clone(&recovery_queue))
             .with_running_agent_registry(Arc::clone(&running_agent_registry)),
         );
+        let phase_started_at = startup_phase_started("verification_startup_scan");
         startup_background::startup_scan_verification_reconciliation(
             svc,
             &startup_ideation_recovery_claims,
         )
         .await;
+        startup_phase_completed("verification_startup_scan", phase_started_at);
     }
 
     if active_git_startup_blocked {
@@ -518,6 +565,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             "Startup Git auth preflight blocked agent workspace bridge dispatcher until user repair"
         );
     } else {
+        let phase_started_at = startup_phase_started("agent_workspace_bridge_dispatcher_spawn");
         startup_background::spawn_agent_workspace_bridge_dispatcher(
             AgentWorkspaceBridgeDeps {
                 project_repo: Arc::clone(&project_repo),
@@ -532,22 +580,18 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&execution_state),
             app_handle.clone(),
         );
+        startup_phase_completed("agent_workspace_bridge_dispatcher_spawn", phase_started_at);
     }
 
     if mode == StartupPipelineMode::Full {
+        let phase_started_at = startup_phase_started("cleanup_loop_spawn");
         startup_background::spawn_cleanup_loops(
             Arc::clone(&external_events_repo),
             Arc::clone(&memory_archive_repo),
             Arc::clone(&memory_entry_repo),
             Arc::clone(&project_repo),
         );
-    }
-
-    if mode == StartupPipelineMode::Full {
-        startup_background::maybe_start_external_mcp(app_handle, |port, timeout| {
-            Box::pin(crate::wait_for_backend_ready(port, timeout))
-        })
-        .await;
+        startup_phase_completed("cleanup_loop_spawn", phase_started_at);
     }
 
     if mode == StartupPipelineMode::DeferredGitResume && !has_git_startup_blocked_projects {

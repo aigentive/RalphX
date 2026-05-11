@@ -223,11 +223,14 @@ pub(crate) async fn inspect_origin_auth_config(
     working_dir: &Path,
 ) -> AppResult<GitRemoteAuthConfig> {
     let fetch_url = read_origin_url(working_dir, &["remote", "get-url", "origin"]).await?;
-    let push_url =
+    let push_url = if fetch_url.is_some() {
         match read_origin_url(working_dir, &["remote", "get-url", "--push", "origin"]).await {
             Ok(Some(url)) => Some(url),
             _ => fetch_url.clone(),
-        };
+        }
+    } else {
+        None
+    };
 
     Ok(GitRemoteAuthConfig {
         fetch_url,
@@ -308,6 +311,7 @@ fn format_git_auth_recovery(
 
 async fn read_origin_url(working_dir: &Path, args: &[&str]) -> AppResult<Option<String>> {
     let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
+    let started_at = std::time::Instant::now();
     let mut command = Command::new(resolve_git_cli_path());
     apply_git_subprocess_env(&mut command);
     let child = command
@@ -321,10 +325,28 @@ async fn read_origin_url(working_dir: &Path, args: &[&str]) -> AppResult<Option<
 
     let output = timeout(Duration::from_secs(5), child.wait_with_output())
         .await
-        .map_err(|_| AppError::GitOperation("git remote get-url timed out".to_string()))?
+        .map_err(|_| {
+            tracing::warn!(
+                command = %args.join(" "),
+                cwd = %working_dir.display(),
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Startup Git auth preflight: git remote inspection timed out"
+            );
+            AppError::GitOperation("git remote get-url timed out".to_string())
+        })?
         .map_err(|error| {
             AppError::GitOperation(format!("failed to inspect git remote: {error}"))
         })?;
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if elapsed_ms >= 500 {
+        tracing::warn!(
+            command = %args.join(" "),
+            cwd = %working_dir.display(),
+            elapsed_ms,
+            success = output.status.success(),
+            "Startup Git auth preflight: slow git remote inspection completed"
+        );
+    }
 
     if !output.status.success() {
         return Ok(None);

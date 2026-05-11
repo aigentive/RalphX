@@ -59,6 +59,14 @@ lazy_static! {
         std::sync::Mutex::new(std::collections::HashMap::new());
 }
 
+fn db_caller_module(caller_file: &str) -> String {
+    std::path::Path::new(caller_file)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(caller_file)
+        .to_string()
+}
+
 impl DbConnection {
     pub fn new(conn: Connection) -> Self {
         Self {
@@ -105,7 +113,8 @@ impl DbConnection {
         let caller = std::panic::Location::caller();
         let caller_file = caller.file().to_string();
         let caller_line = caller.line();
-        let (conn, connection_backend, connection_index) = self.pick_connection();
+        let caller_module = db_caller_module(&caller_file);
+        let (conn, connection_backend, connection_index, connection_pick) = self.pick_connection();
         async move {
             tokio::task::spawn_blocking(move || {
                 #[cfg(debug_assertions)]
@@ -128,10 +137,12 @@ impl DbConnection {
                             lock_wait_ms,
                             lock_hold_ms,
                             method = "run",
+                            caller_module = caller_module.as_str(),
                             caller_file = caller_file.as_str(),
                             caller_line,
                             connection_backend,
                             connection_index,
+                            connection_pick,
                             "DB lock contention: lock wait exceeded 100ms"
                         );
                     } else {
@@ -140,10 +151,12 @@ impl DbConnection {
                             lock_wait_ms,
                             lock_hold_ms,
                             method = "run",
+                            caller_module = caller_module.as_str(),
                             caller_file = caller_file.as_str(),
                             caller_line,
                             connection_backend,
                             connection_index,
+                            connection_pick,
                         );
                     }
                 }
@@ -184,7 +197,8 @@ impl DbConnection {
         let caller = std::panic::Location::caller();
         let caller_file = caller.file().to_string();
         let caller_line = caller.line();
-        let (conn, connection_backend, connection_index) = self.pick_connection();
+        let caller_module = db_caller_module(&caller_file);
+        let (conn, connection_backend, connection_index, connection_pick) = self.pick_connection();
         async move {
             tokio::task::spawn_blocking(move || {
                 #[cfg(debug_assertions)]
@@ -221,10 +235,12 @@ impl DbConnection {
                             lock_wait_ms,
                             lock_hold_ms,
                             method = "run_transaction",
+                            caller_module = caller_module.as_str(),
                             caller_file = caller_file.as_str(),
                             caller_line,
                             connection_backend,
                             connection_index,
+                            connection_pick,
                             "DB lock contention: lock wait exceeded 100ms"
                         );
                     } else {
@@ -233,10 +249,12 @@ impl DbConnection {
                             lock_wait_ms,
                             lock_hold_ms,
                             method = "run_transaction",
+                            caller_module = caller_module.as_str(),
                             caller_file = caller_file.as_str(),
                             caller_line,
                             connection_backend,
                             connection_index,
+                            connection_pick,
                         );
                     }
                 }
@@ -269,12 +287,29 @@ impl DbConnection {
         })
     }
 
-    fn pick_connection(&self) -> (Arc<Mutex<Connection>>, &'static str, usize) {
+    fn pick_connection(&self) -> (Arc<Mutex<Connection>>, &'static str, usize, &'static str) {
         match self.backend.as_ref() {
-            DbBackend::Single(conn) => (Arc::clone(conn), "single", 0),
+            DbBackend::Single(conn) => (Arc::clone(conn), "single", 0, "single"),
             DbBackend::Pool(pool) => {
-                let idx = pool.next_index.fetch_add(1, Ordering::Relaxed) % pool.connections.len();
-                (Arc::clone(&pool.connections[idx]), "pool", idx)
+                let start =
+                    pool.next_index.fetch_add(1, Ordering::Relaxed) % pool.connections.len();
+                for offset in 0..pool.connections.len() {
+                    let idx = (start + offset) % pool.connections.len();
+                    if pool.connections[idx].try_lock().is_ok() {
+                        return (
+                            Arc::clone(&pool.connections[idx]),
+                            "pool",
+                            idx,
+                            "first_available",
+                        );
+                    }
+                }
+                (
+                    Arc::clone(&pool.connections[start]),
+                    "pool",
+                    start,
+                    "round_robin",
+                )
             }
         }
     }

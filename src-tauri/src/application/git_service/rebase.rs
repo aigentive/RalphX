@@ -26,6 +26,8 @@ const FETCH_LOCK_TIMEOUT_SECS: u64 = 60;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FetchOriginOutcome {
     Fetched,
+    RemoteRefMissing,
+    FailedNonFatal,
     NoOriginRemote,
     SkippedBusy,
 }
@@ -122,6 +124,13 @@ impl GitService {
                 return Err(error);
             }
             warn!("Git fetch failed (non-fatal): {}", stderr);
+            if stderr.contains("couldn't find remote ref")
+                || stderr.contains("could not find remote ref")
+                || stderr.contains("remote ref does not exist")
+            {
+                return Ok(FetchOriginOutcome::RemoteRefMissing);
+            }
+            return Ok(FetchOriginOutcome::FailedNonFatal);
         }
 
         Ok(FetchOriginOutcome::Fetched)
