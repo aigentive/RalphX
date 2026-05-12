@@ -31,7 +31,7 @@ pub(crate) struct OrphanCleanupStats {
 }
 
 impl OrphanCleanupStats {
-    fn log_summary(&self, started_at: Instant, paused: bool) {
+    pub(super) fn log_summary(&self, started_at: Instant, paused: bool) {
         tracing::info!(
             cleanup_scope = "orphan_agent_workspace_cleanup",
             paused,
@@ -115,7 +115,7 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
     stats.log_summary(started_at, false);
 }
 
-async fn cleanup_project_orphan_worktrees(
+pub(super) async fn cleanup_project_orphan_worktrees(
     project: &Project,
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
@@ -218,7 +218,7 @@ async fn cleanup_project_orphan_worktrees(
     .await;
 }
 
-async fn scan_canonical_directories(
+pub(super) async fn scan_canonical_directories(
     project: &Project,
     repo_path: &Path,
     worktree_parent: &Path,
@@ -388,7 +388,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
     }
 }
 
-async fn detect_worktree_branch(worktree_path: &Path) -> Option<String> {
+pub(super) async fn detect_worktree_branch(worktree_path: &Path) -> Option<String> {
     let head_file = worktree_path.join(".git");
     if !head_file.exists() {
         return None;
@@ -413,10 +413,10 @@ async fn detect_worktree_branch(worktree_path: &Path) -> Option<String> {
     }
 }
 
-fn is_under_worktree_parent(path: &Path, worktree_parent: &Path) -> bool {
+pub(super) fn is_under_worktree_parent(path: &Path, worktree_parent: &Path) -> bool {
     path.starts_with(worktree_parent)
 }
 
-async fn should_pause(registry: &Arc<dyn RunningAgentRegistry>) -> bool {
+pub(super) async fn should_pause(registry: &Arc<dyn RunningAgentRegistry>) -> bool {
     !registry.list_all().await.is_empty()
 }
