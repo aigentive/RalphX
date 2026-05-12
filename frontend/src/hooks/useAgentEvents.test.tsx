@@ -1192,7 +1192,9 @@ describe("useAgentEvents", () => {
       });
 
       // Transitions to waiting_for_input — agent alive, not generating
-      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe("waiting_for_input");
+      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe(
+        "waiting_for_input"
+      );
     });
 
     it("ignores stale turn completion from an older run on the same conversation", () => {
@@ -1427,7 +1429,9 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe("generating");
+      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe(
+        "generating"
+      );
 
       act(() => {
         emitEvent("agent:turn_completed", {
@@ -1439,7 +1443,9 @@ describe("useAgentEvents", () => {
       });
 
       // Turn completed — waiting for user input
-      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe("waiting_for_input");
+      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe(
+        "waiting_for_input"
+      );
 
       act(() => {
         emitEvent("agent:run_completed", {
@@ -1452,6 +1458,75 @@ describe("useAgentEvents", () => {
 
       // Process died — should be cleared
       expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBeUndefined();
+    });
+
+    it("interactive stdin continuations settle when run_started reuses the process run id", () => {
+      const wrapper = createWrapper();
+      renderHook(() => useAgentEvents("conv-1"), { wrapper });
+
+      act(() => {
+        emitEvent("agent:run_started", {
+          run_id: "run-process",
+          context_type: "task_execution",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+        });
+      });
+
+      act(() => {
+        emitEvent("agent:turn_completed", {
+          run_id: "run-process",
+          context_type: "task_execution",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+        });
+      });
+
+      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe(
+        "waiting_for_input"
+      );
+
+      act(() => {
+        emitEvent("agent:run_started", {
+          run_id: "run-process",
+          context_type: "task_execution",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+        });
+      });
+
+      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe(
+        "generating"
+      );
+
+      act(() => {
+        emitEvent("agent:turn_completed", {
+          run_id: "run-process",
+          context_type: "task_execution",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+        });
+      });
+
+      expect(useChatStore.getState().agentStatus["task_execution:task-123"]).toBe(
+        "waiting_for_input"
+      );
+
+      act(() => {
+        emitEvent("agent:run_completed", {
+          run_id: "run-process",
+          context_type: "task_execution",
+          context_id: "task-123",
+          conversation_id: "conv-1",
+        });
+      });
+
+      expect(
+        useChatStore.getState().agentStatus["task_execution:task-123"]
+      ).toBeUndefined();
+      expect(
+        useChatStore.getState().activeAgentRunIds["task_execution:task-123"]
+      ).toBeUndefined();
     });
 
     it("rapid burst: turn_completed ×3 keeps agent alive throughout", () => {

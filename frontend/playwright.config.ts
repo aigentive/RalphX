@@ -22,7 +22,13 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: "http://localhost:5173",
+    // Use 127.0.0.1 (not localhost) to match the IPv4 binding `vite.config.ts`
+    // pins for the dev server. Otherwise macOS resolves `localhost` to `::1`
+    // first, the connection refuses (Vite is IPv4-only), and the IPv6→IPv4
+    // fallback adds enough latency to delay font/animation settle and shift
+    // the rendered output by ~1 px — enough to push visual snapshot diffs
+    // past their `maxDiffPixelRatio` threshold on macos-15 CI runners.
+    baseURL: "http://127.0.0.1:5173",
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: "on-first-retry",
     /* Keep an end-of-test screenshot in the HTML report for every visual run. */
@@ -40,7 +46,9 @@ export default defineConfig({
   /* Run your local dev server before starting the tests */
   webServer: {
     command: "npm run dev:web",
-    url: "http://localhost:5173",
+    // Match `baseURL` above — IPv4-only readiness probe avoids the same
+    // ::1-then-127.0.0.1 fallback latency Playwright would otherwise hit.
+    url: "http://127.0.0.1:5173",
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,
   },

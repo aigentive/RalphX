@@ -246,6 +246,18 @@ fn runtime_context_id_for_send(
     context_id.to_string()
 }
 
+fn interactive_continuation_run_id(active_agent: Option<&RunningAgentInfo>) -> String {
+    active_agent
+        .and_then(|info| {
+            if info.agent_run_id.is_empty() {
+                None
+            } else {
+                Some(info.agent_run_id.clone())
+            }
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
 /// Returns true for context types that consume execution slots (running count).
 /// TaskExecution, Review, Merge, and Ideation are tracked against max_concurrent.
 #[doc(hidden)]
@@ -2177,8 +2189,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         );
                     }
 
-                    // Emit run_started so frontend shows activity spinner
-                    let interactive_run_id = uuid::Uuid::new_v4().to_string();
+                    // Emit run_started so frontend shows activity spinner. Reuse the
+                    // live process run id so later turn_completed/run_completed events
+                    // still pass frontend stale-run guards.
+                    let active_agent = self
+                        .running_agent_registry
+                        .get(&RunningAgentKey::new(
+                            context_type.to_string(),
+                            &runtime_context_id,
+                        ))
+                        .await;
+                    let interactive_run_id =
+                        interactive_continuation_run_id(active_agent.as_ref());
                     let process_metadata = ipr_ref.get_metadata(&interactive_key).await;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
@@ -2188,7 +2210,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     self.emit_event(
                         "agent:run_started",
                         AgentRunStartedPayload::with_provider_session(
-                            interactive_run_id,
+                            interactive_run_id.clone(),
                             conversation.id.as_str().to_string(),
                             context_type.to_string(),
                             context_id.to_string(),
@@ -2203,7 +2225,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
                     return Ok(SendResult {
                         conversation_id: conversation.id.as_str().to_string(),
-                        agent_run_id: uuid::Uuid::new_v4().to_string(),
+                        agent_run_id: interactive_run_id,
                         is_new_conversation: false,
                         ..Default::default()
                     });
@@ -3717,8 +3739,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 #[cfg(test)]
 mod stale_registry_gate_tests {
     use super::{
-        claude_launches_paused, registry_entry_blocks_send_because_run_inactive,
-        registry_entry_blocks_send_but_is_stale, runtime_context_id_for_send,
+        claude_launches_paused, interactive_continuation_run_id,
+        registry_entry_blocks_send_because_run_inactive, registry_entry_blocks_send_but_is_stale,
+        runtime_context_id_for_send,
         log_send_message_spawn_prep_phase, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
     };
@@ -3775,6 +3798,26 @@ mod stale_registry_gate_tests {
             ),
             "session-1"
         );
+    }
+
+    #[test]
+    fn interactive_continuation_reuses_registered_process_run_id() {
+        let info = registry_info(0, chrono::Utc::now());
+
+        assert_eq!(
+            interactive_continuation_run_id(Some(&info)),
+            "run-1",
+            "interactive stdin continuations must correlate with process terminal events"
+        );
+    }
+
+    #[test]
+    fn interactive_continuation_falls_back_when_registry_run_id_missing() {
+        let mut info = registry_info(0, chrono::Utc::now());
+        info.agent_run_id.clear();
+
+        assert!(!interactive_continuation_run_id(Some(&info)).is_empty());
+        assert!(!interactive_continuation_run_id(None).is_empty());
     }
 
     #[test]
@@ -3963,12 +4006,72 @@ mod stale_registry_gate_tests {
 #[cfg(test)]
 mod agent_workspace_send_tests {
     use super::{ChatService, SendMessageOptions};
+    use crate::application::interactive_process_registry::InteractiveProcessKey;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ProjectId,
+        AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ProjectId, TaskId,
     };
+    use crate::domain::services::RunningAgentKey;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn interactive_stdin_send_returns_registered_process_run_id() {
+        let state = AppState::new_test();
+        let context_id = "task-interactive-run-id";
+        let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+        let conversation_id = conversation.id.as_str().to_string();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for stdin test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register(interactive_key.clone(), stdin)
+            .await;
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("task", context_id),
+                0,
+                conversation_id.clone(),
+                "run-original-process".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        let result = service
+            .send_message(
+                ChatContextType::Task,
+                context_id,
+                "follow-up",
+                SendMessageOptions::default(),
+            )
+            .await
+            .expect("interactive stdin send should succeed");
+
+        state.interactive_process_registry.remove(&interactive_key).await;
+        let _ = child.kill().await;
+
+        assert_eq!(result.conversation_id, conversation_id);
+        assert_eq!(
+            result.agent_run_id, "run-original-process",
+            "Gate 1 sends must not invent a run id that terminal events cannot match"
+        );
+    }
 
     #[tokio::test]
     async fn project_edit_conversation_without_workspace_fails_before_spawn() {
