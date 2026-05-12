@@ -174,6 +174,116 @@ async fn test_terminal_cleanup_candidates_skip_marked_rows() {
 }
 
 #[tokio::test]
+async fn test_terminal_cleanup_candidates_retry_unsafe_after_ttl() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-retry-unsafe".to_string());
+    let mut branch = PlanBranch::new(
+        ArtifactId::from_string("art-retry-unsafe"),
+        IdeationSessionId::from_string("sess-retry-unsafe"),
+        project_id.clone(),
+        "ralphx/proj/plan-retry".to_string(),
+        "main".to_string(),
+    );
+    branch.status = PlanBranchStatus::Merged;
+    let branch_id = branch.id.clone();
+
+    repo.create(branch).await.unwrap();
+
+    let old_time = chrono::Utc::now() - chrono::Duration::hours(25);
+    repo.mark_local_cleanup_status(&branch_id, "unsafe", old_time)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1, "unsafe marker older than 24h should be retryable");
+}
+
+#[tokio::test]
+async fn test_terminal_cleanup_candidates_skip_recent_unsafe() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-skip-unsafe".to_string());
+    let mut branch = PlanBranch::new(
+        ArtifactId::from_string("art-skip-unsafe"),
+        IdeationSessionId::from_string("sess-skip-unsafe"),
+        project_id.clone(),
+        "ralphx/proj/plan-skip".to_string(),
+        "main".to_string(),
+    );
+    branch.status = PlanBranchStatus::Merged;
+    let branch_id = branch.id.clone();
+
+    repo.create(branch).await.unwrap();
+    repo.mark_local_cleanup_status(&branch_id, "unsafe", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert!(candidates.is_empty(), "recent unsafe marker should not be retried");
+}
+
+#[tokio::test]
+async fn test_terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-retry-target".to_string());
+    let mut branch = PlanBranch::new(
+        ArtifactId::from_string("art-retry-target"),
+        IdeationSessionId::from_string("sess-retry-target"),
+        project_id.clone(),
+        "ralphx/proj/plan-target".to_string(),
+        "main".to_string(),
+    );
+    branch.status = PlanBranchStatus::Merged;
+    let branch_id = branch.id.clone();
+
+    repo.create(branch).await.unwrap();
+
+    let old_time = chrono::Utc::now() - chrono::Duration::hours(25);
+    repo.mark_local_cleanup_status(&branch_id, "target_ref_missing", old_time)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1, "target_ref_missing marker older than 24h should be retryable");
+}
+
+#[tokio::test]
+async fn test_terminal_cleanup_candidates_cleaned_stays_terminal() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-cleaned-terminal".to_string());
+    let mut branch = PlanBranch::new(
+        ArtifactId::from_string("art-cleaned"),
+        IdeationSessionId::from_string("sess-cleaned"),
+        project_id.clone(),
+        "ralphx/proj/plan-cleaned".to_string(),
+        "main".to_string(),
+    );
+    branch.status = PlanBranchStatus::Merged;
+    let branch_id = branch.id.clone();
+
+    repo.create(branch).await.unwrap();
+
+    let old_time = chrono::Utc::now() - chrono::Duration::hours(48);
+    repo.mark_local_cleanup_status(&branch_id, "cleaned", old_time)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert!(candidates.is_empty(), "cleaned marker should stay terminal regardless of age");
+}
+
+#[tokio::test]
 async fn test_update_status() {
     let (_db, repo) = setup_repo();
     let branch = create_test_branch();

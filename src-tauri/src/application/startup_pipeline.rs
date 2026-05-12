@@ -366,6 +366,23 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         });
     }
 
+    tracing::info!("Scheduling orphan agent worktree cleanup...");
+    {
+        let project_repo = Arc::clone(&project_repo);
+        let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+        let running_agent_registry = Arc::clone(&running_agent_registry);
+        tauri::async_runtime::spawn(async move {
+            crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
+                project_repo,
+                agent_conversation_workspace_repo,
+                blocked_git_project_ids,
+                running_agent_registry,
+            )
+            .await;
+        });
+    }
+
     let phase_started_at = Instant::now();
     crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&agent_conversation_workspace_repo),

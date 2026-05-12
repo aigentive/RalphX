@@ -32,6 +32,7 @@ pub mod interactive_process_registry;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;
+pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod permission_state;
 pub mod plan_ranking;
@@ -165,6 +166,8 @@ mod chat_service_output_tests;
 mod git_artifact_cleanup_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
+#[cfg(test)]
+mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pr_startup_recovery_tests;
 #[cfg(test)]

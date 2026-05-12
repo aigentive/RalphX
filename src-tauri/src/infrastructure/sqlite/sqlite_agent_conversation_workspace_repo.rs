@@ -242,8 +242,15 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE project_id = ?1
-                       AND local_cleanup_status IS NULL
                        AND publication_pr_status IN ('closed', 'merged')
+                       AND (
+                         local_cleanup_status IS NULL
+                         OR (
+                           local_cleanup_status IN ('unsafe', 'target_ref_missing')
+                           AND local_cleanup_checked_at IS NOT NULL
+                           AND local_cleanup_checked_at < strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now', '-24 hours')
+                         )
+                       )
                      ORDER BY created_at DESC",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![project_id], row_to_workspace)?;
@@ -275,6 +282,29 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     rusqlite::params![status, checked_at, conversation_id],
                 )?;
                 Ok(())
+            })
+            .await
+    }
+
+    async fn list_worktree_paths_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<std::collections::HashSet<String>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT worktree_path FROM agent_conversation_workspaces
+                     WHERE project_id = ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![project_id], |row| {
+                    row.get::<_, String>(0)
+                })?;
+                let mut paths = std::collections::HashSet::new();
+                for row in rows {
+                    paths.insert(row?);
+                }
+                Ok(paths)
             })
             .await
     }
