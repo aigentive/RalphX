@@ -91,6 +91,10 @@ vi.mock("./useAgentSidebarRunningStates", () => ({
   useAgentSidebarRunningStates: vi.fn(),
 }));
 
+vi.mock("./useAgentSidebarPublicationPolling", () => ({
+  useAgentSidebarPublicationPolling: vi.fn(),
+}));
+
 vi.mock("./useArchivedConversationCounts", () => ({
   useArchivedConversationCounts: (projectIds: string[]) => {
     archivedCountCalls.push(projectIds);
