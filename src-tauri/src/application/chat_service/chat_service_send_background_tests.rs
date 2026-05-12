@@ -1,4 +1,4 @@
-use super::session_changed_after_resume;
+use super::{session_changed_after_resume, should_process_stream_queue};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
@@ -39,6 +39,14 @@ fn session_changed_returns_false_when_no_new_id() {
 #[test]
 fn session_changed_returns_false_when_both_none() {
     assert!(!session_changed_after_resume(None, None));
+}
+
+#[test]
+fn stream_queue_processing_gate_requires_queue_session_and_non_silent_exit() {
+    assert!(should_process_stream_queue(1, true, false));
+    assert!(!should_process_stream_queue(0, true, false));
+    assert!(!should_process_stream_queue(1, false, false));
+    assert!(!should_process_stream_queue(1, true, true));
 }
 
 /// Verifies the warning condition for zero-processed queue scenarios.
