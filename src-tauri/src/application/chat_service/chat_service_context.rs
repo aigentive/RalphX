@@ -51,6 +51,22 @@ pub const SESSION_HISTORY_ARTIFACT_THRESHOLD_BYTES: usize = 2000;
 /// Preview budget for long history messages that have a full artifact reference.
 pub const SESSION_HISTORY_PREVIEW_BYTES: usize = 500;
 
+/// Whether to inject `<session_history>` into the bootstrap prompt for this context.
+///
+/// Ideation has always had it. Project and Task chat join the list because their
+/// interactive Claude process can exit silently between turns; the IPR-based "keep
+/// the process alive" assumption is best-effort, so respawned processes must receive
+/// prior conversation context or follow-up turns lose all memory of the chat.
+///
+/// Execution/review/merge contexts intentionally opt out — they are fresh-session by
+/// design and reload their context from task state on every spawn.
+pub fn context_type_supports_history_injection(context_type: ChatContextType) -> bool {
+    matches!(
+        context_type,
+        ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+    )
+}
+
 pub struct ProviderSpawnableCommand {
     pub spawnable: SpawnableCommand,
 }
@@ -1077,6 +1093,11 @@ fn build_initial_prompt_with_history(
             )
         }
         ChatContextType::Task => {
+            let history_block = if history.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", history)
+            };
             format!(
                 "<instructions>\n\
                  RalphX Task Chat. You are helping the user with questions about this specific task.\n\
@@ -1084,12 +1105,17 @@ fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, history_block, user_message
             )
         }
         ChatContextType::Project => {
+            let history_block = if history.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", history)
+            };
             format!(
                 "<instructions>\n\
                  RalphX Project Chat. You are helping the user with project-level questions and suggestions.\n\
@@ -1097,9 +1123,9 @@ fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <project_id>{}</project_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, history_block, user_message
             )
         }
         ChatContextType::TaskExecution => {
@@ -1157,7 +1183,7 @@ async fn build_initial_prompt_with_session_artifacts(
     ideation_harness: Option<AgentHarnessKind>,
     ideation_bootstrap_mode: IdeationBootstrapMode,
 ) -> Result<String, String> {
-    let history = if context_type == ChatContextType::Ideation {
+    let history = if context_type_supports_history_injection(context_type) {
         format_session_history_with_artifacts(session_messages, total_available, artifact_repo)
             .await?
     } else {
@@ -1448,7 +1474,7 @@ pub fn build_initial_prompt(
     session_messages: &[ChatMessage],
     total_available: usize,
 ) -> String {
-    let history = if context_type == ChatContextType::Ideation {
+    let history = if context_type_supports_history_injection(context_type) {
         format_session_history(session_messages, total_available)
     } else {
         String::new()
@@ -3465,6 +3491,125 @@ exit 0
             prompt.contains("<session_bootstrap_mode>fresh</session_bootstrap_mode>"),
             "Fresh ideation sessions must be marked explicitly so prompt logic can skip recovery-only MCP calls"
         );
+    }
+
+    #[test]
+    fn build_initial_prompt_injects_session_history_for_project_respawn() {
+        // Regression: when a project-chat Claude process exits silently between turns and
+        // RalphX re-spawns it, the new process must receive prior conversation history in
+        // the bootstrap prompt — otherwise it answers follow-ups as a fresh session.
+        let project_id = ProjectId::new();
+        let prior_user = ChatMessage::user_in_project(project_id.clone(), "what is in this repo?");
+        let prior_assistant = {
+            let mut msg = ChatMessage::user_in_project(
+                project_id.clone(),
+                "It is a Tauri desktop app called RalphX.",
+            );
+            msg.role = MessageRole::Orchestrator;
+            msg
+        };
+        let messages = vec![prior_user, prior_assistant];
+
+        let prompt = build_initial_prompt(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "ok and what language is it written in?",
+            &messages,
+            messages.len(),
+        );
+
+        assert!(
+            prompt.contains("<session_history"),
+            "Project re-spawn must inject prior conversation as <session_history>: {}",
+            prompt
+        );
+        assert!(
+            prompt.contains("what is in this repo?"),
+            "Project history must include the prior user message"
+        );
+        assert!(
+            prompt.contains("Tauri desktop app called RalphX"),
+            "Project history must include the prior orchestrator/assistant reply"
+        );
+        assert!(
+            prompt.contains("<user_message>ok and what language is it written in?</user_message>"),
+            "The current turn user_message must still be present alongside the history block"
+        );
+    }
+
+    #[test]
+    fn build_initial_prompt_injects_session_history_for_task_respawn() {
+        let task_id = TaskId::from_string("task-history-respawn".to_string());
+        let prior = ChatMessage::user_about_task(task_id.clone(), "explain the task plan");
+        let messages = vec![prior];
+
+        let prompt = build_initial_prompt(
+            ChatContextType::Task,
+            task_id.as_str(),
+            "what about edge cases?",
+            &messages,
+            messages.len(),
+        );
+
+        assert!(
+            prompt.contains("<session_history"),
+            "Task re-spawn must inject prior conversation as <session_history>"
+        );
+        assert!(
+            prompt.contains("explain the task plan"),
+            "Task history must include the prior user message"
+        );
+    }
+
+    #[test]
+    fn build_initial_prompt_omits_session_history_for_project_when_no_prior_messages() {
+        // First spawn: no prior messages, no history block needed.
+        let project_id = ProjectId::new();
+        let prompt = build_initial_prompt(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "hi",
+            &[],
+            0,
+        );
+        assert!(
+            !prompt.contains("<session_history"),
+            "First-turn project prompt must not synthesize an empty history block"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_initial_prompt_with_session_artifacts_injects_history_for_project_respawn() {
+        let project_id = ProjectId::new();
+        let prior_user = ChatMessage::user_in_project(project_id.clone(), "ping?");
+        let prior_assistant = {
+            let mut msg = ChatMessage::user_in_project(project_id.clone(), "pong.");
+            msg.role = MessageRole::Orchestrator;
+            msg
+        };
+        let messages = vec![prior_user, prior_assistant];
+
+        let prompt = build_initial_prompt_with_session_artifacts(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "and now?",
+            &messages,
+            messages.len(),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        )
+        .await
+        .expect("project prompt should build");
+
+        assert!(
+            prompt.contains("<session_history"),
+            "Project respawn prompt must inject <session_history> from persisted DB messages"
+        );
+        assert!(prompt.contains("ping?"));
+        assert!(prompt.contains("pong."));
+        assert!(prompt.contains("<user_message>and now?</user_message>"));
     }
 
     #[test]

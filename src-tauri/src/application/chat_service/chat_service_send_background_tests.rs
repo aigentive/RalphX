@@ -509,3 +509,91 @@ async fn general_session_not_archived_at_auto_archive_callsite_no_regression() {
         "general session must remain Active — not archived at the auto-archive callsite"
     );
 }
+
+#[tokio::test]
+async fn finalize_no_output_writes_both_chat_messages_and_timeline_placeholder() {
+    use crate::application::chat_service::create_assistant_message;
+    use crate::application::chat_service::finalize_no_output_assistant_message_for_test;
+    use crate::domain::entities::{ChatConversationId, ChatTimelineItemStatus, IdeationSessionId};
+
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::new();
+
+    // Seed the pre-created empty assistant placeholder, matching the production spawn flow.
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        session_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    finalize_no_output_assistant_message_for_test::<tauri::Wry>(
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        None,
+        &conversation_id,
+        "ideation",
+        session_id.as_str(),
+        &pre_assistant_id,
+        "orchestrator",
+    )
+    .await;
+
+    // chat_messages got the placeholder note.
+    let persisted = state
+        .chat_message_repo
+        .get_by_id(&crate::domain::entities::ChatMessageId::from_string(
+            pre_assistant_id.clone(),
+        ))
+        .await
+        .expect("load message")
+        .expect("message persisted");
+    assert!(
+        persisted.content.contains("Agent completed with no output"),
+        "chat_messages.content must carry the no-output note"
+    );
+
+    // chat_message_blocks (timeline) also got the placeholder so the timeline-rendering
+    // chat UI does not show a blank turn.
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_blocks: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_id)
+        })
+        .collect();
+    assert_eq!(
+        assistant_blocks.len(),
+        1,
+        "no-output finalization must write exactly one timeline placeholder block"
+    );
+    assert_eq!(
+        assistant_blocks[0].status,
+        ChatTimelineItemStatus::Finalized,
+        "the placeholder block must be finalized so the UI does not show a spinner"
+    );
+    assert!(
+        assistant_blocks[0]
+            .text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Agent completed with no output"),
+        "the placeholder block must carry the same note as chat_messages"
+    );
+}

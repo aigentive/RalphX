@@ -400,12 +400,12 @@ impl GitService {
     /// Conservative failure mode: git errors (timeout, IO) return `Ok(false)` — callers
     /// use `.unwrap_or(false)` so failures safely skip operations that require the branch.
     pub async fn branch_exists(repo_path: &Path, branch: &str) -> AppResult<bool> {
-        git_cmd::run_status(
+        Ok(git_cmd::run_status(
             &["rev-parse", "--verify", &format!("refs/heads/{branch}")],
             repo_path,
         )
         .await
-        .or_else(|_| Ok(false))
+        .unwrap_or(false))
     }
 
     /// Check if any commit-ish git ref exists in the repo.
@@ -414,7 +414,7 @@ impl GitService {
     /// `origin/main`, which are valid merge sources but not local branches.
     pub async fn ref_exists(repo_path: &Path, ref_name: &str) -> AppResult<bool> {
         let commit_ref = format!("{ref_name}^{{commit}}");
-        git_cmd::run_status(
+        Ok(git_cmd::run_status(
             &[
                 "rev-parse",
                 "--verify",
@@ -425,7 +425,7 @@ impl GitService {
             repo_path,
         )
         .await
-        .or_else(|_| Ok(false))
+        .unwrap_or(false))
     }
 
     /// Check if `commit` is an ancestor of `target` in the given repo.
