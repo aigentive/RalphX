@@ -29,8 +29,9 @@ afterEach(() => {
 describe("redactSecrets — pattern matching", () => {
   // Pattern 1: Anthropic API keys
   it("redacts Anthropic API key (sk-ant-)", () => {
+    // "key" contains KEY → generic pattern (11) re-redacts
     const input = "key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456";
-    expect(redactSecrets(input)).toBe("key=sk-ant-***REDACTED***");
+    expect(redactSecrets(input)).toBe("key=***REDACTED***");
   });
 
   // Pattern 2: OpenRouter keys
@@ -41,14 +42,17 @@ describe("redactSecrets — pattern matching", () => {
 
   // Pattern 3: RalphX API keys
   it("redacts RalphX API key (rxk_live_)", () => {
+    // "key" contains KEY → generic pattern (11) re-redacts
     const input = "key=rxk_live_abcdefghijklmnopqrstuvwxyz1234";
-    expect(redactSecrets(input)).toBe("key=rxk_live_***REDACTED***");
+    expect(redactSecrets(input)).toBe("key=***REDACTED***");
   });
 
   // Pattern 4: Generic OpenAI-style keys (catch-all)
   it("redacts generic OpenAI-style key (sk-)", () => {
+    // When the env var name also contains KEY/TOKEN, the generic env-var
+    // assignment pattern (11) re-redacts after the specific sk- pattern (4)
     const input = "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz1234";
-    expect(redactSecrets(input)).toBe("OPENAI_API_KEY=sk-***REDACTED***");
+    expect(redactSecrets(input)).toBe("OPENAI_API_KEY=***REDACTED***");
   });
 
   // Pattern 5: Bearer tokens
@@ -71,14 +75,100 @@ describe("redactSecrets — pattern matching", () => {
 
   // Pattern 8: GitHub PATs
   it("redacts GitHub PAT (ghp_)", () => {
+    // GITHUB_TOKEN contains TOKEN → generic pattern (11) re-redacts
     const input = "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234";
-    expect(redactSecrets(input)).toBe("GITHUB_TOKEN=ghp_***REDACTED***");
+    expect(redactSecrets(input)).toBe("GITHUB_TOKEN=***REDACTED***");
   });
 
   // Pattern 9: GitHub OAuth tokens
   it("redacts GitHub OAuth token (gho_)", () => {
+    // oauth_token contains token → generic pattern (11) re-redacts
     const input = "oauth_token=gho_abcdefghijklmnopqrstuvwxyz1234";
-    expect(redactSecrets(input)).toBe("oauth_token=gho_***REDACTED***");
+    expect(redactSecrets(input)).toBe("oauth_token=***REDACTED***");
+  });
+});
+
+describe("redactSecrets — generic sensitive env var patterns", () => {
+  // Pattern 10: JSON format
+  it("redacts env var with KEY in name (JSON)", () => {
+    const input = '{"OPENAI_API_KEY": "sk-proj-abc123xyz"}';
+    const result = redactSecrets(input);
+    expect(result).toContain('"OPENAI_API_KEY":"***REDACTED***"');
+    expect(result).not.toContain("sk-proj-abc123xyz");
+  });
+
+  it("redacts env var with TOKEN in name (JSON)", () => {
+    const input = '{"GITHUB_TOKEN": "ghp_somesecretvalue123"}';
+    const result = redactSecrets(input);
+    expect(result).toContain('"GITHUB_TOKEN":"***REDACTED***"');
+    expect(result).not.toContain("ghp_somesecretvalue123");
+  });
+
+  it("redacts env var with SECRET in name (JSON)", () => {
+    const input = '{"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG"}';
+    const result = redactSecrets(input);
+    expect(result).toContain('"AWS_SECRET_ACCESS_KEY":"***REDACTED***"');
+    expect(result).not.toContain("wJalrXUtnFEMI");
+  });
+
+  it("redacts env var with PASSWORD in name (JSON)", () => {
+    const input = '{"DB_PASSWORD": "hunter2"}';
+    const result = redactSecrets(input);
+    expect(result).toContain('"DB_PASSWORD":"***REDACTED***"');
+    expect(result).not.toContain("hunter2");
+  });
+
+  it("redacts env var with CREDENTIAL in name (JSON)", () => {
+    const input = '{"SERVICE_CREDENTIAL": "abc-secret-456"}';
+    const result = redactSecrets(input);
+    expect(result).toContain('"SERVICE_CREDENTIAL":"***REDACTED***"');
+    expect(result).not.toContain("abc-secret-456");
+  });
+
+  it("is case-insensitive for env var key names (JSON)", () => {
+    const input = '{"openai_api_key": "myvalue123"}';
+    const result = redactSecrets(input);
+    expect(result).toContain('"openai_api_key":"***REDACTED***"');
+    expect(result).not.toContain("myvalue123");
+  });
+
+  it("does not redact non-sensitive JSON keys", () => {
+    const input = '{"TAURI_API_URL": "http://127.0.0.1:3847"}';
+    expect(redactSecrets(input)).toBe(input);
+  });
+
+  // Pattern 11: Assignment format
+  it("redacts env var with KEY in name (assignment)", () => {
+    const input = "OPENAI_API_KEY=sk-proj-abc123xyz456";
+    expect(redactSecrets(input)).toBe("OPENAI_API_KEY=***REDACTED***");
+  });
+
+  it("redacts env var with TOKEN in name (assignment)", () => {
+    const input = "GITHUB_TOKEN=ghp_somesecretvalue123456";
+    expect(redactSecrets(input)).toBe("GITHUB_TOKEN=***REDACTED***");
+  });
+
+  it("redacts env var with SECRET in name (assignment)", () => {
+    const input = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI";
+    expect(redactSecrets(input)).toBe("AWS_SECRET_ACCESS_KEY=***REDACTED***");
+  });
+
+  it("redacts quoted assignment values", () => {
+    const input = 'MY_SECRET_KEY="some secret value"';
+    expect(redactSecrets(input)).toBe("MY_SECRET_KEY=***REDACTED***");
+  });
+
+  it("does not redact non-sensitive assignment keys", () => {
+    const input = "TAURI_API_URL=http://127.0.0.1:3847";
+    expect(redactSecrets(input)).toBe(input);
+  });
+
+  it("redacts multiple sensitive env vars in a line", () => {
+    const input = "OPENAI_API_KEY=sk-abc123 GITHUB_TOKEN=ghp_def456 HOME=/Users/me";
+    const result = redactSecrets(input);
+    expect(result).toContain("OPENAI_API_KEY=***REDACTED***");
+    expect(result).toContain("GITHUB_TOKEN=***REDACTED***");
+    expect(result).toContain("HOME=/Users/me");
   });
 });
 
@@ -112,25 +202,28 @@ describe("redactSecrets — non-secrets pass through", () => {
 
 describe("redactSecrets — ordering (specific before generic)", () => {
   it("redacts sk-ant- before the generic sk- catch-all (no double-redaction)", () => {
+    // When the assignment key also contains KEY/TOKEN, generic pattern re-redacts
     const input = "key=sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456";
     const result = redactSecrets(input);
-    expect(result).toBe("key=sk-ant-***REDACTED***");
-    expect(result).not.toContain("sk-***REDACTED***");
+    expect(result).toBe("key=***REDACTED***");
+    expect(result).not.toContain("sk-ant-api03");
   });
 
   it("redacts sk-or-v1- before the generic sk- catch-all", () => {
+    // "token" contains TOKEN → generic pattern re-redacts
     const input = "token=sk-or-v1-abcdefghijklmnopqrstuvwxyz1234";
     const result = redactSecrets(input);
-    expect(result).toBe("token=sk-or-v1-***REDACTED***");
-    expect(result).not.toContain("sk-***REDACTED***");
+    expect(result).toBe("token=***REDACTED***");
+    expect(result).not.toContain("sk-or-v1-abcdefghijklmnopqrstuvwxyz");
   });
 });
 
 describe("redactSecrets — multi-secret lines", () => {
   it("redacts multiple secrets on the same line", () => {
+    // key1/key2 contain "key" → generic pattern (11) re-redacts after specific patterns
     const input = "key1=sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456 key2=ghp_abcdefghijklmnopqrstuvwxyz1234";
     const result = redactSecrets(input);
-    expect(result).toBe("key1=sk-ant-***REDACTED*** key2=ghp_***REDACTED***");
+    expect(result).toBe("key1=***REDACTED*** key2=***REDACTED***");
   });
 
   it("redacts secrets in JSON settings string", () => {
