@@ -189,3 +189,18 @@ pub(crate) fn managed_keys_for_test() -> &'static [&'static str] {
 pub(crate) fn should_forward_for_test(key: &str) -> bool {
     should_forward(key)
 }
+
+#[cfg(test)]
+pub(crate) fn disabled_by_env_for_test() -> bool {
+    disabled_by_env()
+}
+
+#[cfg(test)]
+pub(crate) fn resolve_login_shell_for_test() -> Option<OsString> {
+    resolve_login_shell()
+}
+
+#[cfg(test)]
+pub(crate) fn probe_shell_env_for_test() -> HashMap<String, String> {
+    probe_shell_env()
+}

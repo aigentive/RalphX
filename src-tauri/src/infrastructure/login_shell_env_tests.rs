@@ -180,6 +180,114 @@ fn apply_to_std_forwards_auth_vars_and_skips_managed_keys() {
     );
 }
 
+#[tokio::test]
+async fn apply_to_tokio_command_forwards_captured_env() {
+    // apply_to (tokio variant) is a thin wrapper around apply_to_std. Smoke-test
+    // it to make sure the wrapper actually reaches the underlying logic, and to
+    // give the production claude/codex spawn helpers' call site coverage.
+    let mut shell_env = HashMap::new();
+    shell_env.insert("ANTHROPIC_API_KEY".to_string(), "via-tokio".to_string());
+    login_shell_env::set_for_test(shell_env);
+
+    let mut cmd = tokio::process::Command::new("/bin/true");
+    login_shell_env::apply_to(&mut cmd);
+
+    let std_cmd = cmd.as_std();
+    let key_present = std_cmd
+        .get_envs()
+        .any(|(k, v)| k == OsStr::new("ANTHROPIC_API_KEY") && v.map(OsStr::to_os_string).is_some());
+    assert!(
+        key_present,
+        "apply_to() must reach the same forwarding path as apply_to_std()"
+    );
+}
+
+#[test]
+fn disabled_by_env_reflects_env_var_state() {
+    // Save and restore the env var to keep the test isolated.
+    let prior = std::env::var_os(login_shell_env::DISABLE_ENV_VAR);
+
+    std::env::remove_var(login_shell_env::DISABLE_ENV_VAR);
+    assert!(
+        !login_shell_env::disabled_by_env_for_test(),
+        "unset env var means probe is enabled"
+    );
+
+    std::env::set_var(login_shell_env::DISABLE_ENV_VAR, "1");
+    assert!(
+        login_shell_env::disabled_by_env_for_test(),
+        "any non-empty value of RALPHX_DISABLE_LOGIN_SHELL_ENV disables the probe"
+    );
+
+    std::env::set_var(login_shell_env::DISABLE_ENV_VAR, "");
+    assert!(
+        !login_shell_env::disabled_by_env_for_test(),
+        "empty string must NOT disable the probe (matches the &OsStr non-empty check)"
+    );
+
+    match prior {
+        Some(value) => std::env::set_var(login_shell_env::DISABLE_ENV_VAR, value),
+        None => std::env::remove_var(login_shell_env::DISABLE_ENV_VAR),
+    }
+}
+
+#[test]
+fn resolve_login_shell_prefers_user_shell_env_var() {
+    let prior = std::env::var_os("SHELL");
+
+    std::env::set_var("SHELL", "/usr/bin/fish");
+    assert_eq!(
+        login_shell_env::resolve_login_shell_for_test().as_deref(),
+        Some(OsStr::new("/usr/bin/fish")),
+        "explicit $SHELL must win"
+    );
+
+    std::env::set_var("SHELL", "");
+    let fallback = login_shell_env::resolve_login_shell_for_test();
+    // Empty $SHELL falls through to the platform default.
+    #[cfg(target_os = "macos")]
+    assert_eq!(fallback.as_deref(), Some(OsStr::new("/bin/zsh")));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    assert_eq!(fallback.as_deref(), Some(OsStr::new("/bin/bash")));
+    #[cfg(not(unix))]
+    assert!(fallback.is_none());
+
+    std::env::remove_var("SHELL");
+    let unset = login_shell_env::resolve_login_shell_for_test();
+    #[cfg(target_os = "macos")]
+    assert_eq!(unset.as_deref(), Some(OsStr::new("/bin/zsh")));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    assert_eq!(unset.as_deref(), Some(OsStr::new("/bin/bash")));
+    #[cfg(not(unix))]
+    assert!(unset.is_none());
+
+    match prior {
+        Some(value) => std::env::set_var("SHELL", value),
+        None => std::env::remove_var("SHELL"),
+    }
+}
+
+#[test]
+fn probe_shell_env_returns_empty_when_disabled() {
+    // With the disable flag set, probe_shell_env must short-circuit and never
+    // spawn a shell. The returned map must be empty regardless of the user's
+    // real environment.
+    let prior = std::env::var_os(login_shell_env::DISABLE_ENV_VAR);
+    std::env::set_var(login_shell_env::DISABLE_ENV_VAR, "1");
+
+    let map = login_shell_env::probe_shell_env_for_test();
+    assert!(
+        map.is_empty(),
+        "disabled probe must return an empty map; got {} entries",
+        map.len()
+    );
+
+    match prior {
+        Some(value) => std::env::set_var(login_shell_env::DISABLE_ENV_VAR, value),
+        None => std::env::remove_var(login_shell_env::DISABLE_ENV_VAR),
+    }
+}
+
 #[test]
 fn apply_to_std_does_not_clear_existing_env() {
     // The helper sets keys via `.env(key, value)` — it must NOT clear inherited env.
