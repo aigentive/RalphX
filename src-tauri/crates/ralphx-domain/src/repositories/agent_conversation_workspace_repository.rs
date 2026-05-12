@@ -104,4 +104,15 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>>;
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
+
+    async fn list_worktree_paths_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<std::collections::HashSet<String>> {
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .map(|w| w.worktree_path)
+            .collect())
+    }
 }

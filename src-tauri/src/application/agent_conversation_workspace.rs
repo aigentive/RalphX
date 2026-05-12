@@ -732,6 +732,10 @@ fn resolve_agent_conversation_workspace_path_from_record(
     Ok(expected_path)
 }
 
+pub(crate) fn expand_worktree_parent_public(parent: &str) -> AppResult<PathBuf> {
+    expand_worktree_parent(parent)
+}
+
 fn expand_worktree_parent(parent: &str) -> AppResult<PathBuf> {
     let expanded = if let Some(rest) = parent.strip_prefix("~/") {
         let home = dirs::home_dir().ok_or_else(|| {

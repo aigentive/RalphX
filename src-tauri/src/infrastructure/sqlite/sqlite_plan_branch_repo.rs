@@ -272,8 +272,15 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                     .prepare(
                         "SELECT * FROM plan_branches
                          WHERE project_id = ?1
-                           AND local_cleanup_status IS NULL
                            AND (status = 'merged' OR pr_status = 'Merged')
+                           AND (
+                             local_cleanup_status IS NULL
+                             OR (
+                               local_cleanup_status IN ('unsafe', 'target_ref_missing')
+                               AND local_cleanup_checked_at IS NOT NULL
+                               AND local_cleanup_checked_at < strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now', '-24 hours')
+                             )
+                           )
                          ORDER BY created_at DESC",
                     )
                     .map_err(|e| {
