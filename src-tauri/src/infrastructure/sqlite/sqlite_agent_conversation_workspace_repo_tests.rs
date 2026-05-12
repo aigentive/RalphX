@@ -82,6 +82,108 @@ async fn terminal_cleanup_candidates_skip_marked_rows() {
 }
 
 #[tokio::test]
+async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.publication_pr_number = Some(80);
+    workspace.publication_pr_status = Some("closed".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let old_timestamp =
+        chrono::Utc::now() - chrono::Duration::hours(25);
+    repo.mark_local_cleanup_status(&conversation_id, "unsafe", old_timestamp)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1, "unsafe with expired TTL should be retryable");
+
+    let recent_timestamp = chrono::Utc::now();
+    repo.mark_local_cleanup_status(&conversation_id, "unsafe", recent_timestamp)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert!(candidates.is_empty(), "unsafe with fresh TTL should not be retryable");
+
+    let _ = db;
+}
+
+#[tokio::test]
+async fn terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.publication_pr_number = Some(81);
+    workspace.publication_pr_status = Some("merged".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let old_timestamp =
+        chrono::Utc::now() - chrono::Duration::hours(25);
+    repo.mark_local_cleanup_status(&conversation_id, "target_ref_missing", old_timestamp)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1, "target_ref_missing with expired TTL should be retryable");
+
+    let _ = db;
+}
+
+#[tokio::test]
+async fn list_worktree_paths_by_project_id_returns_paths() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    let second_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &second_id);
+    let mut second = make_workspace(second_id);
+    second.worktree_path = "/tmp/ralphx/agent-22222222".to_string();
+    repo.create_or_update(second).await.unwrap();
+
+    let paths = repo
+        .list_worktree_paths_by_project_id(&ProjectId::from_string("project-1".to_string()))
+        .await
+        .unwrap();
+
+    assert_eq!(paths.len(), 2);
+    assert!(paths.contains("/tmp/ralphx/agent-11111111"));
+    assert!(paths.contains("/tmp/ralphx/agent-22222222"));
+}
+
+#[tokio::test]
+async fn list_worktree_paths_by_project_id_empty_for_unknown_project() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id))
+        .await
+        .unwrap();
+
+    let paths = repo
+        .list_worktree_paths_by_project_id(&ProjectId::from_string(
+            "no-such-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert!(paths.is_empty());
+}
+
+#[tokio::test]
 async fn pr_description_round_trips_and_clears() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id))
