@@ -7,6 +7,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   ArrowUp,
   Bot,
@@ -304,6 +305,10 @@ export function AgentComposerSurface({
     [isControlled, matchOptionsFromInput, onChangeProp]
   );
 
+  const { addEntry: addHistoryEntry, handleHistoryKeyDown } = useInputHistory({
+    setValue,
+  });
+
   const clearValue = useCallback(() => {
     if (isControlled) {
       onChangeProp?.("");
@@ -352,6 +357,8 @@ export function AgentComposerSurface({
       return;
     }
 
+    addHistoryEntry(trimmedValue);
+
     if (questionMode || isControlled) {
       await onSend(trimmedValue);
       return;
@@ -364,6 +371,7 @@ export function AgentComposerSurface({
       // Errors surface through the parent; preserve the current interaction model.
     }
   }, [
+    addHistoryEntry,
     canQueue,
     clearValue,
     isControlled,
@@ -394,9 +402,14 @@ export function AgentComposerSurface({
       if (event.key === "ArrowUp" && !value && hasQueuedMessages) {
         event.preventDefault();
         onEditLastQueued?.();
+        return;
+      }
+
+      if (handleHistoryKeyDown(event, value)) {
+        return;
       }
     },
-    [handleSend, hasQueuedMessages, onEditLastQueued, value]
+    [handleHistoryKeyDown, handleSend, hasQueuedMessages, onEditLastQueued, value]
   );
 
   const helperText = useMemo(() => {
