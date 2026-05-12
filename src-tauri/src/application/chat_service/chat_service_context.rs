@@ -2303,6 +2303,7 @@ pub async fn build_interactive_command(
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
 ) -> Result<SpawnableCommand, String> {
+    let agent_started = Instant::now();
     let agent_name = agent_name_override.unwrap_or_else(|| {
         resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
     });
@@ -2313,6 +2314,7 @@ pub async fn build_interactive_command(
                 .clone()
                 .unwrap_or_else(|| resolved_spawn_settings.model.clone())
         });
+    log_claude_launch_plan_phase(conversation, "resolve_agent", agent_started);
 
     // Interactive mode: never resume with --resume session_id because the process stays
     // alive. Resume is only needed when re-spawning after a process death. For the first
@@ -2320,6 +2322,7 @@ pub async fn build_interactive_command(
     let resume_session: Option<&str> = None;
 
     // Fetch pending attachments
+    let attachments_started = Instant::now();
     let attachments = chat_attachment_repo
         .find_by_conversation_id(&conversation.id)
         .await
@@ -2327,9 +2330,21 @@ pub async fn build_interactive_command(
         .into_iter()
         .filter(|a| a.message_id.is_none())
         .collect::<Vec<_>>();
+    log_claude_launch_plan_phase(
+        conversation,
+        "load_pending_attachments",
+        attachments_started,
+    );
 
+    let attachment_context_started = Instant::now();
     let attachment_context = format_attachments_for_agent(&attachments).await?;
+    log_claude_launch_plan_phase(
+        conversation,
+        "format_pending_attachments",
+        attachment_context_started,
+    );
 
+    let prompt_started = Instant::now();
     let initial_prompt = build_initial_prompt_with_session_artifacts(
         conversation.context_type,
         &conversation.context_id,
@@ -2347,7 +2362,9 @@ pub async fn build_interactive_command(
     )
     .await?;
     let prompt = format!("{}{}", initial_prompt, attachment_context);
+    log_claude_launch_plan_phase(conversation, "build_initial_prompt", prompt_started);
 
+    let mcp_context_started = Instant::now();
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -2360,6 +2377,13 @@ pub async fn build_interactive_command(
             None
         },
     );
+    log_claude_launch_plan_phase(
+        conversation,
+        "build_mcp_runtime_context",
+        mcp_context_started,
+    );
+
+    let spawnable_started = Instant::now();
     let mut spawnable = build_claude_spawnable_interactive_command(
         cli_path,
         plugin_dir,
@@ -2372,7 +2396,9 @@ pub async fn build_interactive_command(
         Some(resolved_spawn_settings.model.as_str()),
         Some(&mcp_runtime_context),
     )?;
+    log_claude_launch_plan_phase(conversation, "build_spawnable_command", spawnable_started);
 
+    let env_started = Instant::now();
     apply_ralphx_env_vars(
         &mut spawnable,
         agent_name,
@@ -2384,8 +2410,25 @@ pub async fn build_interactive_command(
         claude_resume_session_id(conversation).as_deref(),
         ideation_subagent_model_cap.as_deref(),
     );
+    log_claude_launch_plan_phase(conversation, "apply_ralphx_env_vars", env_started);
 
     Ok(spawnable)
+}
+
+fn log_claude_launch_plan_phase(
+    conversation: &ChatConversation,
+    phase: &'static str,
+    started: Instant,
+) {
+    tracing::info!(
+        conversation_id = conversation.id.as_str(),
+        context_type = %conversation.context_type,
+        context_id = conversation.context_id.as_str(),
+        harness = %AgentHarnessKind::Claude,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "chat_service.send_message Claude launch plan phase completed"
+    );
 }
 
 /// Fetch entity status for resume command context.

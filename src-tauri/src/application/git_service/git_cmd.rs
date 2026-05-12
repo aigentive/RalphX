@@ -9,6 +9,7 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::apply_git_subprocess_env;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use std::panic::Location;
 use std::path::Path;
 use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
@@ -164,27 +165,34 @@ async fn exec_with_retry_async(
 /// Uses `tokio::process::Command` with `kill_on_drop(true)` — when the timeout
 /// fires, the future is dropped, which kills the git process immediately.
 /// Applies a configurable timeout and retries for transient errors.
-pub(crate) async fn run(args: &[&str], cwd: &Path) -> AppResult<Output> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let timeout_secs = git_runtime_config().cmd_timeout_secs;
-    let started = Instant::now();
+#[track_caller]
+pub(crate) fn run<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    let caller = Location::caller();
+    async move {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let timeout_secs = git_runtime_config().cmd_timeout_secs;
+        let started = Instant::now();
 
-    match timeout(
-        Duration::from_secs(timeout_secs),
-        exec_with_retry_async(&args, &cwd, None),
-    )
-    .await
-    {
-        Ok(result) => {
-            log_git_command_result("run", &args, &cwd, started, result.as_ref());
-            result
-        }
-        Err(_) => {
-            log_git_command_timeout("run", &args, &cwd, started, timeout_secs);
-            Err(AppError::GitOperation(format!(
-                "git command timed out after {timeout_secs}s"
-            )))
+        match timeout(
+            Duration::from_secs(timeout_secs),
+            exec_with_retry_async(&args, &cwd, None),
+        )
+        .await
+        {
+            Ok(result) => {
+                log_git_command_result("run", &args, &cwd, started, caller, result.as_ref());
+                result
+            }
+            Err(_) => {
+                log_git_command_timeout("run", &args, &cwd, started, caller, timeout_secs);
+                Err(AppError::GitOperation(format!(
+                    "git command timed out after {timeout_secs}s"
+                )))
+            }
         }
     }
 }
@@ -193,35 +201,46 @@ pub(crate) async fn run(args: &[&str], cwd: &Path) -> AppResult<Output> {
 ///
 /// Uses `tokio::process::Command` with `kill_on_drop(true)`.
 /// Applies a configurable timeout and retries for transient errors.
-pub(crate) async fn run_with_env(
-    args: &[&str],
-    cwd: &Path,
-    env: &[(&str, &str)],
-) -> AppResult<Output> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let env: Vec<(String, String)> = env
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    let timeout_secs = git_runtime_config().cmd_timeout_secs;
-    let started = Instant::now();
+#[track_caller]
+pub(crate) fn run_with_env<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+    env: &'a [(&'a str, &'a str)],
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    let caller = Location::caller();
+    async move {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let timeout_secs = git_runtime_config().cmd_timeout_secs;
+        let started = Instant::now();
 
-    match timeout(
-        Duration::from_secs(timeout_secs),
-        exec_with_retry_async(&args, &cwd, Some(&env)),
-    )
-    .await
-    {
-        Ok(result) => {
-            log_git_command_result("run_with_env", &args, &cwd, started, result.as_ref());
-            result
-        }
-        Err(_) => {
-            log_git_command_timeout("run_with_env", &args, &cwd, started, timeout_secs);
-            Err(AppError::GitOperation(format!(
-                "git command timed out after {timeout_secs}s"
-            )))
+        match timeout(
+            Duration::from_secs(timeout_secs),
+            exec_with_retry_async(&args, &cwd, Some(&env)),
+        )
+        .await
+        {
+            Ok(result) => {
+                log_git_command_result(
+                    "run_with_env",
+                    &args,
+                    &cwd,
+                    started,
+                    caller,
+                    result.as_ref(),
+                );
+                result
+            }
+            Err(_) => {
+                log_git_command_timeout("run_with_env", &args, &cwd, started, caller, timeout_secs);
+                Err(AppError::GitOperation(format!(
+                    "git command timed out after {timeout_secs}s"
+                )))
+            }
         }
     }
 }
@@ -230,32 +249,39 @@ pub(crate) async fn run_with_env(
 ///
 /// Uses `tokio::process::Command` with `kill_on_drop(true)`.
 /// Status checks are not retried (they should be fast and idempotent).
-pub(crate) async fn run_status(args: &[&str], cwd: &Path) -> AppResult<bool> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let timeout_secs = git_runtime_config().cmd_timeout_secs;
-    let started = Instant::now();
+#[track_caller]
+pub(crate) fn run_status<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+) -> impl std::future::Future<Output = AppResult<bool>> + 'a {
+    let caller = Location::caller();
+    async move {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let timeout_secs = git_runtime_config().cmd_timeout_secs;
+        let started = Instant::now();
 
-    let result = match timeout(Duration::from_secs(timeout_secs), async {
-        let mut cmd = build_git_command(&args, &cwd, &[]);
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        cmd.status().await.map(|s| s.success()).unwrap_or(false)
-    })
-    .await
-    {
-        Ok(result) => {
-            log_git_status_result("run_status", &args, &cwd, started, result);
-            result
-        }
-        Err(_) => {
-            log_git_command_timeout("run_status", &args, &cwd, started, timeout_secs);
-            return Err(AppError::GitOperation(format!(
-                "git status check timed out after {timeout_secs}s"
-            )));
-        }
-    };
+        let result = match timeout(Duration::from_secs(timeout_secs), async {
+            let mut cmd = build_git_command(&args, &cwd, &[]);
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            cmd.status().await.map(|s| s.success()).unwrap_or(false)
+        })
+        .await
+        {
+            Ok(result) => {
+                log_git_status_result("run_status", &args, &cwd, started, caller, result);
+                result
+            }
+            Err(_) => {
+                log_git_command_timeout("run_status", &args, &cwd, started, caller, timeout_secs);
+                return Err(AppError::GitOperation(format!(
+                    "git status check timed out after {timeout_secs}s"
+                )));
+            }
+        };
 
-    Ok(result)
+        Ok(result)
+    }
 }
 
 fn log_git_command_result(
@@ -263,6 +289,7 @@ fn log_git_command_result(
     args: &[String],
     cwd: &Path,
     started: Instant,
+    caller: &'static Location<'static>,
     result: Result<&Output, &AppError>,
 ) {
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -276,6 +303,8 @@ fn log_git_command_result(
                     operation,
                     command = %command,
                     cwd = %cwd.display(),
+                    caller_file = caller.file(),
+                    caller_line = caller.line(),
                     elapsed_ms,
                     success,
                     exit_code,
@@ -286,6 +315,8 @@ fn log_git_command_result(
                     operation,
                     command = %command,
                     cwd = %cwd.display(),
+                    caller_file = caller.file(),
+                    caller_line = caller.line(),
                     elapsed_ms,
                     success,
                     exit_code,
@@ -298,6 +329,8 @@ fn log_git_command_result(
                 operation,
                 command = %command,
                 cwd = %cwd.display(),
+                caller_file = caller.file(),
+                caller_line = caller.line(),
                 elapsed_ms,
                 error = %error,
                 "Git command failed"
@@ -311,6 +344,7 @@ fn log_git_status_result(
     args: &[String],
     cwd: &Path,
     started: Instant,
+    caller: &'static Location<'static>,
     success: bool,
 ) {
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -320,6 +354,8 @@ fn log_git_status_result(
             operation,
             command = %command,
             cwd = %cwd.display(),
+            caller_file = caller.file(),
+            caller_line = caller.line(),
             elapsed_ms,
             success,
             "Slow git status command completed"
@@ -329,6 +365,8 @@ fn log_git_status_result(
             operation,
             command = %command,
             cwd = %cwd.display(),
+            caller_file = caller.file(),
+            caller_line = caller.line(),
             elapsed_ms,
             success,
             "Git status command completed"
@@ -341,12 +379,15 @@ fn log_git_command_timeout(
     args: &[String],
     cwd: &Path,
     started: Instant,
+    caller: &'static Location<'static>,
     timeout_secs: u64,
 ) {
     tracing::warn!(
         operation,
         command = %args.join(" "),
         cwd = %cwd.display(),
+        caller_file = caller.file(),
+        caller_line = caller.line(),
         elapsed_ms = started.elapsed().as_millis() as u64,
         timeout_secs,
         "Git command timed out"

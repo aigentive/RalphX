@@ -665,6 +665,30 @@ pub async fn resolve_valid_agent_conversation_workspace_path(
     project: &Project,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<PathBuf> {
+    let expected_path = resolve_agent_conversation_workspace_path_from_record(project, workspace)?;
+
+    let checked_out = GitService::get_current_branch(&expected_path).await?;
+    if checked_out != workspace.branch_name {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace {} is checked out at '{}' instead of '{}'",
+            workspace.conversation_id, checked_out, workspace.branch_name
+        )));
+    }
+
+    Ok(expected_path)
+}
+
+pub fn resolve_agent_conversation_workspace_path_for_send(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<PathBuf> {
+    resolve_agent_conversation_workspace_path_from_record(project, workspace)
+}
+
+fn resolve_agent_conversation_workspace_path_from_record(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<PathBuf> {
     if workspace.project_id != project.id {
         return Err(AppError::Validation(format!(
             "Agent conversation workspace {} belongs to project {} instead of {}",
@@ -697,11 +721,11 @@ pub async fn resolve_valid_agent_conversation_workspace_path(
         )));
     }
 
-    let checked_out = GitService::get_current_branch(&expected_path).await?;
-    if checked_out != workspace.branch_name {
+    if !expected_path.join(".git").exists() {
         return Err(AppError::Validation(format!(
-            "Agent conversation workspace {} is checked out at '{}' instead of '{}'",
-            workspace.conversation_id, checked_out, workspace.branch_name
+            "Agent conversation workspace {} is not a git worktree: {}",
+            workspace.conversation_id,
+            expected_path.display()
         )));
     }
 
@@ -894,6 +918,51 @@ mod tests {
         })
         .await
         .expect("deferred setup should complete in the background");
+    }
+
+    #[tokio::test]
+    async fn send_path_resolver_uses_stored_workspace_without_branch_probe() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Fast Send".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-fast-send-test".to_string());
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        let worktree_path = Path::new(&workspace.worktree_path);
+        git(worktree_path, &["checkout", "-b", "manual-drift"]);
+
+        let resolved = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
+            .expect("foreground send should trust stored workspace metadata");
+        assert_eq!(resolved, worktree_path);
+
+        let strict_error = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
+            .await
+            .expect_err("strict validation should still catch branch drift");
+        assert!(
+            strict_error.to_string().contains("checked out"),
+            "unexpected strict validation error: {strict_error}"
+        );
     }
 
     #[tokio::test]

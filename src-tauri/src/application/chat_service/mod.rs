@@ -31,7 +31,7 @@ pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
     is_terminal_agent_conversation_publication_status,
-    resolve_valid_agent_conversation_workspace_path,
+    resolve_agent_conversation_workspace_path_for_send,
     rollover_agent_conversation_workspace_with_setup_mode,
     AgentConversationWorkspaceSetupMode, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
@@ -1363,7 +1363,7 @@ impl<R: Runtime> AppChatService<R> {
                 ))
             })?;
 
-        match resolve_valid_agent_conversation_workspace_path(&project, workspace).await {
+        match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
                 if error
