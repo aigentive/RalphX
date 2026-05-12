@@ -28,13 +28,6 @@ export function useAgentConversationTitleEvents(projectId: string | null | undef
       if (!parsed.success) {
         return;
       }
-      if (
-        parsed.data.contextType !== "project" ||
-        parsed.data.contextId !== projectId
-      ) {
-        return;
-      }
-
       invalidateConversationDataQueries(queryClient, parsed.data.conversationId);
       void queryClient.invalidateQueries({
         queryKey: agentConversationKeys.project(projectId),
