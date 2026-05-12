@@ -702,6 +702,11 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
+    // Inject the user's login-shell env FIRST so provider auth exports
+    // (`OPENAI_API_KEY`, `CODEX_HOME`, ...) reach the spawned CLI. The
+    // RalphX-managed `PATH` override below remains authoritative because
+    // `login_shell_env::should_forward` filters PATH out of the captured map.
+    crate::infrastructure::login_shell_env::apply_to(cmd);
     cmd.env(
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
