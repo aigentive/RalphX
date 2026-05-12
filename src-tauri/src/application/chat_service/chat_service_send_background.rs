@@ -129,8 +129,11 @@ pub(super) fn should_process_stream_queue(
     initial_queue_count: usize,
     has_session_for_queue: bool,
     silent_interactive_exit: bool,
+    cancellation_requested: bool,
 ) -> bool {
-    initial_queue_count > 0 && has_session_for_queue && !silent_interactive_exit
+    initial_queue_count > 0
+        && has_session_for_queue
+        && !(silent_interactive_exit && cancellation_requested)
 }
 
 #[derive(Debug, Clone)]
@@ -1151,10 +1154,12 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     .get_queued(context_type, &runtime_context_id)
                     .len();
                 let has_session_for_queue = effective_session_id.is_some();
+                let cancellation_requested = cancellation_token.is_cancelled();
                 let will_process_queue = should_process_stream_queue(
                     initial_queue_count,
                     has_session_for_queue,
                     outcome.silent_interactive_exit,
+                    cancellation_requested,
                 );
 
                 tracing::info!(
@@ -1163,6 +1168,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     turns_finalized,
                     skip_post_loop_finalization,
                     silent_interactive_exit = outcome.silent_interactive_exit,
+                    cancellation_requested,
                     initial_queue_count,
                     has_session_for_queue,
                     will_process_queue,

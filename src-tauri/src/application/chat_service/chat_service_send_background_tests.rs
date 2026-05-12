@@ -7,6 +7,7 @@ use crate::commands::ExecutionState;
 use crate::domain::entities::{ChatContextType, ChatConversationId};
 use std::path::Path;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 #[test]
 fn session_changed_returns_true_when_ids_differ() {
@@ -42,11 +43,19 @@ fn session_changed_returns_false_when_both_none() {
 }
 
 #[test]
-fn stream_queue_processing_gate_requires_queue_session_and_non_silent_exit() {
-    assert!(should_process_stream_queue(1, true, false));
-    assert!(!should_process_stream_queue(0, true, false));
-    assert!(!should_process_stream_queue(1, false, false));
-    assert!(!should_process_stream_queue(1, true, true));
+fn stream_queue_processing_gate_requires_queue_session_and_no_cancelled_silent_exit() {
+    assert!(should_process_stream_queue(1, true, false, false));
+    assert!(!should_process_stream_queue(0, true, false, false));
+    assert!(!should_process_stream_queue(1, false, false, false));
+    assert!(!should_process_stream_queue(1, true, true, true));
+}
+
+#[test]
+fn stream_queue_processing_gate_allows_non_cancel_silent_exit_with_queue() {
+    assert!(
+        should_process_stream_queue(1, true, true, false),
+        "timeout/eof silent exits can still drain queued messages"
+    );
 }
 
 /// Verifies the warning condition for zero-processed queue scenarios.
@@ -239,6 +248,139 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
 
     assert_eq!(outcome.total_processed, 1);
     assert!(outcome.last_run_id.is_some());
+}
+
+async fn spawn_claude_jsonl_fixture(lines: &[&str]) -> tokio::process::Child {
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(line);
+        payload.push('\n');
+    }
+
+    let mut child = tokio::process::Command::new("cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn stream fixture");
+    let mut stdin = child.stdin.take().expect("capture fixture stdin");
+    stdin
+        .write_all(payload.as_bytes())
+        .await
+        .expect("write stream fixture");
+    drop(stdin);
+    child
+}
+
+#[tokio::test]
+async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
+    use crate::domain::agents::AgentHarnessKind;
+    use crate::domain::entities::{ChatConversation, ChatMessageAttribution, IdeationSessionId};
+    use tokio::time::{sleep, timeout, Duration};
+
+    let state = AppState::new_test();
+    let context_id = IdeationSessionId::new();
+    let conversation = ChatConversation::new_ideation(context_id.clone());
+    let conversation_id = conversation.id.clone();
+    state
+        .chat_conversation_repo
+        .create(conversation.clone())
+        .await
+        .expect("seed conversation");
+
+    let message_queue = Arc::clone(&state.message_queue);
+    let context_id_str = context_id.as_str().to_string();
+    message_queue.queue(
+        ChatContextType::Ideation,
+        &context_id_str,
+        "queued follow-up after idle exit".to_string(),
+    );
+
+    let repos = super::BackgroundRunRepos {
+        chat_message_repo: Arc::clone(&state.chat_message_repo),
+        chat_timeline_repo: Some(Arc::clone(&state.chat_timeline_repo)),
+        chat_attachment_repo: Arc::clone(&state.chat_attachment_repo),
+        artifact_repo: Arc::clone(&state.artifact_repo),
+        conversation_repo: Arc::clone(&state.chat_conversation_repo),
+        agent_run_repo: Arc::clone(&state.agent_run_repo),
+        task_repo: Arc::clone(&state.task_repo),
+        task_dependency_repo: Arc::clone(&state.task_dependency_repo),
+        project_repo: Arc::clone(&state.project_repo),
+        ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+        delegated_session_repo: Arc::clone(&state.delegated_session_repo),
+        execution_settings_repo: None,
+        agent_lane_settings_repo: None,
+        ideation_effort_settings_repo: None,
+        ideation_model_settings_repo: None,
+        agent_conversation_workspace_repo: Some(Arc::clone(
+            &state.agent_conversation_workspace_repo,
+        )),
+        task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
+        activity_event_repo: Arc::clone(&state.activity_event_repo),
+        memory_event_repo: Arc::clone(&state.memory_event_repo),
+        message_queue: Arc::clone(&message_queue),
+        running_agent_registry: Arc::clone(&state.running_agent_registry),
+        task_step_repo: Some(Arc::clone(&state.task_step_repo)),
+        review_repo: Some(Arc::clone(&state.review_repo)),
+    };
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+
+    let child = spawn_claude_jsonl_fixture(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"initial turn complete"}]},"session_id":"sess-bg"}"#,
+        r#"{"type":"result","session_id":"sess-bg","is_error":false,"result":"initial turn complete","cost_usd":0.0}"#,
+    ])
+    .await;
+
+    super::spawn_send_message_background::<tauri::test::MockRuntime>(super::BackgroundRunContext {
+        child,
+        harness: AgentHarnessKind::Claude,
+        context_type: ChatContextType::Ideation,
+        context_id: context_id_str.clone(),
+        runtime_context_id: context_id_str.clone(),
+        conversation_id,
+        agent_run_id: "background-run-id".to_string(),
+        stored_session_id: None,
+        working_directory: Path::new(".").to_path_buf(),
+        cli_path: Path::new("/definitely/missing/ralphx-test-cli").to_path_buf(),
+        plugin_dir: Path::new(".").to_path_buf(),
+        repos,
+        execution_state: None,
+        question_state: None,
+        plan_branch_repo: None,
+        app_handle: Some(app_handle),
+        run_chain_id: None,
+        is_retry_attempt: false,
+        user_message_content: Some("initial prompt".to_string()),
+        conversation: Some(conversation),
+        agent_name: Some("orchestrator".to_string()),
+        team_mode: false,
+        assistant_message_attribution: ChatMessageAttribution::default(),
+        persist_conversation_provider_session_ref: true,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        team_service: None,
+        streaming_state_cache: super::StreamingStateCache::new(),
+        interactive_process_registry: None,
+        verification_child_registry: None,
+    });
+
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if message_queue
+                .get_queued(ChatContextType::Ideation, &context_id_str)
+                .is_empty()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background queue processing should drain queued message");
 }
 
 /// Verifies that session swap recovery enqueues rehydration at front of queue,
