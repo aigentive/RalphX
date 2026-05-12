@@ -358,7 +358,7 @@ async fn update_provider_settings_with_probes(
     }
 
     if saved.is_default && apply_to_all_lanes {
-        apply_provider_to_global_lanes(&state, &saved).await?;
+        apply_provider_to_global_lanes(state, &saved).await?;
     }
 
     read_provider_settings_with_probes(state, probes).await

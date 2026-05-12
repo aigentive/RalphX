@@ -733,8 +733,8 @@ fn external_mcp_entry_for_plugin_dir(plugin_dir: &Path) -> PathBuf {
 
 pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
     standard_harness_runtime_adapters()
-        .into_iter()
-        .map(|(harness, _)| (harness, probe_harness(harness)))
+        .into_keys()
+        .map(|harness| (harness, probe_harness(harness)))
         .collect()
 }
 

@@ -27,7 +27,7 @@ pub async fn get_current_release_notes<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<ReleaseNotesResponse, String> {
     let version = app.package_info().version.to_string();
-    Ok(read_release_notes_for_version(&app, &version)?)
+    read_release_notes_for_version(&app, &version)
 }
 
 #[tauri::command]

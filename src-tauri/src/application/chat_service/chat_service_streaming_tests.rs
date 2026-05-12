@@ -124,6 +124,110 @@ async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamE
 }
 
 #[tokio::test]
+async fn claude_stream_turn_complete_persists_assistant_blocks_to_timeline() {
+    // Regression: when a project/task chat Claude turn ends via TurnComplete (result event),
+    // the assistant content must land in BOTH chat_messages and chat_message_blocks.
+    // Previously the TurnComplete handler called update_content on chat_messages but skipped
+    // persist_timeline_snapshot, so the timeline-backed chat UI rendered the turn as
+    // unanswered even though chat_messages had the response.
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    // Pre-create the assistant placeholder, matching the production spawn flow.
+    let pre_assistant = create_assistant_message(
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed pre-assistant message");
+
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"It is a Tauri desktop app called RalphX."}]},"session_id":"sess-1"}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"It is a Tauri desktop app called RalphX.","cost_usd":0.0}"#,
+    ])
+    .await;
+
+    process_stream_background::<MockRuntime>(
+        child,
+        AgentHarnessKind::Claude,
+        ChatContextType::Ideation,
+        context_id.as_str(),
+        &conversation_id,
+        Some(app_handle),
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(state.chat_timeline_repo.clone()),
+        Some(pre_assistant_id.clone()),
+        None,
+        CancellationToken::new(),
+        None,
+        false,
+        StreamingStateCache::new(),
+        None,
+        None,
+        Some("stream-run-id".to_string()),
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("stream should complete");
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 20, None)
+        .await
+        .expect("load timeline page");
+    let assistant_blocks: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_id)
+        })
+        .collect();
+    assert!(
+        !assistant_blocks.is_empty(),
+        "TurnComplete must persist assistant content blocks to the timeline so the chat UI \
+         (which renders from chat_message_blocks) shows the response. Found 0 blocks for \
+         pre_assistant_id={}",
+        pre_assistant_id
+    );
+    assert!(
+        assistant_blocks
+            .iter()
+            .all(|item| item.status == ChatTimelineItemStatus::Finalized),
+        "TurnComplete-persisted blocks must be marked Finalized"
+    );
+    let text_concat = assistant_blocks
+        .iter()
+        .filter_map(|item| item.text.clone())
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(
+        text_concat.contains("Tauri desktop app called RalphX"),
+        "Persisted timeline text must carry the assistant response"
+    );
+}
+
+#[tokio::test]
 async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();

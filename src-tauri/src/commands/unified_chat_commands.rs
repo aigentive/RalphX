@@ -4116,14 +4116,14 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
     let mut messages = Vec::with_capacity(raw_messages.len());
     for message in raw_messages {
         let (tool_calls, content_blocks) = reconcile_delegated_result_payloads(
-            &state,
+            state,
             message.tool_calls.clone(),
             message.content_blocks.clone(),
         )
         .await;
         let (tool_calls, content_blocks) = preview_tool_payloads_for_message(
             &conversation_id.as_str(),
-            &message.id.as_str(),
+            message.id.as_str(),
             tool_calls,
             content_blocks,
         );

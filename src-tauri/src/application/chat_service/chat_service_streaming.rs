@@ -1852,6 +1852,19 @@ pub async fn process_stream_background<R: Runtime>(
                                 split_verification_transcript,
                             )
                             .await;
+                            // Mirror the finalize_structured_assistant_message write into the
+                            // timeline-backed chat_message_blocks table. Without this, project
+                            // and task chat turns that end on TurnComplete leave the timeline
+                            // empty and the chat UI shows the response as missing — even though
+                            // chat_messages has the full content.
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Finalized,
+                            )
+                            .await;
                             let turn_usage = processor.current_turn_usage();
                             persist_assistant_message_usage(
                                 &chat_message_repo,

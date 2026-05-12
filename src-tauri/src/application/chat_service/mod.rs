@@ -3024,9 +3024,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             ),
         );
 
-        // Fetch recent session messages for Ideation context ONLY when spawning a new process.
-        // The agent has no prior context at spawn time, so we inject the history into the prompt.
-        // For non-ideation contexts and already-running agents (IPR path above), we pass empty slice.
+        // Fetch recent session messages when spawning a new process. The agent has no prior
+        // context at spawn time, so we inject the history into the bootstrap prompt.
+        //
+        // Already-running agents (IPR path above) skip this — they have live context from
+        // the existing interactive process.
+        //
+        // Ideation keys by session_id; Project/Task chat key by conversation_id because their
+        // messages are not tied to an ideation session. Execution/Review/Merge intentionally
+        // remain history-free — they reload context from task state on every spawn.
         let session_history_started = Instant::now();
         let (session_messages, session_total) = if context_type == ChatContextType::Ideation {
             let session_id = IdeationSessionId::from_string(context_id.to_string());
@@ -3048,6 +3054,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             } else {
                 (vec![], 0usize)
             }
+        } else if chat_service_context::context_type_supports_history_injection(context_type) {
+            let msgs = self
+                .chat_message_repo
+                .get_recent_by_conversation_paginated(
+                    &conversation_id,
+                    chat_service_context::SESSION_HISTORY_LIMIT as u32,
+                    0,
+                )
+                .await
+                .unwrap_or_default();
+            let total = msgs.len();
+            (msgs, total)
         } else {
             (vec![], 0usize)
         };
