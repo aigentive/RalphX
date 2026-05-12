@@ -98,7 +98,13 @@ export default defineConfig(async ({ mode }) => {
     server: {
       port: isWebMode ? 5173 : 1420,
       strictPort: true,
-      host: host || false,
+      // Bind to IPv4 explicitly. With `host: false` (the previous default) Vite 8 on
+      // macOS / Node 22 resolves `localhost` to `::1` (IPv6) and binds there. If a prior
+      // dev session crashed leaving TIME_WAIT sockets on `::1:1420`, the next Vite start
+      // fails with EADDRINUSE even though `lsof` reports nothing listening. Pinning to
+      // 127.0.0.1 sidesteps that — IPv6 TIME_WAITs are irrelevant when we bind IPv4 only.
+      // Mobile/Tauri DEV_HOST mode (when `host` is set) still wins.
+      host: host || "127.0.0.1",
       hmr: host
         ? {
             protocol: "ws",

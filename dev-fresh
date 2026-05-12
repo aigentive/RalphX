@@ -106,6 +106,44 @@ port_has_listener() {
   lsof -ti tcp:"$port" >/dev/null 2>&1
 }
 
+# Count TIME_WAIT sockets touching the given port (either local or remote side).
+# A pileup on ::1:PORT can make a fresh bind() return EADDRINUSE even when no
+# LISTENER is present. macOS holds each TIME_WAIT for ~2*MSL (~30s by default),
+# but a crashed Vite + Tauri's 1Hz probe loop can stack hundreds of them.
+port_time_wait_count() {
+  local port="$1"
+  netstat -an 2>/dev/null \
+    | awk -v port="$port" '$NF == "TIME_WAIT" && ($4 ~ ("[:.]" port "$") || $5 ~ ("[:.]" port "$")) { count++ } END { print count + 0 }'
+}
+
+# Heuristic threshold above which we should warn the user rather than try to bind.
+# Empirically, anything > ~20 from a single crashed session means the IPv6 LISTEN
+# socket will refuse to bind for the next 30-60 seconds.
+DEV_FRESH_TIME_WAIT_WARN_THRESHOLD=20
+
+warn_on_stuck_time_waits() {
+  local port="$1"
+  local label="$2"
+  local count
+  count="$(port_time_wait_count "$port")"
+  if [[ "$count" -gt "$DEV_FRESH_TIME_WAIT_WARN_THRESHOLD" ]]; then
+    cat >&2 <<EOF
+dev-fresh: WARNING — found $count TIME_WAIT sockets on the $label port ($port).
+A prior dev session likely crashed mid-bind, leaving the IPv6 ::1:$port
+half-released. macOS holds each TIME_WAIT for ~30s; the next dev launch may
+fail with "Port $port is already in use" even though no process is listening.
+
+If Vite reports "Port $port is already in use" within the next ~60s,
+wait for the TIME_WAITs to drain and retry, or run:
+  netstat -an | awk -v p=$port '\$NF == "TIME_WAIT" && (\$4 ~ ("[:.]" p "\$") || \$5 ~ ("[:.]" p "\$"))'
+to inspect them.
+
+This is harmless if the next launch succeeds — vite.config.ts now binds
+IPv4 only, which sidesteps the IPv6 pileup.
+EOF
+  fi
+}
+
 wait_for_pid_exit() {
   local pid="$1"
   local attempts=20
@@ -212,6 +250,13 @@ Closing the app window is not sufficient if the terminal process is still alive.
 EOF
   exit 1
 fi
+
+# Warn about lingering TIME_WAIT sockets from a previously-crashed dev session.
+# These do not block dev-fresh on their own, but they can make the next Vite
+# bind fail with EADDRINUSE on IPv6 ::1 even though no LISTEN socket exists.
+warn_on_stuck_time_waits "$VITE_PORT" "Vite dev server"
+warn_on_stuck_time_waits "$TAURI_BACKEND_PORT" "Tauri backend"
+warn_on_stuck_time_waits "$EXTERNAL_MCP_PORT" "external MCP"
 
 export RALPHX_BACKEND_PORT="$TAURI_BACKEND_PORT"
 export TAURI_API_URL="http://127.0.0.1:$TAURI_BACKEND_PORT"
