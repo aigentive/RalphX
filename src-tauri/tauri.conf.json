@@ -5,7 +5,7 @@
   "identifier": "com.ralphx.app",
   "build": {
     "beforeDevCommand": "npm --prefix ../frontend run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm --prefix ../frontend run build",
     "frontendDist": "../frontend/dist"
   },
