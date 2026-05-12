@@ -270,7 +270,7 @@ async fn persist_assistant_message_snapshot(
     }
 }
 
-async fn persist_timeline_snapshot(
+pub(super) async fn persist_timeline_snapshot(
     chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     conversation_id: &str,
     assistant_message_id: &Option<String>,

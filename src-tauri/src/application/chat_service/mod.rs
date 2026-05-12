@@ -111,6 +111,8 @@ pub use chat_service_replay::{build_rehydration_prompt, ConversationReplay, Repl
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_assistant_message_for_test;
 #[doc(hidden)]
+pub use chat_service_send_background::finalize_no_output_assistant_message_for_test;
+#[doc(hidden)]
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
 pub use chat_service_streaming::process_stream_background;
 pub use chat_service_streaming::{
