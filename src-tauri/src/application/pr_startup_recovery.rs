@@ -1942,6 +1942,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn refresh_existing_pr_metadata_updates_pr_and_marks_ready() {
+        let app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let project = Project::new("Startup Metadata".to_string(), "/tmp/repo".to_string());
+        let mut task = Task::new(project.id.clone(), "Merge plan into main".to_string());
+        task.category = TaskCategory::PlanMerge;
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("metadata-artifact".to_string()),
+            IdeationSessionId::from_string("metadata-session".to_string()),
+            project.id.clone(),
+            "ralphx/startup/metadata".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.merge_task_id = Some(task.id.clone());
+        plan_branch.pr_number = Some(42);
+
+        refresh_existing_pr_metadata(
+            vec![PrMetadataRefreshJob {
+                project,
+                merge_task: task,
+                plan_branch,
+                review_state: PrReviewState::Ready,
+            }],
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            Arc::clone(&app_state.ideation_session_repo),
+            Arc::clone(&app_state.artifact_repo),
+        )
+        .await;
+
+        let state = github.state();
+        assert_eq!(state.update_pr_details_calls, 1);
+        assert_eq!(state.mark_pr_ready_calls, 1);
+        assert_eq!(state.last_mark_pr_ready_number, Some(42));
+    }
+
     async fn create_waiting_pr_merge_task(
         app_state: &AppState,
         project: &Project,

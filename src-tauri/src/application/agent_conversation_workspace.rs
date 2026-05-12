@@ -921,6 +921,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_agent_conversation_workspace_defaults_to_current_branch_when_it_differs() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        git(&repo_path, &["checkout", "-b", "feature/current-work"]);
+
+        let mut project = Project::new(
+            "Agent Current Branch".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        project.base_branch = Some("main".to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-current-default".to_string());
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection::default(),
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::CurrentBranch
+        );
+        assert_eq!(workspace.base_ref, "feature/current-work");
+        assert_eq!(
+            workspace.base_display_name.as_deref(),
+            Some("Current branch (feature/current-work)")
+        );
+    }
+
+    #[tokio::test]
     async fn send_path_resolver_uses_stored_workspace_without_branch_probe() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");

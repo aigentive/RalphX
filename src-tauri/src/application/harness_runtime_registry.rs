@@ -376,6 +376,11 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
 }
 
 pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
+    clear_harness_runtime_caches_for_harness(harness);
+    probe_harness(harness)
+}
+
+fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
     if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
         cache.lock().unwrap().remove(&harness);
     }
@@ -393,7 +398,6 @@ pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> Harnes
             cache.lock().unwrap().clear();
         }
     }
-    probe_harness(harness)
 }
 
 pub(crate) fn probe_default_harness() -> HarnessRuntimeProbe {
@@ -1097,6 +1101,77 @@ mod tests {
             .lock()
             .unwrap()
             .clear();
+    }
+
+    #[test]
+    fn clearing_codex_runtime_caches_removes_probe_cli_and_capability_entries() {
+        let _lock = plugin_override_lock().lock().expect("lock harness caches");
+        let codex_path = PathBuf::from("/tmp/codex-cache-test");
+        HARNESS_RUNTIME_PROBE_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(
+                AgentHarnessKind::Codex,
+                HarnessRuntimeProbe {
+                    binary_path: Some(codex_path.display().to_string()),
+                    binary_found: true,
+                    probe_succeeded: true,
+                    available: true,
+                    missing_core_exec_features: Vec::new(),
+                    error: None,
+                },
+            );
+        CHAT_HARNESS_CLI_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(
+                (AgentHarnessKind::Codex, codex_path.clone()),
+                Ok(ResolvedChatHarnessCli::Codex {
+                    cli_path: codex_path.clone(),
+                    capabilities: test_codex_capabilities(),
+                }),
+            );
+        *RESOLVED_CODEX_CLI_CACHE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap() = Some(Ok(ResolvedCodexCli {
+            path: codex_path.clone(),
+            capabilities: test_codex_capabilities(),
+        }));
+        CODEX_CLI_CAPABILITY_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(codex_path, Ok(test_codex_capabilities()));
+
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Codex);
+
+        assert!(!HARNESS_RUNTIME_PROBE_CACHE
+            .get()
+            .expect("probe cache should exist")
+            .lock()
+            .unwrap()
+            .contains_key(&AgentHarnessKind::Codex));
+        assert!(CHAT_HARNESS_CLI_CACHE
+            .get()
+            .expect("chat CLI cache should exist")
+            .lock()
+            .unwrap()
+            .is_empty());
+        assert!(RESOLVED_CODEX_CLI_CACHE
+            .get()
+            .expect("Codex resolution cache should exist")
+            .lock()
+            .unwrap()
+            .is_none());
+        assert!(CODEX_CLI_CAPABILITY_CACHE
+            .get()
+            .expect("Codex capability cache should exist")
+            .lock()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

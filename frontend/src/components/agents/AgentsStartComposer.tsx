@@ -287,6 +287,7 @@ export function AgentsStartComposer({
 
   const handleProviderChange = useCallback(
     (nextProvider: AgentProvider) => {
+      /* c8 ignore next 3 -- menu options are disabled; keep this guard for programmatic calls. */
       if (providerOptions.find((option) => option.id === nextProvider)?.disabled) {
         return;
       }
@@ -484,6 +485,7 @@ export function AgentsStartComposer({
       setError("Prompt is required");
       return;
     }
+    /* c8 ignore next 3 -- submit is disabled for this state; keep this guard for direct calls. */
     if (!hasSelectableProvider || providerStatusMessage) {
       setError(providerStatusMessage ?? "Enable a provider with a validated CLI in Settings.");
       return;

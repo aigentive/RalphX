@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use futures::{stream, StreamExt};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceStatus, PlanBranch, PlanBranchStatus,
@@ -95,12 +95,12 @@ impl StartupGitAuthPreflightSummary {
     }
 }
 
-pub(crate) async fn run_startup_git_auth_preflight(
+pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
     project_repo: Arc<dyn ProjectRepository>,
     app_state_repo: Arc<dyn AppStateRepository>,
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
-    app_handle: &AppHandle,
+    app_handle: &AppHandle<R>,
 ) -> StartupGitAuthPreflightSummary {
     let started_at = Instant::now();
     let active_project_id = app_state_repo
@@ -605,6 +605,74 @@ mod tests {
                 Some(&app_state.agent_conversation_workspace_repo),
             )
             .await
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_git_auth_preflight_skips_projects_without_startup_git_work() {
+        let app_state = crate::application::AppState::new_test();
+        let app = crate::testing::create_mock_app();
+        let inactive_project = app_state
+            .project_repo
+            .create(project(false))
+            .await
+            .expect("project should persist");
+        assert!(!inactive_project.github_pr_enabled);
+
+        let summary = run_startup_git_auth_preflight(
+            Arc::clone(&app_state.project_repo),
+            Arc::clone(&app_state.app_state_repo),
+            Some(Arc::clone(&app_state.plan_branch_repo)),
+            Some(Arc::clone(&app_state.agent_conversation_workspace_repo)),
+            app.handle(),
+        )
+        .await;
+
+        assert!(summary.issues.is_empty());
+        assert!(summary.blocked_project_ids().is_empty());
+        assert!(!summary.active_project_blocked());
+        assert!(!summary.has_blocked_projects());
+    }
+
+    #[tokio::test]
+    async fn startup_git_auth_preflight_reports_active_project_missing_origin() {
+        let app_state = crate::application::AppState::new_test();
+        let app = crate::testing::create_mock_app();
+        let repo = tempfile::tempdir().expect("repo tempdir");
+        std::fs::create_dir(repo.path().join(".git")).expect("git dir should exist");
+        std::fs::write(
+            repo.path().join(".git").join("config"),
+            "[core]\n\trepositoryformatversion = 0\n",
+        )
+        .expect("git config should be written");
+        let mut active_project = project(false);
+        active_project.working_directory = repo.path().to_string_lossy().to_string();
+        let active_project = app_state
+            .project_repo
+            .create(active_project)
+            .await
+            .expect("project should persist");
+        app_state
+            .app_state_repo
+            .set_active_project(Some(&active_project.id))
+            .await
+            .expect("active project should persist");
+
+        let summary = run_startup_git_auth_preflight(
+            Arc::clone(&app_state.project_repo),
+            Arc::clone(&app_state.app_state_repo),
+            Some(Arc::clone(&app_state.plan_branch_repo)),
+            Some(Arc::clone(&app_state.agent_conversation_workspace_repo)),
+            app.handle(),
+        )
+        .await;
+
+        assert!(summary.active_project_blocked());
+        assert_eq!(summary.issues.len(), 1);
+        assert_eq!(summary.issues[0].issue_kind, "repo_remote_missing");
+        assert_eq!(
+            summary.issues[0].reasons,
+            vec!["origin remote is not configured"]
         );
     }
 }

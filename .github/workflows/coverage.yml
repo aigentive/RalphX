@@ -162,6 +162,88 @@ jobs:
           cargo llvm-cov report --json --output-path ../coverage/rust-lib/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-lib/html
 
+      - name: Filter Rust tracing macro coverage noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ROOT = Path("src-tauri")
+          LCOV = Path("coverage/rust-lib/lcov.info")
+          MACROS = (
+              "tracing::trace!(",
+              "tracing::debug!(",
+              "tracing::info!(",
+              "tracing::warn!(",
+              "tracing::error!(",
+              "trace!(",
+              "debug!(",
+              "info!(",
+              "warn!(",
+              "error!(",
+          )
+
+          def ignored_lines(source: Path) -> set[int]:
+              try:
+                  lines = source.read_text(encoding="utf-8").splitlines()
+              except OSError:
+                  return set()
+              ignored: set[int] = set()
+              index = 0
+              while index < len(lines):
+                  if not any(macro in lines[index] for macro in MACROS):
+                      index += 1
+                      continue
+                  depth = 0
+                  seen_open = False
+                  cursor = index
+                  while cursor < len(lines):
+                      for char in lines[cursor]:
+                          if char == "(":
+                              depth += 1
+                              seen_open = True
+                          elif char == ")" and seen_open:
+                              depth -= 1
+                      ignored.add(cursor + 1)
+                      if seen_open and depth <= 0 and ";" in lines[cursor]:
+                          break
+                      cursor += 1
+                  index = max(cursor + 1, index + 1)
+              return ignored
+
+          cache: dict[str, set[int]] = {}
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              ignored = cache.setdefault(
+                  source_key or "",
+                  ignored_lines(ROOT / source_key) if source_key else set(),
+              )
+              output: list[str] = []
+              lines_found = 0
+              lines_hit = 0
+              for line in record_lines:
+                  if line.startswith(("LF:", "LH:")):
+                      continue
+                  if line.startswith("DA:"):
+                      line_number_raw, count_raw = line[3:].split(",", 1)
+                      line_number = int(line_number_raw)
+                      if line_number in ignored:
+                          continue
+                      lines_found += 1
+                      if int(count_raw.split(",", 1)[0]) > 0:
+                          lines_hit += 1
+                  output.append(line)
+              output.append(f"LF:{lines_found}")
+              output.append(f"LH:{lines_hit}")
+              filtered_records.append("\n".join(output) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
+
       - name: Summarize Rust lib coverage
         run: |
           node scripts/summarize-coverage.mjs \
@@ -233,6 +315,88 @@ jobs:
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
+
+      - name: Filter Rust tracing macro coverage noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ROOT = Path("src-tauri")
+          LCOV = Path("coverage/rust-ipc/lcov.info")
+          MACROS = (
+              "tracing::trace!(",
+              "tracing::debug!(",
+              "tracing::info!(",
+              "tracing::warn!(",
+              "tracing::error!(",
+              "trace!(",
+              "debug!(",
+              "info!(",
+              "warn!(",
+              "error!(",
+          )
+
+          def ignored_lines(source: Path) -> set[int]:
+              try:
+                  lines = source.read_text(encoding="utf-8").splitlines()
+              except OSError:
+                  return set()
+              ignored: set[int] = set()
+              index = 0
+              while index < len(lines):
+                  if not any(macro in lines[index] for macro in MACROS):
+                      index += 1
+                      continue
+                  depth = 0
+                  seen_open = False
+                  cursor = index
+                  while cursor < len(lines):
+                      for char in lines[cursor]:
+                          if char == "(":
+                              depth += 1
+                              seen_open = True
+                          elif char == ")" and seen_open:
+                              depth -= 1
+                      ignored.add(cursor + 1)
+                      if seen_open and depth <= 0 and ";" in lines[cursor]:
+                          break
+                      cursor += 1
+                  index = max(cursor + 1, index + 1)
+              return ignored
+
+          cache: dict[str, set[int]] = {}
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              ignored = cache.setdefault(
+                  source_key or "",
+                  ignored_lines(ROOT / source_key) if source_key else set(),
+              )
+              output: list[str] = []
+              lines_found = 0
+              lines_hit = 0
+              for line in record_lines:
+                  if line.startswith(("LF:", "LH:")):
+                      continue
+                  if line.startswith("DA:"):
+                      line_number_raw, count_raw = line[3:].split(",", 1)
+                      line_number = int(line_number_raw)
+                      if line_number in ignored:
+                          continue
+                      lines_found += 1
+                      if int(count_raw.split(",", 1)[0]) > 0:
+                          lines_hit += 1
+                  output.append(line)
+              output.append(f"LF:{lines_found}")
+              output.append(f"LH:{lines_hit}")
+              filtered_records.append("\n".join(output) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
 
       - name: Summarize Rust IPC coverage
         run: |

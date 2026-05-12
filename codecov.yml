@@ -35,6 +35,27 @@ ignore:
   - "plugins/app/**/*.test.*"
   - "plugins/app/**/*.spec.*"
 
+flags:
+  rust-lib:
+    paths:
+      - "src-tauri/crates/"
+      - "src-tauri/src/application/"
+      - "src-tauri/src/domain/"
+      - "src-tauri/src/infrastructure/"
+  rust-ipc:
+    paths:
+      - "src-tauri/src/commands/"
+      - "src-tauri/tests/"
+  frontend:
+    paths:
+      - "frontend/src/"
+  plugin-external-mcp:
+    paths:
+      - "plugins/app/ralphx-external-mcp/"
+  plugin-internal-mcp:
+    paths:
+      - "plugins/app/ralphx-mcp-server/"
+
 comment:
   layout: "reach, diff, flags, files"
   behavior: default
