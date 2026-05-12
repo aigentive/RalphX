@@ -322,6 +322,31 @@ async fn test_from_shared_file_backed_reuses_pooled_backend() {
 }
 
 #[tokio::test]
+async fn test_pooled_backend_prefers_unlocked_connection() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("pooled_available.db");
+    let conn = open_connection(&db_path).unwrap();
+    conn.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY)")
+        .unwrap();
+
+    let shared = Arc::new(Mutex::new(conn));
+    let db = DbConnection::from_shared(Arc::clone(&shared));
+
+    let DbBackend::Pool(pool) = db.backend.as_ref() else {
+        panic!("expected file-backed pooled backend");
+    };
+
+    let _locked_first_lane = pool.connections[0].try_lock().expect("lock lane 0");
+    pool.next_index.store(0, Ordering::Relaxed);
+
+    let (_conn, backend, idx, pick) = db.pick_connection();
+
+    assert_eq!(backend, "pool");
+    assert_ne!(idx, 0, "pool should skip the locked first lane");
+    assert_eq!(pick, "first_available");
+}
+
+#[tokio::test]
 async fn test_from_shared_in_memory_uses_single_backend() {
     let shared = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
     let db = DbConnection::from_shared(Arc::clone(&shared));

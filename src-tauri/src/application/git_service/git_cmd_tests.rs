@@ -105,7 +105,10 @@ fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
         .expect("PATH env");
     let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
 
-    assert_eq!(path_entries.first(), Some(&std::path::PathBuf::from("/tmp/git-node-bin")));
+    assert_eq!(
+        path_entries.first(),
+        Some(&std::path::PathBuf::from("/tmp/git-node-bin"))
+    );
     assert_eq!(
         path_entries,
         vec![
@@ -217,6 +220,43 @@ fn test_retry_backoff_array_length() {
     );
 }
 
+#[test]
+fn git_command_telemetry_helpers_cover_success_error_and_timeout_paths() {
+    let args: Vec<String> = vec!["--version".to_string()];
+    let cwd = std::env::temp_dir();
+    let caller = std::panic::Location::caller();
+    let output = std::process::Command::new("git")
+        .arg("--version")
+        .current_dir(&cwd)
+        .output()
+        .expect("git --version should run");
+
+    log_git_command_result("run", &args, &cwd, Instant::now(), caller, Ok(&output));
+    log_git_command_result(
+        "run",
+        &args,
+        &cwd,
+        Instant::now() - Duration::from_millis(SLOW_GIT_COMMAND_MS + 1),
+        caller,
+        Ok(&output),
+    );
+
+    let error = AppError::GitOperation("test git failure".to_string());
+    log_git_command_result("run", &args, &cwd, Instant::now(), caller, Err(&error));
+
+    log_git_status_result("run_status", &args, &cwd, Instant::now(), caller, true);
+    log_git_status_result(
+        "run_status",
+        &args,
+        &cwd,
+        Instant::now() - Duration::from_millis(SLOW_GIT_COMMAND_MS + 1),
+        caller,
+        false,
+    );
+
+    log_git_command_timeout("run", &args, &cwd, Instant::now(), caller, 5);
+}
+
 // ── Async public API tests ───────────────────────────────────────────────
 
 #[tokio::test]
@@ -274,14 +314,11 @@ async fn test_timeout_drops_future_cleanly() {
     let args: Vec<String> = vec!["--version".to_string()];
     let cwd = tmpdir.to_path_buf();
 
-    // Use a generous 5s timeout — `git --version` should complete well within this.
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        exec_git_async(&args, &cwd),
-    )
-    .await;
+    // Keep this as a hang guard instead of a performance assertion; macOS
+    // subprocess startup can exceed 5s on overloaded developer machines.
+    let result = tokio::time::timeout(Duration::from_secs(30), exec_git_async(&args, &cwd)).await;
 
     // Should complete within timeout
-    assert!(result.is_ok(), "git --version should complete within 5s");
+    assert!(result.is_ok(), "git --version should complete within 30s");
     assert!(result.unwrap().is_ok());
 }

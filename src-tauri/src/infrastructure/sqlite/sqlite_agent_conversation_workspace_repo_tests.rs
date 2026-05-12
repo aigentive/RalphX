@@ -51,6 +51,37 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
 }
 
 #[tokio::test]
+async fn terminal_cleanup_candidates_skip_marked_rows() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.publication_pr_number = Some(72);
+    workspace.publication_pr_status = Some("merged".to_string());
+
+    repo.create_or_update(workspace).await.unwrap();
+    assert_eq!(
+        repo.get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string()
+        ))
+        .await
+        .unwrap()
+        .len(),
+        1
+    );
+
+    repo.mark_local_cleanup_status(&conversation_id, "cleaned", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    assert!(repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string()
+        ))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn pr_description_round_trips_and_clears() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id))

@@ -261,6 +261,77 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
             .await
     }
 
+    async fn get_terminal_local_cleanup_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PlanBranch>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT * FROM plan_branches
+                         WHERE project_id = ?1
+                           AND local_cleanup_status IS NULL
+                           AND (status = 'merged' OR pr_status = 'Merged')
+                         ORDER BY created_at DESC",
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to prepare terminal cleanup query: {}",
+                            e
+                        ))
+                    })?;
+                let branches = stmt
+                    .query_map(rusqlite::params![project_id.as_str()], |row| {
+                        PlanBranch::from_row(row)
+                    })
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to query terminal cleanup plan branches: {}",
+                            e
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to collect terminal cleanup plan branches: {}",
+                            e
+                        ))
+                    })?;
+                Ok(branches)
+            })
+            .await
+    }
+
+    async fn mark_local_cleanup_status(
+        &self,
+        id: &PlanBranchId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let status = status.to_string();
+        let checked_at = checked_at.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE plan_branches
+                     SET local_cleanup_status = ?1, local_cleanup_checked_at = ?2
+                     WHERE id = ?3",
+                    rusqlite::params![status, checked_at, id.as_str()],
+                )
+                .map_err(|e| {
+                    AppError::Database(format!(
+                        "Failed to mark plan branch local cleanup status: {}",
+                        e
+                    ))
+                })?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn update_status(&self, id: &PlanBranchId, status: PlanBranchStatus) -> AppResult<()> {
         let id = id.as_str().to_string();
         let id_display = id.clone();

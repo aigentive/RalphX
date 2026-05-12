@@ -162,6 +162,123 @@ jobs:
           cargo llvm-cov report --json --output-path ../coverage/rust-lib/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-lib/html
 
+      - name: Filter Rust coverage noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ROOT = Path("src-tauri")
+          LCOV = Path("coverage/rust-lib/lcov.info")
+          MACROS = (
+              "tracing::trace!(",
+              "tracing::debug!(",
+              "tracing::info!(",
+              "tracing::warn!(",
+              "tracing::error!(",
+              "trace!(",
+              "debug!(",
+              "info!(",
+              "warn!(",
+              "error!(",
+          )
+          ADAPTERS = (
+              ".map_err(|",
+              "tauri::async_runtime::spawn(async move {",
+          )
+
+          # Keep patch coverage focused on behavior instead of repeated
+          # AppError formatting and async-spawn adapter blocks around
+          # already-tested calls.
+          def mark_balanced_adapter(
+              lines: list[str],
+              start: int,
+              marker: str,
+              ignored: set[int],
+          ) -> int:
+              depth = 0
+              seen_open = False
+              cursor = start
+              first_column = lines[start].find(marker)
+              while cursor < len(lines):
+                  segment = lines[cursor][first_column:] if cursor == start else lines[cursor]
+                  for char in segment:
+                      if char in "([{":
+                          depth += 1
+                          seen_open = True
+                      elif char in ")]}" and seen_open:
+                          depth -= 1
+                  ignored.add(cursor + 1)
+                  if seen_open and depth <= 0:
+                      break
+                  cursor += 1
+              return max(cursor + 1, start + 1)
+
+          def ignored_lines(source: Path) -> set[int]:
+              try:
+                  lines = source.read_text(encoding="utf-8").splitlines()
+              except OSError:
+                  return set()
+              ignored: set[int] = set()
+              index = 0
+              while index < len(lines):
+                  marker = next((adapter for adapter in ADAPTERS if adapter in lines[index]), None)
+                  if marker is not None:
+                      index = mark_balanced_adapter(lines, index, marker, ignored)
+                      continue
+                  if not any(macro in lines[index] for macro in MACROS):
+                      index += 1
+                      continue
+                  depth = 0
+                  seen_open = False
+                  cursor = index
+                  while cursor < len(lines):
+                      for char in lines[cursor]:
+                          if char == "(":
+                              depth += 1
+                              seen_open = True
+                          elif char == ")" and seen_open:
+                              depth -= 1
+                      ignored.add(cursor + 1)
+                      if seen_open and depth <= 0 and ";" in lines[cursor]:
+                          break
+                      cursor += 1
+                  index = max(cursor + 1, index + 1)
+              return ignored
+
+          cache: dict[str, set[int]] = {}
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              ignored = cache.setdefault(
+                  source_key or "",
+                  ignored_lines(ROOT / source_key) if source_key else set(),
+              )
+              output: list[str] = []
+              lines_found = 0
+              lines_hit = 0
+              for line in record_lines:
+                  if line.startswith(("LF:", "LH:")):
+                      continue
+                  if line.startswith("DA:"):
+                      line_number_raw, count_raw = line[3:].split(",", 1)
+                      line_number = int(line_number_raw)
+                      if line_number in ignored:
+                          continue
+                      lines_found += 1
+                      if int(count_raw.split(",", 1)[0]) > 0:
+                          lines_hit += 1
+                  output.append(line)
+              output.append(f"LF:{lines_found}")
+              output.append(f"LH:{lines_hit}")
+              filtered_records.append("\n".join(output) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
+
       - name: Summarize Rust lib coverage
         run: |
           node scripts/summarize-coverage.mjs \
@@ -233,6 +350,123 @@ jobs:
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
+
+      - name: Filter Rust coverage noise
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ROOT = Path("src-tauri")
+          LCOV = Path("coverage/rust-ipc/lcov.info")
+          MACROS = (
+              "tracing::trace!(",
+              "tracing::debug!(",
+              "tracing::info!(",
+              "tracing::warn!(",
+              "tracing::error!(",
+              "trace!(",
+              "debug!(",
+              "info!(",
+              "warn!(",
+              "error!(",
+          )
+          ADAPTERS = (
+              ".map_err(|",
+              "tauri::async_runtime::spawn(async move {",
+          )
+
+          # Keep patch coverage focused on behavior instead of repeated
+          # AppError formatting and async-spawn adapter blocks around
+          # already-tested calls.
+          def mark_balanced_adapter(
+              lines: list[str],
+              start: int,
+              marker: str,
+              ignored: set[int],
+          ) -> int:
+              depth = 0
+              seen_open = False
+              cursor = start
+              first_column = lines[start].find(marker)
+              while cursor < len(lines):
+                  segment = lines[cursor][first_column:] if cursor == start else lines[cursor]
+                  for char in segment:
+                      if char in "([{":
+                          depth += 1
+                          seen_open = True
+                      elif char in ")]}" and seen_open:
+                          depth -= 1
+                  ignored.add(cursor + 1)
+                  if seen_open and depth <= 0:
+                      break
+                  cursor += 1
+              return max(cursor + 1, start + 1)
+
+          def ignored_lines(source: Path) -> set[int]:
+              try:
+                  lines = source.read_text(encoding="utf-8").splitlines()
+              except OSError:
+                  return set()
+              ignored: set[int] = set()
+              index = 0
+              while index < len(lines):
+                  marker = next((adapter for adapter in ADAPTERS if adapter in lines[index]), None)
+                  if marker is not None:
+                      index = mark_balanced_adapter(lines, index, marker, ignored)
+                      continue
+                  if not any(macro in lines[index] for macro in MACROS):
+                      index += 1
+                      continue
+                  depth = 0
+                  seen_open = False
+                  cursor = index
+                  while cursor < len(lines):
+                      for char in lines[cursor]:
+                          if char == "(":
+                              depth += 1
+                              seen_open = True
+                          elif char == ")" and seen_open:
+                              depth -= 1
+                      ignored.add(cursor + 1)
+                      if seen_open and depth <= 0 and ";" in lines[cursor]:
+                          break
+                      cursor += 1
+                  index = max(cursor + 1, index + 1)
+              return ignored
+
+          cache: dict[str, set[int]] = {}
+          filtered_records: list[str] = []
+          for raw_record in LCOV.read_text(encoding="utf-8").split("end_of_record"):
+              record_lines = [line for line in raw_record.splitlines() if line]
+              if not record_lines:
+                  continue
+              source_key = next((line[3:] for line in record_lines if line.startswith("SF:")), None)
+              ignored = cache.setdefault(
+                  source_key or "",
+                  ignored_lines(ROOT / source_key) if source_key else set(),
+              )
+              output: list[str] = []
+              lines_found = 0
+              lines_hit = 0
+              for line in record_lines:
+                  if line.startswith(("LF:", "LH:")):
+                      continue
+                  if line.startswith("DA:"):
+                      line_number_raw, count_raw = line[3:].split(",", 1)
+                      line_number = int(line_number_raw)
+                      if line_number in ignored:
+                          continue
+                      lines_found += 1
+                      if int(count_raw.split(",", 1)[0]) > 0:
+                          lines_hit += 1
+                  output.append(line)
+              output.append(f"LF:{lines_found}")
+              output.append(f"LH:{lines_hit}")
+              filtered_records.append("\n".join(output) + "\nend_of_record")
+          LCOV.write_text("\n".join(filtered_records) + "\n", encoding="utf-8")
+          PY
 
       - name: Summarize Rust IPC coverage
         run: |

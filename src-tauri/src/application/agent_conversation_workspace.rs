@@ -62,19 +62,109 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
 ) -> AppResult<AgentConversationWorkspace> {
     let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
-    let branch_probe_started = Instant::now();
-    let (current_branch, project_default) = tokio::join!(
-        GitService::get_current_branch(&repo_path),
-        GitService::resolve_project_default_branch(&repo_path, project.base_branch.as_deref())
+    tracing::info!(
+        conversation_id = %conversation_id,
+        project_id = %project.id,
+        mode = %mode,
+        setup_mode = ?setup_mode,
+        selected_base_kind = ?selection.kind,
+        selected_base_ref = ?selection.base_ref,
+        "Agent conversation workspace prepare started"
     );
-    let current_branch = current_branch.ok().filter(|branch| branch != "HEAD");
+
+    let selected_kind = selection.kind;
+    let selected_base_ref = selection
+        .base_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let selected_display_name = selection
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let branch_probe_started = Instant::now();
+    let needs_current_branch = selected_kind.is_none()
+        || (selected_kind == Some(IdeationAnalysisBaseRefKind::CurrentBranch)
+            && selected_base_ref.is_none());
+    let needs_project_default = selected_kind.is_none()
+        || (selected_kind == Some(IdeationAnalysisBaseRefKind::ProjectDefault)
+            && selected_base_ref.is_none());
+    let current_branch_probe_started = Instant::now();
+    let project_default_probe_started = Instant::now();
+    let (current_branch, project_default) = tokio::join!(
+        async {
+            if !needs_current_branch {
+                tracing::info!(
+                    conversation_id = %conversation_id,
+                    phase = "resolve_current_branch",
+                    elapsed_ms = current_branch_probe_started.elapsed().as_millis() as u64,
+                    result = ?Option::<&str>::None,
+                    error = ?Option::<String>::None,
+                    skipped = true,
+                    "Agent conversation workspace probe completed"
+                );
+                return Ok(None);
+            }
+
+            let result = GitService::get_current_branch(&repo_path).await;
+            log_agent_workspace_probe_result(
+                conversation_id,
+                "resolve_current_branch",
+                current_branch_probe_started,
+                result.as_ref().ok().map(String::as_str),
+                result.as_ref().err().map(ToString::to_string),
+            );
+            result.map(Some)
+        },
+        async {
+            if !needs_project_default {
+                tracing::info!(
+                    conversation_id = %conversation_id,
+                    phase = "resolve_project_default_branch",
+                    elapsed_ms = project_default_probe_started.elapsed().as_millis() as u64,
+                    configured_base_branch = ?project.base_branch,
+                    branch = ?Option::<&str>::None,
+                    skipped = true,
+                    "Agent conversation workspace probe completed"
+                );
+                return None;
+            }
+
+            let branch = GitService::resolve_project_default_branch(
+                &repo_path,
+                project.base_branch.as_deref(),
+            )
+            .await;
+            tracing::info!(
+                conversation_id = %conversation_id,
+                phase = "resolve_project_default_branch",
+                elapsed_ms = project_default_probe_started.elapsed().as_millis() as u64,
+                configured_base_branch = ?project.base_branch,
+                branch = %branch,
+                skipped = false,
+                "Agent conversation workspace probe completed"
+            );
+            Some(branch)
+        }
+    );
+    let current_branch = current_branch
+        .ok()
+        .flatten()
+        .filter(|branch| branch != "HEAD");
     log_agent_workspace_phase(
         conversation_id,
         "resolve_base_context",
         branch_probe_started,
     );
 
-    let kind = selection.kind.unwrap_or_else(|| {
+    let kind = selected_kind.unwrap_or_else(|| {
+        let project_default = project_default
+            .as_deref()
+            .unwrap_or_else(|| project.base_branch.as_deref().unwrap_or("main"));
         if current_branch
             .as_deref()
             .is_some_and(|branch| branch != project_default)
@@ -93,46 +183,50 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
     }
 
     let base_ref = match kind {
-        IdeationAnalysisBaseRefKind::ProjectDefault => selection
-            .base_ref
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(project_default),
-        IdeationAnalysisBaseRefKind::CurrentBranch => selection
-            .base_ref
-            .filter(|value| !value.trim().is_empty())
+        IdeationAnalysisBaseRefKind::ProjectDefault => selected_base_ref
+            .clone()
+            .or(project_default)
+            .unwrap_or_else(|| "main".to_string()),
+        IdeationAnalysisBaseRefKind::CurrentBranch => selected_base_ref
+            .clone()
             .or(current_branch)
             .ok_or_else(|| AppError::Validation("Unable to resolve current branch".to_string()))?,
-        IdeationAnalysisBaseRefKind::LocalBranch => selection
-            .base_ref
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                AppError::Validation(
-                    "Local branch agent conversation base requires base_ref".to_string(),
-                )
-            })?,
+        IdeationAnalysisBaseRefKind::LocalBranch => selected_base_ref.clone().ok_or_else(|| {
+            AppError::Validation(
+                "Local branch agent conversation base requires base_ref".to_string(),
+            )
+        })?,
         IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
     };
 
     let ref_check_started = Instant::now();
-    if !GitService::ref_exists(&repo_path, &base_ref).await? {
-        return Err(AppError::Validation(format!(
-            "Agent conversation base ref '{}' does not exist in the project repository",
-            base_ref
-        )));
-    }
+    let base_commit = GitService::get_branch_sha(&repo_path, &base_ref)
+        .await
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "Agent conversation base ref '{}' does not exist in the project repository: {}",
+                base_ref, error
+            ))
+        })?;
     log_agent_workspace_phase(conversation_id, "validate_base_ref", ref_check_started);
 
-    let display_name = selection
-        .display_name
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| match kind {
-            IdeationAnalysisBaseRefKind::ProjectDefault => format!("Project default ({base_ref})"),
-            IdeationAnalysisBaseRefKind::CurrentBranch => format!("Current branch ({base_ref})"),
-            IdeationAnalysisBaseRefKind::LocalBranch => base_ref.clone(),
-            IdeationAnalysisBaseRefKind::PullRequest => base_ref.clone(),
-        });
+    let display_name = selected_display_name.unwrap_or_else(|| match kind {
+        IdeationAnalysisBaseRefKind::ProjectDefault => format!("Project default ({base_ref})"),
+        IdeationAnalysisBaseRefKind::CurrentBranch => format!("Current branch ({base_ref})"),
+        IdeationAnalysisBaseRefKind::LocalBranch => base_ref.clone(),
+        IdeationAnalysisBaseRefKind::PullRequest => base_ref.clone(),
+    });
     let branch_name = agent_conversation_branch_name(project, conversation_id);
+    let workspace_path_started = Instant::now();
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
+    tracing::info!(
+        conversation_id = %conversation_id,
+        phase = "resolve_workspace_path",
+        elapsed_ms = workspace_path_started.elapsed().as_millis() as u64,
+        branch_name = %branch_name,
+        worktree_path = %worktree_path.display(),
+        "Agent conversation workspace path resolved"
+    );
 
     let worktree_started = Instant::now();
     ensure_agent_conversation_worktree(&repo_path, &worktree_path, &branch_name, &base_ref).await?;
@@ -148,10 +242,13 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
     )
     .await;
     log_agent_workspace_phase(conversation_id, "workspace_setup", setup_started);
-
-    let base_commit_started = Instant::now();
-    let base_commit = GitService::get_branch_sha(&repo_path, &branch_name).await?;
-    log_agent_workspace_phase(conversation_id, "capture_base_commit", base_commit_started);
+    tracing::info!(
+        conversation_id = %conversation_id,
+        phase = "capture_base_commit",
+        elapsed_ms = 0u64,
+        source_ref = %base_ref,
+        "Agent conversation workspace phase completed"
+    );
     log_agent_workspace_phase(conversation_id, "prepare_total", total_started);
 
     Ok(AgentConversationWorkspace {
@@ -360,6 +457,23 @@ fn log_agent_workspace_phase(
     );
 }
 
+fn log_agent_workspace_probe_result(
+    conversation_id: &ChatConversationId,
+    phase: &'static str,
+    started: Instant,
+    result: Option<&str>,
+    error: Option<String>,
+) {
+    tracing::info!(
+        conversation_id = %conversation_id,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        result = ?result,
+        error = ?error,
+        "Agent conversation workspace probe completed"
+    );
+}
+
 async fn run_or_defer_agent_conversation_workspace_setup(
     project: &Project,
     conversation_id: &ChatConversationId,
@@ -481,14 +595,33 @@ async fn ensure_agent_conversation_worktree(
     branch_name: &str,
     base_ref: &str,
 ) -> AppResult<()> {
-    if workspace_path.exists() {
+    let exists_started = Instant::now();
+    let workspace_exists = workspace_path.exists();
+    tracing::info!(
+        branch_name,
+        base_ref,
+        worktree_path = %workspace_path.display(),
+        elapsed_ms = exists_started.elapsed().as_millis() as u64,
+        workspace_exists,
+        "Agent conversation worktree path probe completed"
+    );
+
+    if workspace_exists {
         if !workspace_path.is_dir() {
             return Err(AppError::Validation(format!(
                 "Agent conversation workspace path exists but is not a directory: {}",
                 workspace_path.display()
             )));
         }
+        let branch_check_started = Instant::now();
         let checked_out = GitService::get_current_branch(workspace_path).await?;
+        tracing::info!(
+            branch_name,
+            checked_out = %checked_out,
+            worktree_path = %workspace_path.display(),
+            elapsed_ms = branch_check_started.elapsed().as_millis() as u64,
+            "Agent conversation existing worktree branch check completed"
+        );
         if checked_out != branch_name {
             return Err(AppError::Validation(format!(
                 "Existing agent conversation workspace {} is checked out at '{}' instead of '{}'",
@@ -500,7 +633,19 @@ async fn ensure_agent_conversation_worktree(
         return Ok(());
     }
 
-    GitService::create_worktree(repo_path, workspace_path, branch_name, base_ref).await
+    let create_started = Instant::now();
+    let result =
+        GitService::create_worktree(repo_path, workspace_path, branch_name, base_ref).await;
+    tracing::info!(
+        branch_name,
+        base_ref,
+        worktree_path = %workspace_path.display(),
+        elapsed_ms = create_started.elapsed().as_millis() as u64,
+        success = result.is_ok(),
+        error = ?result.as_ref().err().map(ToString::to_string),
+        "Agent conversation worktree creation completed"
+    );
+    result
 }
 
 pub fn resolve_agent_conversation_workspace_path(
@@ -517,6 +662,30 @@ pub fn resolve_agent_conversation_workspace_path(
 }
 
 pub async fn resolve_valid_agent_conversation_workspace_path(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<PathBuf> {
+    let expected_path = resolve_agent_conversation_workspace_path_from_record(project, workspace)?;
+
+    let checked_out = GitService::get_current_branch(&expected_path).await?;
+    if checked_out != workspace.branch_name {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace {} is checked out at '{}' instead of '{}'",
+            workspace.conversation_id, checked_out, workspace.branch_name
+        )));
+    }
+
+    Ok(expected_path)
+}
+
+pub fn resolve_agent_conversation_workspace_path_for_send(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<PathBuf> {
+    resolve_agent_conversation_workspace_path_from_record(project, workspace)
+}
+
+fn resolve_agent_conversation_workspace_path_from_record(
     project: &Project,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<PathBuf> {
@@ -552,11 +721,11 @@ pub async fn resolve_valid_agent_conversation_workspace_path(
         )));
     }
 
-    let checked_out = GitService::get_current_branch(&expected_path).await?;
-    if checked_out != workspace.branch_name {
+    if !expected_path.join(".git").exists() {
         return Err(AppError::Validation(format!(
-            "Agent conversation workspace {} is checked out at '{}' instead of '{}'",
-            workspace.conversation_id, checked_out, workspace.branch_name
+            "Agent conversation workspace {} is not a git worktree: {}",
+            workspace.conversation_id,
+            expected_path.display()
         )));
     }
 
@@ -749,6 +918,89 @@ mod tests {
         })
         .await
         .expect("deferred setup should complete in the background");
+    }
+
+    #[tokio::test]
+    async fn prepare_agent_conversation_workspace_defaults_to_current_branch_when_it_differs() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        git(&repo_path, &["checkout", "-b", "feature/current-work"]);
+
+        let mut project = Project::new(
+            "Agent Current Branch".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        project.base_branch = Some("main".to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-current-default".to_string());
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection::default(),
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::CurrentBranch
+        );
+        assert_eq!(workspace.base_ref, "feature/current-work");
+        assert_eq!(
+            workspace.base_display_name.as_deref(),
+            Some("Current branch (feature/current-work)")
+        );
+    }
+
+    #[tokio::test]
+    async fn send_path_resolver_uses_stored_workspace_without_branch_probe() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Fast Send".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-fast-send-test".to_string());
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        let worktree_path = Path::new(&workspace.worktree_path);
+        git(worktree_path, &["checkout", "-b", "manual-drift"]);
+
+        let resolved = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
+            .expect("foreground send should trust stored workspace metadata");
+        assert_eq!(resolved, worktree_path);
+
+        let strict_error = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
+            .await
+            .expect_err("strict validation should still catch branch drift");
+        assert!(
+            strict_error.to_string().contains("checked out"),
+            "unexpected strict validation error: {strict_error}"
+        );
     }
 
     #[tokio::test]

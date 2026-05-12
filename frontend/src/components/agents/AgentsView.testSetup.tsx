@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
+import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import { ideationApi } from "@/api/ideation";
 import {
   DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS,
@@ -24,6 +25,7 @@ import {
 
 const agentsViewTestMocks = vi.hoisted(() => ({
   useProjectsMock: vi.fn(),
+  useHarnessProvidersMock: vi.fn(),
   useProjectAgentConversationsMock: vi.fn(),
   useAgentSidebarProjectGroupMock: vi.fn(),
   useAgentSidebarPublicationGroupMock: vi.fn(),
@@ -61,9 +63,55 @@ const agentsViewTestMocks = vi.hoisted(() => ({
 }));
 
 const eventSubscriptions = new Map<string, ((payload: unknown) => void)[]>();
+const providerUpdatedAt = new Date().toISOString();
+const defaultProviderSettings: AgentProvidersSettingsResponse = {
+  defaultProvider: "codex",
+  requiresOnboarding: false,
+  providers: [
+    {
+      provider: "codex",
+      enabled: true,
+      isDefault: true,
+      model: "gpt-5.5",
+      effort: "xhigh",
+      approvalPolicy: "never",
+      sandboxMode: "danger-full-access",
+      claudePermissionMode: null,
+      claudeDangerouslySkipPermissions: false,
+      claudeAllowDangerouslySkipPermissions: false,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/opt/homebrew/bin/codex",
+      status: "Available codex detected.",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: providerUpdatedAt,
+    },
+    {
+      provider: "claude",
+      enabled: true,
+      isDefault: false,
+      model: "sonnet",
+      effort: "medium",
+      approvalPolicy: null,
+      sandboxMode: null,
+      claudePermissionMode: "default",
+      claudeDangerouslySkipPermissions: false,
+      claudeAllowDangerouslySkipPermissions: false,
+      available: true,
+      binaryFound: true,
+      binaryPath: "/usr/local/bin/claude",
+      status: "Available claude detected.",
+      error: null,
+      missingCoreExecFeatures: [],
+      updatedAt: providerUpdatedAt,
+    },
+  ],
+};
 
 const {
   useProjectsMock,
+  useHarnessProvidersMock,
   useProjectAgentConversationsMock,
   useAgentSidebarProjectGroupMock,
   useAgentSidebarPublicationGroupMock,
@@ -104,6 +152,25 @@ export function getAgentsViewTestMocks() {
   return agentsViewTestMocks;
 }
 
+export function mockHarnessProviders(
+  settings: AgentProvidersSettingsResponse = defaultProviderSettings,
+  overrides: Record<string, unknown> = {},
+) {
+  useHarnessProvidersMock.mockReturnValue({
+    settings,
+    providers: settings.providers,
+    isLoading: false,
+    isPlaceholderData: false,
+    isError: false,
+    error: null,
+    refetchProviders: vi.fn(),
+    updateProviderAsync: vi.fn(),
+    isUpdating: false,
+    updateError: null,
+    ...overrides,
+  });
+}
+
 export function fireAgentViewEvent<T>(event: string, payload: T) {
   const handlers = eventSubscriptions.get(event);
   if (!handlers) {
@@ -116,6 +183,10 @@ export function fireAgentViewEvent<T>(event: string, payload: T) {
 
 vi.mock("@/hooks/useProjects", () => ({
   useProjects: () => useProjectsMock(),
+}));
+
+vi.mock("@/hooks/useHarnessProviders", () => ({
+  useHarnessProviders: () => useHarnessProvidersMock(),
 }));
 
 vi.mock("@/providers/EventProvider", () => ({
@@ -781,6 +852,7 @@ export function setupAgentsViewTest() {
   useAgentSidebarProjectGroupMock.mockReset();
   useAgentSidebarPublicationGroupMock.mockReset();
   useProjectsMock.mockReset();
+  useHarnessProvidersMock.mockReset();
   useConversationMock.mockReset();
   startAgentConversationMock.mockReset();
   getAgentConversationWorkspaceMock.mockReset();
@@ -945,6 +1017,7 @@ export function setupAgentsViewTest() {
     purpose: "verification",
     latestChildSessionId: null,
   });
+  mockHarnessProviders();
   archiveConversationMock.mockResolvedValue(undefined);
   restoreConversationMock.mockResolvedValue(undefined);
   vi.mocked(invoke).mockReset();
@@ -957,6 +1030,7 @@ export function setupAgentsViewTest() {
     agentStatus: {},
     isSending: {},
   });
+  useUiStore.getState().closeModal();
   useUiStore.getState().setExecutionPaused(false);
   useUiStore.getState().setExecutionQueuedCount(0, 0);
   resetAgentSessionState();

@@ -27,10 +27,7 @@ async fn test_create_and_get_by_plan_artifact_id() {
     let created = repo.create(branch).await.unwrap();
     assert_eq!(created.plan_artifact_id, artifact_id);
 
-    let results = repo
-        .get_by_plan_artifact_id(&artifact_id)
-        .await
-        .unwrap();
+    let results = repo.get_by_plan_artifact_id(&artifact_id).await.unwrap();
     assert_eq!(results.len(), 1);
     let retrieved = &results[0];
     assert_eq!(retrieved.plan_artifact_id, artifact_id);
@@ -143,6 +140,40 @@ async fn test_get_by_project_id_empty() {
 }
 
 #[tokio::test]
+async fn test_terminal_cleanup_candidates_skip_marked_rows() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-cleanup-candidates".to_string());
+    let mut branch = PlanBranch::new(
+        ArtifactId::from_string("art-cleanup-candidate"),
+        IdeationSessionId::from_string("sess-cleanup-candidate"),
+        project_id.clone(),
+        "ralphx/proj/plan-cleanup".to_string(),
+        "main".to_string(),
+    );
+    branch.status = PlanBranchStatus::Merged;
+    let branch_id = branch.id.clone();
+
+    repo.create(branch).await.unwrap();
+    assert_eq!(
+        repo.get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    repo.mark_local_cleanup_status(&branch_id, "branch_missing", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    assert!(repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn test_update_status() {
     let (_db, repo) = setup_repo();
     let branch = create_test_branch();
@@ -154,10 +185,7 @@ async fn test_update_status() {
         .await
         .unwrap();
 
-    let results = repo
-        .get_by_plan_artifact_id(&artifact_id)
-        .await
-        .unwrap();
+    let results = repo.get_by_plan_artifact_id(&artifact_id).await.unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, PlanBranchStatus::Abandoned);
 }
@@ -187,10 +215,7 @@ async fn test_set_merge_task_id() {
         .await
         .unwrap();
 
-    let results = repo
-        .get_by_plan_artifact_id(&artifact_id)
-        .await
-        .unwrap();
+    let results = repo.get_by_plan_artifact_id(&artifact_id).await.unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].merge_task_id.as_ref().unwrap().as_str(), "mt-1");
 }
@@ -217,10 +242,7 @@ async fn test_set_merged() {
     repo.create(branch).await.unwrap();
     repo.set_merged(&branch_id).await.unwrap();
 
-    let results = repo
-        .get_by_plan_artifact_id(&artifact_id)
-        .await
-        .unwrap();
+    let results = repo.get_by_plan_artifact_id(&artifact_id).await.unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, PlanBranchStatus::Merged);
     assert!(results[0].merged_at.is_some());
@@ -250,7 +272,10 @@ async fn test_multiple_branches_same_plan_artifact_id() {
 
     repo.create(branch1).await.unwrap();
     let result = repo.create(branch2).await;
-    assert!(result.is_ok(), "Multiple branches with same plan_artifact_id should be allowed");
+    assert!(
+        result.is_ok(),
+        "Multiple branches with same plan_artifact_id should be allowed"
+    );
 
     // Verify get_by_plan_artifact_id returns both branches
     let branches = repo.get_by_plan_artifact_id(&artifact_id).await.unwrap();
@@ -302,7 +327,8 @@ async fn test_clear_merge_task_id_removes_task_link() {
         .unwrap();
 
     // Verify it's set
-    let results = repo.get_by_plan_artifact_id(&ArtifactId::from_string("art-test-1"))
+    let results = repo
+        .get_by_plan_artifact_id(&ArtifactId::from_string("art-test-1"))
         .await
         .unwrap();
     assert_eq!(results.len(), 1);
@@ -381,7 +407,10 @@ async fn test_create_or_update_conflict_returns_existing_id() {
     let returned = repo.create_or_update(updated).await.unwrap();
 
     // Returned id must match the original persisted row, not the new UUID
-    assert_eq!(returned.id, original_id, "create_or_update must return existing row id on conflict");
+    assert_eq!(
+        returned.id, original_id,
+        "create_or_update must return existing row id on conflict"
+    );
     assert_eq!(returned.branch_name, "ralphx/updated-branch");
 }
 
@@ -407,11 +436,17 @@ async fn test_create_or_update_conflict_set_merge_task_id_succeeds() {
     // set_merge_task_id must succeed using the returned id (which is the existing row's id)
     let merge_task_id = TaskId::from_string("mt-upsert".to_string());
     let set_result = repo.set_merge_task_id(&returned.id, &merge_task_id).await;
-    assert!(set_result.is_ok(), "set_merge_task_id must succeed with returned branch id after conflict upsert");
+    assert!(
+        set_result.is_ok(),
+        "set_merge_task_id must succeed with returned branch id after conflict upsert"
+    );
 
     // Verify it was actually persisted
     let retrieved = repo.get_by_session_id(&session_id).await.unwrap().unwrap();
-    assert_eq!(retrieved.merge_task_id.as_ref().unwrap().as_str(), "mt-upsert");
+    assert_eq!(
+        retrieved.merge_task_id.as_ref().unwrap().as_str(),
+        "mt-upsert"
+    );
 }
 
 // ==================== DELETE TESTS ====================
@@ -426,12 +461,22 @@ async fn test_delete_removes_branch() {
     repo.create(branch).await.unwrap();
 
     // Verify it exists
-    assert_eq!(repo.get_by_plan_artifact_id(&artifact_id).await.unwrap().len(), 1);
+    assert_eq!(
+        repo.get_by_plan_artifact_id(&artifact_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 
     repo.delete(&branch_id).await.unwrap();
 
     // Should be gone
-    assert!(repo.get_by_plan_artifact_id(&artifact_id).await.unwrap().is_empty());
+    assert!(repo
+        .get_by_plan_artifact_id(&artifact_id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

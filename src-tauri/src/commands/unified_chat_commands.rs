@@ -16,11 +16,12 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Runtime, State};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
@@ -1405,13 +1406,14 @@ fn find_tool_call_detail(
 // Helper to create ChatService
 // ============================================================================
 
-pub(crate) fn create_chat_service(
+pub(crate) fn create_chat_service<R: Runtime + 'static>(
     state: &AppState,
-    _app_handle: tauri::AppHandle,
+    app_handle: tauri::AppHandle<R>,
     execution_state: &Arc<ExecutionState>,
     team_service: Option<std::sync::Arc<crate::application::TeamService>>,
-) -> AppChatService<tauri::Wry> {
-    let mut service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+) -> AppChatService<R> {
+    let mut service =
+        state.build_chat_service_for_runtime(Some(Arc::clone(execution_state)), Some(app_handle));
     if let Some(svc) = team_service {
         service = service.with_team_service(svc);
     }
@@ -1642,19 +1644,35 @@ async fn normalize_agent_runtime_selection(
     Ok((None, Some(effort)))
 }
 
+fn log_start_agent_conversation_phase(
+    project_id: &str,
+    conversation_id: Option<&ChatConversationId>,
+    phase: &'static str,
+    started: Instant,
+) {
+    tracing::info!(
+        project_id,
+        conversation_id = ?conversation_id.map(ChatConversationId::as_str),
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "start_agent_conversation phase completed"
+    );
+}
+
 // ============================================================================
 // Commands
 // ============================================================================
 
 /// Start a project-backed agent conversation in an isolated feature worktree.
 #[tauri::command]
-pub async fn start_agent_conversation(
+pub async fn start_agent_conversation<R: Runtime + 'static>(
     input: StartAgentConversationInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
+    let command_started = Instant::now();
     tracing::info!(
         project_id = %input.project_id,
         content_len = input.content.len(),
@@ -1664,12 +1682,20 @@ pub async fn start_agent_conversation(
         "[START_AGENT_CONVERSATION] command invoked"
     );
 
+    let parse_runtime_started = Instant::now();
     let harness_override = input
         .provider_harness
         .as_deref()
         .map(str::parse::<AgentHarnessKind>)
         .transpose()?;
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        None,
+        "parse_runtime_selection",
+        parse_runtime_started,
+    );
 
+    let validate_runtime_started = Instant::now();
     crate::application::validate_chat_runtime_for_context_with_override(
         &state,
         ChatContextType::Project,
@@ -1678,17 +1704,34 @@ pub async fn start_agent_conversation(
         harness_override,
     )
     .await?;
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        None,
+        "validate_chat_runtime",
+        validate_runtime_started,
+    );
 
+    let parse_input_started = Instant::now();
     let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
     let project_id = ProjectId::from_string(input.project_id.clone());
+    log_start_agent_conversation_phase(&input.project_id, None, "parse_input", parse_input_started);
+
+    let project_lookup_started = Instant::now();
     let project = state
         .project_repo
         .get_by_id(&project_id)
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Project not found: {}", input.project_id))?;
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        None,
+        "load_project",
+        project_lookup_started,
+    );
 
+    let conversation_resolve_started = Instant::now();
     let draft_conversation_id = input
         .conversation_id
         .as_deref()
@@ -1715,7 +1758,15 @@ pub async fn start_agent_conversation(
         ChatConversation::new_project(project_id)
     };
     conversation.set_agent_mode(Some(mode));
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "resolve_conversation",
+        conversation_resolve_started,
+    );
+
     let should_create_conversation = draft_conversation_id.is_none();
+    let workspace_prepare_started = Instant::now();
     let workspace = if agent_mode_requires_workspace(mode) {
         Some(
             prepare_agent_conversation_workspace_with_setup_mode(
@@ -1741,7 +1792,14 @@ pub async fn start_agent_conversation(
     } else {
         None
     };
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "prepare_workspace",
+        workspace_prepare_started,
+    );
 
+    let conversation_persist_started = Instant::now();
     let conversation = if should_create_conversation {
         state
             .chat_conversation_repo
@@ -1756,6 +1814,14 @@ pub async fn start_agent_conversation(
             .map_err(|error| error.to_string())?;
         conversation
     };
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "persist_conversation",
+        conversation_persist_started,
+    );
+
+    let workspace_persist_started = Instant::now();
     let workspace = match workspace {
         Some(workspace) => match state
             .agent_conversation_workspace_repo
@@ -1772,7 +1838,14 @@ pub async fn start_agent_conversation(
         },
         None => None,
     };
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "persist_workspace",
+        workspace_persist_started,
+    );
 
+    let event_emit_started = Instant::now();
     if should_create_conversation {
         let _ = app.emit(
             "agent:conversation_created",
@@ -1783,19 +1856,45 @@ pub async fn start_agent_conversation(
             },
         );
     }
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "emit_conversation_created",
+        event_emit_started,
+    );
 
+    let service_create_started = Instant::now();
     let service = create_chat_service(
         &state,
         app,
         &execution_state,
         Some(team_service.inner().clone()),
     );
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "create_chat_service",
+        service_create_started,
+    );
+
+    let runtime_override_prepare_started = Instant::now();
     let model_override = input
         .model_override
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
+    let working_directory_override = workspace
+        .as_ref()
+        .map(|workspace| PathBuf::from(&workspace.worktree_path));
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "prepare_runtime_overrides",
+        runtime_override_prepare_started,
+    );
+
+    let runtime_normalize_started = Instant::now();
     let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
         &state,
         harness_override,
@@ -1803,6 +1902,14 @@ pub async fn start_agent_conversation(
         input.logical_effort,
     )
     .await?;
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "normalize_runtime_selection",
+        runtime_normalize_started,
+    );
+
+    let send_message_started = Instant::now();
     let send_result = service
         .send_message(
             ChatContextType::Project,
@@ -1814,19 +1921,39 @@ pub async fn start_agent_conversation(
                 model_override,
                 logical_effort_override,
                 conversation_id_override: Some(conversation.id),
+                working_directory_override,
                 ..Default::default()
             },
         )
         .await
         .map(SendAgentMessageResponse::from)
         .map_err(|error| error.to_string())?;
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "send_message",
+        send_message_started,
+    );
 
+    let workspace_response_started = Instant::now();
     let workspace_response = match workspace {
         Some(workspace) => {
             Some(agent_workspace_response_for_state(state.inner(), workspace).await?)
         }
         None => None,
     };
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "build_workspace_response",
+        workspace_response_started,
+    );
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "command_total",
+        command_started,
+    );
 
     Ok(StartAgentConversationResponse {
         conversation: AgentConversationResponse::from(conversation),

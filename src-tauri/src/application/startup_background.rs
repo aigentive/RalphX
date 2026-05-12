@@ -175,6 +175,7 @@ pub async fn maybe_start_external_mcp(
         Duration,
     ) -> futures::future::BoxFuture<'static, Result<(), String>>,
 ) {
+    let started_at = std::time::Instant::now();
     let bootstrap = match resolve_default_external_mcp_bootstrap() {
         Ok(None) => return,
         Ok(Some(bootstrap)) => bootstrap,
@@ -188,15 +189,23 @@ pub async fn maybe_start_external_mcp(
     };
 
     let backend_port = backend_http_port();
+    let wait_started_at = std::time::Instant::now();
     match wait_for_backend_ready(backend_port, Duration::from_secs(30)).await {
         Err(e) => {
-            warn!("Backend not ready, skipping external MCP start: {}", e);
+            warn!(
+                elapsed_ms = started_at.elapsed().as_millis(),
+                backend_wait_ms = wait_started_at.elapsed().as_millis(),
+                "Backend not ready, skipping external MCP start: {}",
+                e
+            );
         }
         Ok(()) => {
             info!(
                 port = backend_port,
+                backend_wait_ms = wait_started_at.elapsed().as_millis(),
                 "Backend ready, starting external MCP server"
             );
+            let supervisor_started_at = std::time::Instant::now();
             let app_data_dir = app_handle
                 .path()
                 .app_data_dir()
@@ -215,11 +224,20 @@ pub async fn maybe_start_external_mcp(
                     if handle.set(supervisor).is_err() {
                         warn!("ExternalMcpHandle already initialized");
                     } else {
-                        info!("External MCP supervisor started and registered");
+                        info!(
+                            supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
+                            elapsed_ms = started_at.elapsed().as_millis(),
+                            "External MCP supervisor started and registered"
+                        );
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to start external MCP: {}", e);
+                    warn!(
+                        supervisor_elapsed_ms = supervisor_started_at.elapsed().as_millis(),
+                        elapsed_ms = started_at.elapsed().as_millis(),
+                        "Failed to start external MCP: {}",
+                        e
+                    );
                 }
             }
         }

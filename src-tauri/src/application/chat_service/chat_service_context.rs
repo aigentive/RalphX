@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::ideation::SessionPurpose;
@@ -1974,6 +1975,7 @@ pub async fn build_codex_command(
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
 ) -> Result<SpawnableCommand, String> {
+    let total_started = Instant::now();
     let codex_team_mode = false;
     let agent_name = agent_name_override.unwrap_or_else(|| {
         resolve_agent_with_team_mode(&conversation.context_type, entity_status, codex_team_mode)
@@ -1986,6 +1988,7 @@ pub async fn build_codex_command(
                 .unwrap_or_else(|| resolved_spawn_settings.model.clone())
         });
 
+    let attachments_started = Instant::now();
     let attachments = chat_attachment_repo
         .find_by_conversation_id(&conversation.id)
         .await
@@ -1993,8 +1996,29 @@ pub async fn build_codex_command(
         .into_iter()
         .filter(|a| a.message_id.is_none())
         .collect::<Vec<_>>();
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "fetch_attachments",
+        attachment_count = attachments.len(),
+        elapsed_ms = attachments_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
+    let attachment_context_started = Instant::now();
     let attachment_context = format_attachments_for_agent(&attachments).await?;
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "format_attachments",
+        elapsed_ms = attachment_context_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let prompt_build_started = Instant::now();
     let initial_prompt = build_initial_prompt_with_session_artifacts(
         conversation.context_type,
         &conversation.context_id,
@@ -2011,12 +2035,34 @@ pub async fn build_codex_command(
         },
     )
     .await?;
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "build_initial_prompt",
+        prompt_len = initial_prompt.len(),
+        elapsed_ms = prompt_build_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
+    let prompt_compose_started = Instant::now();
     let prompt = compose_codex_prompt(
         &format!("{}{}", initial_prompt, attachment_context),
         Some(plugin_dir),
         Some(agent_name),
     );
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "compose_codex_prompt",
+        prompt_len = prompt.len(),
+        elapsed_ms = prompt_compose_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let mcp_config_started = Instant::now();
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -2037,10 +2083,31 @@ pub async fn build_codex_command(
     )?;
     let codex_config =
         build_codex_cli_config(working_directory, resolved_spawn_settings, config_overrides);
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "build_mcp_and_cli_config",
+        override_count = codex_config.config_overrides.len(),
+        elapsed_ms = mcp_config_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let spawnable_build_started = Instant::now();
     let mut spawnable =
         build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "build_spawnable_command",
+        elapsed_ms = spawnable_build_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let env_apply_started = Instant::now();
     apply_ralphx_env_vars(
         &mut spawnable,
         agent_name,
@@ -2051,6 +2118,16 @@ pub async fn build_codex_command(
         codex_team_mode,
         None,
         ideation_subagent_model_cap.as_deref(),
+    );
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "apply_env_vars",
+        total_elapsed_ms = total_started.elapsed().as_millis() as u64,
+        elapsed_ms = env_apply_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
     );
 
     Ok(spawnable)
@@ -2226,6 +2303,7 @@ pub async fn build_interactive_command(
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
 ) -> Result<SpawnableCommand, String> {
+    let agent_started = Instant::now();
     let agent_name = agent_name_override.unwrap_or_else(|| {
         resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
     });
@@ -2236,6 +2314,7 @@ pub async fn build_interactive_command(
                 .clone()
                 .unwrap_or_else(|| resolved_spawn_settings.model.clone())
         });
+    log_claude_launch_plan_phase(conversation, "resolve_agent", agent_started);
 
     // Interactive mode: never resume with --resume session_id because the process stays
     // alive. Resume is only needed when re-spawning after a process death. For the first
@@ -2243,6 +2322,7 @@ pub async fn build_interactive_command(
     let resume_session: Option<&str> = None;
 
     // Fetch pending attachments
+    let attachments_started = Instant::now();
     let attachments = chat_attachment_repo
         .find_by_conversation_id(&conversation.id)
         .await
@@ -2250,9 +2330,21 @@ pub async fn build_interactive_command(
         .into_iter()
         .filter(|a| a.message_id.is_none())
         .collect::<Vec<_>>();
+    log_claude_launch_plan_phase(
+        conversation,
+        "load_pending_attachments",
+        attachments_started,
+    );
 
+    let attachment_context_started = Instant::now();
     let attachment_context = format_attachments_for_agent(&attachments).await?;
+    log_claude_launch_plan_phase(
+        conversation,
+        "format_pending_attachments",
+        attachment_context_started,
+    );
 
+    let prompt_started = Instant::now();
     let initial_prompt = build_initial_prompt_with_session_artifacts(
         conversation.context_type,
         &conversation.context_id,
@@ -2270,7 +2362,9 @@ pub async fn build_interactive_command(
     )
     .await?;
     let prompt = format!("{}{}", initial_prompt, attachment_context);
+    log_claude_launch_plan_phase(conversation, "build_initial_prompt", prompt_started);
 
+    let mcp_context_started = Instant::now();
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -2283,6 +2377,13 @@ pub async fn build_interactive_command(
             None
         },
     );
+    log_claude_launch_plan_phase(
+        conversation,
+        "build_mcp_runtime_context",
+        mcp_context_started,
+    );
+
+    let spawnable_started = Instant::now();
     let mut spawnable = build_claude_spawnable_interactive_command(
         cli_path,
         plugin_dir,
@@ -2295,7 +2396,9 @@ pub async fn build_interactive_command(
         Some(resolved_spawn_settings.model.as_str()),
         Some(&mcp_runtime_context),
     )?;
+    log_claude_launch_plan_phase(conversation, "build_spawnable_command", spawnable_started);
 
+    let env_started = Instant::now();
     apply_ralphx_env_vars(
         &mut spawnable,
         agent_name,
@@ -2307,8 +2410,25 @@ pub async fn build_interactive_command(
         claude_resume_session_id(conversation).as_deref(),
         ideation_subagent_model_cap.as_deref(),
     );
+    log_claude_launch_plan_phase(conversation, "apply_ralphx_env_vars", env_started);
 
     Ok(spawnable)
+}
+
+fn log_claude_launch_plan_phase(
+    conversation: &ChatConversation,
+    phase: &'static str,
+    started: Instant,
+) {
+    tracing::info!(
+        conversation_id = conversation.id.as_str(),
+        context_type = %conversation.context_type,
+        context_id = conversation.context_id.as_str(),
+        harness = %AgentHarnessKind::Claude,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "chat_service.send_message Claude launch plan phase completed"
+    );
 }
 
 /// Fetch entity status for resume command context.
@@ -3636,5 +3756,13 @@ exit 0
             background.launch_mode(),
             ResolvedChatHarnessLaunchMode::Background
         );
+    }
+
+    #[test]
+    fn claude_launch_plan_phase_telemetry_smoke() {
+        let conversation =
+            ChatConversation::new_project(ProjectId::from_string("project-telemetry".to_string()));
+
+        log_claude_launch_plan_phase(&conversation, "build_claude_launch_plan", Instant::now());
     }
 }

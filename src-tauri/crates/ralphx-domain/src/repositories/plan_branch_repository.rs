@@ -47,6 +47,31 @@ pub trait PlanBranchRepository: Send + Sync {
     /// Get all plan branches for a project
     async fn get_by_project_id(&self, project_id: &ProjectId) -> AppResult<Vec<PlanBranch>>;
 
+    /// Get terminal plan branches that still need startup local-artifact cleanup.
+    async fn get_terminal_local_cleanup_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PlanBranch>> {
+        let branches = self.get_by_project_id(project_id).await?;
+        Ok(branches
+            .into_iter()
+            .filter(|branch| {
+                branch.status == PlanBranchStatus::Merged
+                    || matches!(branch.pr_status, Some(PrStatus::Merged))
+            })
+            .collect())
+    }
+
+    /// Mark startup local-artifact cleanup as no longer needing repeated launch checks.
+    async fn mark_local_cleanup_status(
+        &self,
+        _id: &PlanBranchId,
+        _status: &str,
+        _checked_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     /// Update plan branch status
     async fn update_status(&self, id: &PlanBranchId, status: PlanBranchStatus) -> AppResult<()>;
 

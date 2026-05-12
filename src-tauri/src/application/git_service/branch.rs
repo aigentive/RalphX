@@ -111,6 +111,30 @@ impl GitService {
         Ok(sorted)
     }
 
+    /// List local branch names without probing each branch individually.
+    pub(crate) async fn list_local_branch_names(repo: &Path) -> AppResult<HashSet<String>> {
+        let output = git_cmd::run(
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            repo,
+        )
+        .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::GitOperation(format!(
+                "git for-each-ref failed: {}",
+                stderr
+            )));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
     /// Resolve the default branch for project workflows.
     ///
     /// Explicit project settings win; otherwise this uses the same automatic
