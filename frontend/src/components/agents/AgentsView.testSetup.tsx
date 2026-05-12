@@ -403,6 +403,7 @@ vi.mock("@/api/chat", () => ({
     archiveConversation: (...args: unknown[]) => archiveConversationMock(...args),
     restoreConversation: (...args: unknown[]) => restoreConversationMock(...args),
     getAgentRunningStates: vi.fn().mockResolvedValue({}),
+    getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
 
