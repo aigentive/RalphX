@@ -9,7 +9,9 @@ use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, AgentConversationResponse,
     AgentConversationWorkspaceResponse,
 };
-use crate::domain::entities::{ChatContextType, ChatConversation, Project, ProjectId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
+};
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
@@ -525,6 +527,65 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
             publication_state: row.publication_state.key().to_string(),
             publication_label,
         }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct BulkPublicationStateResponse {
+    pub publication_state: String,
+    pub publication_label: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_bulk_workspace_publication_states(
+    conversation_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<HashMap<String, BulkPublicationStateResponse>, String> {
+    get_bulk_workspace_publication_states_inner(&conversation_ids, state.inner())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn get_bulk_workspace_publication_states_inner(
+    conversation_ids: &[String],
+    state: &AppState,
+) -> Result<HashMap<String, BulkPublicationStateResponse>, crate::error::AppError> {
+    let workspace_repo = &state.agent_conversation_workspace_repo;
+    let mut result = HashMap::with_capacity(conversation_ids.len());
+
+    for id in conversation_ids {
+        let conv_id = ChatConversationId::from_string(id);
+        let workspace = workspace_repo.get_by_conversation_id(&conv_id).await?;
+        let pub_state = publication_state_from_domain(workspace.as_ref());
+        result.insert(
+            id.clone(),
+            BulkPublicationStateResponse {
+                publication_state: pub_state.key().to_string(),
+                publication_label: pub_state.publication_label().map(|s| s.to_string()),
+            },
+        );
+    }
+
+    Ok(result)
+}
+
+fn publication_state_from_domain(
+    workspace: Option<&crate::domain::entities::AgentConversationWorkspace>,
+) -> SidebarPublicationState {
+    let pr_status = workspace
+        .and_then(|w| w.publication_pr_status.as_deref())
+        .map(normalize_status);
+    let push_status = workspace
+        .and_then(|w| w.publication_push_status.as_deref())
+        .map(normalize_status);
+
+    match (pr_status.as_deref(), push_status.as_deref()) {
+        (Some("merged"), _) => SidebarPublicationState::Merged,
+        (Some("closed"), _) => SidebarPublicationState::Closed,
+        (_, Some("needs_agent")) => SidebarPublicationState::Uncommitted,
+        (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
+        (Some("draft"), _) => SidebarPublicationState::Draft,
+        _ => SidebarPublicationState::Active,
     }
 }
 
