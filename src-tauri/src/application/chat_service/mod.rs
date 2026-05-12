@@ -3698,11 +3698,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 mod stale_registry_gate_tests {
     use super::{
         claude_launches_paused, registry_entry_blocks_send_because_run_inactive,
-        registry_entry_blocks_send_but_is_stale, runtime_context_id_for_send, AgentRunStatus,
-        ChatContextType, ChatConversationId, RegistryCleanupCaller, RunningAgentInfo,
+        registry_entry_blocks_send_but_is_stale, runtime_context_id_for_send,
+        log_send_message_spawn_prep_phase, AgentRunStatus, ChatContextType, ChatConversationId,
+        RegistryCleanupCaller, RunningAgentInfo,
     };
     use crate::commands::ExecutionState;
     use std::sync::Arc;
+    use std::time::Instant;
 
     fn registry_info(pid: u32, started_at: chrono::DateTime<chrono::Utc>) -> RunningAgentInfo {
         RunningAgentInfo {
@@ -3795,6 +3797,17 @@ mod stale_registry_gate_tests {
             ChatContextType::Delegation,
             Some(&execution_state),
         ));
+    }
+
+    #[test]
+    fn send_message_spawn_prep_phase_telemetry_smoke() {
+        log_send_message_spawn_prep_phase(
+            ChatContextType::Project,
+            "project-telemetry",
+            "conversation-telemetry",
+            "load_spawn_context",
+            Instant::now(),
+        );
     }
 
     #[test]

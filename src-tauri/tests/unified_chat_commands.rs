@@ -907,7 +907,7 @@ mod ipc_contract {
         wake_agent_workspace_for_bridge_events_with_service_factory,
     };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
-    use ralphx_lib::application::{AppState, MockChatService};
+    use ralphx_lib::application::{AppState, MockChatService, TeamService, TeamStateTracker};
     use ralphx_lib::commands::agent_model_commands::{
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
         UpsertCustomAgentModelInput,
@@ -916,10 +916,12 @@ mod ipc_contract {
         get_agent_conversation_messages_page_for_app_state, get_agent_conversation_summary,
         get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
-        publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
-        QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
-        SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
+        publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
+        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
+        StartAgentConversationInput, SwitchAgentConversationModeInput,
+        UpdateAgentConversationTitleInput,
     };
+    use ralphx_lib::commands::ExecutionState;
     use ralphx_lib::domain::agents::{
         built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,
         default_model_for_provider, lightweight_model_for_provider, AgentHarnessKind,
@@ -937,6 +939,8 @@ mod ipc_contract {
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
+    use std::ffi::OsString;
+    use std::sync::Arc;
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
 
@@ -1684,6 +1688,120 @@ mod ipc_contract {
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_chat_mode_queues_without_workspace() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-start-agent-chat-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Chat".to_string(),
+            "/tmp/project-start-agent-chat-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Inspect the repo without editing".to_string(),
+                conversation_id: None,
+                provider_harness: None,
+                model_override: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("chat".to_string()),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("chat-mode start should succeed");
+
+        assert!(response.workspace.is_none());
+        assert_eq!(response.conversation.context_id, project_id.as_str());
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+        assert!(response.send_result.was_queued);
+        assert_eq!(
+            response.send_result.conversation_id.as_str(),
+            response.conversation.id.as_str()
+        );
+
+        let workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(
+                response.conversation.id.clone(),
+            ))
+            .await
+            .expect("workspace lookup should succeed");
+        assert!(workspace.is_none());
+    }
+
+    struct FakeCliOnPath {
+        _temp_dir: tempfile::TempDir,
+        previous_path: Option<OsString>,
+    }
+
+    impl FakeCliOnPath {
+        fn new(command_name: &str) -> Self {
+            let temp_dir = tempfile::tempdir().expect("fake CLI dir should be created");
+            let cli_path = temp_dir.path().join(command_name);
+            std::fs::write(&cli_path, "#!/bin/sh\nexit 0\n").expect("fake CLI should be written");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = std::fs::metadata(&cli_path)
+                    .expect("fake CLI metadata should load")
+                    .permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(&cli_path, permissions)
+                    .expect("fake CLI should be executable");
+            }
+
+            let previous_path = std::env::var_os("PATH");
+            let mut paths = vec![temp_dir.path().to_path_buf()];
+            if let Some(existing) = previous_path.as_ref() {
+                paths.extend(std::env::split_paths(existing));
+            }
+            let joined_path = std::env::join_paths(paths).expect("fake CLI PATH should join");
+            std::env::set_var("PATH", joined_path);
+
+            Self {
+                _temp_dir: temp_dir,
+                previous_path,
+            }
+        }
+    }
+
+    impl Drop for FakeCliOnPath {
+        fn drop(&mut self) {
+            match self.previous_path.as_ref() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
     }
 
     #[test]

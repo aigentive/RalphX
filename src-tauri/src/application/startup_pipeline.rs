@@ -628,4 +628,11 @@ mod tests {
 
         assert_eq!(killed, 0);
     }
+
+    #[test]
+    fn startup_phase_timing_helpers_emit_completion_telemetry() {
+        let started = startup_phase_started("test_phase");
+
+        startup_phase_completed("test_phase", started);
+    }
 }

@@ -644,6 +644,73 @@ mod tests {
         assert_eq!(config.push_url, config.fetch_url);
     }
 
+    #[test]
+    fn parses_origin_remote_section_aliases_and_ignores_other_remotes() {
+        let dot_section = r#"
+            [remote.upstream]
+                url = https://github.com/other/repo.git
+            [remote.origin]
+                url = git@github.com:owner/repo.git
+        "#;
+        let single_quote_section = r#"
+            [remote 'origin']
+                url = https://github.com/owner/repo.git
+        "#;
+
+        assert_eq!(
+            parse_origin_auth_config_from_git_config(dot_section)
+                .fetch_url
+                .as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert_eq!(
+            parse_origin_auth_config_from_git_config(single_quote_section)
+                .fetch_url
+                .as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn reads_origin_remote_from_git_config_file_without_git_subprocess() {
+        let repo = tempfile::tempdir().expect("temp repo");
+        let git_dir = repo.path().join(".git");
+        std::fs::create_dir_all(&git_dir).expect("git dir");
+        std::fs::write(
+            git_dir.join("config"),
+            r#"
+                [core]
+                    repositoryformatversion = 0
+                [remote "origin"]
+                    url = https://github.com/owner/repo.git
+                    pushurl = git@github.com:owner/repo.git
+            "#,
+        )
+        .expect("write git config");
+
+        let config = read_origin_auth_config_from_git_config(repo.path())
+            .expect("config read should succeed")
+            .expect("origin config should be read");
+
+        assert_eq!(
+            config.fetch_url.as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            config.push_url.as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn missing_git_config_falls_back_to_git_remote_inspection() {
+        let repo = tempfile::tempdir().expect("temp repo");
+
+        assert!(read_origin_auth_config_from_git_config(repo.path())
+            .expect("missing config should not error")
+            .is_none());
+    }
+
     #[tokio::test]
     async fn auth_error_from_failure_hydrates_mixed_origin_urls() {
         let repo = tempfile::tempdir().expect("temp repo");

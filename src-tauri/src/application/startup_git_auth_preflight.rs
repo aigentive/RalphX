@@ -438,6 +438,52 @@ mod tests {
     }
 
     #[test]
+    fn github_https_origin_blocks_background_git_when_gh_is_missing() {
+        let issue = evaluate_project_git_auth_issue(
+            &project(false),
+            true,
+            false,
+            Ok(GitRemoteAuthConfig {
+                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+                push_url: Some("https://github.com/owner/repo.git".to_string()),
+            }),
+        )
+        .expect("GitHub HTTPS origin should require non-interactive credentials");
+
+        assert_eq!(issue.issue_kind, "auth_blocked");
+        assert_eq!(issue.fetch_kind.as_deref(), Some("HTTPS"));
+        assert_eq!(issue.push_kind.as_deref(), Some("HTTPS"));
+        assert!(issue.can_switch_to_ssh);
+        assert_eq!(
+            issue.suggested_ssh_url.as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert!(issue
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("non-interactive credentials")));
+    }
+
+    #[test]
+    fn git_config_inspection_error_reports_repo_unavailable() {
+        let issue = evaluate_project_git_auth_issue(
+            &project(false),
+            false,
+            true,
+            Err("permission denied".to_string()),
+        )
+        .expect("repo inspection failures should be visible");
+
+        assert_eq!(issue.issue_kind, "repo_unavailable");
+        assert_eq!(issue.fetch_kind, None);
+        assert_eq!(issue.push_kind, None);
+        assert!(issue
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("could not inspect origin remote")));
+    }
+
+    #[test]
     fn ssh_project_without_pr_mode_does_not_block_when_gh_is_missing() {
         let issue = evaluate_project_git_auth_issue(
             &project(false),
@@ -471,11 +517,11 @@ mod tests {
 
     #[test]
     fn terminal_only_records_do_not_force_preflight_scope() {
-        let project = project(true);
+        let active_project = project(true);
         let mut plan_branch = PlanBranch::new(
             crate::domain::entities::ArtifactId::from_string("artifact-1".to_string()),
             crate::domain::entities::IdeationSessionId::from_string("session-1".to_string()),
-            project.id.clone(),
+            active_project.id.clone(),
             "ralphx/demo/plan-old".to_string(),
             "main".to_string(),
         );
@@ -483,7 +529,7 @@ mod tests {
 
         let mut workspace = AgentConversationWorkspace::new(
             crate::domain::entities::ChatConversationId::from_string("conversation-1".to_string()),
-            project.id.clone(),
+            active_project.id.clone(),
             crate::domain::entities::AgentConversationWorkspaceMode::Edit,
             crate::domain::entities::IdeationAnalysisBaseRefKind::ProjectDefault,
             "main".to_string(),
@@ -497,6 +543,68 @@ mod tests {
 
         assert!(!plan_branch_has_startup_git_work(&plan_branch));
         assert!(!workspace_has_startup_git_work(&workspace));
-        assert!(!should_preflight_project(&project, false, false));
+        assert!(!should_preflight_project(&active_project, false, false));
+    }
+
+    #[tokio::test]
+    async fn startup_git_work_scope_detects_active_pr_and_workspace_records() {
+        let app_state = crate::application::AppState::new_test();
+        let active_project = project(true);
+
+        let mut plan_branch = PlanBranch::new(
+            crate::domain::entities::ArtifactId::from_string("artifact-active".to_string()),
+            crate::domain::entities::IdeationSessionId::from_string("session-active".to_string()),
+            active_project.id.clone(),
+            "ralphx/demo/plan-active".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Active;
+        plan_branch.pr_eligible = true;
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should persist");
+
+        assert!(
+            project_has_startup_git_work(
+                &active_project,
+                Some(&app_state.plan_branch_repo),
+                Some(&app_state.agent_conversation_workspace_repo),
+            )
+            .await
+        );
+
+        let mut workspace_project = project(false);
+        workspace_project.id = ProjectId::from_string("project-2".to_string());
+        let mut workspace = AgentConversationWorkspace::new(
+            crate::domain::entities::ChatConversationId::from_string(
+                "conversation-active-workspace".to_string(),
+            ),
+            workspace_project.id.clone(),
+            crate::domain::entities::AgentConversationWorkspaceMode::Edit,
+            crate::domain::entities::IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            None,
+            None,
+            "ralphx/demo/agent-active".to_string(),
+            "/tmp/ralphx-demo-agent-active".to_string(),
+        );
+        workspace.publication_pr_number = Some(88);
+        workspace.publication_pr_status = Some("open".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        assert!(
+            project_has_startup_git_work(
+                &workspace_project,
+                Some(&app_state.plan_branch_repo),
+                Some(&app_state.agent_conversation_workspace_repo),
+            )
+            .await
+        );
     }
 }

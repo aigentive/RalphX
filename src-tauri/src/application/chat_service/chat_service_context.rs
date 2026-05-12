@@ -3757,4 +3757,12 @@ exit 0
             ResolvedChatHarnessLaunchMode::Background
         );
     }
+
+    #[test]
+    fn claude_launch_plan_phase_telemetry_smoke() {
+        let conversation =
+            ChatConversation::new_project(ProjectId::from_string("project-telemetry".to_string()));
+
+        log_claude_launch_plan_phase(&conversation, "build_claude_launch_plan", Instant::now());
+    }
 }

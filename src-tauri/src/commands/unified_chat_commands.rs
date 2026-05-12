@@ -21,7 +21,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Runtime, State};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
@@ -1406,13 +1406,14 @@ fn find_tool_call_detail(
 // Helper to create ChatService
 // ============================================================================
 
-pub(crate) fn create_chat_service(
+pub(crate) fn create_chat_service<R: Runtime + 'static>(
     state: &AppState,
-    _app_handle: tauri::AppHandle,
+    app_handle: tauri::AppHandle<R>,
     execution_state: &Arc<ExecutionState>,
     team_service: Option<std::sync::Arc<crate::application::TeamService>>,
-) -> AppChatService<tauri::Wry> {
-    let mut service = state.build_chat_service_with_execution_state(Arc::clone(execution_state));
+) -> AppChatService<R> {
+    let mut service =
+        state.build_chat_service_for_runtime(Some(Arc::clone(execution_state)), Some(app_handle));
     if let Some(svc) = team_service {
         service = service.with_team_service(svc);
     }
@@ -1664,12 +1665,12 @@ fn log_start_agent_conversation_phase(
 
 /// Start a project-backed agent conversation in an isolated feature worktree.
 #[tauri::command]
-pub async fn start_agent_conversation(
+pub async fn start_agent_conversation<R: Runtime + 'static>(
     input: StartAgentConversationInput,
     state: State<'_, AppState>,
     execution_state: State<'_, Arc<ExecutionState>>,
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
     let command_started = Instant::now();
     tracing::info!(

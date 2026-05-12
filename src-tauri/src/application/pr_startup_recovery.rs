@@ -1840,6 +1840,108 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_cleanup_stats_track_fetch_and_cleanup_outcomes() {
+        let mut stats = TerminalCleanupStats::default();
+        for result in [
+            TerminalCleanupFetchResult::Fetched,
+            TerminalCleanupFetchResult::RemoteRefMissing,
+            TerminalCleanupFetchResult::FailedNonFatal,
+            TerminalCleanupFetchResult::NoOriginRemote,
+            TerminalCleanupFetchResult::SkippedBusy,
+            TerminalCleanupFetchResult::SkippedUserWork,
+            TerminalCleanupFetchResult::Failed,
+        ] {
+            stats.observe_fetch(result);
+        }
+
+        stats.observe_report(&LocalGitArtifactCleanupReport {
+            branch_deleted: true,
+            worktree_removed: true,
+            skipped_reason: None,
+        });
+        stats.observe_report(&LocalGitArtifactCleanupReport {
+            skipped_reason: Some("branch_missing".to_string()),
+            ..LocalGitArtifactCleanupReport::default()
+        });
+        stats.observe_report(&LocalGitArtifactCleanupReport {
+            skipped_reason: Some("branch_not_merged:main".to_string()),
+            ..LocalGitArtifactCleanupReport::default()
+        });
+        stats.observe_report(&LocalGitArtifactCleanupReport::default());
+        stats.log_summary("plan_branch", Instant::now(), false);
+
+        assert_eq!(stats.fetch_attempts, 7);
+        assert_eq!(stats.fetch_fetched, 1);
+        assert_eq!(stats.fetch_remote_ref_missing, 1);
+        assert_eq!(stats.fetch_no_origin, 1);
+        assert_eq!(stats.fetch_skipped_busy, 1);
+        assert_eq!(stats.fetch_skipped_user_work, 1);
+        assert_eq!(stats.fetch_failed, 2);
+        assert_eq!(stats.branches_deleted, 1);
+        assert_eq!(stats.worktrees_removed, 1);
+        assert_eq!(stats.branches_missing, 1);
+        assert_eq!(stats.branches_skipped, 2);
+    }
+
+    #[test]
+    fn local_branch_base_ref_availability_accepts_origin_prefix_alias() {
+        let local_branches = HashSet::from(["main".to_string(), "feature/demo".to_string()]);
+
+        assert!(base_ref_available_from_local_branch_set(
+            "main",
+            Some(&local_branches)
+        ));
+        assert!(base_ref_available_from_local_branch_set(
+            "origin/main",
+            Some(&local_branches)
+        ));
+        assert!(!base_ref_available_from_local_branch_set(
+            "origin/missing",
+            Some(&local_branches)
+        ));
+        assert!(!base_ref_available_from_local_branch_set("main", None));
+    }
+
+    #[test]
+    fn terminal_cleanup_markers_are_derived_from_cleanup_reports() {
+        assert_eq!(
+            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+                branch_deleted: true,
+                ..LocalGitArtifactCleanupReport::default()
+            }),
+            Some("cleaned")
+        );
+        assert_eq!(
+            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+                skipped_reason: Some("branch_missing".to_string()),
+                ..LocalGitArtifactCleanupReport::default()
+            }),
+            Some("branch_missing")
+        );
+        assert_eq!(
+            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+                skipped_reason: Some("target_ref_missing:main".to_string()),
+                ..LocalGitArtifactCleanupReport::default()
+            }),
+            Some("target_ref_missing")
+        );
+        assert_eq!(
+            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+                skipped_reason: Some("branch_not_merged:main".to_string()),
+                ..LocalGitArtifactCleanupReport::default()
+            }),
+            Some("unsafe")
+        );
+        assert_eq!(
+            terminal_cleanup_marker_for_report(&LocalGitArtifactCleanupReport {
+                skipped_reason: Some("agent_running".to_string()),
+                ..LocalGitArtifactCleanupReport::default()
+            }),
+            None
+        );
+    }
+
     async fn create_waiting_pr_merge_task(
         app_state: &AppState,
         project: &Project,
