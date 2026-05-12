@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::{
-    harness_runtime_registry::HarnessRuntimeProbe, probe_supported_harnesses, AppState, AGENT_LANES,
+    harness_runtime_registry::{refresh_harness_runtime_probe, HarnessRuntimeProbe},
+    probe_supported_harnesses, AppState, AGENT_LANES,
 };
 use crate::domain::agents::{
     generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings, AgentProviderSettings,
@@ -312,7 +313,11 @@ pub async fn update_agent_provider_settings(
     input: UpdateAgentProviderSettingsInput,
     state: State<'_, AppState>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    let probes = probe_supported_harnesses();
+    let provider = parse_provider(&input.provider)?;
+    let mut probes = probe_supported_harnesses();
+    if input.enabled == Some(true) {
+        probes.insert(provider, refresh_harness_runtime_probe(provider));
+    }
     update_provider_settings_with_probes(input, &state, &probes).await
 }
 

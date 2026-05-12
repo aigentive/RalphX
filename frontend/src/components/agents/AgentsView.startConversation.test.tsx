@@ -1,5 +1,6 @@
 import {
   getAgentsViewTestMocks,
+  mockHarnessProviders,
   mockAgentSidebarData,
   mockAgentViewData,
   renderAgentsView,
@@ -13,6 +14,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
+import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -37,6 +39,58 @@ const {
   useProjectAgentConversationsMock,
   useProjectsMock,
 } = getAgentsViewTestMocks();
+
+const providerUpdatedAt = new Date().toISOString();
+
+function agentProviderSettings(
+  overrides: Partial<AgentProvidersSettingsResponse> = {},
+): AgentProvidersSettingsResponse {
+  const settings: AgentProvidersSettingsResponse = {
+    defaultProvider: "codex",
+    requiresOnboarding: false,
+    providers: [
+      {
+        provider: "codex",
+        enabled: true,
+        isDefault: true,
+        model: "gpt-5.5",
+        effort: "xhigh",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+        claudePermissionMode: null,
+        claudeDangerouslySkipPermissions: false,
+        claudeAllowDangerouslySkipPermissions: false,
+        available: true,
+        binaryFound: true,
+        binaryPath: "/opt/homebrew/bin/codex",
+        status: "Available codex detected.",
+        error: null,
+        missingCoreExecFeatures: [],
+        updatedAt: providerUpdatedAt,
+      },
+      {
+        provider: "claude",
+        enabled: true,
+        isDefault: false,
+        model: "sonnet",
+        effort: "medium",
+        approvalPolicy: null,
+        sandboxMode: null,
+        claudePermissionMode: "default",
+        claudeDangerouslySkipPermissions: false,
+        claudeAllowDangerouslySkipPermissions: false,
+        available: true,
+        binaryFound: true,
+        binaryPath: "/usr/local/bin/claude",
+        status: "Available claude detected.",
+        error: null,
+        missingCoreExecFeatures: [],
+        updatedAt: providerUpdatedAt,
+      },
+    ],
+  };
+  return { ...settings, ...overrides };
+}
 
 describe("AgentsView start conversation", () => {
   beforeEach(setupAgentsViewTest);
@@ -378,6 +432,129 @@ describe("AgentsView start conversation", () => {
         })
       )
     );
+  });
+
+  it("falls back to an enabled and validated provider when the remembered provider is unavailable", async () => {
+    mockAgentViewData();
+    mockHarnessProviders(
+      agentProviderSettings({
+        defaultProvider: "claude",
+        providers: [
+          {
+            ...agentProviderSettings().providers[0]!,
+            enabled: false,
+            isDefault: false,
+            available: false,
+            binaryFound: true,
+            status: "Codex is disabled",
+            error: null,
+          },
+          {
+            ...agentProviderSettings().providers[1]!,
+            enabled: true,
+            isDefault: true,
+            available: true,
+          },
+        ],
+      }),
+    );
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
+        "Claude",
+      )
+    );
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "use available provider" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerHarness: "claude",
+          modelId: "sonnet",
+          logicalEffort: "medium",
+        })
+      )
+    );
+  });
+
+  it("disables unavailable providers in the starter runtime selector", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    mockHarnessProviders(
+      agentProviderSettings({
+        providers: [
+          agentProviderSettings().providers[0]!,
+          {
+            ...agentProviderSettings().providers[1]!,
+            enabled: false,
+            available: false,
+            binaryFound: false,
+            status: "Claude CLI not found",
+            error: "Claude CLI not found",
+          },
+        ],
+      }),
+    );
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agent-composer-runtime-pill"));
+    expect(screen.getByTestId("agents-start-provider-claude")).toBeDisabled();
+    expect(screen.getByTestId("agents-start-provider-claude")).toHaveTextContent(
+      "Enable in Settings.",
+    );
+    await user.click(screen.getByTestId("agents-start-provider-settings"));
+
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+  });
+
+  it("blocks new agent runs when no provider is enabled and validated", async () => {
+    mockAgentViewData();
+    mockHarnessProviders(
+      agentProviderSettings({
+        defaultProvider: null,
+        requiresOnboarding: true,
+        providers: agentProviderSettings().providers.map((providerSetting) => ({
+          ...providerSetting,
+          enabled: false,
+          available: false,
+          isDefault: false,
+          status: `${providerSetting.provider} disabled`,
+          error: null,
+        })),
+      }),
+    );
+
+    renderAgentsView();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "should not start" },
+    });
+
+    expect(screen.getByTestId("agents-start-submit")).toBeDisabled();
+    expect(screen.getByTestId("agents-start-provider-status")).toHaveTextContent(
+      "Enable in Settings.",
+    );
+    fireEvent.click(screen.getByTestId("agents-start-provider-status-settings"));
+
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
   });
 
   it("remembers runtime changes made on the starter composer before creating a conversation", async () => {
@@ -869,6 +1046,47 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
       "agent-conversation-chat"
     );
+  });
+
+  it("blocks active conversation sends when the conversation provider is not validated", async () => {
+    mockAgentViewData();
+    mockHarnessProviders(
+      agentProviderSettings({
+        providers: [
+          {
+            ...agentProviderSettings().providers[0]!,
+            enabled: true,
+            available: false,
+            binaryFound: false,
+            status: "Codex CLI not found",
+            error: "Codex CLI not found",
+          },
+          agentProviderSettings().providers[1]!,
+        ],
+      }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+    );
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "continue this run" },
+    });
+
+    expect(screen.getByTestId("agents-conversation-submit")).toBeDisabled();
+    expect(screen.getByTestId("agents-conversation-provider-status")).toHaveTextContent(
+      "Codex CLI not found",
+    );
+    fireEvent.click(screen.getByTestId("agents-conversation-provider-status-settings"));
+
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
   });
 
   it("archives the selected conversation, clears the active view, and refreshes archived counts", async () => {

@@ -65,6 +65,8 @@ interface ComposerOption {
   id: string;
   label: string;
   description?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }
 
 interface ProjectFieldConfig {
@@ -81,8 +83,9 @@ interface ProjectFieldConfig {
 interface ProviderFieldConfig {
   value: AgentProvider;
   onValueChange: (value: AgentProvider) => void;
-  options: Array<{ id: AgentProvider; label: string }>;
+  options: Array<ComposerOption & { id: AgentProvider }>;
   disabled?: boolean;
+  footerAction?: ReactNode;
   testId?: string;
   className?: string;
 }
@@ -169,6 +172,7 @@ export interface AgentComposerSurfaceProps {
   actionTestId?: string;
   submitLabel?: string;
   submittingLabel?: string;
+  sendDisabledReason?: string | null;
   className?: string;
 }
 
@@ -202,6 +206,7 @@ export function AgentComposerSurface({
   actionTestId,
   submitLabel = "Send",
   submittingLabel = "Sending...",
+  sendDisabledReason = null,
   className,
 }: AgentComposerSurfaceProps) {
   const isControlled = controlledValue !== undefined;
@@ -215,7 +220,11 @@ export function AgentComposerSurface({
   const isAgentAlive = agentStatus !== "idle";
   const canQueue = !isReadOnly && isAgentAlive;
   const shouldShowStop = Boolean(onStop) && isAgentAlive && value.trim().length === 0;
-  const canSubmit = value.trim().length > 0 && !isReadOnly && (!isSubmitting || canQueue);
+  const canSubmit =
+    value.trim().length > 0 &&
+    !isReadOnly &&
+    !sendDisabledReason &&
+    (!isSubmitting || canQueue);
   const attachmentDisabled = isReadOnly || (isSubmitting && !canQueue);
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
@@ -339,7 +348,7 @@ export function AgentComposerSurface({
       return;
     }
 
-    if ((isSubmitting && !canQueue) || isReadOnly) {
+    if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
       return;
     }
 
@@ -363,6 +372,7 @@ export function AgentComposerSurface({
     onSend,
     onStop,
     questionMode,
+    sendDisabledReason,
     shouldShowStop,
     value,
   ]);
@@ -920,7 +930,7 @@ function ComposerRuntimePill({
         <ComposerOptionList
           label="Provider"
           value={provider.value}
-          options={provider.options.map((o) => ({ id: o.id, label: o.label }))}
+          options={provider.options}
           disabled={provider.disabled ?? false}
           testId={provider.testId ?? "agent-composer-runtime-provider"}
           icon={Bot}
@@ -928,6 +938,11 @@ function ComposerRuntimePill({
             provider.onValueChange(value as AgentProvider);
           }}
         />
+        {provider.footerAction && (
+          <div className="px-1 pb-0.5 pt-1">
+            {provider.footerAction}
+          </div>
+        )}
         <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
         <ComposerOptionList
           label="Model"
@@ -1014,31 +1029,46 @@ function ComposerOptionList({
       <div className="space-y-0.5">
         {options.map((option) => {
           const isSelected = option.id === value;
+          const optionDisabled = disabled || option.disabled;
           return (
             <button
               key={option.id}
               type="button"
-              disabled={disabled}
+              disabled={optionDisabled}
               data-testid={testId ? `${testId}-${option.id}` : undefined}
               className={cn(
-                "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-[0.75rem] transition-colors disabled:opacity-50",
+                "flex w-full items-start justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[0.75rem] transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                 isSelected ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--bg-hover)]"
               )}
-              onClick={() => onValueChange(option.id)}
+              onClick={() => {
+                if (!optionDisabled) {
+                  onValueChange(option.id);
+                }
+              }}
             >
-              <span
-                className="truncate"
-                style={{
-                  color: isSelected
-                    ? "var(--accent-primary)"
-                    : "var(--text-primary)",
-                  fontWeight: isSelected ? 600 : 500,
-                }}
-              >
-                {option.label}
+              <span className="min-w-0 flex-1">
+                <span
+                  className="block truncate"
+                  style={{
+                    color: isSelected
+                      ? "var(--accent-primary)"
+                      : "var(--text-primary)",
+                    fontWeight: isSelected ? 600 : 500,
+                  }}
+                >
+                  {option.label}
+                </span>
+                {(option.disabledReason || option.description) && (
+                  <span
+                    className="mt-0.5 block line-clamp-2 text-[0.6875rem] leading-snug"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {option.disabledReason ?? option.description}
+                  </span>
+                )}
               </span>
               {isSelected && (
-                <Check className="h-3.5 w-3.5 shrink-0 text-[var(--accent-primary)]" />
+                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--accent-primary)]" />
               )}
             </button>
           );

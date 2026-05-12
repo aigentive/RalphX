@@ -6,6 +6,7 @@ import type {
   AgentConversationWorkspaceMode,
 } from "@/api/chat";
 import type { Project } from "@/types/project";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { withAlpha } from "@/lib/theme-colors";
 import {
   useAgentSessionStore,
@@ -26,6 +27,7 @@ import {
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
+import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
 import type { AgentQueueHaltState } from "./agentExecutionPause";
 import {
   AGENT_PROVIDER_OPTIONS,
@@ -36,6 +38,12 @@ import {
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
+import {
+  buildAgentProviderAvailabilityOptions,
+  getProviderAvailabilityMessage,
+  normalizeRuntimeForSelectableProvider,
+} from "./agentProviderAvailability";
+import { useUiStore } from "@/stores/uiStore";
 
 interface PendingAttachment {
   id: string;
@@ -124,6 +132,13 @@ export function AgentsStartComposer({
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
+  const openModal = useUiStore((s) => s.openModal);
+  const {
+    settings: providerSettings,
+    providers: configuredProviders,
+    isLoading: isLoadingProviderSettings,
+    isPlaceholderData: isPlaceholderProviderSettings,
+  } = useHarnessProviders();
   const branchBaseCacheByProjectId = useAgentSessionStore(
     (s) => s.branchBaseCacheByProjectId
   );
@@ -141,6 +156,42 @@ export function AgentsStartComposer({
     () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME, modelRegistry),
     [defaultRuntime, modelRegistry]
   );
+  const providerSettingsReady =
+    !isLoadingProviderSettings && !isPlaceholderProviderSettings;
+  const providerOptions = useMemo(
+    () =>
+      buildAgentProviderAvailabilityOptions({
+        providers: configuredProviders,
+        isReady: providerSettingsReady,
+      }),
+    [configuredProviders, providerSettingsReady]
+  );
+  const selectableRuntime = useMemo(
+    () =>
+      normalizeRuntimeForSelectableProvider({
+        runtime: { provider, modelId, effort },
+        providerOptions,
+        defaultProvider: toAgentProvider(providerSettings.defaultProvider),
+        modelRegistry,
+      }),
+    [
+      effort,
+      modelId,
+      modelRegistry,
+      provider,
+      providerOptions,
+      providerSettings.defaultProvider,
+    ]
+  );
+  const providerStatusMessage = getProviderAvailabilityMessage({
+    provider,
+    providerOptions,
+    isReady: providerSettingsReady,
+  });
+  const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
+  const openProviderSettings = useCallback(() => {
+    openModal("settings", { section: "providers" });
+  }, [openModal]);
 
   useEffect(() => {
     setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
@@ -201,6 +252,31 @@ export function AgentsStartComposer({
     [modelRegistry, onRuntimePreferenceChange]
   );
 
+  useEffect(() => {
+    if (!providerSettingsReady || !selectableRuntime) {
+      return;
+    }
+    if (
+      selectableRuntime.provider === provider &&
+      selectableRuntime.modelId === modelId &&
+      selectableRuntime.effort === effort
+    ) {
+      return;
+    }
+    setProvider(selectableRuntime.provider);
+    setModelId(selectableRuntime.modelId);
+    setEffort(selectableRuntime.effort);
+    persistRuntimePreference(projectId, selectableRuntime);
+  }, [
+    effort,
+    modelId,
+    persistRuntimePreference,
+    projectId,
+    provider,
+    providerSettingsReady,
+    selectableRuntime,
+  ]);
+
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
       setProjectId(nextProjectId);
@@ -211,6 +287,9 @@ export function AgentsStartComposer({
 
   const handleProviderChange = useCallback(
     (nextProvider: AgentProvider) => {
+      if (providerOptions.find((option) => option.id === nextProvider)?.disabled) {
+        return;
+      }
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider: nextProvider,
@@ -223,7 +302,7 @@ export function AgentsStartComposer({
       setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [modelRegistry, persistRuntimePreference, projectId]
+    [modelRegistry, persistRuntimePreference, projectId, providerOptions]
   );
 
   const handleModelChange = useCallback(
@@ -405,6 +484,10 @@ export function AgentsStartComposer({
       setError("Prompt is required");
       return;
     }
+    if (!hasSelectableProvider || providerStatusMessage) {
+      setError(providerStatusMessage ?? "Enable a provider with a validated CLI in Settings.");
+      return;
+    }
 
     setError(null);
     try {
@@ -548,7 +631,13 @@ export function AgentsStartComposer({
             provider={{
               value: provider,
               onValueChange: handleProviderChange,
-              options: AGENT_PROVIDER_OPTIONS,
+              options: providerOptions.length > 0 ? providerOptions : AGENT_PROVIDER_OPTIONS,
+              footerAction: (
+                <AgentProviderSettingsButton
+                  onClick={openProviderSettings}
+                  testId="agents-start-provider-settings"
+                />
+              ),
               testId: "agents-start-provider",
               className: "max-w-[172px] flex-none",
             }}
@@ -556,6 +645,7 @@ export function AgentsStartComposer({
               value: modelId,
               onValueChange: handleModelChange,
               options: modelOptions,
+              disabled: Boolean(providerStatusMessage),
               allowCustomValue: true,
               customPlaceholder: "Custom model ID",
               testId: "agents-start-model",
@@ -565,10 +655,38 @@ export function AgentsStartComposer({
               value: effort,
               onValueChange: (value) => handleEffortChange(value as AgentEffort),
               options: effortOptions,
+              disabled: Boolean(providerStatusMessage),
               testId: "agents-start-effort",
               className: "max-w-[148px] flex-none",
             }}
+            sendDisabledReason={providerStatusMessage}
           />
+
+          {providerStatusMessage && (
+            <div
+              className="mx-auto mt-3 flex max-w-[620px] flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-[0.8125rem]"
+              style={{
+                color: "var(--text-secondary)",
+                background: "var(--bg-surface)",
+                borderColor: "var(--border-subtle)",
+              }}
+              data-testid="agents-start-provider-status"
+            >
+              <span>{providerStatusMessage}</span>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-[0.75rem] font-medium"
+                style={{
+                  color: "var(--accent-primary)",
+                  background: "var(--accent-muted)",
+                }}
+                onClick={openProviderSettings}
+                data-testid="agents-start-provider-status-settings"
+              >
+                Open Settings
+              </button>
+            </div>
+          )}
 
           <div className="mt-3 flex w-full flex-wrap items-center justify-between gap-2 px-2">
             <AgentComposerProjectLine
@@ -616,6 +734,10 @@ export function AgentsStartComposer({
       </div>
     </div>
   );
+}
+
+function toAgentProvider(value: unknown): AgentProvider | null {
+  return value === "claude" || value === "codex" ? value : null;
 }
 
 const AnimatedStarterHeadingWord = memo(function AnimatedStarterHeadingWord() {

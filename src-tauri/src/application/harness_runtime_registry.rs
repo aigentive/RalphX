@@ -1,5 +1,6 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::{collections::HashMap, time::Instant};
 
 use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{standard_harness_registry, AgentHarnessKind, DEFAULT_AGENT_HARNESS};
@@ -30,7 +31,7 @@ pub(crate) struct HarnessRuntimeProbe {
     pub error: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ResolvedChatHarnessCli {
     Claude {
         cli_path: PathBuf,
@@ -112,7 +113,7 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
 }
 
 fn probe_codex_harness() -> HarnessRuntimeProbe {
-    match resolve_codex_cli() {
+    match resolve_codex_cli_cached() {
         Ok(resolved) => {
             let binary_path = Some(resolved.path.to_string_lossy().into_owned());
             let capabilities = resolved.capabilities;
@@ -177,7 +178,7 @@ fn resolve_claude_chat_harness_cli(
 
 fn resolve_codex_chat_harness_cli(codex_cli_path: &Path) -> Result<ResolvedChatHarnessCli, String> {
     if codex_cli_path == Path::new(default_chat_service_cli_name(AgentHarnessKind::Codex)) {
-        return codex_chat_harness_cli_from_resolve_result(resolve_codex_cli());
+        return codex_chat_harness_cli_from_resolve_result(resolve_codex_cli_cached());
     }
 
     if !codex_cli_path.exists() && which(codex_cli_path).is_err() {
@@ -187,7 +188,7 @@ fn resolve_codex_chat_harness_cli(codex_cli_path: &Path) -> Result<ResolvedChatH
         ));
     }
 
-    let capabilities = probe_codex_cli(codex_cli_path)?;
+    let capabilities = probe_codex_cli_cached(codex_cli_path)?;
     Ok(ResolvedChatHarnessCli::Codex {
         cli_path: codex_cli_path.to_path_buf(),
         capabilities,
@@ -202,6 +203,81 @@ fn codex_chat_harness_cli_from_resolve_result(
         cli_path: resolved.path,
         capabilities: resolved.capabilities,
     })
+}
+
+static RESOLVED_CODEX_CLI_CACHE: OnceLock<Mutex<Option<Result<ResolvedCodexCli, String>>>> =
+    OnceLock::new();
+static CODEX_CLI_CAPABILITY_CACHE: OnceLock<
+    Mutex<HashMap<PathBuf, Result<CodexCliCapabilities, String>>>,
+> = OnceLock::new();
+static HARNESS_RUNTIME_PROBE_CACHE: OnceLock<
+    Mutex<HashMap<AgentHarnessKind, HarnessRuntimeProbe>>,
+> = OnceLock::new();
+static CHAT_HARNESS_CLI_CACHE: OnceLock<
+    Mutex<HashMap<(AgentHarnessKind, PathBuf), Result<ResolvedChatHarnessCli, String>>>,
+> = OnceLock::new();
+
+fn resolve_codex_cli_cached() -> Result<ResolvedCodexCli, String> {
+    let cache = RESOLVED_CODEX_CLI_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached = cache.lock().unwrap();
+    if let Some(result) = cached.as_ref() {
+        tracing::debug!(
+            success = result.is_ok(),
+            cli_path = ?result.as_ref().ok().map(|resolved| resolved.path.display().to_string()),
+            "Codex CLI resolved from app-session cache"
+        );
+        return result.clone();
+    }
+
+    let started = Instant::now();
+    let result = resolve_codex_cli();
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        success = result.is_ok(),
+        cli_path = ?result.as_ref().ok().map(|resolved| resolved.path.display().to_string()),
+        error = ?result.as_ref().err(),
+        "Codex CLI capability probe completed"
+    );
+    *cached = Some(result.clone());
+    result
+}
+
+fn probe_codex_cli_cached(cli_path: &Path) -> Result<CodexCliCapabilities, String> {
+    if let Some(Ok(resolved)) = RESOLVED_CODEX_CLI_CACHE
+        .get()
+        .and_then(|cache| cache.lock().ok().and_then(|cached| cached.clone()))
+    {
+        if resolved.path == cli_path {
+            tracing::debug!(
+                cli_path = %cli_path.display(),
+                "Codex CLI capabilities reused from resolved cache"
+            );
+            return Ok(resolved.capabilities);
+        }
+    }
+
+    let cache = CODEX_CLI_CAPABILITY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cached = cache.lock().unwrap();
+    if let Some(result) = cached.get(cli_path) {
+        tracing::debug!(
+            cli_path = %cli_path.display(),
+            success = result.is_ok(),
+            "Codex CLI capabilities reused from path cache"
+        );
+        return result.clone();
+    }
+
+    let started = Instant::now();
+    let result = probe_codex_cli(cli_path);
+    tracing::info!(
+        cli_path = %cli_path.display(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        success = result.is_ok(),
+        error = ?result.as_ref().err(),
+        "Codex CLI path capability probe completed"
+    );
+    cached.insert(cli_path.to_path_buf(), result.clone());
+    result
 }
 
 fn resolve_claude_startup_integration() -> Result<Option<ResolvedHarnessStartupIntegration>, String>
@@ -256,7 +332,7 @@ pub(crate) fn standard_chat_harness_cli_resolvers(
         .collect()
 }
 
-pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
+fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
     let adapters = standard_harness_runtime_adapters();
     adapters
         .get(&harness)
@@ -269,6 +345,55 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
             missing_core_exec_features: Vec::new(),
             error: Some(format!("No harness probe registered for {}", harness)),
         })
+}
+
+pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
+    let cache = HARNESS_RUNTIME_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cached = cache.lock().unwrap();
+    if let Some(probe) = cached.get(&harness) {
+        tracing::debug!(
+            harness = %harness,
+            available = probe.available,
+            binary_path = ?probe.binary_path,
+            "Harness runtime probe reused from app-session cache"
+        );
+        return probe.clone();
+    }
+
+    let started = Instant::now();
+    let probe = probe_harness_uncached(harness);
+    tracing::info!(
+        harness = %harness,
+        available = probe.available,
+        binary_found = probe.binary_found,
+        binary_path = ?probe.binary_path,
+        missing_core_exec_features = ?probe.missing_core_exec_features,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Harness runtime probe completed"
+    );
+    cached.insert(harness, probe.clone());
+    probe
+}
+
+pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
+    if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
+        cache.lock().unwrap().remove(&harness);
+    }
+    if let Some(cache) = CHAT_HARNESS_CLI_CACHE.get() {
+        cache
+            .lock()
+            .unwrap()
+            .retain(|(cached_harness, _), _| *cached_harness != harness);
+    }
+    if harness == AgentHarnessKind::Codex {
+        if let Some(cache) = RESOLVED_CODEX_CLI_CACHE.get() {
+            *cache.lock().unwrap() = None;
+        }
+        if let Some(cache) = CODEX_CLI_CAPABILITY_CACHE.get() {
+            cache.lock().unwrap().clear();
+        }
+    }
+    probe_harness(harness)
 }
 
 pub(crate) fn probe_default_harness() -> HarnessRuntimeProbe {
@@ -317,15 +442,13 @@ fn default_chat_service_cli_name(harness: AgentHarnessKind) -> &'static str {
 }
 
 fn resolve_chat_service_cli_path(harness: AgentHarnessKind) -> PathBuf {
-    match harness {
-        AgentHarnessKind::Claude => find_claude_cli()
-            .unwrap_or_else(|| PathBuf::from(default_chat_service_cli_name(harness))),
-        AgentHarnessKind::Codex => {
-            codex_chat_service_cli_path_from_resolve_result(resolve_codex_cli())
-        }
-    }
+    probe_harness(harness)
+        .binary_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(default_chat_service_cli_name(harness)))
 }
 
+#[cfg(test)]
 fn codex_chat_service_cli_path_from_resolve_result(
     resolved: Result<ResolvedCodexCli, String>,
 ) -> PathBuf {
@@ -607,13 +730,13 @@ fn external_mcp_entry_for_plugin_dir(plugin_dir: &Path) -> PathBuf {
 pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
     standard_harness_runtime_adapters()
         .into_iter()
-        .map(|(harness, adapter)| (harness, (adapter.probe)()))
+        .map(|(harness, _)| (harness, probe_harness(harness)))
         .collect()
 }
 
 pub(crate) fn probe_codex_harness_with_capabilities(
 ) -> (HarnessRuntimeProbe, Option<CodexCliCapabilities>) {
-    match resolve_codex_cli() {
+    match resolve_codex_cli_cached() {
         Ok(resolved) => {
             let capabilities = resolved.capabilities;
             let missing_core_exec_features = capabilities
@@ -670,12 +793,36 @@ pub(crate) fn resolve_chat_harness_cli(
     harness: AgentHarnessKind,
     claude_cli_path: &Path,
 ) -> Result<ResolvedChatHarnessCli, String> {
+    let cache_key = (harness, claude_cli_path.to_path_buf());
+    let cache = CHAT_HARNESS_CLI_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cached = cache.lock().unwrap();
+    if let Some(result) = cached.get(&cache_key) {
+        tracing::debug!(
+            harness = %harness,
+            cli_path = %claude_cli_path.display(),
+            success = result.is_ok(),
+            "Chat harness CLI resolution reused from app-session cache"
+        );
+        return result.clone();
+    }
+
     let adapters = standard_harness_runtime_adapters();
     let adapter = adapters
         .get(&harness)
         .copied()
         .ok_or_else(|| format!("No chat harness CLI resolver registered for {}", harness))?;
-    (adapter.resolve_chat_cli)(claude_cli_path)
+    let started = Instant::now();
+    let result = (adapter.resolve_chat_cli)(claude_cli_path);
+    tracing::info!(
+        harness = %harness,
+        cli_path = %claude_cli_path.display(),
+        success = result.is_ok(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        error = ?result.as_ref().err(),
+        "Chat harness CLI resolution completed"
+    );
+    cached.insert(cache_key, result.clone());
+    result
 }
 
 pub(crate) fn resolve_startup_harness_integration(

@@ -1862,18 +1862,37 @@ pub async fn start_agent_conversation(
         event_emit_started,
     );
 
+    let service_create_started = Instant::now();
     let service = create_chat_service(
         &state,
         app,
         &execution_state,
         Some(team_service.inner().clone()),
     );
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "create_chat_service",
+        service_create_started,
+    );
+
+    let runtime_override_prepare_started = Instant::now();
     let model_override = input
         .model_override
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(str::to_string);
+    let working_directory_override = workspace
+        .as_ref()
+        .map(|workspace| PathBuf::from(&workspace.worktree_path));
+    log_start_agent_conversation_phase(
+        &input.project_id,
+        Some(&conversation.id),
+        "prepare_runtime_overrides",
+        runtime_override_prepare_started,
+    );
+
     let runtime_normalize_started = Instant::now();
     let (model_override, logical_effort_override) = normalize_agent_runtime_selection(
         &state,
@@ -1901,6 +1920,7 @@ pub async fn start_agent_conversation(
                 model_override,
                 logical_effort_override,
                 conversation_id_override: Some(conversation.id),
+                working_directory_override,
                 ..Default::default()
             },
         )

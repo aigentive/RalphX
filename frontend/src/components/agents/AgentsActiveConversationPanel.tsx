@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { Clock, Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
 
 import type {
@@ -13,6 +13,7 @@ import {
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
@@ -40,6 +41,11 @@ import {
   agentEffortOptions,
   agentModelOptions,
 } from "./agentOptions";
+import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
+import {
+  buildAgentProviderAvailabilityOptions,
+  getProviderAvailabilityMessage,
+} from "./agentProviderAvailability";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import { AGENTS_CHAT_MIN_WIDTH } from "./AgentsArtifactPaneRegion";
 import {
@@ -134,6 +140,30 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 }: AgentsActiveConversationPanelProps) {
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
+  const openModal = useUiStore((s) => s.openModal);
+  const {
+    providers: configuredProviders,
+    isLoading: isLoadingProviderSettings,
+    isPlaceholderData: isPlaceholderProviderSettings,
+  } = useHarnessProviders();
+  const providerSettingsReady =
+    !isLoadingProviderSettings && !isPlaceholderProviderSettings;
+  const providerOptions = useMemo(
+    () =>
+      buildAgentProviderAvailabilityOptions({
+        providers: configuredProviders,
+        isReady: providerSettingsReady,
+      }),
+    [configuredProviders, providerSettingsReady],
+  );
+  const workspaceProviderStatusMessage = getProviderAvailabilityMessage({
+    provider: normalizedActiveRuntime.provider,
+    providerOptions,
+    isReady: providerSettingsReady,
+  });
+  const openProviderSettings = useCallback(() => {
+    openModal("settings", { section: "providers" });
+  }, [openModal]);
   const panelIdeationSessionId =
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
@@ -288,6 +318,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       : "Ask the agent to plan, build, debug, or review something"
                   }
                   showHelperText={false}
+                  sendDisabledReason={
+                    !isFocusedChildChat ? workspaceProviderStatusMessage : null
+                  }
                   hasQueuedMessages={composerProps.hasQueuedMessages}
                   onEditLastQueued={composerProps.onEditLastQueued}
                   attachments={composerProps.attachments}
@@ -338,13 +371,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         provider: {
                           value: normalizedActiveRuntime.provider,
                           onValueChange: () => undefined,
-                          options: AGENT_PROVIDER_OPTIONS,
+                          options: providerOptions.length > 0 ? providerOptions : AGENT_PROVIDER_OPTIONS,
                           disabled: true,
+                          footerAction: (
+                            <AgentProviderSettingsButton
+                              onClick={openProviderSettings}
+                              testId="agents-conversation-provider-settings"
+                            />
+                          ),
                         },
                         model: {
                           value: normalizedActiveRuntime.modelId,
                           onValueChange: onActiveModelChange,
                           options: workspaceModelOptions,
+                          disabled: Boolean(workspaceProviderStatusMessage),
                           allowCustomValue: true,
                           customPlaceholder: "Custom model ID",
                         },
@@ -352,6 +392,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                           value: normalizedActiveRuntime.effort,
                           onValueChange: onActiveEffortChange,
                           options: workspaceEffortOptions,
+                          disabled: Boolean(workspaceProviderStatusMessage),
                           testId: "agents-conversation-effort",
                         },
                       };
@@ -394,6 +435,31 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     };
                   })()}
                 />
+                {!isFocusedChildChat && workspaceProviderStatusMessage && (
+                  <div
+                    className="mx-2 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-[0.8125rem]"
+                    style={{
+                      color: "var(--text-secondary)",
+                      background: "var(--bg-surface)",
+                      borderColor: "var(--border-subtle)",
+                    }}
+                    data-testid="agents-conversation-provider-status"
+                  >
+                    <span>{workspaceProviderStatusMessage}</span>
+                    <button
+                      type="button"
+                      className="rounded-md px-2 py-1 text-[0.75rem] font-medium"
+                      style={{
+                        color: "var(--accent-primary)",
+                        background: "var(--accent-muted)",
+                      }}
+                      onClick={openProviderSettings}
+                      data-testid="agents-conversation-provider-status-settings"
+                    >
+                      Open Settings
+                    </button>
+                  </div>
+                )}
                 <div className="mt-2 flex w-full flex-wrap items-center justify-between gap-2 px-2">
                   <AgentComposerProjectLine
                     value={activeProjectId}
