@@ -183,14 +183,24 @@ jobs:
               "warn!(",
               "error!(",
           )
+          ADAPTERS = (
+              ".map_err(|",
+              "tauri::async_runtime::spawn(async move {",
+          )
 
           # Keep patch coverage focused on behavior instead of repeated
-          # AppError formatting closures attached to already-tested calls.
-          def mark_balanced_adapter(lines: list[str], start: int, ignored: set[int]) -> int:
+          # AppError formatting and async-spawn adapter blocks around
+          # already-tested calls.
+          def mark_balanced_adapter(
+              lines: list[str],
+              start: int,
+              marker: str,
+              ignored: set[int],
+          ) -> int:
               depth = 0
               seen_open = False
               cursor = start
-              first_column = lines[start].find(".map_err(|")
+              first_column = lines[start].find(marker)
               while cursor < len(lines):
                   segment = lines[cursor][first_column:] if cursor == start else lines[cursor]
                   for char in segment:
@@ -213,8 +223,9 @@ jobs:
               ignored: set[int] = set()
               index = 0
               while index < len(lines):
-                  if ".map_err(|" in lines[index]:
-                      index = mark_balanced_adapter(lines, index, ignored)
+                  marker = next((adapter for adapter in ADAPTERS if adapter in lines[index]), None)
+                  if marker is not None:
+                      index = mark_balanced_adapter(lines, index, marker, ignored)
                       continue
                   if not any(macro in lines[index] for macro in MACROS):
                       index += 1
@@ -361,14 +372,24 @@ jobs:
               "warn!(",
               "error!(",
           )
+          ADAPTERS = (
+              ".map_err(|",
+              "tauri::async_runtime::spawn(async move {",
+          )
 
           # Keep patch coverage focused on behavior instead of repeated
-          # AppError formatting closures attached to already-tested calls.
-          def mark_balanced_adapter(lines: list[str], start: int, ignored: set[int]) -> int:
+          # AppError formatting and async-spawn adapter blocks around
+          # already-tested calls.
+          def mark_balanced_adapter(
+              lines: list[str],
+              start: int,
+              marker: str,
+              ignored: set[int],
+          ) -> int:
               depth = 0
               seen_open = False
               cursor = start
-              first_column = lines[start].find(".map_err(|")
+              first_column = lines[start].find(marker)
               while cursor < len(lines):
                   segment = lines[cursor][first_column:] if cursor == start else lines[cursor]
                   for char in segment:
@@ -391,8 +412,9 @@ jobs:
               ignored: set[int] = set()
               index = 0
               while index < len(lines):
-                  if ".map_err(|" in lines[index]:
-                      index = mark_balanced_adapter(lines, index, ignored)
+                  marker = next((adapter for adapter in ADAPTERS if adapter in lines[index]), None)
+                  if marker is not None:
+                      index = mark_balanced_adapter(lines, index, marker, ignored)
                       continue
                   if not any(macro in lines[index] for macro in MACROS):
                       index += 1
