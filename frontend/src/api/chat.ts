@@ -1457,6 +1457,7 @@ export const chatApi = {
   closeAgentWorkspacePr,
   getAgentRunStatus,
   getAgentRunningStates,
+  getBulkWorkspacePublicationStates,
   // Message sending & queue
   startAgentConversation,
   switchAgentConversationMode,
@@ -2181,6 +2182,27 @@ export async function getAgentRunningStates(
     "get_agent_running_states",
     { contextType, contextIds },
     z.record(z.string(), z.boolean())
+  );
+}
+
+export interface BulkPublicationStateResponse {
+  publication_state: string;
+  publication_label: string | null;
+}
+
+export async function getBulkWorkspacePublicationStates(
+  conversationIds: string[]
+): Promise<Record<string, BulkPublicationStateResponse>> {
+  return typedInvoke(
+    "get_bulk_workspace_publication_states",
+    { conversationIds },
+    z.record(
+      z.string(),
+      z.object({
+        publication_state: z.string(),
+        publication_label: z.string().nullable(),
+      })
+    )
   );
 }
 

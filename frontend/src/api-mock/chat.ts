@@ -1010,6 +1010,14 @@ export async function mockGetAgentRunningStates(
   return Object.fromEntries(contextIds.map((contextId) => [contextId, false]));
 }
 
+export async function mockGetBulkWorkspacePublicationStates(
+  conversationIds: string[]
+): Promise<Record<string, { publication_state: string; publication_label: string | null }>> {
+  return Object.fromEntries(
+    conversationIds.map((id) => [id, { publication_state: "active", publication_label: null }])
+  );
+}
+
 // ============================================================================
 // Mock Chat API Object
 // ============================================================================
@@ -1046,4 +1054,5 @@ export const mockChatApi = {
   stopAgent: mockStopAgent,
   isAgentRunning: mockIsAgentRunning,
   getAgentRunningStates: mockGetAgentRunningStates,
+  getBulkWorkspacePublicationStates: mockGetBulkWorkspacePublicationStates,
 } as const;

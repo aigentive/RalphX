@@ -89,6 +89,7 @@ import {
   useAgentSidebarProjectGroup,
   useAgentSidebarPublicationGroup,
 } from "./useAgentSidebarPublicationGroup";
+import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
 
@@ -1093,6 +1094,18 @@ function PublicationStateGroup({
     selectedConversationInGroup,
   ]);
   useAgentSidebarRunningStates(visibleConversations, isSidebarVisible && expanded);
+  const publicationCurrentStates = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of groupQuery.group.rows) {
+      map.set(row.conversation.id, row.publicationState);
+    }
+    return map;
+  }, [groupQuery.group.rows]);
+  useAgentSidebarPublicationPolling(
+    visibleConversations,
+    isSidebarVisible && expanded,
+    publicationCurrentStates
+  );
 
   return (
     <div
@@ -1591,6 +1604,18 @@ function ProjectSessionGroup({
   useAgentSidebarRunningStates(
     visibleConversations,
     isSidebarVisible && (showProjectHeader ? expanded : true)
+  );
+  const projectPublicationCurrentStates = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of visibleRows) {
+      map.set(row.conversation.id, row.publicationState);
+    }
+    return map;
+  }, [visibleRows]);
+  useAgentSidebarPublicationPolling(
+    visibleConversations,
+    isSidebarVisible && (showProjectHeader ? expanded : true),
+    projectPublicationCurrentStates
   );
   const totalConversationCount = groupQuery.group.total;
   const activeRuntimeCount = visibleConversations.filter((conversation) => {

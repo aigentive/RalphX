@@ -9,7 +9,9 @@ use crate::commands::unified_chat_commands::{
     agent_workspace_response_for_state, AgentConversationResponse,
     AgentConversationWorkspaceResponse,
 };
-use crate::domain::entities::{ChatContextType, ChatConversation, Project, ProjectId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
+};
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
 const MAX_LIMIT_PER_GROUP: u32 = 100;
@@ -528,6 +530,65 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct BulkPublicationStateResponse {
+    pub publication_state: String,
+    pub publication_label: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_bulk_workspace_publication_states(
+    conversation_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<HashMap<String, BulkPublicationStateResponse>, String> {
+    get_bulk_workspace_publication_states_inner(&conversation_ids, state.inner())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn get_bulk_workspace_publication_states_inner(
+    conversation_ids: &[String],
+    state: &AppState,
+) -> Result<HashMap<String, BulkPublicationStateResponse>, crate::error::AppError> {
+    let workspace_repo = &state.agent_conversation_workspace_repo;
+    let mut result = HashMap::with_capacity(conversation_ids.len());
+
+    for id in conversation_ids {
+        let conv_id = ChatConversationId::from_string(id);
+        let workspace = workspace_repo.get_by_conversation_id(&conv_id).await?;
+        let pub_state = publication_state_from_domain(workspace.as_ref());
+        result.insert(
+            id.clone(),
+            BulkPublicationStateResponse {
+                publication_state: pub_state.key().to_string(),
+                publication_label: pub_state.publication_label().map(|s| s.to_string()),
+            },
+        );
+    }
+
+    Ok(result)
+}
+
+fn publication_state_from_domain(
+    workspace: Option<&crate::domain::entities::AgentConversationWorkspace>,
+) -> SidebarPublicationState {
+    let pr_status = workspace
+        .and_then(|w| w.publication_pr_status.as_deref())
+        .map(normalize_status);
+    let push_status = workspace
+        .and_then(|w| w.publication_push_status.as_deref())
+        .map(normalize_status);
+
+    match (pr_status.as_deref(), push_status.as_deref()) {
+        (Some("merged"), _) => SidebarPublicationState::Merged,
+        (Some("closed"), _) => SidebarPublicationState::Closed,
+        (_, Some("needs_agent")) => SidebarPublicationState::Uncommitted,
+        (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
+        (Some("draft"), _) => SidebarPublicationState::Draft,
+        _ => SidebarPublicationState::Active,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -747,6 +808,165 @@ mod tests {
             alpha.id.as_str()
         );
         assert_eq!(response.groups[0].rows[1].conversation.id, zulu.id.as_str());
+    }
+
+    #[tokio::test]
+    async fn bulk_publication_states_returns_active_for_no_workspace() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let conv = create_conversation(&state, &project.id, "No workspace", now).await;
+        let conv_id = conv.id.as_str();
+
+        let result =
+            get_bulk_workspace_publication_states_inner(&[conv_id.clone()], &state)
+                .await
+                .unwrap();
+
+        assert_eq!(result.len(), 1);
+        let entry = result.get(&conv_id).unwrap();
+        assert_eq!(entry.publication_state, "active");
+        assert!(entry.publication_label.is_none());
+    }
+
+    #[tokio::test]
+    async fn bulk_publication_states_returns_correct_states_for_various_workspaces() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+
+        let merged_conv = create_conversation(&state, &project.id, "Merged", now).await;
+        create_workspace(
+            &state,
+            &merged_conv,
+            &project.id,
+            Some(10),
+            Some("merged"),
+            None,
+        )
+        .await;
+        let merged_id = merged_conv.id.as_str();
+
+        let draft_conv = create_conversation(
+            &state,
+            &project.id,
+            "Draft",
+            now - chrono::Duration::minutes(1),
+        )
+        .await;
+        create_workspace(
+            &state,
+            &draft_conv,
+            &project.id,
+            Some(11),
+            Some("draft"),
+            None,
+        )
+        .await;
+        let draft_id = draft_conv.id.as_str();
+
+        let uncommitted_conv = create_conversation(
+            &state,
+            &project.id,
+            "Uncommitted",
+            now - chrono::Duration::minutes(2),
+        )
+        .await;
+        create_workspace(
+            &state,
+            &uncommitted_conv,
+            &project.id,
+            None,
+            None,
+            Some("needs_agent"),
+        )
+        .await;
+        let uncommitted_id = uncommitted_conv.id.as_str();
+
+        let unpushed_conv = create_conversation(
+            &state,
+            &project.id,
+            "Unpushed",
+            now - chrono::Duration::minutes(3),
+        )
+        .await;
+        create_workspace(
+            &state,
+            &unpushed_conv,
+            &project.id,
+            None,
+            None,
+            Some("pending"),
+        )
+        .await;
+        let unpushed_id = unpushed_conv.id.as_str();
+
+        let closed_conv = create_conversation(
+            &state,
+            &project.id,
+            "Closed",
+            now - chrono::Duration::minutes(4),
+        )
+        .await;
+        create_workspace(
+            &state,
+            &closed_conv,
+            &project.id,
+            Some(12),
+            Some("closed"),
+            None,
+        )
+        .await;
+        let closed_id = closed_conv.id.as_str();
+
+        let ids: Vec<String> = vec![
+            merged_id.clone(),
+            draft_id.clone(),
+            uncommitted_id.clone(),
+            unpushed_id.clone(),
+            closed_id.clone(),
+        ];
+
+        let result = get_bulk_workspace_publication_states_inner(&ids, &state)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 5);
+        assert_eq!(
+            result.get(&merged_id).unwrap().publication_state,
+            "merged"
+        );
+        assert_eq!(
+            result.get(&merged_id).unwrap().publication_label.as_deref(),
+            Some("merged")
+        );
+        assert_eq!(
+            result.get(&draft_id).unwrap().publication_state,
+            "draft"
+        );
+        assert_eq!(
+            result.get(&uncommitted_id).unwrap().publication_state,
+            "uncommitted"
+        );
+        assert_eq!(
+            result.get(&unpushed_id).unwrap().publication_state,
+            "unpushed"
+        );
+        assert_eq!(
+            result.get(&closed_id).unwrap().publication_state,
+            "closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn bulk_publication_states_returns_empty_for_empty_input() {
+        let state = AppState::new_test();
+
+        let result = get_bulk_workspace_publication_states_inner(&[], &state)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
     }
 
     #[tokio::test]

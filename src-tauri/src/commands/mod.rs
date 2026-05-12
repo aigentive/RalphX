@@ -193,6 +193,9 @@ pub use team_commands::{
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
+pub use agent_sidebar_commands::{
+    get_bulk_workspace_publication_states, BulkPublicationStateResponse,
+};
 pub use unified_chat_commands::{
     archive_agent_conversation, create_agent_conversation,
     delete_queued_agent_message, get_agent_conversation, get_agent_conversation_messages_page,
