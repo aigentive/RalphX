@@ -459,6 +459,7 @@ impl ResolvedChatHarnessCli {
                     request.session_messages,
                     request.total_available,
                     request.is_external_mcp,
+                    request.stored_session_id,
                     request.resolved_spawn_settings,
                 )
                 .await?;
@@ -2327,6 +2328,7 @@ pub async fn build_interactive_command(
     session_messages: &[ChatMessage],
     total_available: usize,
     is_external_mcp: bool,
+    stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
 ) -> Result<SpawnableCommand, String> {
     let agent_started = Instant::now();
@@ -2342,10 +2344,12 @@ pub async fn build_interactive_command(
         });
     log_claude_launch_plan_phase(conversation, "resolve_agent", agent_started);
 
-    // Interactive mode: never resume with --resume session_id because the process stays
-    // alive. Resume is only needed when re-spawning after a process death. For the first
-    // spawn, the persisted provider session ref is set after the stream reports it.
-    let resume_session: Option<&str> = None;
+    let resume_session = stored_session_id.and_then(|session_id| {
+        match provider_resume_mode_for_session(AgentHarnessKind::Claude, session_id) {
+            ProviderResumeMode::Resume => Some(session_id),
+            ProviderResumeMode::Recovery => None,
+        }
+    });
 
     // Fetch pending attachments
     let attachments_started = Instant::now();
@@ -2371,22 +2375,33 @@ pub async fn build_interactive_command(
     );
 
     let prompt_started = Instant::now();
-    let initial_prompt = build_initial_prompt_with_session_artifacts(
-        conversation.context_type,
-        &conversation.context_id,
-        user_message,
-        session_messages,
-        total_available,
-        artifact_repo,
-        ideation_subagent_model_cap.as_deref(),
-        Some(AgentHarnessKind::Claude),
-        if session_messages.is_empty() {
-            IdeationBootstrapMode::Fresh
-        } else {
-            IdeationBootstrapMode::Continuation
-        },
-    )
-    .await?;
+    let initial_prompt = match resume_session {
+        Some(_) => build_resume_initial_prompt(
+            conversation.context_type,
+            &conversation.context_id,
+            user_message,
+            session_messages,
+            total_available,
+        ),
+        None => {
+            build_initial_prompt_with_session_artifacts(
+                conversation.context_type,
+                &conversation.context_id,
+                user_message,
+                session_messages,
+                total_available,
+                artifact_repo,
+                ideation_subagent_model_cap.as_deref(),
+                Some(AgentHarnessKind::Claude),
+                if session_messages.is_empty() {
+                    IdeationBootstrapMode::Fresh
+                } else {
+                    IdeationBootstrapMode::Continuation
+                },
+            )
+            .await?
+        }
+    };
     let prompt = format!("{}{}", initial_prompt, attachment_context);
     log_claude_launch_plan_phase(conversation, "build_initial_prompt", prompt_started);
 
@@ -2433,7 +2448,7 @@ pub async fn build_interactive_command(
         working_directory,
         project_id,
         team_mode,
-        claude_resume_session_id(conversation).as_deref(),
+        resume_session,
         ideation_subagent_model_cap.as_deref(),
     );
     log_claude_launch_plan_phase(conversation, "apply_ralphx_env_vars", env_started);
@@ -3079,10 +3094,33 @@ mod tests {
         MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryDelegatedSessionRepository,
         MemoryIdeationSessionRepository, MemoryTaskRepository,
     };
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
     use tokio::process::Command;
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn write_test_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
@@ -3565,13 +3603,8 @@ exit 0
     fn build_initial_prompt_omits_session_history_for_project_when_no_prior_messages() {
         // First spawn: no prior messages, no history block needed.
         let project_id = ProjectId::new();
-        let prompt = build_initial_prompt(
-            ChatContextType::Project,
-            project_id.as_str(),
-            "hi",
-            &[],
-            0,
-        );
+        let prompt =
+            build_initial_prompt(ChatContextType::Project, project_id.as_str(), "hi", &[], 0);
         assert!(
             !prompt.contains("<session_history"),
             "First-turn project prompt must not synthesize an empty history block"
@@ -3677,6 +3710,107 @@ exit 0
         assert!(
             prompt.contains("<user_message>hello from fresh ideation</user_message>"),
             "fresh Claude ideation launch plans must carry only the new user message in stdin bootstrap"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_project_launch_plan_resumes_stored_provider_session() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let provider_session_id = "session-to-resume";
+        write_test_file(
+            &provider_home
+                .join(".claude")
+                .join("projects")
+                .join("project")
+                .join(format!("{provider_session_id}.jsonl")),
+            "{}\n",
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let cli_path = make_fake_claude_cli(&temp);
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("claude-project-resume".to_string());
+        let agent_name = agent_names::AGENT_GENERAL_WORKER;
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: provider_session_id.to_string(),
+        });
+        let prior_user = ChatMessage::user_in_project(
+            project_id.clone(),
+            "prior message should stay in the provider transcript",
+        );
+        let prior_assistant = {
+            let mut msg = ChatMessage::user_in_project(project_id.clone(), "prior answer");
+            msg.role = MessageRole::Orchestrator;
+            msg
+        };
+        let messages = vec![prior_user, prior_assistant];
+        let resolved_spawn_settings =
+            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                agent_name,
+                Some(project_id.as_str()),
+                ChatContextType::Project,
+                None,
+                Some(AgentHarnessKind::Claude),
+                None,
+                None,
+            )
+            .await;
+
+        let launch_plan = build_launch_plan_for_harness(
+            AgentHarnessKind::Claude,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "continue from the same Claude session",
+            Some(agent_name),
+            ChatContextType::Project,
+            project_id.as_str(),
+            temp.path(),
+            None,
+            Some(project_id.as_str()),
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &messages,
+            messages.len(),
+            false,
+            Some(provider_session_id),
+            &resolved_spawn_settings,
+        )
+        .await
+        .expect("Claude project launch plan should build");
+
+        let spawnable = launch_spawnable(&launch_plan);
+        let args = spawnable.get_args_for_test();
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "--resume" && window[1] == provider_session_id),
+            "Claude launch args must include --resume for stored provider session: {args:?}"
+        );
+        assert_eq!(
+            spawnable_env_value(spawnable, "RALPHX_LEAD_SESSION_ID").as_deref(),
+            Some(provider_session_id)
+        );
+
+        let prompt = spawnable
+            .get_stdin_prompt_for_test()
+            .expect("interactive prompt should be stored on stdin");
+        assert!(
+            prompt.contains("<user_message>continue from the same Claude session</user_message>")
+        );
+        assert!(
+            !prompt.contains("prior message should stay in the provider transcript")
+                && !prompt.contains("<session_history"),
+            "provider resume prompts should not replay RalphX DB history into stdin: {prompt}"
         );
     }
 
