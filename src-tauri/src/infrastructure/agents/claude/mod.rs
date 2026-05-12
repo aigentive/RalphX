@@ -227,6 +227,11 @@ pub fn apply_common_spawn_env(cmd: &mut Command) {
 }
 
 fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
+    // Inject the user's login-shell env FIRST so things like `ANTHROPIC_API_KEY`
+    // and other auth exports the user set in `~/.zshrc` / `~/.zprofile` reach
+    // the spawned CLI. The RalphX-managed overrides below stay authoritative
+    // because they apply after — see `login_shell_env::should_forward`.
+    crate::infrastructure::login_shell_env::apply_to_std(cmd);
     cmd.env(
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),

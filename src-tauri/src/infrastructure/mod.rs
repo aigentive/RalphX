@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub(crate) mod git_auth;
+pub mod login_shell_env;
 pub mod memory;
 pub mod services;
 pub mod sqlite;
@@ -28,6 +29,8 @@ pub use webhook_publisher::WebhookPublisher as ConcreteWebhookPublisher;
 
 #[cfg(test)]
 mod external_mcp_supervisor_tests;
+#[cfg(test)]
+mod login_shell_env_tests;
 #[cfg(test)]
 mod tool_paths_tests;
 #[cfg(test)]
