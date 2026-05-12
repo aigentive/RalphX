@@ -146,20 +146,123 @@ fn github_oauth_gho_is_redacted() {
     assert_eq!(redact(input), "gho_***REDACTED***");
 }
 
+// ── Pattern 10: Generic sensitive env var JSON ──────────────────────────────
+
+#[test]
+fn generic_env_key_json_is_redacted() {
+    let input = r#"{"OPENAI_API_KEY": "sk-proj-abc123xyz"}"#;
+    let output = redact(input);
+    assert!(output.contains(r#""OPENAI_API_KEY":"***REDACTED***""#));
+    assert!(!output.contains("sk-proj-abc123xyz"));
+}
+
+#[test]
+fn generic_env_token_json_is_redacted() {
+    let input = r#"{"GITHUB_TOKEN": "ghp_somesecretvalue123"}"#;
+    let output = redact(input);
+    assert!(output.contains(r#""GITHUB_TOKEN":"***REDACTED***""#));
+    assert!(!output.contains("ghp_somesecretvalue123"));
+}
+
+#[test]
+fn generic_env_secret_json_is_redacted() {
+    let input = r#"{"AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCY"}"#;
+    let output = redact(input);
+    assert!(output.contains(r#""AWS_SECRET_ACCESS_KEY":"***REDACTED***""#));
+    assert!(!output.contains("wJalrXUtnFEMI"));
+}
+
+#[test]
+fn generic_env_password_json_is_redacted() {
+    let input = r#"{"DB_PASSWORD": "hunter2"}"#;
+    let output = redact(input);
+    assert!(output.contains(r#""DB_PASSWORD":"***REDACTED***""#));
+    assert!(!output.contains("hunter2"));
+}
+
+#[test]
+fn generic_env_credential_json_is_redacted() {
+    let input = r#"{"SERVICE_CREDENTIAL": "abc-secret-456"}"#;
+    let output = redact(input);
+    assert!(output.contains(r#""SERVICE_CREDENTIAL":"***REDACTED***""#));
+    assert!(!output.contains("abc-secret-456"));
+}
+
+#[test]
+fn generic_env_json_case_insensitive() {
+    let input = r#"{"openai_api_key": "myvalue123"}"#;
+    let output = redact(input);
+    assert!(output.contains(r#""openai_api_key":"***REDACTED***""#));
+    assert!(!output.contains("myvalue123"));
+}
+
+#[test]
+fn generic_env_json_non_sensitive_key_not_redacted() {
+    let input = r#"{"TAURI_API_URL": "http://127.0.0.1:3847"}"#;
+    assert_eq!(redact(input), input);
+}
+
+// ── Pattern 11: Generic sensitive env var assignment ────────────────────────
+
+#[test]
+fn generic_env_key_assignment_is_redacted() {
+    let input = "OPENAI_API_KEY=sk-proj-abc123xyz456";
+    let output = redact(input);
+    assert_eq!(output, "OPENAI_API_KEY=***REDACTED***");
+}
+
+#[test]
+fn generic_env_token_assignment_is_redacted() {
+    let input = "GITHUB_TOKEN=ghp_somesecretvalue123456";
+    let output = redact(input);
+    assert_eq!(output, "GITHUB_TOKEN=***REDACTED***");
+}
+
+#[test]
+fn generic_env_secret_assignment_is_redacted() {
+    let input = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI";
+    let output = redact(input);
+    assert_eq!(output, "AWS_SECRET_ACCESS_KEY=***REDACTED***");
+}
+
+#[test]
+fn generic_env_assignment_quoted_value_is_redacted() {
+    let input = r#"MY_SECRET_KEY="some secret value""#;
+    let output = redact(input);
+    assert_eq!(output, "MY_SECRET_KEY=***REDACTED***");
+}
+
+#[test]
+fn generic_env_assignment_non_sensitive_key_not_redacted() {
+    let input = "TAURI_API_URL=http://127.0.0.1:3847";
+    assert_eq!(redact(input), input);
+}
+
+#[test]
+fn generic_env_assignment_in_env_dump_multiple() {
+    let input = "OPENAI_API_KEY=sk-abc123 GITHUB_TOKEN=ghp_def456 HOME=/Users/me";
+    let output = redact(input);
+    assert!(output.contains("OPENAI_API_KEY=***REDACTED***"));
+    assert!(output.contains("GITHUB_TOKEN=***REDACTED***"));
+    assert!(output.contains("HOME=/Users/me"));
+}
+
 // ── Multi-secret line ─────────────────────────────────────────────────────────
 
 #[test]
 fn two_different_secrets_in_same_string_both_redacted() {
+    // key1/key2 contain "key" → generic pattern (11) re-redacts after specific patterns
     let input = "key1=sk-ant-AAAAAAAAAAAAAAAAAAAAA key2=ghp_BBBBBBBBBBBBBBBBBBBB";
     let output = redact(input);
-    assert_eq!(output, "key1=sk-ant-***REDACTED*** key2=ghp_***REDACTED***");
+    assert_eq!(output, "key1=***REDACTED*** key2=***REDACTED***");
 }
 
 #[test]
 fn bearer_and_rxk_live_both_redacted() {
+    // "token" contains "token" → generic pattern (11) re-redacts the rxk_live_ value
     let input = "token=rxk_live_AAAAAAAAAAAAAAAAAAAA auth=Bearer BBBBBBBBBBBBBBBBBBBB";
     let output = redact(input);
-    assert!(output.contains("rxk_live_***REDACTED***"));
+    assert!(output.contains("token=***REDACTED***"));
     assert!(output.contains("Bearer ***REDACTED***"));
     assert!(!output.contains("rxk_live_AAAAA"));
     assert!(!output.contains("Bearer BBBBB"));

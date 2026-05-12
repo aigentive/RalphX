@@ -35,6 +35,10 @@ const PATTERNS = [
     { regex: /ghp_[a-zA-Z0-9]{20,}/g, replacement: "ghp_***REDACTED***" },
     // 9. GitHub OAuth tokens
     { regex: /gho_[a-zA-Z0-9]{20,}/g, replacement: "gho_***REDACTED***" },
+    // 10. Generic env var with sensitive name in JSON ("MY_API_KEY": "value")
+    { regex: /"([A-Z_0-9]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z_0-9]*)"\s*:\s*"[^"]+"/gi, replacement: '"$1":"***REDACTED***"' },
+    // 11. Generic env var with sensitive name in assignment (MY_API_KEY=value)
+    { regex: /\b([A-Z_0-9]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z_0-9]*)=("[^"]*"|\S+)/gi, replacement: "$1=***REDACTED***" },
 ];
 /**
  * Apply all redaction patterns to a string.

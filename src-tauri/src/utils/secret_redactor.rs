@@ -57,6 +57,16 @@ lazy_static! {
             regex::Regex::new(r"gho_[a-zA-Z0-9]{20,}").unwrap(),
             "gho_***REDACTED***",
         ),
+        // 10. Generic env var with sensitive name in JSON ("MY_API_KEY": "value")
+        (
+            regex::Regex::new(r#"(?i)"([A-Z_0-9]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z_0-9]*)"\s*:\s*"[^"]+""#).unwrap(),
+            r#""$1":"***REDACTED***""#,
+        ),
+        // 11. Generic env var with sensitive name in assignment (MY_API_KEY=value)
+        (
+            regex::Regex::new(r#"(?i)\b([A-Z_0-9]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z_0-9]*)=("[^"]*"|\S+)"#).unwrap(),
+            "$1=***REDACTED***",
+        ),
     ];
 }
 
