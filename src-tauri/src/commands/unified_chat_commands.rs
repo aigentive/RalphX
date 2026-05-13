@@ -2410,31 +2410,27 @@ pub async fn list_agent_conversations_page(
     })
 }
 
-/// Archive a conversation.
-/// If the workspace has an open PR, close it immediately on the remote
-/// and mark publication_pr_status as "closed". The local worktree/branch
-/// will be cleaned up on next app restart via the terminal cleanup pipeline.
-#[tauri::command]
-pub async fn archive_agent_conversation(
-    conversation_id: String,
-    state: State<'_, AppState>,
-) -> Result<AgentConversationResponse, String> {
-    let conversation_id = ChatConversationId::from_string(conversation_id);
+/// Core archive logic, testable without Tauri `State` wrapper.
+#[doc(hidden)]
+pub async fn archive_agent_conversation_inner(
+    conversation_id: &ChatConversationId,
+    state: &AppState,
+) -> Result<(), String> {
     state
         .chat_conversation_repo
-        .archive(&conversation_id)
+        .archive(conversation_id)
         .await
         .map_err(|e| e.to_string())?;
 
     if let Ok(Some(workspace)) = state
         .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
+        .get_by_conversation_id(conversation_id)
         .await
     {
         state
             .agent_conversation_workspace_repo
             .update_status(
-                &conversation_id,
+                conversation_id,
                 AgentConversationWorkspaceStatus::Archived,
             )
             .await
@@ -2466,7 +2462,7 @@ pub async fn archive_agent_conversation(
                 state
                     .agent_conversation_workspace_repo
                     .update_publication(
-                        &conversation_id,
+                        conversation_id,
                         Some(pr_number),
                         workspace.publication_pr_url.as_deref(),
                         Some("closed"),
@@ -2495,6 +2491,21 @@ pub async fn archive_agent_conversation(
             }
         }
     }
+
+    Ok(())
+}
+
+/// Archive a conversation.
+/// If the workspace has an open PR, close it immediately on the remote
+/// and mark publication_pr_status as "closed". The local worktree/branch
+/// will be cleaned up on next app restart via the terminal cleanup pipeline.
+#[tauri::command]
+pub async fn archive_agent_conversation(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationResponse, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    archive_agent_conversation_inner(&conversation_id, &state).await?;
 
     state
         .chat_conversation_repo
