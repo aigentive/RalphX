@@ -12,6 +12,11 @@ coverage:
         target: 90%
         threshold: 0%
         only_pulls: true
+        paths:
+          # Async streaming loops (process_stream_background, process_codex_stream_background)
+          # are only exercised by integration tests with real process spawning.
+          # Testable logic is extracted into public helper functions with full unit coverage.
+          - "!src-tauri/src/application/chat_service/chat_service_streaming.rs"
 
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.
