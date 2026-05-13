@@ -56,7 +56,7 @@ fn to_response(
 
 async fn get_harness_availability_for_lanes(
     project_id: Option<String>,
-    app_state: State<'_, AppState>,
+    app_state: &AppState,
     lanes: &[AgentLane],
     refresh_runtime: bool,
 ) -> Result<Vec<AgentLaneHarnessAvailabilityResponse>, String> {
@@ -102,7 +102,7 @@ pub async fn get_ideation_harness_availability(
     let input = input.unwrap_or_default();
     get_harness_availability_for_lanes(
         input.project_id,
-        app_state,
+        app_state.inner(),
         &IDEATION_LANES,
         input.refresh_runtime,
     )
@@ -117,9 +117,74 @@ pub async fn get_agent_harness_availability(
     let input = input.unwrap_or_default();
     get_harness_availability_for_lanes(
         input.project_id,
-        app_state,
+        app_state.inner(),
         &AGENT_LANES,
         input.refresh_runtime,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::application::AppState;
+    use crate::domain::agents::AgentHarnessKind;
+
+    #[tokio::test]
+    async fn availability_helper_loads_stored_provider_probes_for_requested_lanes() {
+        let state = AppState::new_test();
+        let project_id = Some("project-availability".to_string());
+
+        let responses =
+            get_harness_availability_for_lanes(project_id.clone(), &state, &IDEATION_LANES, false)
+                .await
+                .expect("availability should load");
+
+        assert_eq!(responses.len(), IDEATION_LANES.len());
+        assert!(responses
+            .iter()
+            .all(|response| response.project_id == project_id));
+        assert!(responses
+            .iter()
+            .all(|response| !response.effective_harness.is_empty()));
+    }
+
+    #[test]
+    fn availability_response_maps_lane_probe_and_error_fields() {
+        let availability =
+            crate::application::ideation_harness_availability::LaneHarnessAvailability {
+                lane: AgentLane::ExecutionWorker,
+                configured_harness: Some(AgentHarnessKind::Codex),
+                effective_harness: AgentHarnessKind::Codex,
+                binary_path: Some("/usr/local/bin/codex".to_string()),
+                binary_found: true,
+                probe_succeeded: false,
+                available: false,
+                missing_core_exec_features: vec!["exec".to_string()],
+                error: Some("codex missing exec support".to_string()),
+            };
+
+        let response = to_response(&Some("project-1".to_string()), availability);
+
+        assert_eq!(response.project_id.as_deref(), Some("project-1"));
+        assert_eq!(response.lane, "execution_worker");
+        assert_eq!(response.configured_harness.as_deref(), Some("codex"));
+        assert_eq!(response.effective_harness, "codex");
+        assert_eq!(
+            response.binary_path.as_deref(),
+            Some("/usr/local/bin/codex")
+        );
+        assert!(response.binary_found);
+        assert!(!response.probe_succeeded);
+        assert!(!response.available);
+        assert_eq!(
+            response.missing_core_exec_features,
+            vec!["exec".to_string()]
+        );
+        assert_eq!(
+            response.error.as_deref(),
+            Some("codex missing exec support")
+        );
+    }
 }

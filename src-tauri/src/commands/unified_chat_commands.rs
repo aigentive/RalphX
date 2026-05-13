@@ -6744,6 +6744,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_freshness_command_caches_local_summary_after_first_lookup() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-local-cache",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let first = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("local freshness should load");
+        assert_eq!(first.freshness_scope, "local");
+        assert_eq!(first.base_ref, "feature/deleted-base");
+        assert!(first.target_ref.starts_with("ralphx/"));
+        assert!(!first.remote_refreshed);
+        assert!(!first.worktree_status_checked);
+
+        let second = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("cached local freshness should load");
+
+        assert_eq!(second.conversation_id, first.conversation_id);
+        assert_eq!(second.freshness_scope, "local");
+        assert_eq!(second.target_base_commit, first.target_base_commit);
+        assert_eq!(second.target_ref, first.target_ref);
+    }
+
+    #[tokio::test]
     async fn update_workspace_from_explicit_base_recovers_blocked_base() {
         let (temp, state, conversation_id, _github) = setup_publish_command_state(
             "explicit-base-recovery",
