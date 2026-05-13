@@ -477,10 +477,12 @@ const commandHandlers: Record<
   list_agent_models: async () => mockAgentModels,
   get_agent_lane_settings: async (args) =>
     mockAgentLaneSettings((args.projectId as string | null | undefined) ?? null),
-  get_agent_harness_availability: async (args) =>
-    mockAgentHarnessAvailability(
-      (args.projectId as string | null | undefined) ?? null,
-    ),
+  get_agent_harness_availability: async (args) => {
+    const input = args.input as { projectId?: string | null } | undefined;
+    return mockAgentHarnessAvailability(
+      input?.projectId ?? (args.projectId as string | null | undefined) ?? null,
+    );
+  },
   update_agent_lane_settings: async (args) => {
     const input = args.input as {
       projectId?: string | null;

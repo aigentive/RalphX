@@ -52,11 +52,17 @@ export interface UpdateAgentProviderSettingsInput {
   applyToAllLanes?: boolean;
 }
 
+export interface ListAgentProviderSettingsOptions {
+  refreshRuntime?: boolean;
+}
+
 export const harnessProvidersApi = {
-  list(): Promise<AgentProvidersSettingsResponse> {
+  list(
+    options: ListAgentProviderSettingsOptions = {},
+  ): Promise<AgentProvidersSettingsResponse> {
     return typedInvoke(
       "get_agent_provider_settings",
-      {},
+      { input: { refreshRuntime: options.refreshRuntime ?? false } },
       AgentProvidersSettingsResponseSchema,
     );
   },

@@ -1,11 +1,20 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::{
     build_lane_harness_availability, probe_supported_harnesses, resolve_lane_harness_config,
     AppState, AGENT_LANES, IDEATION_LANES,
 };
+use crate::commands::harness_provider_commands::snapshot_probes_from_provider_settings;
 use crate::domain::agents::AgentLane;
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHarnessAvailabilityInput {
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub refresh_runtime: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,8 +58,19 @@ async fn get_harness_availability_for_lanes(
     project_id: Option<String>,
     app_state: State<'_, AppState>,
     lanes: &[AgentLane],
+    refresh_runtime: bool,
 ) -> Result<Vec<AgentLaneHarnessAvailabilityResponse>, String> {
-    let probes = probe_supported_harnesses();
+    let started_at = std::time::Instant::now();
+    let probes = if refresh_runtime {
+        probe_supported_harnesses()
+    } else {
+        let stored = app_state
+            .agent_provider_settings_repo
+            .list()
+            .await
+            .map_err(|err| err.to_string())?;
+        snapshot_probes_from_provider_settings(&stored)
+    };
     let mut responses = Vec::with_capacity(lanes.len());
 
     for lane in lanes {
@@ -64,21 +84,42 @@ async fn get_harness_availability_for_lanes(
         responses.push(to_response(&project_id, availability));
     }
 
+    tracing::info!(
+        refresh_runtime,
+        lanes = lanes.len(),
+        project_id = ?project_id,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent harness availability loaded"
+    );
     Ok(responses)
 }
 
 #[tauri::command]
 pub async fn get_ideation_harness_availability(
-    project_id: Option<String>,
+    input: Option<AgentHarnessAvailabilityInput>,
     app_state: State<'_, AppState>,
 ) -> Result<Vec<IdeationLaneHarnessAvailabilityResponse>, String> {
-    get_harness_availability_for_lanes(project_id, app_state, &IDEATION_LANES).await
+    let input = input.unwrap_or_default();
+    get_harness_availability_for_lanes(
+        input.project_id,
+        app_state,
+        &IDEATION_LANES,
+        input.refresh_runtime,
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn get_agent_harness_availability(
-    project_id: Option<String>,
+    input: Option<AgentHarnessAvailabilityInput>,
     app_state: State<'_, AppState>,
 ) -> Result<Vec<AgentLaneHarnessAvailabilityResponse>, String> {
-    get_harness_availability_for_lanes(project_id, app_state, &AGENT_LANES).await
+    let input = input.unwrap_or_default();
+    get_harness_availability_for_lanes(
+        input.project_id,
+        app_state,
+        &AGENT_LANES,
+        input.refresh_runtime,
+    )
+    .await
 }

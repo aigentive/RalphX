@@ -729,6 +729,22 @@ impl AgentWorkspaceFreshnessCacheStatus {
     }
 }
 
+fn log_agent_workspace_freshness_phase(
+    conversation_id: &ChatConversationId,
+    freshness_scope: AgentWorkspaceFreshnessScope,
+    phase: &'static str,
+    started_at: Instant,
+) {
+    tracing::info!(
+        target: "ralphx_lib::commands::agent_workspace_freshness",
+        conversation_id = %conversation_id,
+        freshness_scope = freshness_scope.as_str(),
+        phase,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "Agent workspace freshness phase completed"
+    );
+}
+
 fn agent_workspace_freshness_cache() -> &'static DashMap<String, AgentWorkspaceFreshnessCacheEntry>
 {
     static CACHE: OnceLock<DashMap<String, AgentWorkspaceFreshnessCacheEntry>> = OnceLock::new();
@@ -2887,28 +2903,75 @@ async fn get_agent_conversation_workspace_freshness_cached(
     ),
     String,
 > {
+    let phase_started_at = Instant::now();
     if let Some(response) = cached_agent_workspace_freshness(conversation_id, freshness_scope) {
+        log_agent_workspace_freshness_phase(
+            conversation_id,
+            freshness_scope,
+            "cache_lookup_initial",
+            phase_started_at,
+        );
         return Ok((response, AgentWorkspaceFreshnessCacheStatus::Hit));
     }
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "cache_lookup_initial",
+        phase_started_at,
+    );
 
     let key = format!("{}:{}", conversation_id.as_str(), freshness_scope.as_str());
     let lock = agent_workspace_freshness_locks()
         .entry(key)
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
+    let phase_started_at = Instant::now();
     let _guard = lock.lock().await;
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "coalescing_lock_wait",
+        phase_started_at,
+    );
 
+    let phase_started_at = Instant::now();
     if let Some(response) = cached_agent_workspace_freshness(conversation_id, freshness_scope) {
+        log_agent_workspace_freshness_phase(
+            conversation_id,
+            freshness_scope,
+            "cache_lookup_coalesced",
+            phase_started_at,
+        );
         return Ok((response, AgentWorkspaceFreshnessCacheStatus::Coalesced));
     }
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "cache_lookup_coalesced",
+        phase_started_at,
+    );
 
+    let phase_started_at = Instant::now();
     let response = get_agent_conversation_workspace_freshness_for_state(
         conversation_id,
         freshness_scope,
         state,
     )
     .await?;
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "compute",
+        phase_started_at,
+    );
+    let phase_started_at = Instant::now();
     store_agent_workspace_freshness(conversation_id, freshness_scope, &response);
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "cache_store",
+        phase_started_at,
+    );
     Ok((response, AgentWorkspaceFreshnessCacheStatus::Miss))
 }
 
@@ -2918,7 +2981,14 @@ async fn get_agent_conversation_workspace_local_freshness(
     workspace: &AgentConversationWorkspace,
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        let phase_started_at = Instant::now();
         let target = resolve_agent_workspace_publish_target(state, project, workspace).await?;
+        log_agent_workspace_freshness_phase(
+            &workspace.conversation_id,
+            AgentWorkspaceFreshnessScope::Local,
+            "local_publish_target_resolution",
+            phase_started_at,
+        );
         return Ok(
             AgentConversationWorkspaceFreshnessResponse::from_local_summary(
                 workspace.conversation_id.as_str(),
@@ -2937,8 +3007,15 @@ async fn get_agent_conversation_workspace_local_freshness(
         );
     }
 
+    let phase_started_at = Instant::now();
     resolve_agent_conversation_workspace_path_for_send(project, workspace)
         .map_err(|e| e.to_string())?;
+    log_agent_workspace_freshness_phase(
+        &workspace.conversation_id,
+        AgentWorkspaceFreshnessScope::Local,
+        "local_path_resolution",
+        phase_started_at,
+    );
 
     Ok(
         AgentConversationWorkspaceFreshnessResponse::from_local_summary(
@@ -2956,6 +3033,7 @@ async fn get_agent_conversation_workspace_freshness_for_state(
     freshness_scope: AgentWorkspaceFreshnessScope,
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
+    let phase_started_at = Instant::now();
     let workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -2967,19 +3045,48 @@ async fn get_agent_conversation_workspace_freshness_for_state(
                 conversation_id
             )
         })?;
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "workspace_read",
+        phase_started_at,
+    );
+    let phase_started_at = Instant::now();
     let mut workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
         .await
         .map_err(|e| e.to_string())?;
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "stale_publish_repair",
+        phase_started_at,
+    );
 
+    let phase_started_at = Instant::now();
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
+    log_agent_workspace_freshness_phase(
+        conversation_id,
+        freshness_scope,
+        "project_read",
+        phase_started_at,
+    );
 
     if freshness_scope == AgentWorkspaceFreshnessScope::Local {
-        return get_agent_conversation_workspace_local_freshness(state, &project, &workspace).await;
+        let phase_started_at = Instant::now();
+        let response =
+            get_agent_conversation_workspace_local_freshness(state, &project, &workspace).await?;
+        log_agent_workspace_freshness_phase(
+            conversation_id,
+            freshness_scope,
+            "local_summary",
+            phase_started_at,
+        );
+        return Ok(response);
     }
 
     // For ideation workspaces linked to a plan branch, check freshness of the

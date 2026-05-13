@@ -197,6 +197,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         }
     }
 
+    let phase_started_at = startup_phase_started("task_scheduler_build");
     let task_scheduler = build_startup_task_scheduler(StartupSchedulerDeps {
         execution_state: Arc::clone(&execution_state),
         project_repo: Arc::clone(&project_repo),
@@ -221,7 +222,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         interactive_process_registry: Arc::clone(&interactive_process_registry),
         app_handle: app_handle.clone(),
     });
+    startup_phase_completed("task_scheduler_build", phase_started_at);
 
+    let phase_started_at = startup_phase_started("startup_transition_factory_build");
     let startup_transition_factory = StartupTransitionFactory {
         execution_state: Arc::clone(&execution_state),
         execution_settings_repo: Arc::clone(&execution_settings_repo),
@@ -236,7 +239,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         webhook_publisher: webhook_publisher.clone(),
         session_merge_locks: Arc::clone(&session_merge_locks),
     };
+    startup_phase_completed("startup_transition_factory_build", phase_started_at);
 
+    let phase_started_at = startup_phase_started("core_runtime_deps_build");
     let core_runtime_deps = RuntimeFactoryDeps::from_core(
         Arc::clone(&task_repo),
         Arc::clone(&task_dependency_repo),
@@ -256,10 +261,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         github_service.as_ref().map(Arc::clone),
         Some(Arc::clone(&pr_poller_registry)),
     );
+    startup_phase_completed("core_runtime_deps_build", phase_started_at);
 
+    let phase_started_at = startup_phase_started("transition_service_build");
     let transition_service = startup_transition_factory
         .build(core_runtime_deps.clone(), app_handle.clone())
         .into_arc();
+    startup_phase_completed("transition_service_build", phase_started_at);
 
     if let Some(github_service) = github_service.as_ref() {
         tracing::info!("Running startup PR creation recovery...");
@@ -319,6 +327,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         "Startup phase completed: PR poller recovery"
     );
 
+    let phase_started_at = startup_phase_started("recovery_chat_service_deps_build");
     let recovery_chat_service_deps = ChatRuntimeFactoryDeps::from_core(
         Arc::clone(&chat_message_repo),
         Arc::clone(&chat_attachment_repo),
@@ -346,11 +355,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Some(Arc::clone(&ideation_effort_settings_repo)),
         Some(Arc::clone(&ideation_model_settings_repo)),
     );
+    startup_phase_completed("recovery_chat_service_deps_build", phase_started_at);
+
+    let phase_started_at = startup_phase_started("recovery_chat_service_build");
     let recovery_chat_service = build_startup_recovery_chat_service(
         app_handle.clone(),
         Arc::clone(&execution_state),
         recovery_chat_service_deps.clone(),
     );
+    startup_phase_completed("recovery_chat_service_build", phase_started_at);
 
     tracing::info!("Running agent workspace PR startup recovery...");
     tracing::info!("Scheduling terminal agent workspace local cleanup...");
@@ -485,10 +498,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("chat_resumption", phase_started_at);
     }
 
+    let phase_started_at = startup_phase_started("reconcile_transition_service_build");
     let reconcile_transition_service = startup_transition_factory
         .build(core_runtime_deps, app_handle.clone())
         .into_arc();
+    startup_phase_completed("reconcile_transition_service_build", phase_started_at);
 
+    let phase_started_at = startup_phase_started("reconciliation_runner_build");
     let reconcile_runner = build_startup_reconciliation_runner(StartupReconciliationDeps {
         task_repo: Arc::clone(&task_repo),
         task_dependency_repo: Arc::clone(&task_dependency_repo),
@@ -512,6 +528,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         review_repo: Arc::clone(&review_repo),
         app_handle: app_handle.clone(),
     });
+    startup_phase_completed("reconciliation_runner_build", phase_started_at);
 
     if active_git_startup_blocked {
         tracing::warn!(
@@ -554,11 +571,14 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
         let recovery_config = RecoveryQueueConfig::default();
         let recovery_queue_chat_deps = recovery_chat_service_deps.clone();
+        let phase_started_at = startup_phase_started("verification_recovery_chat_service_build");
         let recovery_chat_service = build_startup_recovery_chat_service(
             app_handle.clone(),
             Arc::clone(&execution_state),
             recovery_queue_chat_deps,
         );
+        startup_phase_completed("verification_recovery_chat_service_build", phase_started_at);
+        let phase_started_at = startup_phase_started("verification_recovery_queue_build");
         let (recovery_queue, recovery_processor) = create_recovery_queue(
             Arc::clone(&running_agent_registry),
             Arc::clone(&interactive_process_registry),
@@ -568,6 +588,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             recovery_config,
         );
         let recovery_queue = Arc::new(recovery_queue);
+        startup_phase_completed("verification_recovery_queue_build", phase_started_at);
         let phase_started_at = startup_phase_started("verification_recovery_queue_spawn");
         startup_background::spawn_recovery_queue_processor(recovery_processor);
         startup_phase_completed("verification_recovery_queue_spawn", phase_started_at);

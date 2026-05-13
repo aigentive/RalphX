@@ -245,18 +245,24 @@ fn provider_status_uses_ready_path_or_error_message() {
         provider_status(
             AgentHarnessKind::Codex,
             true,
+            true,
             Some("/opt/homebrew/bin/codex"),
             None,
         ),
         "Available codex detected at /opt/homebrew/bin/codex."
     );
     assert_eq!(
-        provider_status(AgentHarnessKind::Claude, true, None, None),
+        provider_status(AgentHarnessKind::Claude, true, true, None, None),
         "Available claude detected."
+    );
+    assert_eq!(
+        provider_status(AgentHarnessKind::Claude, true, false, None, None),
+        "claude is enabled in Settings."
     );
     assert_eq!(
         provider_status(
             AgentHarnessKind::Codex,
+            false,
             false,
             None,
             Some("codex missing core exec support"),
@@ -264,7 +270,7 @@ fn provider_status_uses_ready_path_or_error_message() {
         "codex missing core exec support"
     );
     assert_eq!(
-        provider_status(AgentHarnessKind::Claude, false, None, None),
+        provider_status(AgentHarnessKind::Claude, false, false, None, None),
         "claude CLI is not ready."
     );
 }
@@ -332,7 +338,7 @@ fn lane_settings_inherit_provider_defaults() {
 #[tokio::test]
 async fn read_settings_returns_ordered_provider_defaults() {
     let state = AppState::new_test();
-    let response = read_provider_settings(&state)
+    let response = read_provider_settings(&state, false)
         .await
         .expect("read provider settings");
 
