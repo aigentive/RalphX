@@ -1,16 +1,19 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::application::git_service::git_cmd;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::{AppState, GitService};
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentWorkspacePrDescription, ChatConversation, Project,
+    AgentConversationWorkspace, AgentWorkspacePrDescription, ChatConversation, ChatConversationId,
+    Project,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
+use crate::infrastructure::agents::claude::git_runtime_config;
+use dashmap::DashMap;
 use tracing::info;
 
 pub const DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE: &str =
@@ -30,6 +33,154 @@ const PR_DESCRIBER_SUBMIT_TOOL: &str = "submit_agent_workspace_pr_description";
 struct PullRequestTemplateContext {
     source: &'static str,
     content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentWorkspacePrDescriptionCacheKey {
+    conversation_id: ChatConversationId,
+    review_base: String,
+    branch_head_sha: String,
+    reviewable_commit_count: u32,
+}
+
+impl AgentWorkspacePrDescriptionCacheKey {
+    pub(crate) fn new(
+        conversation_id: ChatConversationId,
+        review_base: impl Into<String>,
+        branch_head_sha: impl Into<String>,
+        reviewable_commit_count: u32,
+    ) -> Option<Self> {
+        if conversation_id.as_uuid().is_nil() {
+            return None;
+        }
+        let review_base = review_base.into();
+        let branch_head_sha = branch_head_sha.into();
+        if review_base.trim().is_empty() || branch_head_sha.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            conversation_id,
+            review_base,
+            branch_head_sha,
+            reviewable_commit_count,
+        })
+    }
+
+    fn cache_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.conversation_id,
+            self.review_base,
+            self.branch_head_sha,
+            self.reviewable_commit_count
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentWorkspacePrDescriptionCacheStatus {
+    Hit,
+    Coalesced,
+    Miss,
+    Disabled,
+}
+
+impl AgentWorkspacePrDescriptionCacheStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Coalesced => "coalesced",
+            Self::Miss => "miss",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentWorkspacePrDescriptionDraftOutcome {
+    pub(crate) description: AgentWorkspacePrDescription,
+    pub(crate) cache_status: AgentWorkspacePrDescriptionCacheStatus,
+    pub(crate) cache_age_ms: Option<u128>,
+    pub(crate) cache_wait_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkspacePrDescriptionCacheEntry {
+    inserted_at: Instant,
+    description: AgentWorkspacePrDescription,
+}
+
+fn agent_workspace_pr_description_cache_ttl() -> Duration {
+    Duration::from_millis(git_runtime_config().workspace_pr_description_cache_ttl_ms)
+}
+
+fn agent_workspace_pr_description_cache(
+) -> &'static DashMap<String, AgentWorkspacePrDescriptionCacheEntry> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspacePrDescriptionCacheEntry>> =
+        OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_pr_description_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn cached_agent_workspace_pr_description(
+    key: &AgentWorkspacePrDescriptionCacheKey,
+) -> Option<(AgentWorkspacePrDescription, u128)> {
+    let ttl = agent_workspace_pr_description_cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let cache_key = key.cache_key();
+    let Some(entry) = agent_workspace_pr_description_cache().get(&cache_key) else {
+        return None;
+    };
+    let age = entry.inserted_at.elapsed();
+    if age <= ttl {
+        return Some((entry.description.clone(), age.as_millis()));
+    }
+    drop(entry);
+    agent_workspace_pr_description_cache().remove(&cache_key);
+    None
+}
+
+fn store_agent_workspace_pr_description(
+    key: &AgentWorkspacePrDescriptionCacheKey,
+    description: &AgentWorkspacePrDescription,
+) {
+    if agent_workspace_pr_description_cache_ttl().is_zero() {
+        return;
+    }
+    agent_workspace_pr_description_cache().insert(
+        key.cache_key(),
+        AgentWorkspacePrDescriptionCacheEntry {
+            inserted_at: Instant::now(),
+            description: description.clone(),
+        },
+    );
+}
+
+pub(crate) fn invalidate_agent_workspace_pr_description_cache(
+    conversation_id: &ChatConversationId,
+) {
+    if conversation_id.as_uuid().is_nil() {
+        return;
+    }
+    let prefix = format!("{conversation_id}:");
+    let keys = agent_workspace_pr_description_cache()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .key()
+                .starts_with(&prefix)
+                .then(|| entry.key().clone())
+        })
+        .collect::<Vec<_>>();
+    for key in keys {
+        agent_workspace_pr_description_cache().remove(&key);
+    }
 }
 
 pub fn validate_agent_workspace_pr_description_body(body: &str) -> AppResult<()> {
@@ -231,6 +382,78 @@ pub async fn draft_agent_workspace_pr_description(
         description.title,
         description.body_markdown,
     ))
+}
+
+pub(crate) async fn get_or_draft_agent_workspace_pr_description(
+    state: &AppState,
+    conversation: &ChatConversation,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    workspace_path: &Path,
+    review_base: &str,
+    key: AgentWorkspacePrDescriptionCacheKey,
+) -> AppResult<AgentWorkspacePrDescriptionDraftOutcome> {
+    if agent_workspace_pr_description_cache_ttl().is_zero() {
+        let description = draft_agent_workspace_pr_description(
+            state,
+            conversation,
+            project,
+            workspace,
+            workspace_path,
+            review_base,
+        )
+        .await?;
+        return Ok(AgentWorkspacePrDescriptionDraftOutcome {
+            description,
+            cache_status: AgentWorkspacePrDescriptionCacheStatus::Disabled,
+            cache_age_ms: None,
+            cache_wait_ms: 0,
+        });
+    }
+
+    if let Some((description, age_ms)) = cached_agent_workspace_pr_description(&key) {
+        return Ok(AgentWorkspacePrDescriptionDraftOutcome {
+            description,
+            cache_status: AgentWorkspacePrDescriptionCacheStatus::Hit,
+            cache_age_ms: Some(age_ms),
+            cache_wait_ms: 0,
+        });
+    }
+
+    let lock = agent_workspace_pr_description_locks()
+        .entry(key.cache_key())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let wait_started = Instant::now();
+    let _guard = lock.lock().await;
+    let wait_ms = wait_started.elapsed().as_millis();
+
+    if let Some((description, age_ms)) = cached_agent_workspace_pr_description(&key) {
+        return Ok(AgentWorkspacePrDescriptionDraftOutcome {
+            description,
+            cache_status: AgentWorkspacePrDescriptionCacheStatus::Coalesced,
+            cache_age_ms: Some(age_ms),
+            cache_wait_ms: wait_ms,
+        });
+    }
+
+    let description = draft_agent_workspace_pr_description(
+        state,
+        conversation,
+        project,
+        workspace,
+        workspace_path,
+        review_base,
+    )
+    .await?;
+    store_agent_workspace_pr_description(&key, &description);
+
+    Ok(AgentWorkspacePrDescriptionDraftOutcome {
+        description,
+        cache_status: AgentWorkspacePrDescriptionCacheStatus::Miss,
+        cache_age_ms: None,
+        cache_wait_ms: wait_ms,
+    })
 }
 
 fn ensure_pr_describer_submit_tool_available(
@@ -704,6 +927,16 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    fn test_cache_key() -> AgentWorkspacePrDescriptionCacheKey {
+        AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
+            "base-sha",
+            "head-sha",
+            2,
+        )
+        .expect("test key should be cacheable")
+    }
+
     fn create_reviewable_repo() -> (TempDir, PathBuf, String) {
         let temp_dir = TempDir::new().expect("temp repo should be created");
         let repo = temp_dir.path().to_path_buf();
@@ -783,6 +1016,51 @@ mod tests {
     fn validation_rejects_empty_body() {
         let error = validate_agent_workspace_pr_description_body("  ").unwrap_err();
         assert!(error.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn pr_description_cache_rejects_uncacheable_keys() {
+        assert!(AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::nil().to_string()),
+            "base",
+            "head",
+            1,
+        )
+        .is_none());
+        assert!(AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
+            "",
+            "head",
+            1,
+        )
+        .is_none());
+        assert!(AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
+            "base",
+            " ",
+            1,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn pr_description_cache_hits_and_invalidates_by_conversation() {
+        let key = test_cache_key();
+        invalidate_agent_workspace_pr_description_cache(&key.conversation_id);
+        let description = AgentWorkspacePrDescription::new(
+            Some("Draft title".to_string()),
+            "## Summary\n\nCached body".to_string(),
+        );
+
+        store_agent_workspace_pr_description(&key, &description);
+
+        let (cached, age_ms) =
+            cached_agent_workspace_pr_description(&key).expect("cached description should hit");
+        assert_eq!(cached, description);
+        assert!(age_ms < 1_000);
+
+        invalidate_agent_workspace_pr_description_cache(&key.conversation_id);
+        assert!(cached_agent_workspace_pr_description(&key).is_none());
     }
 
     #[test]

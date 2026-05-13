@@ -9,7 +9,7 @@ import {
   MoreVertical,
   XCircle,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -131,6 +131,7 @@ export function AgentPublishPanel({
   const [localPublishStartedAtMs, setLocalPublishStartedAtMs] = useState<number | null>(
     null,
   );
+  const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
@@ -288,6 +289,44 @@ export function AgentPublishPanel({
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
   const hasNoDetectedChanges = reviewQuery.isSuccess && changes.length === 0;
+  useEffect(() => {
+    if (
+      !conversationId ||
+      !workspace ||
+      !reviewQuery.isSuccess ||
+      !reviewQuery.data ||
+      reviewQuery.data.changes.length === 0 ||
+      isAgentWorkspacePublishCurrent(workspace, freshness) ||
+      (freshness?.baseStatus ?? "valid") === "blocked" ||
+      isPipelineOwnedAgentWorkspace(workspace) ||
+      Boolean(getAgentWorkspaceTerminalPublicationStatus(workspace)) ||
+      workspace.status === "missing"
+    ) {
+      return;
+    }
+    const precomputeKey = [
+      conversationId,
+      reviewQuery.data.baseRef,
+      reviewQuery.data.headRef,
+      reviewQuery.data.commits.length,
+      reviewQuery.data.changes.length,
+    ].join(":");
+    if (prDescriptionPrecomputeKeysRef.current.has(precomputeKey)) {
+      return;
+    }
+    prDescriptionPrecomputeKeysRef.current.add(precomputeKey);
+    void chatApi
+      .precomputeAgentConversationWorkspacePrDescription(conversationId)
+      .catch(() => {
+        prDescriptionPrecomputeKeysRef.current.delete(precomputeKey);
+      });
+  }, [
+    conversationId,
+    freshness,
+    reviewQuery.data,
+    reviewQuery.isSuccess,
+    workspace,
+  ]);
 
   if (!workspace) {
     return <EmptyArtifactState title="No workspace selected" />;

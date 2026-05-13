@@ -22,6 +22,7 @@ import type {
   AgentSidebarConversationsInput,
   AgentSidebarPublicationState,
   AgentSidebarSort,
+  PrecomputeAgentConversationWorkspacePrDescriptionResult,
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
   SendAgentMessageResult,
@@ -962,6 +963,17 @@ export async function mockPublishAgentConversationWorkspace(
   };
 }
 
+export async function mockPrecomputeAgentConversationWorkspacePrDescription(
+  conversationId: string
+): Promise<PrecomputeAgentConversationWorkspacePrDescriptionResult> {
+  return {
+    conversationId,
+    status: mockWorkspaces.has(conversationId) ? "ready" : "skipped",
+    cacheStatus: mockWorkspaces.has(conversationId) ? "miss" : null,
+    reason: mockWorkspaces.has(conversationId) ? null : "missing_workspace",
+  };
+}
+
 export async function mockGetQueuedAgentMessages(
   contextType: ContextType,
   contextId: string
@@ -1044,6 +1056,8 @@ export const mockChatApi = {
   listAgentSidebarConversations: mockListAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents:
     mockListAgentConversationWorkspacePublicationEvents,
+  precomputeAgentConversationWorkspacePrDescription:
+    mockPrecomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace: mockPublishAgentConversationWorkspace,
   startAgentConversation: mockStartAgentConversation,
   switchAgentConversationMode: mockSwitchAgentConversationMode,

@@ -22,6 +22,7 @@ const {
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
+  precomputePrDescriptionMock,
   closeWorkspacePrMock,
   loadBranchBaseOptionsMock,
   getArtifactMock,
@@ -49,6 +50,7 @@ const {
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
+  precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   getArtifactMock: vi.fn(),
@@ -80,6 +82,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getWorkspaceFreshnessMock(...args),
       updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
         updateWorkspaceFromBaseMock(...args),
+      precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
+        precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
         closeWorkspacePrMock(...args),
     },
@@ -358,6 +362,13 @@ describe("AgentsArtifactPane", () => {
       updated: false,
       targetRef: "origin/main",
       baseCommit: "base-sha",
+    });
+    precomputePrDescriptionMock.mockClear();
+    precomputePrDescriptionMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      status: "ready",
+      cacheStatus: "miss",
+      reason: null,
     });
     loadBranchBaseOptionsMock.mockResolvedValue({
       options: [
@@ -1888,6 +1899,19 @@ describe("AgentsArtifactPane", () => {
     fireEvent.click(screen.getByTestId("agents-review-changes"));
     await waitFor(() =>
       expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
+    );
+  });
+
+  it("precomputes the PR description after review changes load", async () => {
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    fireEvent.click(await screen.findByTestId("agents-review-changes"));
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await waitFor(() =>
+      expect(precomputePrDescriptionMock).toHaveBeenCalledWith("conversation-1"),
     );
   });
 

@@ -23,6 +23,7 @@ import {
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
+  precomputeAgentConversationWorkspacePrDescription,
   startAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
@@ -1252,6 +1253,29 @@ describe("chat api", () => {
     });
   });
 
+  it("precomputes an agent conversation workspace PR description", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      status: "ready",
+      cache_status: "miss",
+      reason: null,
+    });
+
+    const result =
+      await precomputeAgentConversationWorkspacePrDescription("conversation-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "precompute_agent_conversation_workspace_pr_description",
+      { conversationId: "conversation-1" }
+    );
+    expect(result).toEqual({
+      conversationId: "conversation-1",
+      status: "ready",
+      cacheStatus: "miss",
+      reason: null,
+    });
+  });
+
   it("updates an agent conversation workspace from its base branch", async () => {
     mockInvoke.mockResolvedValue({
       workspace: {
@@ -1655,6 +1679,9 @@ describe("chat api", () => {
     );
     expect(chatApi.listAgentConversationWorkspacePublicationEvents).toBe(
       listAgentConversationWorkspacePublicationEvents
+    );
+    expect(chatApi.precomputeAgentConversationWorkspacePrDescription).toBe(
+      precomputeAgentConversationWorkspacePrDescription
     );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
     expect(chatApi.archiveConversation).toBe(archiveConversation);

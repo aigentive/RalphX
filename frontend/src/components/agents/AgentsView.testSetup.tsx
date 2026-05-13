@@ -36,6 +36,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   createConversationMock: vi.fn(),
@@ -123,6 +124,7 @@ const {
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  precomputePrDescriptionMock,
   switchAgentConversationModeMock,
   sendAgentMessageMock,
   createConversationMock,
@@ -395,6 +397,8 @@ vi.mock("@/api/chat", () => ({
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
+      precomputePrDescriptionMock(...args),
     switchAgentConversationMode: (...args: unknown[]) =>
       switchAgentConversationModeMock(...args),
     sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
@@ -880,6 +884,7 @@ export function setupAgentsViewTest() {
   getWorkspaceCommitsMock.mockReset();
   getWorkspaceCommitChangesMock.mockReset();
   getWorkspaceCommitDiffMock.mockReset();
+  precomputePrDescriptionMock.mockReset();
   toastErrorMock.mockReset();
   toastSuccessMock.mockReset();
   integratedChatPanelRenderMock.mockReset();
@@ -926,6 +931,12 @@ export function setupAgentsViewTest() {
   getWorkspaceCommitsMock.mockResolvedValue([]);
   getWorkspaceCommitChangesMock.mockResolvedValue([]);
   getWorkspaceCommitDiffMock.mockResolvedValue("");
+  precomputePrDescriptionMock.mockResolvedValue({
+    conversationId: "conversation-1",
+    status: "skipped",
+    cacheStatus: null,
+    reason: "no_reviewable_commits",
+  });
   publishAgentConversationWorkspaceMock.mockResolvedValue({
     workspace: {
       conversationId: "conversation-2",
