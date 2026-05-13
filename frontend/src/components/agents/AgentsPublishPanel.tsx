@@ -342,7 +342,6 @@ export function AgentPublishPanel({
     base;
   const shouldShowPublishPipeline =
     effectivePublishing || workspace.publicationPushStatus === "description_failed";
-  const isFreshnessLoading = freshnessQuery.isLoading;
   const publishDisabled =
     !onPublishWorkspace ||
     isPipelineOwnedWorkspace ||
@@ -631,7 +630,7 @@ export function AgentPublishPanel({
                 variant="ghost"
                 className="h-9 gap-2 px-3 text-xs"
                 onClick={() => setReviewOpen(true)}
-                disabled={baseBlocked || (isChangesLoading && !hasPublishedPr)}
+                disabled={baseBlocked}
                 data-testid="agents-review-changes"
               >
                 <Code className="h-3.5 w-3.5" />
@@ -676,10 +675,10 @@ export function AgentPublishPanel({
                   type="button"
                   className={primaryActionClassName}
                   onClick={confirmPublishWorkspace}
-                  disabled={publishDisabled || isFreshnessLoading}
+                  disabled={publishDisabled}
                   data-testid="agents-publish-confirm"
                 >
-                  {isPublishingThisWorkspace || isFreshnessLoading ? (
+                  {isPublishingThisWorkspace ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : isPublishCurrent || terminalPublicationStatus ? (
                     <CheckCircle2 className="h-3.5 w-3.5" />
@@ -688,9 +687,7 @@ export function AgentPublishPanel({
                   )}
                   {baseBlocked
                     ? "Base unavailable"
-                    : isFreshnessLoading
-                      ? "Checking..."
-                      : publishButtonLabel}
+                    : publishButtonLabel}
                 </Button>
               )}
               {canClosePr && (
@@ -879,7 +876,7 @@ export function AgentPublishPanel({
         base={base}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}
-        confirmDisabled={publishDisabled || isFreshnessLoading}
+        confirmDisabled={publishDisabled}
         onConfirm={handleConfirmPublishWorkspace}
         onOpenChange={handlePublishDialogOpenChange}
       />

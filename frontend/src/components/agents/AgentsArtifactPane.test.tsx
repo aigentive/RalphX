@@ -1239,6 +1239,39 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
+  it("keeps commit publish available while freshness is loading", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const freshnessDeferred = deferred<unknown>();
+    getWorkspaceFreshnessMock.mockReturnValue(freshnessDeferred.promise);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    const publishButton = await screen.findByTestId("agents-publish-confirm");
+    await waitFor(() =>
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(publishButton).toBeEnabled();
+    expect(publishButton).toHaveTextContent("Commit & Publish");
+    expect(publishButton).not.toHaveTextContent("Checking");
+  });
+
+  it("opens review changes while the file list is still loading", async () => {
+    const changesDeferred = deferred<unknown>();
+    getWorkspaceChangesMock.mockReturnValue(changesDeferred.promise);
+
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    const reviewButton = await screen.findByTestId("agents-review-changes");
+    await waitFor(() =>
+      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(reviewButton).toBeEnabled();
+
+    fireEvent.click(reviewButton);
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
   it("disables publish when no changed files are detected", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceChangesMock.mockResolvedValue([]);
@@ -1828,7 +1861,9 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     await waitFor(() => expect(screen.getByTestId("agents-review-changes")).toBeEnabled());
-    expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1");
+    await waitFor(() =>
+      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1"),
+    );
   });
 
   it("shows workspace branch commits in the review dialog history tab", async () => {

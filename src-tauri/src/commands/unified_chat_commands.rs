@@ -2604,6 +2604,35 @@ pub async fn get_agent_conversation_workspace_freshness(
     state: State<'_, AppState>,
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let started = Instant::now();
+    let result =
+        get_agent_conversation_workspace_freshness_for_state(&conversation_id, state.inner()).await;
+    match &result {
+        Ok(response) => tracing::info!(
+            target: "ralphx_lib::commands::agent_workspace_freshness",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            base_status = response.base_status.as_str(),
+            has_uncommitted_changes = response.has_uncommitted_changes,
+            unpublished_commit_count = ?response.unpublished_commit_count,
+            is_base_ahead = response.is_base_ahead,
+            "Loaded agent workspace freshness"
+        ),
+        Err(error) => tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_freshness",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error,
+            "Failed to load agent workspace freshness"
+        ),
+    }
+    result
+}
+
+async fn get_agent_conversation_workspace_freshness_for_state(
+    conversation_id: &ChatConversationId,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     let workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -2615,10 +2644,9 @@ pub async fn get_agent_conversation_workspace_freshness(
                 conversation_id
             )
         })?;
-    let mut workspace =
-        recover_stale_publish_repair_for_workspace_in_state(state.inner(), workspace)
-            .await
-            .map_err(|e| e.to_string())?;
+    let mut workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let project = state
         .project_repo
@@ -2631,7 +2659,7 @@ pub async fn get_agent_conversation_workspace_freshness(
     // plan branch against its base (the workspace's own branch has no commits).
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         let mut target =
-            resolve_agent_workspace_publish_target(state.inner(), &project, &workspace).await?;
+            resolve_agent_workspace_publish_target(state, &project, &workspace).await?;
         let base_resolution = resolve_workspace_base(&project, &workspace)
             .await
             .map_err(|e| e.to_string())?;
@@ -2734,7 +2762,7 @@ pub async fn get_agent_conversation_workspace_freshness(
             .await
             .map_err(|e| e.to_string())?;
         append_agent_workspace_publication_event(
-            &state,
+            state,
             &workspace.conversation_id,
             "repair_resolved",
             "succeeded",
@@ -3248,6 +3276,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let publish_started = Instant::now();
     let mut workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -3582,8 +3611,18 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    let push_started = Instant::now();
     if let Err(error) = push_publish_branch(github, &worktree_path, &workspace.branch_name).await {
         let error = error.to_string();
+        tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_publish",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %workspace.branch_name,
+            elapsed_ms = push_started.elapsed().as_millis(),
+            error = %error,
+            "Failed to push agent workspace publish branch"
+        );
         mark_agent_workspace_publish_failure_with_routing(
             state,
             &workspace,
@@ -3596,19 +3635,49 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await;
         return Err(error);
     }
+    tracing::info!(
+        target: "ralphx_lib::commands::agent_workspace_publish",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = push_started.elapsed().as_millis(),
+        "Pushed agent workspace publish branch"
+    );
 
     mark_agent_workspace_publish_status(state, &workspace, "pushed")
         .await
         .map_err(|e| e.to_string())?;
 
     let publisher = AgentWorkspacePrPublisher::new(github);
+    let publish_pr_started = Instant::now();
     let pr_result = publisher
         .publish_draft_pr(&worktree_path, &conversation, &workspace, &pr_description)
         .await;
     let outcome = match pr_result {
-        Ok(result) => result,
+        Ok(result) => {
+            tracing::info!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                pr_number = result.pr_number,
+                created_pr = result.created_pr,
+                elapsed_ms = publish_pr_started.elapsed().as_millis(),
+                "Published agent workspace draft pull request"
+            );
+            result
+        }
         Err(error) => {
             let error = error.to_string();
+            tracing::warn!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                elapsed_ms = publish_pr_started.elapsed().as_millis(),
+                error = %error,
+                "Failed to publish agent workspace draft pull request"
+            );
             mark_agent_workspace_publish_failure_with_routing(
                 state,
                 &workspace,
@@ -3661,6 +3730,18 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
+
+    tracing::info!(
+        target: "ralphx_lib::commands::agent_workspace_publish",
+        conversation_id = %conversation_id,
+        project_id = %project.id,
+        branch = %refreshed.branch_name,
+        reviewable_commit_count,
+        created_pr = outcome.created_pr,
+        pr_number = outcome.pr_number,
+        elapsed_ms = publish_started.elapsed().as_millis(),
+        "Completed agent workspace publish"
+    );
 
     Ok(PublishAgentConversationWorkspaceResponse {
         workspace: AgentConversationWorkspaceResponse::from(refreshed),

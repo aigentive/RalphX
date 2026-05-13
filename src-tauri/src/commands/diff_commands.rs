@@ -12,7 +12,9 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 use tauri::State;
+use tracing::{info, warn};
 
 fn resolve_merge_base(repo: &Path, base: &str, target: &str) -> Result<String, String> {
     let output = Command::new(resolve_git_cli_path())
@@ -292,15 +294,38 @@ pub async fn get_agent_conversation_workspace_file_changes(
     app_state: State<'_, AppState>,
     conversation_id: String,
 ) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-    let working_path = ctx.working_path.to_string_lossy().to_string();
-    let diff_service = DiffService::new();
-    if let Some(target) = &ctx.diff_target {
-        diff_service.get_file_changes_between_refs(&working_path, &ctx.base_ref, target)
-    } else {
-        diff_service.get_worktree_file_changes_from_ref(&working_path, &ctx.base_ref)
+    let result: AppResult<Vec<FileChange>> = async {
+        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+        let working_path = ctx.working_path.to_string_lossy().to_string();
+        let diff_service = DiffService::new();
+        if let Some(target) = &ctx.diff_target {
+            diff_service.get_file_changes_between_refs(&working_path, &ctx.base_ref, target)
+        } else {
+            diff_service.get_worktree_file_changes_from_ref(&working_path, &ctx.base_ref)
+        }
     }
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded agent workspace file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace file changes"
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -309,15 +334,46 @@ pub async fn get_agent_conversation_workspace_file_diff(
     conversation_id: String,
     file_path: String,
 ) -> AppResult<FileDiff> {
+    let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-    let working_path = ctx.working_path.to_string_lossy().to_string();
-    let diff_service = DiffService::new();
-    if let Some(target) = &ctx.diff_target {
-        diff_service.get_file_diff_between_refs(&file_path, &working_path, &ctx.base_ref, target)
-    } else {
-        diff_service.get_file_diff(&file_path, &working_path, &ctx.base_ref)
+    let result: AppResult<FileDiff> = async {
+        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+        let working_path = ctx.working_path.to_string_lossy().to_string();
+        let diff_service = DiffService::new();
+        if let Some(target) = &ctx.diff_target {
+            diff_service.get_file_diff_between_refs(
+                &file_path,
+                &working_path,
+                &ctx.base_ref,
+                target,
+            )
+        } else {
+            diff_service.get_file_diff(&file_path, &working_path, &ctx.base_ref)
+        }
     }
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "file_diff",
+            conversation_id = %conversation_id,
+            file_path,
+            elapsed_ms = started.elapsed().as_millis(),
+            old_chars = diff.old_content.chars().count(),
+            new_chars = diff.new_content.chars().count(),
+            "Loaded agent workspace file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "file_diff",
+            conversation_id = %conversation_id,
+            file_path,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace file diff"
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -325,14 +381,37 @@ pub async fn get_agent_conversation_workspace_commits(
     app_state: State<'_, AppState>,
     conversation_id: String,
 ) -> AppResult<TaskCommitsResponse> {
+    let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-    let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
-    let commits =
-        GitService::get_commits_between(&ctx.working_path, &ctx.base_ref, head_ref).await?;
-    Ok(TaskCommitsResponse {
-        commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
-    })
+    let result: AppResult<TaskCommitsResponse> = async {
+        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+        let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
+        let commits =
+            GitService::get_commits_between(&ctx.working_path, &ctx.base_ref, head_ref).await?;
+        Ok(TaskCommitsResponse {
+            commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
+        })
+    }
+    .await;
+    match &result {
+        Ok(response) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "commits",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            commits = response.commits.len(),
+            "Loaded agent workspace commits"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "commits",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace commits"
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -341,21 +420,51 @@ pub async fn get_agent_conversation_workspace_commit_file_changes(
     conversation_id: String,
     commit_sha: String,
 ) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-    let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
-    ensure_agent_workspace_commit_in_range(&ctx.working_path, &ctx.base_ref, head_ref, &commit_sha)
-        .await?;
-    let working_path = ctx.working_path.to_string_lossy().to_string();
-    let diff_service = DiffService::new();
-    if diff_service.is_merge_commit(&working_path, &commit_sha) {
-        return diff_service.get_file_changes_between_refs(
-            &working_path,
+    let result: AppResult<Vec<FileChange>> = async {
+        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+        let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
+        ensure_agent_workspace_commit_in_range(
+            &ctx.working_path,
             &ctx.base_ref,
+            head_ref,
             &commit_sha,
-        );
+        )
+        .await?;
+        let working_path = ctx.working_path.to_string_lossy().to_string();
+        let diff_service = DiffService::new();
+        if diff_service.is_merge_commit(&working_path, &commit_sha) {
+            return diff_service.get_file_changes_between_refs(
+                &working_path,
+                &ctx.base_ref,
+                &commit_sha,
+            );
+        }
+        diff_service.get_commit_file_changes(&commit_sha, &working_path)
     }
-    diff_service.get_commit_file_changes(&commit_sha, &working_path)
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "commit_file_changes",
+            conversation_id = %conversation_id,
+            commit_sha,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded agent workspace commit file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "commit_file_changes",
+            conversation_id = %conversation_id,
+            commit_sha,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace commit file changes"
+        ),
+    }
+    result
 }
 
 #[tauri::command]
@@ -365,22 +474,55 @@ pub async fn get_agent_conversation_workspace_commit_file_diff(
     commit_sha: String,
     file_path: String,
 ) -> AppResult<FileDiff> {
+    let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-    let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
-    ensure_agent_workspace_commit_in_range(&ctx.working_path, &ctx.base_ref, head_ref, &commit_sha)
-        .await?;
-    let working_path = ctx.working_path.to_string_lossy().to_string();
-    let diff_service = DiffService::new();
-    if diff_service.is_merge_commit(&working_path, &commit_sha) {
-        return diff_service.get_file_diff_between_refs(
-            &file_path,
-            &working_path,
+    let result: AppResult<FileDiff> = async {
+        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+        let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
+        ensure_agent_workspace_commit_in_range(
+            &ctx.working_path,
             &ctx.base_ref,
+            head_ref,
             &commit_sha,
-        );
+        )
+        .await?;
+        let working_path = ctx.working_path.to_string_lossy().to_string();
+        let diff_service = DiffService::new();
+        if diff_service.is_merge_commit(&working_path, &commit_sha) {
+            return diff_service.get_file_diff_between_refs(
+                &file_path,
+                &working_path,
+                &ctx.base_ref,
+                &commit_sha,
+            );
+        }
+        diff_service.get_commit_file_diff(&commit_sha, &file_path, &working_path)
     }
-    diff_service.get_commit_file_diff(&commit_sha, &file_path, &working_path)
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "commit_file_diff",
+            conversation_id = %conversation_id,
+            commit_sha,
+            file_path,
+            elapsed_ms = started.elapsed().as_millis(),
+            old_chars = diff.old_content.chars().count(),
+            new_chars = diff.new_content.chars().count(),
+            "Loaded agent workspace commit file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "commit_file_diff",
+            conversation_id = %conversation_id,
+            commit_sha,
+            file_path,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace commit file diff"
+        ),
+    }
+    result
 }
 
 /// Get files changed in a specific commit

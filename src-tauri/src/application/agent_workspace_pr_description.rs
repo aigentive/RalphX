@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::application::git_service::git_cmd;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
@@ -10,6 +11,7 @@ use crate::domain::entities::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
+use tracing::info;
 
 pub const DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE: &str =
     include_str!("../../../.github/PULL_REQUEST_TEMPLATE.md");
@@ -56,47 +58,77 @@ pub async fn draft_agent_workspace_pr_description(
     workspace_path: &Path,
     review_base: &str,
 ) -> AppResult<AgentWorkspacePrDescription> {
+    let total_started = Instant::now();
     state
         .agent_conversation_workspace_repo
         .clear_pr_description(&workspace.conversation_id)
         .await?;
 
-    let template = read_pull_request_template_context(project, workspace_path).await;
-    let diff_stats =
-        GitService::get_diff_stats_between(workspace_path, review_base, "HEAD").await?;
-    let commits = GitService::get_commits_between(workspace_path, review_base, "HEAD").await?;
-    let name_status = run_git_text(
+    let context_started = Instant::now();
+    let review_range = format!("{review_base}..HEAD");
+    let template_fut = async {
+        Ok::<_, AppError>(read_pull_request_template_context(project, workspace_path).await)
+    };
+    let diff_stats_fut = GitService::get_diff_stats_between(workspace_path, review_base, "HEAD");
+    let commits_fut = GitService::get_commits_between(workspace_path, review_base, "HEAD");
+    let name_status_fut = run_git_text_owned(
         workspace_path,
-        &[
-            "diff",
-            "--find-renames",
-            "--name-status",
-            &format!("{review_base}..HEAD"),
+        vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--name-status".to_string(),
+            review_range.clone(),
         ],
-    )
-    .await?;
-    let diff_stat = run_git_text(
+    );
+    let diff_stat_fut = run_git_text_owned(
         workspace_path,
-        &[
-            "diff",
-            "--find-renames",
-            "--stat",
-            &format!("{review_base}..HEAD"),
+        vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--stat".to_string(),
+            review_range.clone(),
         ],
-    )
-    .await?;
-    let patch_excerpt = run_git_text(
+    );
+    let patch_excerpt_fut = run_git_text_owned(
         workspace_path,
-        &[
-            "diff",
-            "--find-renames",
-            "--minimal",
-            "--no-ext-diff",
-            &format!("{review_base}..HEAD"),
+        vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--minimal".to_string(),
+            "--no-ext-diff".to_string(),
+            review_range,
         ],
-    )
-    .await?;
-    let conversation_context = build_conversation_context(state, conversation).await?;
+    );
+    let conversation_context_fut = build_conversation_context(state, conversation);
+    let (
+        template,
+        diff_stats,
+        commits,
+        name_status,
+        diff_stat,
+        patch_excerpt,
+        conversation_context,
+    ) = tokio::try_join!(
+        template_fut,
+        diff_stats_fut,
+        commits_fut,
+        name_status_fut,
+        diff_stat_fut,
+        patch_excerpt_fut,
+        conversation_context_fut
+    )?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        review_base,
+        elapsed_ms = context_started.elapsed().as_millis(),
+        commits = commits.len(),
+        files_changed = diff_stats.files_changed,
+        patch_excerpt_chars = patch_excerpt.chars().count(),
+        "Collected agent workspace PR description context"
+    );
     let prompt = build_pr_describer_prompt(PrDescriberPromptContext {
         conversation,
         project,
@@ -122,6 +154,7 @@ pub async fn draft_agent_workspace_pr_description(
     );
     ensure_pr_describer_submit_tool_available(helper_harness, &bootstrap.plugin_dir)?;
 
+    let spawn_started = Instant::now();
     let output = agent_client
         .spawn_agent(AgentConfig {
             role: AgentRole::Custom(bootstrap.agent_role.clone()),
@@ -142,11 +175,31 @@ pub async fn draft_agent_workspace_pr_description(
         .map_err(|error| {
             AppError::Infrastructure(format!("failed to spawn PR describer agent: {error}"))
         })?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        harness = %helper_harness,
+        elapsed_ms = spawn_started.elapsed().as_millis(),
+        "Spawned agent workspace PR describer helper"
+    );
 
+    let wait_started = Instant::now();
     let output = agent_client
         .wait_for_completion(&output)
         .await
         .map_err(|error| AppError::Infrastructure(format!("PR describer agent failed: {error}")))?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        harness = %helper_harness,
+        elapsed_ms = wait_started.elapsed().as_millis(),
+        success = output.success,
+        "Agent workspace PR describer helper completed"
+    );
     if !output.success {
         return Err(AppError::Infrastructure(format!(
             "PR describer agent exited unsuccessfully: {}",
@@ -163,6 +216,17 @@ pub async fn draft_agent_workspace_pr_description(
     };
 
     validate_agent_workspace_pr_description_body(&description.body_markdown)?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        review_base,
+        elapsed_ms = total_started.elapsed().as_millis(),
+        body_chars = description.body_markdown.chars().count(),
+        has_title = description.title.is_some(),
+        "Drafted agent workspace PR description"
+    );
     Ok(AgentWorkspacePrDescription::new(
         description.title,
         description.body_markdown,
@@ -335,6 +399,11 @@ async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn run_git_text_owned(repo: &Path, args: Vec<String>) -> AppResult<String> {
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git_text(repo, &arg_refs).await
 }
 
 async fn build_conversation_context(
