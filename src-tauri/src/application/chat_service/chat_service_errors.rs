@@ -367,13 +367,11 @@ impl StreamError {
     /// Whether this error requires clearing the stored Claude session ID.
     ///
     /// SessionNotFound means the session is stale and must be cleared.
-    /// Timeout/ParseStall may indicate a stuck session that should be reset.
+    /// Timeout/ParseStall are idle-based stalls — the session itself is still
+    /// valid and can be resumed, so clearing it would destroy continuity.
     /// ProviderError does NOT require session clear — session is still valid.
     pub fn requires_session_clear(&self) -> bool {
-        matches!(
-            self,
-            Self::SessionNotFound { .. } | Self::Timeout { .. } | Self::ParseStall { .. }
-        )
+        matches!(self, Self::SessionNotFound { .. })
     }
 
     /// The suggested task status to transition to after this error.

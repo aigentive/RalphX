@@ -1132,9 +1132,10 @@ pub async fn process_stream_background<R: Runtime>(
     let mut lines_parsed: usize = 0;
     let mut stream_seq: u64 = 0;
     let mut last_parsed_at = std::time::Instant::now();
-    // Wall-clock cap: hard kill after max_wall_clock_secs regardless of PID state
+    // Activity-aware idle cap: kill after max_wall_clock_secs of no meaningful activity
     let stream_start = std::time::Instant::now();
     let max_wall_clock = std::time::Duration::from_secs(stream_cfg.max_wall_clock_secs);
+    let mut last_activity_at = std::time::Instant::now();
     let completion_grace_duration =
         std::time::Duration::from_secs(stream_cfg.completion_grace_secs);
 
@@ -1198,6 +1199,13 @@ pub async fn process_stream_background<R: Runtime>(
                     &chat_message_repo, &assistant_message_id,
                     &processor.response_text, &processor.tool_calls, &processor.content_blocks,
                 ).await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &processor.content_blocks,
+                    ChatTimelineItemStatus::Error,
+                ).await;
                 return Err(StreamError::Cancelled {
                     turns_finalized,
                     completion_tool_called: completion_signal_tracker.was_called(),
@@ -1253,7 +1261,7 @@ pub async fn process_stream_background<R: Runtime>(
                             .is_in_grace_period(completion_grace_duration);
 
                         if should_kill_on_timeout(
-                            stream_start.elapsed(),
+                            last_activity_at.elapsed(),
                             max_wall_clock,
                             has_pending_question,
                             between_interactive_turns,
@@ -1262,11 +1270,12 @@ pub async fn process_stream_background<R: Runtime>(
                             active_task_tracker.has_active_tasks(),
                             is_completion_grace_period,
                         ) {
-                            if stream_start.elapsed() > max_wall_clock {
+                            if last_activity_at.elapsed() > max_wall_clock {
                                 tracing::warn!(
                                     conversation_id = %conversation_id_str,
-                                    elapsed_secs = stream_start.elapsed().as_secs(),
-                                    "Wall-clock cap reached — killing agent"
+                                    idle_secs = last_activity_at.elapsed().as_secs(),
+                                    total_secs = stream_start.elapsed().as_secs(),
+                                    "Idle cap reached — killing agent"
                                 );
                             }
                             tracing::warn!(
@@ -1288,6 +1297,13 @@ pub async fn process_stream_background<R: Runtime>(
                             flush_content_before_error(
                                 &chat_message_repo, &assistant_message_id,
                                 &processor.response_text, &processor.tool_calls, &processor.content_blocks,
+                            ).await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Error,
                             ).await;
                             return Err(StreamError::Timeout {
                                 context_type,
@@ -1390,6 +1406,7 @@ pub async fn process_stream_background<R: Runtime>(
         if let Some(parsed) = StreamProcessor::parse_line(&line) {
             lines_parsed += 1;
             last_parsed_at = std::time::Instant::now();
+            last_activity_at = std::time::Instant::now();
 
             // [STREAM_MSG] Log parsed message variant
             tracing::debug!(
@@ -2523,7 +2540,7 @@ pub async fn process_stream_background<R: Runtime>(
                 completion_signal_tracker.is_in_grace_period(completion_grace_duration);
 
             if should_kill_on_timeout(
-                stream_start.elapsed(),
+                last_activity_at.elapsed(),
                 max_wall_clock,
                 has_pending_question,
                 false, // parse stall path has no interactive_turns bypass
@@ -2532,11 +2549,12 @@ pub async fn process_stream_background<R: Runtime>(
                 active_task_tracker.has_active_tasks(),
                 is_completion_grace_period,
             ) {
-                if stream_start.elapsed() > max_wall_clock {
+                if last_activity_at.elapsed() > max_wall_clock {
                     tracing::warn!(
                         conversation_id = %conversation_id_str,
-                        elapsed_secs = stream_start.elapsed().as_secs(),
-                        "Wall-clock cap reached in parse stall path — killing agent"
+                        idle_secs = last_activity_at.elapsed().as_secs(),
+                        total_secs = stream_start.elapsed().as_secs(),
+                        "Idle cap reached in parse stall path — killing agent"
                     );
                 } else {
                     tracing::warn!(
@@ -2562,6 +2580,14 @@ pub async fn process_stream_background<R: Runtime>(
                     &processor.response_text,
                     &processor.tool_calls,
                     &processor.content_blocks,
+                )
+                .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &processor.content_blocks,
+                    ChatTimelineItemStatus::Error,
                 )
                 .await;
                 return Err(StreamError::ParseStall {
@@ -3044,8 +3070,8 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut lines_parsed = 0usize;
     let mut stream_seq = 0u64;
     let mut last_parsed_at = std::time::Instant::now();
-    let stream_start = std::time::Instant::now();
     let max_wall_clock = std::time::Duration::from_secs(stream_timeouts().max_wall_clock_secs);
+    let mut last_activity_at = std::time::Instant::now();
     let mut last_flush = std::time::Instant::now();
     const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
     let mut completion_signal_tracker = CompletionSignalTracker::default();
@@ -3098,7 +3124,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         };
 
                         if should_kill_on_timeout(
-                            stream_start.elapsed(),
+                            last_activity_at.elapsed(),
                             max_wall_clock,
                             has_pending_question,
                             false,
@@ -3131,6 +3157,7 @@ async fn process_codex_stream_background<R: Runtime>(
         if let Some(event) = parse_codex_event_line(&line) {
             lines_parsed += 1;
             last_parsed_at = std::time::Instant::now();
+            last_activity_at = std::time::Instant::now();
 
             if let Some(thread_id) = extract_codex_thread_id(&event) {
                 session_id = Some(thread_id.clone());
@@ -3508,15 +3535,20 @@ async fn process_codex_stream_background<R: Runtime>(
 ///
 /// Returns `true` = kill (terminate with error), `false` = reset timeout and continue.
 /// Ordering mirrors the actual `Err(_)` branch in `process_stream_background`:
-/// wall-clock → question_state → interactive_turns → PID-alive → active_tasks
+/// idle-cap → question_state → interactive_turns → PID-alive → active_tasks
 /// → completion_grace → kill
+///
+/// `idle_elapsed` is the duration since the last meaningful activity (parsed
+/// stream event, tool call, interactive turn, or stdin message). Using
+/// idle-based timing instead of absolute process age ensures long-running
+/// interactive/IPR agents are not killed while they are actively working.
 ///
 /// This pure function is extracted for unit testability. Side effects (tracing,
 /// heartbeat emission) remain in the calling code.
 #[doc(hidden)]
 pub fn should_kill_on_timeout(
-    wall_clock_elapsed: std::time::Duration,
-    max_wall_clock: std::time::Duration,
+    idle_elapsed: std::time::Duration,
+    max_idle: std::time::Duration,
     has_pending_question: bool,
     is_interactive_turn: bool,
     pid_alive: bool,
@@ -3524,8 +3556,8 @@ pub fn should_kill_on_timeout(
     has_active_tasks: bool,
     is_completion_grace_period: bool,
 ) -> bool {
-    // 1. Wall-clock cap overrides everything
-    if wall_clock_elapsed > max_wall_clock {
+    // 1. Idle cap: kill only when the agent has been idle longer than max_idle
+    if idle_elapsed > max_idle {
         return true;
     }
     // 2. Pending question bypass (existing)

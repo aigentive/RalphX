@@ -139,10 +139,21 @@ fn test_stream_error_is_retryable() {
 
 #[test]
 fn test_stream_error_requires_session_clear() {
-    let should_clear = vec![
-        StreamError::SessionNotFound {
-            session_id: "abc".to_string(),
-        },
+    let should_clear = vec![StreamError::SessionNotFound {
+        session_id: "abc".to_string(),
+    }];
+
+    for err in &should_clear {
+        assert!(
+            err.requires_session_clear(),
+            "{} should require session clear",
+            err
+        );
+    }
+
+    // Timeout and ParseStall are idle-based stalls — the provider session is
+    // still valid and can be resumed. Clearing it would destroy continuity.
+    let should_not_clear = vec![
         StreamError::Timeout {
             context_type: ChatContextType::TaskExecution,
             elapsed_secs: 600,
@@ -153,17 +164,6 @@ fn test_stream_error_requires_session_clear() {
             lines_seen: 50,
             lines_parsed: 0,
         },
-    ];
-
-    for err in &should_clear {
-        assert!(
-            err.requires_session_clear(),
-            "{} should require session clear",
-            err
-        );
-    }
-
-    let should_not_clear = vec![
         StreamError::AgentExit {
             exit_code: Some(1),
             stderr: "error".to_string(),

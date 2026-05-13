@@ -20,8 +20,8 @@ fn dur(secs: u64) -> Duration {
 #[test]
 fn test_pid_alive_resets_timeout() {
     assert!(!should_kill_on_timeout(
-        dur(601),  // elapsed > line_read_timeout (600s) but within wall-clock
-        dur(1800), // max_wall_clock
+        dur(601),  // idle > line_read_timeout (600s) but within max_idle
+        dur(1800), // max_idle
         false,     // no pending question
         false,     // not interactive turn
         true,      // pid_alive
@@ -46,11 +46,11 @@ fn test_dead_process_killed() {
     ));
 }
 
-/// 3. Wall-clock exceeded AND pid alive → still kill (wall-clock overrides everything)
+/// 3. Idle cap exceeded AND pid alive → still kill (idle cap overrides everything)
 #[test]
-fn test_wall_clock_overrides_pid_alive() {
+fn test_idle_cap_overrides_pid_alive() {
     assert!(should_kill_on_timeout(
-        dur(1801), // elapsed > max_wall_clock
+        dur(1801), // idle > max_idle
         dur(1800),
         false, // no pending question
         false, // not interactive turn
@@ -107,11 +107,11 @@ fn test_pending_question_bypass() {
     ));
 }
 
-/// 7. Wall-clock exceeded AND pending question → kill (wall-clock wins)
+/// 7. Idle cap exceeded AND pending question → kill (idle cap wins)
 #[test]
-fn test_wall_clock_overrides_question() {
+fn test_idle_cap_overrides_question() {
     assert!(should_kill_on_timeout(
-        dur(1801), // exceeds wall-clock
+        dur(1801), // exceeds max_idle
         dur(1800),
         true,  // has_pending_question — would bypass normally
         false, // not interactive turn
@@ -127,8 +127,8 @@ fn test_wall_clock_overrides_question() {
 #[test]
 fn test_parse_stall_pid_alive_resets() {
     assert!(!should_kill_on_timeout(
-        dur(181),  // elapsed > parse_stall_timeout (180s) but within wall-clock
-        dur(1800), // max_wall_clock
+        dur(181),  // idle > parse_stall_timeout (180s) but within max_idle
+        dur(1800), // max_idle
         false,     // no pending question
         false,     // parse stall path passes false for is_interactive_turn
         true,      // pid_alive
@@ -153,7 +153,7 @@ fn test_completion_grace_bypasses_timeout() {
 }
 
 #[test]
-fn test_wall_clock_overrides_completion_grace() {
+fn test_idle_cap_overrides_completion_grace() {
     assert!(should_kill_on_timeout(
         dur(1801),
         dur(1800),
@@ -181,6 +181,70 @@ fn test_completion_tracker_grace_expires_and_timeout_kills() {
         true,
         false,
         tracker.is_in_grace_period(dur(30)),
+    ));
+}
+
+/// Activity-aware idle cap: recent activity (idle=5min) keeps a running agent alive.
+/// Under the old absolute wall-clock, a 3600s-old process would be killed even with
+/// recent output. Now only idle time matters.
+#[test]
+fn test_recent_activity_prevents_kill_running_process() {
+    assert!(!should_kill_on_timeout(
+        dur(300),  // idle only 5 minutes (recent activity)
+        dur(1800), // max_idle = 30 minutes
+        false,
+        false,
+        true,  // pid_alive — process is still running
+        false, // child NOT exited
+        false,
+        false,
+    ));
+}
+
+/// Activity-aware idle cap: no activity for longer than max_idle kills the agent.
+#[test]
+fn test_long_idle_kills_agent() {
+    assert!(should_kill_on_timeout(
+        dur(1801), // idle > max_idle
+        dur(1800),
+        false,
+        false,
+        true,  // even with pid alive
+        false,
+        false,
+        false,
+    ));
+}
+
+/// Active tasks bypass even when idle exceeds line_read_timeout.
+/// idle_elapsed is under max_idle so the idle cap doesn't fire,
+/// and active_tasks bypass prevents the default kill.
+#[test]
+fn test_active_tasks_bypass_idle_timeout() {
+    assert!(!should_kill_on_timeout(
+        dur(700),  // idle 11+ minutes — above line_read_timeout but under max_idle
+        dur(1800),
+        false,
+        false,
+        false,
+        true,
+        true, // has_active_tasks
+        false,
+    ));
+}
+
+/// Dead process with recent idle still gets killed (no point keeping a dead process).
+#[test]
+fn test_dead_process_killed_despite_short_idle() {
+    assert!(should_kill_on_timeout(
+        dur(300),  // idle only 5 minutes
+        dur(1800),
+        false,
+        false,
+        false, // pid NOT alive
+        true,  // child exited
+        false,
+        false,
     ));
 }
 
