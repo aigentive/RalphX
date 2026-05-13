@@ -115,6 +115,47 @@ async fn test_set_active_project_skips_when_project_is_already_active() {
     assert_eq!(active_project_state.get().await, Some(project.id));
 }
 
+#[tokio::test]
+async fn test_set_active_project_persists_when_project_changes() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Changed Project".into(),
+            "/tmp/changed-project".into(),
+        ))
+        .await
+        .unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(execution_state)
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    set_active_project(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("new active project should be persisted");
+
+    assert_eq!(active_project_state.get().await, Some(project.id.clone()));
+    let persisted = app
+        .state::<AppState>()
+        .app_state_repo
+        .get()
+        .await
+        .unwrap()
+        .active_project_id;
+    assert_eq!(persisted, Some(project.id));
+}
+
 #[test]
 fn test_execution_state_set_max_concurrent() {
     let state = ExecutionState::new();
