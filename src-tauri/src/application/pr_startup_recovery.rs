@@ -8,7 +8,7 @@
 //! BEFORE `StartupJobRunner::run()` to ensure pollers exist before the reconciler
 //! can re-enter PR-mode entry actions for waiting-on-PR tasks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -66,6 +66,8 @@ struct PrCreationRecoveryProjectResult {
     missing_pr_repairs: usize,
     pending_push_syncs: usize,
     candidate_load_elapsed_ms: u64,
+    project_task_load_elapsed_ms: u64,
+    project_tasks_seen: usize,
     merge_task_read_elapsed_ms: u64,
     needs_recovery_elapsed_ms: u64,
     review_state_elapsed_ms: u64,
@@ -85,6 +87,8 @@ impl PrCreationRecoveryProjectResult {
         self.missing_pr_repairs += other.missing_pr_repairs;
         self.pending_push_syncs += other.pending_push_syncs;
         self.candidate_load_elapsed_ms += other.candidate_load_elapsed_ms;
+        self.project_task_load_elapsed_ms += other.project_task_load_elapsed_ms;
+        self.project_tasks_seen += other.project_tasks_seen;
         self.merge_task_read_elapsed_ms += other.merge_task_read_elapsed_ms;
         self.needs_recovery_elapsed_ms += other.needs_recovery_elapsed_ms;
         self.review_state_elapsed_ms += other.review_state_elapsed_ms;
@@ -94,6 +98,59 @@ impl PrCreationRecoveryProjectResult {
         self.slow_candidates += other.slow_candidates;
         self.metadata_refresh_jobs
             .extend(other.metadata_refresh_jobs);
+    }
+}
+
+struct ProjectPrRecoveryTaskSnapshot {
+    by_id: HashMap<String, Task>,
+    merged_regular_plan_keys: HashSet<(String, String)>,
+    task_count: usize,
+}
+
+impl ProjectPrRecoveryTaskSnapshot {
+    fn from_tasks(tasks: Vec<Task>) -> Self {
+        let task_count = tasks.len();
+        let mut by_id = HashMap::with_capacity(task_count);
+        let mut merged_regular_plan_keys = HashSet::new();
+
+        for task in tasks {
+            if task.category == TaskCategory::Regular
+                && task.internal_status == InternalStatus::Merged
+                && task.archived_at.is_none()
+            {
+                if let (Some(session_id), Some(execution_plan_id)) =
+                    (&task.ideation_session_id, &task.execution_plan_id)
+                {
+                    merged_regular_plan_keys.insert((
+                        session_id.as_str().to_string(),
+                        execution_plan_id.as_str().to_string(),
+                    ));
+                }
+            }
+
+            by_id.insert(task.id.as_str().to_string(), task);
+        }
+
+        Self {
+            by_id,
+            merged_regular_plan_keys,
+            task_count,
+        }
+    }
+
+    fn get_task(&self, task_id: &TaskId) -> Option<&Task> {
+        self.by_id.get(task_id.as_str())
+    }
+
+    fn has_merged_regular_plan_task(
+        &self,
+        session_id: &crate::domain::entities::IdeationSessionId,
+        execution_plan_id: &ExecutionPlanId,
+    ) -> bool {
+        self.merged_regular_plan_keys.contains(&(
+            session_id.as_str().to_string(),
+            execution_plan_id.as_str().to_string(),
+        ))
     }
 }
 
@@ -374,6 +431,8 @@ pub async fn recover_missing_draft_prs(
         pending_push_syncs = totals.pending_push_syncs,
         metadata_refresh_jobs = totals.metadata_refresh_jobs.len(),
         candidate_load_elapsed_ms = totals.candidate_load_elapsed_ms,
+        project_task_load_elapsed_ms = totals.project_task_load_elapsed_ms,
+        project_tasks_seen = totals.project_tasks_seen,
         merge_task_read_elapsed_ms = totals.merge_task_read_elapsed_ms,
         needs_recovery_elapsed_ms = totals.needs_recovery_elapsed_ms,
         review_state_elapsed_ms = totals.review_state_elapsed_ms,
@@ -446,6 +505,26 @@ async fn recover_missing_draft_prs_for_project(
     };
     result.candidate_load_elapsed_ms += elapsed_ms_u64(candidate_load_started_at);
 
+    if plan_branches.is_empty() {
+        return result;
+    }
+
+    let project_task_load_started_at = Instant::now();
+    let task_snapshot = match task_repo.get_by_project(&project.id).await {
+        Ok(tasks) => ProjectPrRecoveryTaskSnapshot::from_tasks(tasks),
+        Err(e) => {
+            result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                error = %e,
+                "PR startup recovery: failed to load project task snapshot"
+            );
+            return result;
+        }
+    };
+    result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
+    result.project_tasks_seen += task_snapshot.task_count;
+
     for plan_branch in plan_branches {
         let candidate_started_at = Instant::now();
         result.plan_branches_seen += 1;
@@ -459,53 +538,32 @@ async fn recover_missing_draft_prs_for_project(
         };
 
         let merge_task_read_started_at = Instant::now();
-        let merge_task = match task_repo.get_by_id(merge_task_id).await {
-            Ok(Some(task)) => task,
-            Ok(None) => {
-                result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
-                tracing::debug!(
-                    branch_id = plan_branch.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    merge_task_id = merge_task_id.as_str(),
-                    "PR startup recovery: merge task not found for PR-eligible plan branch"
-                );
-                record_slow_pr_recovery_candidate(
-                    &mut result,
-                    &project,
-                    &plan_branch,
-                    candidate_started_at,
-                    "merge_task_missing",
-                );
-                continue;
-            }
-            Err(e) => {
-                result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
-                tracing::warn!(
-                    branch_id = plan_branch.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    merge_task_id = merge_task_id.as_str(),
-                    error = %e,
-                    "PR startup recovery: failed to load merge task for PR-eligible plan branch"
-                );
-                record_slow_pr_recovery_candidate(
-                    &mut result,
-                    &project,
-                    &plan_branch,
-                    candidate_started_at,
-                    "merge_task_read_failed",
-                );
-                continue;
-            }
+        let Some(merge_task) = task_snapshot.get_task(merge_task_id) else {
+            result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
+            tracing::debug!(
+                branch_id = plan_branch.id.as_str(),
+                branch = %plan_branch.branch_name,
+                merge_task_id = merge_task_id.as_str(),
+                "PR startup recovery: merge task not found for PR-eligible plan branch"
+            );
+            record_slow_pr_recovery_candidate(
+                &mut result,
+                &project,
+                &plan_branch,
+                candidate_started_at,
+                "merge_task_missing",
+            );
+            continue;
         };
         result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
 
         let needs_recovery_started_at = Instant::now();
         if !plan_branch_needs_pr_recovery(
-            &task_repo,
             &execution_plan_repo,
+            &task_snapshot,
             &project,
             &plan_branch,
-            &merge_task,
+            merge_task,
         )
         .await
         {
@@ -523,7 +581,7 @@ async fn recover_missing_draft_prs_for_project(
 
         let review_state_started_at = Instant::now();
         let review_state =
-            if plan_regular_tasks_complete(&merge_task, &plan_branch, Some(&task_repo)).await {
+            if plan_regular_tasks_complete(merge_task, &plan_branch, Some(&task_repo)).await {
                 PrReviewState::Ready
             } else {
                 PrReviewState::Draft
@@ -565,7 +623,7 @@ async fn recover_missing_draft_prs_for_project(
                 elapsed_ms_u64(refresh_lookup_started_at);
             result.metadata_refresh_jobs.push(PrMetadataRefreshJob {
                 project: project.clone(),
-                merge_task: merge_task.clone(),
+                merge_task: (*merge_task).clone(),
                 plan_branch: refreshed_plan_branch,
                 review_state,
             });
@@ -628,7 +686,7 @@ async fn recover_missing_draft_prs_for_project(
 
         let create_pr_started_at = Instant::now();
         create_draft_pr_if_needed(
-            &merge_task,
+            merge_task,
             &project,
             &plan_branch,
             &pr_creation_guard,
@@ -645,7 +703,7 @@ async fn recover_missing_draft_prs_for_project(
                 result.missing_pr_repairs += 1;
                 result.metadata_refresh_jobs.push(PrMetadataRefreshJob {
                     project: project.clone(),
-                    merge_task: merge_task.clone(),
+                    merge_task: (*merge_task).clone(),
                     plan_branch: refreshed_plan_branch,
                     review_state,
                 });
@@ -782,8 +840,8 @@ async fn refresh_existing_pr_metadata(
 }
 
 async fn plan_branch_needs_pr_recovery(
-    task_repo: &Arc<dyn TaskRepository>,
     execution_plan_repo: &Arc<dyn ExecutionPlanRepository>,
+    task_snapshot: &ProjectPrRecoveryTaskSnapshot,
     project: &Project,
     plan_branch: &PlanBranch,
     merge_task: &Task,
@@ -835,38 +893,19 @@ async fn plan_branch_needs_pr_recovery(
         return false;
     };
 
-    match task_repo.get_by_project_filtered(&project.id, false).await {
-        Ok(tasks) => {
-            let has_merged_plan_task = tasks.iter().any(|task| {
-                task.category == TaskCategory::Regular
-                    && task.internal_status == InternalStatus::Merged
-                    && task.archived_at.is_none()
-                    && task.ideation_session_id.as_ref() == Some(&plan_branch.session_id)
-                    && task.execution_plan_id.as_ref() == Some(&execution_plan_id)
-            });
+    let has_merged_plan_task =
+        task_snapshot.has_merged_regular_plan_task(&plan_branch.session_id, &execution_plan_id);
 
-            if !has_merged_plan_task {
-                tracing::debug!(
-                    branch_id = plan_branch.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    execution_plan_id = execution_plan_id.as_str(),
-                    "PR startup recovery: skipping active plan branch with no merged regular task"
-                );
-            }
-
-            has_merged_plan_task
-        }
-        Err(e) => {
-            tracing::warn!(
-                branch_id = plan_branch.id.as_str(),
-                branch = %plan_branch.branch_name,
-                execution_plan_id = execution_plan_id.as_str(),
-                error = %e,
-                "PR startup recovery: failed to inspect plan tasks"
-            );
-            false
-        }
+    if !has_merged_plan_task {
+        tracing::debug!(
+            branch_id = plan_branch.id.as_str(),
+            branch = %plan_branch.branch_name,
+            execution_plan_id = execution_plan_id.as_str(),
+            "PR startup recovery: skipping active plan branch with no merged regular task"
+        );
     }
+
+    has_merged_plan_task
 }
 
 async fn active_execution_plan_id_for_branch(

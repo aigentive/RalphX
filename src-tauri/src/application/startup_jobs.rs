@@ -1933,9 +1933,15 @@ impl<R: Runtime> StartupJobRunner<R> {
             deferred_merge_cleanup, has_pending_cleanup_metadata,
         };
 
+        let started_at = Instant::now();
+        let mut merged_tasks_seen = 0usize;
+        let mut pending_cleanup_tasks = 0usize;
+        let mut task_scan_elapsed_ms = 0u128;
+        let mut plan_branch_lookup_elapsed_ms = 0u128;
         let mut resumed = 0u32;
 
         for project in projects {
+            let task_scan_started_at = Instant::now();
             let merged_tasks = match self
                 .task_repo
                 .get_by_status(&project.id, InternalStatus::Merged)
@@ -1943,6 +1949,7 @@ impl<R: Runtime> StartupJobRunner<R> {
             {
                 Ok(tasks) => tasks,
                 Err(e) => {
+                    task_scan_elapsed_ms += task_scan_started_at.elapsed().as_millis();
                     tracing::warn!(
                         error = %e,
                         project_id = project.id.as_str(),
@@ -1951,11 +1958,14 @@ impl<R: Runtime> StartupJobRunner<R> {
                     continue;
                 }
             };
+            task_scan_elapsed_ms += task_scan_started_at.elapsed().as_millis();
+            merged_tasks_seen += merged_tasks.len();
 
             for task in merged_tasks {
                 if !has_pending_cleanup_metadata(&task) {
                     continue;
                 }
+                pending_cleanup_tasks += 1;
 
                 info!(
                     task_id = task.id.as_str(),
@@ -1971,6 +1981,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                 let task_branch = task.task_branch.clone();
                 let worktree_path = task.worktree_path.clone();
                 // Resolve plan branch for ancestor guard
+                let plan_branch_lookup_started_at = Instant::now();
                 let plan_branch = if let (Some(ref exec_plan_id), Some(ref pb_repo)) =
                     (&task.execution_plan_id, &self.plan_branch_repo)
                 {
@@ -1983,6 +1994,8 @@ impl<R: Runtime> StartupJobRunner<R> {
                 } else {
                     None
                 };
+                plan_branch_lookup_elapsed_ms +=
+                    plan_branch_lookup_started_at.elapsed().as_millis();
                 tokio::spawn(async move {
                     deferred_merge_cleanup(
                         task_id,
@@ -1999,11 +2012,16 @@ impl<R: Runtime> StartupJobRunner<R> {
             }
         }
 
-        if resumed > 0 {
-            info!(count = resumed, "Phase 0.5: Resumed deferred cleanup tasks");
-        } else {
-            debug!("Phase 0.5: No pending cleanup tasks found");
-        }
+        info!(
+            projects_seen = projects.len(),
+            merged_tasks_seen,
+            pending_cleanup_tasks,
+            cleanup_jobs_spawned = resumed,
+            task_scan_elapsed_ms,
+            plan_branch_lookup_elapsed_ms,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "Phase 0.5: Pending cleanup startup scan completed"
+        );
     }
 
     /// Repair task worktree paths for non-merge statuses on startup.

@@ -194,27 +194,29 @@ impl<R: Runtime> TaskSchedulerService<R> {
         let projects_elapsed_ms = projects_started_at.elapsed().as_millis();
 
         let mut deferred_tasks: Vec<Task> = Vec::new();
-        let mut tasks_scanned = 0usize;
+        let mut pending_merge_tasks_seen = 0usize;
         let task_scan_started_at = std::time::Instant::now();
 
         for project in &projects {
-            let tasks = match self.task_repo.get_by_project(&project.id).await {
+            let tasks = match self
+                .task_repo
+                .get_by_status(&project.id, InternalStatus::PendingMerge)
+                .await
+            {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         project_id = project.id.as_str(),
-                        "Failed to fetch tasks for main merge retry"
+                        "Failed to fetch PendingMerge tasks for main merge retry"
                     );
                     continue;
                 }
             };
-            tasks_scanned += tasks.len();
+            pending_merge_tasks_seen += tasks.len();
 
             for task in tasks {
-                if task.internal_status == InternalStatus::PendingMerge
-                    && has_main_merge_deferred_metadata(&task)
-                {
+                if has_main_merge_deferred_metadata(&task) {
                     deferred_tasks.push(task);
                 }
             }
@@ -226,7 +228,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
         if deferred_count == 0 {
             tracing::info!(
                 projects_seen = projects.len(),
-                tasks_scanned,
+                pending_merge_tasks_seen,
                 deferred_count,
                 projects_elapsed_ms,
                 task_scan_elapsed_ms,
@@ -406,7 +408,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
 
         tracing::info!(
             projects_seen = projects.len(),
-            tasks_scanned,
+            pending_merge_tasks_seen,
             deferred_count,
             skipped_sibling_guard,
             retry_attempted,
