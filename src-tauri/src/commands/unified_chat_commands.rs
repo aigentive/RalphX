@@ -27,6 +27,7 @@ use tauri::{Emitter, Runtime, State};
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
     prepare_agent_conversation_workspace_with_setup_mode,
+    resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceSetupMode,
 };
@@ -554,6 +555,7 @@ pub struct PrecomputeAgentConversationWorkspacePrDescriptionResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentConversationWorkspaceFreshnessResponse {
     pub conversation_id: String,
+    pub freshness_scope: String,
     pub base_ref: String,
     pub base_display_name: Option<String>,
     pub target_ref: String,
@@ -562,21 +564,56 @@ pub struct AgentConversationWorkspaceFreshnessResponse {
     pub is_base_ahead: bool,
     pub has_uncommitted_changes: bool,
     pub unpublished_commit_count: Option<u32>,
+    pub remote_refreshed: bool,
+    pub worktree_status_checked: bool,
     pub base_status: String,
     pub effective_base_ref: Option<String>,
     pub effective_base_display_name: Option<String>,
     pub base_block_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum AgentWorkspaceFreshnessScope {
+    Local,
+    Full,
+}
+
+impl AgentWorkspaceFreshnessScope {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("full")
+        {
+            "local" => Ok(Self::Local),
+            "full" => Ok(Self::Full),
+            other => Err(format!(
+                "Unsupported agent workspace freshness scope '{}'",
+                other
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Full => "full",
+        }
+    }
+}
+
 impl AgentConversationWorkspaceFreshnessResponse {
     fn from_target_status(
         conversation_id: String,
+        freshness_scope: AgentWorkspaceFreshnessScope,
         base_ref: String,
         base_display_name: Option<String>,
         base_resolution: Option<&BaseResolutionResult>,
         status: PublishBranchFreshnessStatus,
         has_uncommitted_changes: bool,
         unpublished_commit_count: Option<u32>,
+        remote_refreshed: bool,
+        worktree_status_checked: bool,
     ) -> Self {
         let base_status = base_resolution
             .map(|resolution| resolution.status.as_str())
@@ -592,6 +629,7 @@ impl AgentConversationWorkspaceFreshnessResponse {
             base_resolution.and_then(|resolution| resolution.block_reason.clone());
         Self {
             conversation_id,
+            freshness_scope: freshness_scope.as_str().to_string(),
             base_ref,
             base_display_name,
             target_ref: status.target_ref,
@@ -600,6 +638,8 @@ impl AgentConversationWorkspaceFreshnessResponse {
             is_base_ahead: status.is_base_ahead,
             has_uncommitted_changes,
             unpublished_commit_count,
+            remote_refreshed,
+            worktree_status_checked,
             base_status,
             effective_base_ref,
             effective_base_display_name,
@@ -609,13 +649,17 @@ impl AgentConversationWorkspaceFreshnessResponse {
 
     fn blocked(
         conversation_id: String,
+        freshness_scope: AgentWorkspaceFreshnessScope,
         workspace: &AgentConversationWorkspace,
         base_resolution: &BaseResolutionResult,
         has_uncommitted_changes: bool,
         unpublished_commit_count: Option<u32>,
+        remote_refreshed: bool,
+        worktree_status_checked: bool,
     ) -> Self {
         Self {
             conversation_id,
+            freshness_scope: freshness_scope.as_str().to_string(),
             base_ref: workspace.base_ref.clone(),
             base_display_name: workspace.base_display_name.clone(),
             target_ref: String::new(),
@@ -624,10 +668,40 @@ impl AgentConversationWorkspaceFreshnessResponse {
             is_base_ahead: false,
             has_uncommitted_changes,
             unpublished_commit_count,
+            remote_refreshed,
+            worktree_status_checked,
             base_status: BaseStatus::Blocked.as_str().to_string(),
             effective_base_ref: None,
             effective_base_display_name: None,
             base_block_reason: base_resolution.block_reason.clone(),
+        }
+    }
+
+    fn from_local_summary(
+        conversation_id: String,
+        base_ref: String,
+        base_display_name: Option<String>,
+        target_ref: String,
+        captured_base_commit: Option<String>,
+    ) -> Self {
+        let target_base_commit = captured_base_commit.clone().unwrap_or_default();
+        Self {
+            conversation_id,
+            freshness_scope: AgentWorkspaceFreshnessScope::Local.as_str().to_string(),
+            base_ref: base_ref.clone(),
+            base_display_name: base_display_name.clone(),
+            target_ref,
+            captured_base_commit,
+            target_base_commit,
+            is_base_ahead: false,
+            has_uncommitted_changes: false,
+            unpublished_commit_count: None,
+            remote_refreshed: false,
+            worktree_status_checked: false,
+            base_status: BaseStatus::Valid.as_str().to_string(),
+            effective_base_ref: Some(base_ref),
+            effective_base_display_name: base_display_name,
+            base_block_reason: None,
         }
     }
 }
@@ -670,21 +744,29 @@ fn agent_workspace_freshness_cache_ttl() -> Duration {
     Duration::from_millis(git_runtime_config().workspace_freshness_cache_ttl_ms)
 }
 
-fn agent_workspace_freshness_cache_key(conversation_id: &ChatConversationId) -> Option<String> {
+fn agent_workspace_freshness_cache_key(
+    conversation_id: &ChatConversationId,
+    freshness_scope: AgentWorkspaceFreshnessScope,
+) -> Option<String> {
     if conversation_id.as_uuid().is_nil() {
         return None;
     }
-    Some(conversation_id.as_str())
+    Some(format!(
+        "{}:{}",
+        conversation_id.as_str(),
+        freshness_scope.as_str()
+    ))
 }
 
 fn cached_agent_workspace_freshness(
     conversation_id: &ChatConversationId,
+    freshness_scope: AgentWorkspaceFreshnessScope,
 ) -> Option<AgentConversationWorkspaceFreshnessResponse> {
     let ttl = agent_workspace_freshness_cache_ttl();
     if ttl.is_zero() {
         return None;
     }
-    let key = agent_workspace_freshness_cache_key(conversation_id)?;
+    let key = agent_workspace_freshness_cache_key(conversation_id, freshness_scope)?;
     let Some(entry) = agent_workspace_freshness_cache().get(&key) else {
         return None;
     };
@@ -698,12 +780,13 @@ fn cached_agent_workspace_freshness(
 
 fn store_agent_workspace_freshness(
     conversation_id: &ChatConversationId,
+    freshness_scope: AgentWorkspaceFreshnessScope,
     response: &AgentConversationWorkspaceFreshnessResponse,
 ) {
     if agent_workspace_freshness_cache_ttl().is_zero() {
         return;
     }
-    let Some(key) = agent_workspace_freshness_cache_key(conversation_id) else {
+    let Some(key) = agent_workspace_freshness_cache_key(conversation_id, freshness_scope) else {
         return;
     };
     agent_workspace_freshness_cache().insert(
@@ -716,11 +799,18 @@ fn store_agent_workspace_freshness(
 }
 
 pub(crate) fn invalidate_agent_workspace_freshness_cache(conversation_id: &ChatConversationId) {
-    let Some(key) = agent_workspace_freshness_cache_key(conversation_id) else {
+    if conversation_id.as_uuid().is_nil() {
         return;
-    };
-    if let Some(cache) = agent_workspace_freshness_cache().remove(&key) {
-        drop(cache);
+    }
+    for freshness_scope in [
+        AgentWorkspaceFreshnessScope::Local,
+        AgentWorkspaceFreshnessScope::Full,
+    ] {
+        if let Some(key) = agent_workspace_freshness_cache_key(conversation_id, freshness_scope) {
+            if let Some(cache) = agent_workspace_freshness_cache().remove(&key) {
+                drop(cache);
+            }
+        }
     }
 }
 
@@ -2584,10 +2674,7 @@ pub async fn archive_agent_conversation_inner(
     {
         state
             .agent_conversation_workspace_repo
-            .update_status(
-                conversation_id,
-                AgentConversationWorkspaceStatus::Archived,
-            )
+            .update_status(conversation_id, AgentConversationWorkspaceStatus::Archived)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -2596,11 +2683,7 @@ pub async fn archive_agent_conversation_inner(
             && workspace.publication_pr_status.as_deref() != Some("merged");
 
         if has_open_pr {
-            if let Ok(Some(project)) = state
-                .project_repo
-                .get_by_id(&workspace.project_id)
-                .await
-            {
+            if let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await {
                 let pr_number = workspace.publication_pr_number.unwrap();
                 let working_dir = std::path::Path::new(&project.working_directory);
 
@@ -2628,10 +2711,8 @@ pub async fn archive_agent_conversation_inner(
             }
 
             if let Some(plan_branch_id) = &workspace.linked_plan_branch_id {
-                if let Ok(Some(plan_branch)) = state
-                    .plan_branch_repo
-                    .get_by_id(plan_branch_id)
-                    .await
+                if let Ok(Some(plan_branch)) =
+                    state.plan_branch_repo.get_by_id(plan_branch_id).await
                 {
                     if plan_branch.pr_number.is_some()
                         && plan_branch.pr_status != Some(PrStatus::Closed)
@@ -2756,27 +2837,37 @@ pub async fn list_agent_conversation_workspace_publication_events(
 #[tauri::command]
 pub async fn get_agent_conversation_workspace_freshness(
     conversation_id: String,
+    freshness_scope: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let freshness_scope = AgentWorkspaceFreshnessScope::parse(freshness_scope.as_deref())?;
     let started = Instant::now();
-    let result =
-        get_agent_conversation_workspace_freshness_cached(&conversation_id, state.inner()).await;
+    let result = get_agent_conversation_workspace_freshness_cached(
+        &conversation_id,
+        freshness_scope,
+        state.inner(),
+    )
+    .await;
     match &result {
         Ok((response, cache_status)) => tracing::info!(
             target: "ralphx_lib::commands::agent_workspace_freshness",
             conversation_id = %conversation_id,
+            freshness_scope = freshness_scope.as_str(),
             elapsed_ms = started.elapsed().as_millis(),
             cache_status = cache_status.as_str(),
             base_status = response.base_status.as_str(),
             has_uncommitted_changes = response.has_uncommitted_changes,
             unpublished_commit_count = ?response.unpublished_commit_count,
             is_base_ahead = response.is_base_ahead,
+            remote_refreshed = response.remote_refreshed,
+            worktree_status_checked = response.worktree_status_checked,
             "Loaded agent workspace freshness"
         ),
         Err(error) => tracing::warn!(
             target: "ralphx_lib::commands::agent_workspace_freshness",
             conversation_id = %conversation_id,
+            freshness_scope = freshness_scope.as_str(),
             elapsed_ms = started.elapsed().as_millis(),
             error,
             "Failed to load agent workspace freshness"
@@ -2787,6 +2878,7 @@ pub async fn get_agent_conversation_workspace_freshness(
 
 async fn get_agent_conversation_workspace_freshness_cached(
     conversation_id: &ChatConversationId,
+    freshness_scope: AgentWorkspaceFreshnessScope,
     state: &AppState,
 ) -> Result<
     (
@@ -2795,29 +2887,73 @@ async fn get_agent_conversation_workspace_freshness_cached(
     ),
     String,
 > {
-    if let Some(response) = cached_agent_workspace_freshness(conversation_id) {
+    if let Some(response) = cached_agent_workspace_freshness(conversation_id, freshness_scope) {
         return Ok((response, AgentWorkspaceFreshnessCacheStatus::Hit));
     }
 
-    let key = conversation_id.as_str();
+    let key = format!("{}:{}", conversation_id.as_str(), freshness_scope.as_str());
     let lock = agent_workspace_freshness_locks()
         .entry(key)
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
     let _guard = lock.lock().await;
 
-    if let Some(response) = cached_agent_workspace_freshness(conversation_id) {
+    if let Some(response) = cached_agent_workspace_freshness(conversation_id, freshness_scope) {
         return Ok((response, AgentWorkspaceFreshnessCacheStatus::Coalesced));
     }
 
-    let response =
-        get_agent_conversation_workspace_freshness_for_state(conversation_id, state).await?;
-    store_agent_workspace_freshness(conversation_id, &response);
+    let response = get_agent_conversation_workspace_freshness_for_state(
+        conversation_id,
+        freshness_scope,
+        state,
+    )
+    .await?;
+    store_agent_workspace_freshness(conversation_id, freshness_scope, &response);
     Ok((response, AgentWorkspaceFreshnessCacheStatus::Miss))
+}
+
+async fn get_agent_conversation_workspace_local_freshness(
+    state: &AppState,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        let target = resolve_agent_workspace_publish_target(state, project, workspace).await?;
+        return Ok(
+            AgentConversationWorkspaceFreshnessResponse::from_local_summary(
+                workspace.conversation_id.as_str(),
+                target.base_ref,
+                target.base_display_name,
+                target.branch_name,
+                workspace.base_commit.clone(),
+            ),
+        );
+    }
+
+    if workspace.mode != AgentConversationWorkspaceMode::Edit {
+        return Err(
+            "Only edit workspaces and ideation workspaces with linked plan branches can be inspected for freshness"
+                .to_string(),
+        );
+    }
+
+    resolve_agent_conversation_workspace_path_for_send(project, workspace)
+        .map_err(|e| e.to_string())?;
+
+    Ok(
+        AgentConversationWorkspaceFreshnessResponse::from_local_summary(
+            workspace.conversation_id.as_str(),
+            workspace.base_ref.clone(),
+            workspace.base_display_name.clone(),
+            workspace.branch_name.clone(),
+            workspace.base_commit.clone(),
+        ),
+    )
 }
 
 async fn get_agent_conversation_workspace_freshness_for_state(
     conversation_id: &ChatConversationId,
+    freshness_scope: AgentWorkspaceFreshnessScope,
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     let workspace = state
@@ -2842,6 +2978,10 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
 
+    if freshness_scope == AgentWorkspaceFreshnessScope::Local {
+        return get_agent_conversation_workspace_local_freshness(state, &project, &workspace).await;
+    }
+
     // For ideation workspaces linked to a plan branch, check freshness of the
     // plan branch against its base (the workspace's own branch has no commits).
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
@@ -2853,10 +2993,13 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         if base_resolution.status == BaseStatus::Blocked {
             return Ok(AgentConversationWorkspaceFreshnessResponse::blocked(
                 workspace.conversation_id.as_str(),
+                AgentWorkspaceFreshnessScope::Full,
                 &workspace,
                 &base_resolution,
                 false,
                 Some(0),
+                true,
+                false,
             ));
         }
         apply_base_resolution_to_publish_target(&mut target, &base_resolution)?;
@@ -2872,12 +3015,15 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         return Ok(
             AgentConversationWorkspaceFreshnessResponse::from_target_status(
                 workspace.conversation_id.as_str(),
+                AgentWorkspaceFreshnessScope::Full,
                 target.base_ref,
                 target.base_display_name,
                 Some(&base_resolution),
                 status,
                 false,
                 Some(0),
+                true,
+                false,
             ),
         );
     }
@@ -2888,26 +3034,28 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         );
     }
 
-    let worktree_path = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
-        .await
-        .map_err(|e| e.to_string())?;
-    let base_resolution = resolve_workspace_base(&project, &workspace)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (worktree_path, base_resolution) = tokio::join!(
+        resolve_valid_agent_conversation_workspace_path(&project, &workspace),
+        resolve_workspace_base(&project, &workspace),
+    );
+    let worktree_path = worktree_path.map_err(|e| e.to_string())?;
+    let base_resolution = base_resolution.map_err(|e| e.to_string())?;
     if base_resolution.status == BaseStatus::Blocked {
-        let has_uncommitted_changes = GitService::has_uncommitted_changes(&worktree_path)
-            .await
-            .unwrap_or(false);
-        let unpublished_commit_count =
-            count_unpublished_publish_commits(&worktree_path, &workspace.branch_name)
-                .await
-                .unwrap_or(None);
+        let (has_uncommitted_changes, unpublished_commit_count) = tokio::join!(
+            GitService::has_uncommitted_changes(&worktree_path),
+            count_unpublished_publish_commits(&worktree_path, &workspace.branch_name),
+        );
+        let has_uncommitted_changes = has_uncommitted_changes.unwrap_or(false);
+        let unpublished_commit_count = unpublished_commit_count.unwrap_or(None);
         return Ok(AgentConversationWorkspaceFreshnessResponse::blocked(
             workspace.conversation_id.as_str(),
+            AgentWorkspaceFreshnessScope::Full,
             &workspace,
             &base_resolution,
             has_uncommitted_changes,
             unpublished_commit_count,
+            true,
+            true,
         ));
     }
     let effective_base_ref = base_resolution
@@ -2966,23 +3114,25 @@ async fn get_agent_conversation_workspace_freshness_for_state(
             .unwrap_or(workspace);
     }
 
-    let has_uncommitted_changes = GitService::has_uncommitted_changes(&worktree_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    let unpublished_commit_count =
-        count_unpublished_publish_commits(&worktree_path, &workspace.branch_name)
-            .await
-            .map_err(|e| e.to_string())?;
+    let (has_uncommitted_changes, unpublished_commit_count) = tokio::join!(
+        GitService::has_uncommitted_changes(&worktree_path),
+        count_unpublished_publish_commits(&worktree_path, &workspace.branch_name),
+    );
+    let has_uncommitted_changes = has_uncommitted_changes.map_err(|e| e.to_string())?;
+    let unpublished_commit_count = unpublished_commit_count.map_err(|e| e.to_string())?;
 
     Ok(
         AgentConversationWorkspaceFreshnessResponse::from_target_status(
             workspace.conversation_id.as_str(),
+            AgentWorkspaceFreshnessScope::Full,
             workspace.base_ref.clone(),
             workspace.base_display_name.clone(),
             Some(&base_resolution),
             status,
             has_uncommitted_changes,
             unpublished_commit_count,
+            true,
+            true,
         ),
     )
 }
@@ -5169,8 +5319,9 @@ mod tests {
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
         AgentTimelineItemResponse, AgentWorkspaceFreshnessCacheEntry,
         AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
-        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
+        AgentWorkspaceFreshnessScope, AgentWorkspacePrDescriptionInvalidationGuard,
+        AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
+        SwitchAgentConversationModeInput,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -6105,12 +6256,15 @@ mod tests {
         let retargeted = retargeted_base_resolution();
         let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
             "conversation-command-base".to_string(),
+            AgentWorkspaceFreshnessScope::Full,
             "feature/deleted-base".to_string(),
             Some("Current branch (feature/deleted-base)".to_string()),
             Some(&retargeted),
             status.clone(),
             true,
             Some(2),
+            true,
+            true,
         );
 
         assert_eq!(response.base_status, "retargeted");
@@ -6125,12 +6279,15 @@ mod tests {
 
         let fallback = AgentConversationWorkspaceFreshnessResponse::from_target_status(
             "conversation-command-base".to_string(),
+            AgentWorkspaceFreshnessScope::Full,
             "main".to_string(),
             Some("Project default (main)".to_string()),
             None,
             status,
             false,
             Some(0),
+            true,
+            true,
         );
         assert_eq!(fallback.base_status, "valid");
         assert_eq!(fallback.effective_base_ref.as_deref(), Some("main"));
@@ -6143,10 +6300,13 @@ mod tests {
         let blocked = blocked_base_resolution(BLOCK_REASON_MISSING_BASE_COMMIT);
         let blocked_response = AgentConversationWorkspaceFreshnessResponse::blocked(
             "conversation-command-base".to_string(),
+            AgentWorkspaceFreshnessScope::Full,
             &workspace,
             &blocked,
             true,
             Some(1),
+            true,
+            true,
         );
         assert_eq!(blocked_response.base_status, "blocked");
         assert_eq!(
@@ -6172,10 +6332,15 @@ mod tests {
         let conversation_id =
             ChatConversationId::from_string("77777777-7777-4777-8777-777777777777".to_string());
         invalidate_agent_workspace_freshness_cache(&conversation_id);
-        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+        assert!(cached_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full
+        )
+        .is_none());
 
         let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
             conversation_id.as_str().to_string(),
+            AgentWorkspaceFreshnessScope::Full,
             "main".to_string(),
             Some("Project default (main)".to_string()),
             None,
@@ -6187,17 +6352,82 @@ mod tests {
             },
             false,
             Some(1),
+            true,
+            true,
         );
-        store_agent_workspace_freshness(&conversation_id, &response);
+        store_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full,
+            &response,
+        );
 
-        let cached = cached_agent_workspace_freshness(&conversation_id)
-            .expect("recent freshness response should be cached");
+        let cached =
+            cached_agent_workspace_freshness(&conversation_id, AgentWorkspaceFreshnessScope::Full)
+                .expect("recent freshness response should be cached");
         assert_eq!(cached.conversation_id, response.conversation_id);
         assert_eq!(cached.target_base_commit, "main-sha");
         assert!(cached.is_base_ahead);
 
         invalidate_agent_workspace_freshness_cache(&conversation_id);
-        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+        assert!(cached_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn workspace_freshness_cache_keeps_local_and_full_scopes_separate() {
+        let conversation_id =
+            ChatConversationId::from_string("78777777-7777-4777-8777-777777777777".to_string());
+        invalidate_agent_workspace_freshness_cache(&conversation_id);
+        let local = AgentConversationWorkspaceFreshnessResponse::from_local_summary(
+            conversation_id.as_str(),
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            "ralphx/test/workspace".to_string(),
+            Some("base-sha".to_string()),
+        );
+        let full = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            conversation_id.as_str(),
+            AgentWorkspaceFreshnessScope::Full,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            PublishBranchFreshnessStatus {
+                target_ref: "origin/main".to_string(),
+                captured_base_commit: Some("base-sha".to_string()),
+                target_base_commit: "new-main-sha".to_string(),
+                is_base_ahead: true,
+            },
+            false,
+            Some(3),
+            true,
+            true,
+        );
+
+        store_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Local,
+            &local,
+        );
+        store_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full,
+            &full,
+        );
+
+        let cached_local =
+            cached_agent_workspace_freshness(&conversation_id, AgentWorkspaceFreshnessScope::Local)
+                .expect("local response should be cached");
+        let cached_full =
+            cached_agent_workspace_freshness(&conversation_id, AgentWorkspaceFreshnessScope::Full)
+                .expect("full response should be cached");
+
+        assert_eq!(cached_local.freshness_scope, "local");
+        assert_eq!(cached_local.target_base_commit, "base-sha");
+        assert_eq!(cached_full.freshness_scope, "full");
+        assert_eq!(cached_full.target_base_commit, "new-main-sha");
     }
 
     #[test]
@@ -6207,6 +6437,7 @@ mod tests {
         invalidate_agent_workspace_freshness_cache(&conversation_id);
         let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
             conversation_id.as_str(),
+            AgentWorkspaceFreshnessScope::Full,
             "main".to_string(),
             Some("Project default (main)".to_string()),
             None,
@@ -6218,9 +6449,14 @@ mod tests {
             },
             false,
             Some(0),
+            true,
+            true,
         );
-        let key = agent_workspace_freshness_cache_key(&conversation_id)
-            .expect("conversation id should be cacheable");
+        let key = agent_workspace_freshness_cache_key(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full,
+        )
+        .expect("conversation id should be cacheable");
         agent_workspace_freshness_cache().insert(
             key.clone(),
             AgentWorkspaceFreshnessCacheEntry {
@@ -6231,7 +6467,11 @@ mod tests {
             },
         );
 
-        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+        assert!(cached_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full
+        )
+        .is_none());
         assert!(!agent_workspace_freshness_cache().contains_key(&key));
     }
 
@@ -6241,6 +6481,7 @@ mod tests {
             ChatConversationId::from_string("97777777-7777-4777-8777-777777777777");
         let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
             conversation_id.as_str(),
+            AgentWorkspaceFreshnessScope::Full,
             "main".to_string(),
             Some("Project default (main)".to_string()),
             None,
@@ -6252,17 +6493,43 @@ mod tests {
             },
             false,
             Some(0),
+            true,
+            true,
         );
 
-        store_agent_workspace_freshness(&conversation_id, &response);
-        assert!(cached_agent_workspace_freshness(&conversation_id).is_some());
+        store_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full,
+            &response,
+        );
+        assert!(cached_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full
+        )
+        .is_some());
         {
             let _guard = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
-            assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
-            store_agent_workspace_freshness(&conversation_id, &response);
-            assert!(cached_agent_workspace_freshness(&conversation_id).is_some());
+            assert!(cached_agent_workspace_freshness(
+                &conversation_id,
+                AgentWorkspaceFreshnessScope::Full
+            )
+            .is_none());
+            store_agent_workspace_freshness(
+                &conversation_id,
+                AgentWorkspaceFreshnessScope::Full,
+                &response,
+            );
+            assert!(cached_agent_workspace_freshness(
+                &conversation_id,
+                AgentWorkspaceFreshnessScope::Full
+            )
+            .is_some());
         }
-        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+        assert!(cached_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full
+        )
+        .is_none());
     }
 
     #[test]
@@ -6279,6 +6546,7 @@ mod tests {
 
         let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
             conversation_id.as_str(),
+            AgentWorkspaceFreshnessScope::Full,
             "main".to_string(),
             Some("Project default (main)".to_string()),
             None,
@@ -6290,10 +6558,20 @@ mod tests {
             },
             false,
             Some(0),
+            true,
+            true,
         );
-        store_agent_workspace_freshness(&conversation_id, &response);
+        store_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full,
+            &response,
+        );
 
-        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+        assert!(cached_agent_workspace_freshness(
+            &conversation_id,
+            AgentWorkspaceFreshnessScope::Full
+        )
+        .is_none());
     }
 
     #[tokio::test]
@@ -6310,10 +6588,13 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should return blocked state");
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should return blocked state");
 
         assert_eq!(response.base_status, "blocked");
         assert_eq!(response.base_ref, "feature/deleted-base");
@@ -6339,10 +6620,13 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should resolve retargeted base");
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should resolve retargeted base");
 
         assert_eq!(response.base_status, "retargeted");
         assert_eq!(response.base_ref, "feature/deleted-base");
@@ -6390,10 +6674,13 @@ mod tests {
             .manage(team_service)
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
-        let blocked =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should load");
+        let blocked = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should load");
         assert_eq!(blocked.base_status, "blocked");
 
         let response = update_agent_conversation_workspace_from_base_for_app_state(
@@ -6446,10 +6733,13 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let freshness =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should resolve retargeted base");
+        let freshness = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should resolve retargeted base");
         assert_eq!(freshness.base_status, "retargeted");
 
         let response = update_agent_conversation_workspace_from_base_for_app_state(

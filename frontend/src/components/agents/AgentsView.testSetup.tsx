@@ -906,6 +906,7 @@ export function setupAgentsViewTest() {
   getAgentConversationWorkspaceMock.mockResolvedValue(null);
   getAgentConversationWorkspaceFreshnessMock.mockResolvedValue({
     conversationId: "conversation-1",
+    freshnessScope: "full",
     baseRef: "main",
     baseDisplayName: "Project default (main)",
     targetRef: "origin/main",
@@ -914,6 +915,8 @@ export function setupAgentsViewTest() {
     isBaseAhead: false,
     hasUncommittedChanges: false,
     unpublishedCommitCount: null,
+    remoteRefreshed: true,
+    worktreeStatusChecked: true,
   });
   listAgentConversationWorkspacesByProjectMock.mockResolvedValue([]);
   listConversationsMock.mockResolvedValue([]);

@@ -1581,9 +1581,11 @@ export interface AgentConversationWorkspacePublicationEvent {
 }
 
 export type AgentConversationWorkspaceBaseStatus = "valid" | "retargeted" | "blocked";
+export type AgentConversationWorkspaceFreshnessScope = "local" | "full";
 
 export interface AgentConversationWorkspaceFreshness {
   conversationId: string;
+  freshnessScope: AgentConversationWorkspaceFreshnessScope;
   baseRef: string;
   baseDisplayName: string | null;
   targetRef: string;
@@ -1592,6 +1594,8 @@ export interface AgentConversationWorkspaceFreshness {
   isBaseAhead: boolean;
   hasUncommittedChanges: boolean;
   unpublishedCommitCount: number | null;
+  remoteRefreshed: boolean;
+  worktreeStatusChecked: boolean;
   baseStatus: AgentConversationWorkspaceBaseStatus;
   effectiveBaseRef: string | null;
   effectiveBaseDisplayName: string | null;
@@ -1682,6 +1686,7 @@ const AgentConversationWorkspacePublicationEventListResponseSchema = z.array(
 );
 const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   conversation_id: z.string(),
+  freshness_scope: z.enum(["local", "full"]).optional().default("full"),
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
   target_ref: z.string(),
@@ -1690,6 +1695,8 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   is_base_ahead: z.boolean(),
   has_uncommitted_changes: z.boolean(),
   unpublished_commit_count: z.number().nullable(),
+  remote_refreshed: z.boolean().optional().default(true),
+  worktree_status_checked: z.boolean().optional().default(true),
   base_status: z.enum(["valid", "retargeted", "blocked"]).optional().default("valid"),
   effective_base_ref: z.string().nullable().optional().default(null),
   effective_base_display_name: z.string().nullable().optional().default(null),
@@ -1879,6 +1886,7 @@ function transformAgentConversationWorkspaceFreshness(
 ): AgentConversationWorkspaceFreshness {
   return {
     conversationId: raw.conversation_id,
+    freshnessScope: raw.freshness_scope,
     baseRef: raw.base_ref,
     baseDisplayName: raw.base_display_name,
     targetRef: raw.target_ref,
@@ -1887,6 +1895,8 @@ function transformAgentConversationWorkspaceFreshness(
     isBaseAhead: raw.is_base_ahead,
     hasUncommittedChanges: raw.has_uncommitted_changes,
     unpublishedCommitCount: raw.unpublished_commit_count,
+    remoteRefreshed: raw.remote_refreshed,
+    worktreeStatusChecked: raw.worktree_status_checked,
     baseStatus: raw.base_status,
     effectiveBaseRef: raw.effective_base_ref,
     effectiveBaseDisplayName: raw.effective_base_display_name,
@@ -1968,11 +1978,15 @@ export async function listAgentConversationWorkspacePublicationEvents(
 }
 
 export async function getAgentConversationWorkspaceFreshness(
-  conversationId: string
+  conversationId: string,
+  options: { scope?: AgentConversationWorkspaceFreshnessScope } = {}
 ): Promise<AgentConversationWorkspaceFreshness> {
   const raw = await typedInvoke(
     "get_agent_conversation_workspace_freshness",
-    { conversationId },
+    {
+      conversationId,
+      ...(options.scope ? { freshnessScope: options.scope } : {}),
+    },
     AgentConversationWorkspaceFreshnessResponseSchema
   );
   return transformAgentConversationWorkspaceFreshness(raw);

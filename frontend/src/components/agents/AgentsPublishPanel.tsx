@@ -161,8 +161,11 @@ export function AgentPublishPanel({
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
   const freshnessQuery = useQuery({
-    queryKey: agentWorkspaceKeys.freshness(conversationId),
-    queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(conversationId!),
+    queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspaceFreshness(conversationId!, {
+        scope: "full",
+      }),
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&

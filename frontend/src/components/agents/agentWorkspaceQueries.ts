@@ -1,7 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshnessScope,
+} from "@/api/chat";
 
 import {
   getAgentWorkspaceTerminalPublicationLabel,
@@ -21,6 +24,15 @@ export const agentWorkspaceKeys = {
     "agents",
     "conversation-workspace-freshness",
     conversationId,
+  ] as const,
+  scopedFreshness: (
+    conversationId: string | null | undefined,
+    scope: AgentConversationWorkspaceFreshnessScope,
+  ) => [
+    "agents",
+    "conversation-workspace-freshness",
+    conversationId,
+    scope,
   ] as const,
   publicationEvents: (conversationId: string | null | undefined) => [
     "agents",
@@ -81,8 +93,11 @@ export async function preflightAgentWorkspaceFreshness(
     }
 
     await queryClient.prefetchQuery({
-      queryKey: agentWorkspaceKeys.freshness(conversationId),
-      queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(conversationId),
+      queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "local"),
+      queryFn: () =>
+        chatApi.getAgentConversationWorkspaceFreshness(conversationId, {
+          scope: "local",
+        }),
       staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
     });
   } catch {
