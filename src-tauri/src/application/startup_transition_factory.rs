@@ -1,11 +1,12 @@
 use std::sync::Arc;
+use std::time::Instant;
 
-use crate::application::AgentClientBundle;
-use crate::application::InteractiveProcessRegistry;
 use crate::application::runtime_factory::{
-    RuntimeFactoryDeps, build_transition_service_with_fallback,
+    build_transition_service_with_fallback, RuntimeFactoryDeps,
 };
 use crate::application::task_transition_service::TaskTransitionService;
+use crate::application::AgentClientBundle;
+use crate::application::InteractiveProcessRegistry;
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, ExecutionSettingsRepository,
@@ -29,30 +30,48 @@ pub struct StartupTransitionFactory {
 }
 
 impl StartupTransitionFactory {
+    fn log_build_step(step: &'static str, started_at: Instant) {
+        tracing::info!(
+            step,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "Startup transition service build step completed"
+        );
+    }
+
     pub(crate) fn build(
         &self,
         mut deps: RuntimeFactoryDeps,
         app_handle: tauri::AppHandle,
     ) -> TaskTransitionService {
+        let started_at = Instant::now();
         deps.agent_clients = Some(self.agent_clients.clone());
         deps.execution_settings_repo = Some(Arc::clone(&self.execution_settings_repo));
         deps.agent_lane_settings_repo = Some(Arc::clone(&self.agent_lane_settings_repo));
         deps.agent_provider_settings_repo = Some(Arc::clone(&self.agent_provider_settings_repo));
         deps.plan_branch_repo = Some(Arc::clone(&self.plan_branch_repo));
         deps.interactive_process_registry = Some(Arc::clone(&self.interactive_process_registry));
+        Self::log_build_step("startup_transition_deps_overlay", started_at);
 
+        let started_at = Instant::now();
         let mut service = build_transition_service_with_fallback(
             &Some(app_handle),
             Arc::clone(&self.execution_state),
             &deps,
-        )
-        .with_task_scheduler(Arc::clone(&self.task_scheduler))
-        .with_step_repo(Arc::clone(&self.step_repo))
-        .with_external_events_repo(Arc::clone(&self.external_events_repo))
-        .with_session_merge_locks(Arc::clone(&self.session_merge_locks));
+        );
+        Self::log_build_step("startup_transition_base_service", started_at);
+
+        let started_at = Instant::now();
+        service = service
+            .with_task_scheduler(Arc::clone(&self.task_scheduler))
+            .with_step_repo(Arc::clone(&self.step_repo))
+            .with_external_events_repo(Arc::clone(&self.external_events_repo))
+            .with_session_merge_locks(Arc::clone(&self.session_merge_locks));
+        Self::log_build_step("startup_transition_startup_wiring", started_at);
 
         if let Some(ref publisher) = self.webhook_publisher {
+            let started_at = Instant::now();
             service = service.with_webhook_publisher_for_emitter(Arc::clone(publisher));
+            Self::log_build_step("startup_transition_webhook_wiring", started_at);
         }
 
         service

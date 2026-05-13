@@ -265,7 +265,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
     let phase_started_at = startup_phase_started("transition_service_build");
     let transition_service = startup_transition_factory
-        .build(core_runtime_deps.clone(), app_handle.clone())
+        .build(core_runtime_deps, app_handle.clone())
         .into_arc();
     startup_phase_completed("transition_service_build", phase_started_at);
 
@@ -498,11 +498,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         startup_phase_completed("chat_resumption", phase_started_at);
     }
 
-    let phase_started_at = startup_phase_started("reconcile_transition_service_build");
-    let reconcile_transition_service = startup_transition_factory
-        .build(core_runtime_deps, app_handle.clone())
-        .into_arc();
-    startup_phase_completed("reconcile_transition_service_build", phase_started_at);
+    let phase_started_at = startup_phase_started("reconcile_transition_service_reuse");
+    let reconcile_transition_service = Arc::clone(&transition_service);
+    startup_phase_completed("reconcile_transition_service_reuse", phase_started_at);
 
     let phase_started_at = startup_phase_started("reconciliation_runner_build");
     let reconcile_runner = build_startup_reconciliation_runner(StartupReconciliationDeps {

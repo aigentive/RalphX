@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
@@ -386,9 +387,20 @@ impl AppState {
         execution_state: Arc<ExecutionState>,
         app_handle: Option<AppHandle<R>>,
     ) -> TaskTransitionService<R> {
+        let started_at = Instant::now();
         let deps = RuntimeFactoryDeps::from_app_state(self);
+        tracing::info!(
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "AppState transition service deps built"
+        );
 
-        build_transition_service_from_deps(app_handle, execution_state, &deps)
+        let started_at = Instant::now();
+        let service = build_transition_service_from_deps(app_handle, execution_state, &deps);
+        tracing::info!(
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "AppState transition service built"
+        );
+        service
     }
 
     pub fn build_task_scheduler_for_runtime<R: Runtime>(
