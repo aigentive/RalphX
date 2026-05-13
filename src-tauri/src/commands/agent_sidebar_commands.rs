@@ -818,10 +818,12 @@ mod tests {
         let conv = create_conversation(&state, &project.id, "No workspace", now).await;
         let conv_id = conv.id.as_str();
 
-        let result =
-            get_bulk_workspace_publication_states_inner(&[conv_id.clone()], &state)
-                .await
-                .unwrap();
+        let result = get_bulk_workspace_publication_states_inner(
+            std::slice::from_ref(&conv_id),
+            &state,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.len(), 1);
         let entry = result.get(&conv_id).unwrap();

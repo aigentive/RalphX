@@ -570,8 +570,11 @@ const AgentsWorkspaceStatusPill = memo(function AgentsWorkspaceStatusPill({
     ? workspace.publicationPrStatus
     : null;
   const { data: freshness } = useQuery({
-    queryKey: agentWorkspaceKeys.freshness(workspace.conversationId),
-    queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(workspace.conversationId),
+    queryKey: agentWorkspaceKeys.scopedFreshness(workspace.conversationId, "local"),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspaceFreshness(workspace.conversationId, {
+        scope: "local",
+      }),
     enabled:
       !terminalStatus &&
       (workspace.mode === "edit" || hasPublishedWorkspacePr(workspace)),

@@ -1220,6 +1220,7 @@ describe("chat api", () => {
   it("gets agent conversation workspace freshness", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "conversation-1",
+      freshness_scope: "full",
       base_ref: "feature/agent-screen",
       base_display_name: "Current branch (feature/agent-screen)",
       target_ref: "origin/feature/agent-screen",
@@ -1228,6 +1229,8 @@ describe("chat api", () => {
       is_base_ahead: true,
       has_uncommitted_changes: true,
       unpublished_commit_count: 2,
+      remote_refreshed: true,
+      worktree_status_checked: true,
       base_status: "retargeted",
       effective_base_ref: "main",
       effective_base_display_name: "Project default (main)",
@@ -1242,6 +1245,7 @@ describe("chat api", () => {
     );
     expect(result).toMatchObject({
       conversationId: "conversation-1",
+      freshnessScope: "full",
       baseRef: "feature/agent-screen",
       targetRef: "origin/feature/agent-screen",
       baseStatus: "retargeted",
@@ -1250,6 +1254,40 @@ describe("chat api", () => {
       isBaseAhead: true,
       hasUncommittedChanges: true,
       unpublishedCommitCount: 2,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
+    });
+  });
+
+  it("requests scoped agent conversation workspace freshness", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      freshness_scope: "local",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      target_ref: "ralphx/test/agent-workspace",
+      captured_base_commit: "base",
+      target_base_commit: "base",
+      is_base_ahead: false,
+      has_uncommitted_changes: false,
+      unpublished_commit_count: null,
+      remote_refreshed: false,
+      worktree_status_checked: false,
+    });
+
+    const result = await getAgentConversationWorkspaceFreshness("conversation-1", {
+      scope: "local",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_workspace_freshness",
+      { conversationId: "conversation-1", freshnessScope: "local" }
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      freshnessScope: "local",
+      remoteRefreshed: false,
+      worktreeStatusChecked: false,
     });
   });
 

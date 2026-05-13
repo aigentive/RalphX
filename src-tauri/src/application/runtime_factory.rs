@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -137,7 +138,8 @@ impl RuntimeFactoryDeps {
     }
 
     pub(crate) fn from_app_state(state: &AppState) -> Self {
-        Self::from_core(
+        let started_at = Instant::now();
+        let deps = Self::from_core(
             Arc::clone(&state.task_repo),
             Arc::clone(&state.task_dependency_repo),
             Arc::clone(&state.project_repo),
@@ -165,7 +167,12 @@ impl RuntimeFactoryDeps {
         .with_github_runtime_support(
             state.github_service.as_ref().map(Arc::clone),
             Some(Arc::clone(&state.pr_poller_registry)),
-        )
+        );
+        tracing::info!(
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "Runtime factory deps loaded from AppState"
+        );
+        deps
     }
 }
 
@@ -538,14 +545,38 @@ pub(crate) fn build_transition_service_with_fallback<R: Runtime>(
     execution_state: Arc<ExecutionState>,
     deps: &RuntimeFactoryDeps,
 ) -> TaskTransitionService<R> {
+    let total_started_at = Instant::now();
     if let Some(handle) = app_handle {
-        if let Some(app_state) = handle.try_state::<AppState>() {
-            return app_state
-                .build_transition_service_for_runtime(execution_state, app_handle.clone());
+        let lookup_started_at = Instant::now();
+        let app_state = handle.try_state::<AppState>();
+        tracing::info!(
+            elapsed_ms = lookup_started_at.elapsed().as_millis(),
+            app_state_available = app_state.is_some(),
+            "Transition service AppState lookup completed"
+        );
+        if let Some(app_state) = app_state {
+            let build_started_at = Instant::now();
+            let service =
+                app_state.build_transition_service_for_runtime(execution_state, app_handle.clone());
+            tracing::info!(
+                elapsed_ms = build_started_at.elapsed().as_millis(),
+                total_elapsed_ms = total_started_at.elapsed().as_millis(),
+                source = "app_state",
+                "Transition service built with fallback"
+            );
+            return service;
         }
     }
 
-    build_transition_service_from_deps(app_handle.clone(), execution_state, deps)
+    let build_started_at = Instant::now();
+    let service = build_transition_service_from_deps(app_handle.clone(), execution_state, deps);
+    tracing::info!(
+        elapsed_ms = build_started_at.elapsed().as_millis(),
+        total_elapsed_ms = total_started_at.elapsed().as_millis(),
+        source = "deps",
+        "Transition service built with fallback"
+    );
+    service
 }
 
 pub(crate) fn build_transition_service_from_deps<R: Runtime>(
@@ -553,6 +584,7 @@ pub(crate) fn build_transition_service_from_deps<R: Runtime>(
     execution_state: Arc<ExecutionState>,
     deps: &RuntimeFactoryDeps,
 ) -> TaskTransitionService<R> {
+    let new_started_at = Instant::now();
     let mut service = TaskTransitionService::new(
         Arc::clone(&deps.task_repo),
         Arc::clone(&deps.task_dependency_repo),
@@ -569,25 +601,29 @@ pub(crate) fn build_transition_service_from_deps<R: Runtime>(
         app_handle,
         Arc::clone(&deps.memory_event_repo),
     );
-    if let Some(repo) = deps.execution_settings_repo.as_ref() {
-        service = service.with_execution_settings_repo(Arc::clone(repo));
-    }
-    if let Some(agent_clients) = deps.agent_clients.as_ref() {
-        service = service.with_agent_clients(agent_clients.clone());
-    }
-    if let Some(repo) = deps.agent_lane_settings_repo.as_ref() {
-        service = service.with_agent_lane_settings_repo(Arc::clone(repo));
-    }
+    tracing::info!(
+        elapsed_ms = new_started_at.elapsed().as_millis(),
+        "Transition service core constructor completed"
+    );
+
+    let runtime_started_at = Instant::now();
+    service = service.with_runtime_resolution_context(
+        deps.agent_clients.clone(),
+        deps.execution_settings_repo.as_ref().map(Arc::clone),
+        deps.agent_lane_settings_repo.as_ref().map(Arc::clone),
+        deps.agent_provider_settings_repo.as_ref().map(Arc::clone),
+        deps.plan_branch_repo.as_ref().map(Arc::clone),
+        deps.interactive_process_registry.as_ref().map(Arc::clone),
+    );
+    tracing::info!(
+        elapsed_ms = runtime_started_at.elapsed().as_millis(),
+        "Transition service runtime context wiring completed"
+    );
+
     if let Some(repo) = deps.review_repo.as_ref() {
         service = service.with_review_repo(Arc::clone(repo));
     }
-    if let Some(repo) = deps.plan_branch_repo.as_ref() {
-        service = service.with_plan_branch_repo(Arc::clone(repo));
-    }
     service = service.with_artifact_repo(Arc::clone(&deps.artifact_repo));
-    if let Some(ipr) = deps.interactive_process_registry.as_ref() {
-        service = service.with_interactive_process_registry(Arc::clone(ipr));
-    }
     if let Some(registry) = deps.pr_poller_registry.as_ref() {
         service = service.with_pr_poller_registry(Arc::clone(registry));
     }

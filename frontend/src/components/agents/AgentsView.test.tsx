@@ -116,7 +116,8 @@ describe("AgentsView", () => {
       expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledTimes(1)
     );
     expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
-      "conversation-1"
+      "conversation-1",
+      { scope: "local" }
     );
   });
 

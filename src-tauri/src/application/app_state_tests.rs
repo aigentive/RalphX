@@ -327,10 +327,7 @@ async fn test_resolve_ideation_background_agent_runtime_uses_registered_harness_
     assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(runtime.approval_policy.as_deref(), Some("never"));
-    assert_eq!(
-        runtime.sandbox_mode.as_deref(),
-        Some("danger-full-access")
-    );
+    assert_eq!(runtime.sandbox_mode.as_deref(), Some("danger-full-access"));
 }
 
 #[tokio::test]
@@ -666,7 +663,10 @@ async fn test_resolve_pr_describer_runtime_requires_enabled_default_provider() {
     let mut state = AppState::new_test();
     state.agent_provider_settings_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
 
-    let project = Project::new("Unconfigured Provider Project".to_string(), "/tmp".to_string());
+    let project = Project::new(
+        "Unconfigured Provider Project".to_string(),
+        "/tmp".to_string(),
+    );
     let conversation = ChatConversation::new_project(project.id);
 
     let error = match state.resolve_pr_describer_runtime(&conversation).await {

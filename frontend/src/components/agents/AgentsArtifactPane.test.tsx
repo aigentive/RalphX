@@ -348,6 +348,7 @@ describe("AgentsArtifactPane", () => {
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
+      freshnessScope: "full",
       baseRef: "main",
       baseDisplayName: "Project default (main)",
       targetRef: "origin/main",
@@ -356,6 +357,8 @@ describe("AgentsArtifactPane", () => {
       isBaseAhead: false,
       hasUncommittedChanges: false,
       unpublishedCommitCount: null,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
     });
     updateWorkspaceFromBaseMock.mockResolvedValue({
       workspace: workspace({ mode: "edit", baseCommit: "base-sha" }),
@@ -649,6 +652,7 @@ describe("AgentsArtifactPane", () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
+      freshnessScope: "full",
       baseRef: "feature/agent-screen",
       baseDisplayName: "Current branch (feature/agent-screen)",
       targetRef: "origin/feature/agent-screen",
@@ -657,6 +661,8 @@ describe("AgentsArtifactPane", () => {
       isBaseAhead: true,
       hasUncommittedChanges: false,
       unpublishedCommitCount: null,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
     });
     updateWorkspaceFromBaseMock.mockResolvedValue({
       workspace: workspace({
@@ -737,7 +743,9 @@ describe("AgentsArtifactPane", () => {
     expect(listPublicationEventsMock).not.toHaveBeenCalled();
 
     await waitFor(() =>
-      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1")
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
+        scope: "full",
+      })
     );
     expect(listPublicationEventsMock).toHaveBeenCalledWith("conversation-1");
   });
@@ -1274,7 +1282,9 @@ describe("AgentsArtifactPane", () => {
 
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() =>
-      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1"),
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
+        scope: "full",
+      }),
     );
     expect(publishButton).toBeEnabled();
     expect(publishButton).toHaveTextContent("Commit & Publish");
@@ -1821,7 +1831,9 @@ describe("AgentsArtifactPane", () => {
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
     );
     await waitFor(() =>
-      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1")
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
+        scope: "full",
+      })
     );
   });
 

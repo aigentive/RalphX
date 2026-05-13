@@ -68,10 +68,16 @@ export function isAgentWorkspacePublishCurrent(
   workspace: AgentConversationWorkspace | null,
   freshness: AgentConversationWorkspaceFreshness | undefined
 ): boolean {
+  const freshnessScope = freshness?.freshnessScope ?? "full";
+  const remoteRefreshed = freshness?.remoteRefreshed ?? true;
+  const worktreeStatusChecked = freshness?.worktreeStatusChecked ?? true;
   return (
     hasPublishedWorkspacePr(workspace) &&
     workspace?.publicationPushStatus === "pushed" &&
     freshness !== undefined &&
+    freshnessScope === "full" &&
+    remoteRefreshed &&
+    worktreeStatusChecked &&
     freshness.baseStatus !== "blocked" &&
     !freshness.isBaseAhead &&
     !freshness.hasUncommittedChanges &&

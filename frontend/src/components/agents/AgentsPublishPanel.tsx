@@ -63,7 +63,11 @@ import {
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
-import { agentWorkspaceKeys, invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
+import {
+  AGENT_WORKSPACE_FRESHNESS_STALE_MS,
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -157,14 +161,17 @@ export function AgentPublishPanel({
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
   const freshnessQuery = useQuery({
-    queryKey: ["agents", "conversation-workspace-freshness", conversationId],
-    queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(conversationId!),
+    queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspaceFreshness(conversationId!, {
+        scope: "full",
+      }),
     enabled:
       canHydratePublishFacts &&
       !!conversationId &&
       (workspace?.mode === "edit" || hasPublishedPr) &&
       !terminalPublicationStatus,
-    staleTime: 5_000,
+    staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const freshness = freshnessQuery.data;
   const baseStatus = freshness?.baseStatus ?? "valid";

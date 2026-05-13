@@ -28,7 +28,23 @@ describe("harnessProvidersApi", () => {
 
     expect(typedInvoke).toHaveBeenCalledWith(
       "get_agent_provider_settings",
-      {},
+      { input: { refreshRuntime: false } },
+      expect.any(Object),
+    );
+  });
+
+  it("can request a live runtime refresh when listing providers", async () => {
+    vi.mocked(typedInvoke).mockResolvedValue({
+      providers: [],
+      defaultProvider: null,
+      requiresOnboarding: true,
+    });
+
+    await harnessProvidersApi.list({ refreshRuntime: true });
+
+    expect(typedInvoke).toHaveBeenCalledWith(
+      "get_agent_provider_settings",
+      { input: { refreshRuntime: true } },
       expect.any(Object),
     );
   });

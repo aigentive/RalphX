@@ -140,6 +140,62 @@ async fn test_get_by_project_id_empty() {
 }
 
 #[tokio::test]
+async fn test_startup_pr_recovery_candidates_filter_historical_branches() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-startup-pr-recovery".to_string());
+
+    let make_branch = |suffix: &str, project_id: ProjectId| {
+        PlanBranch::new(
+            ArtifactId::from_string(format!("art-{suffix}")),
+            IdeationSessionId::from_string(format!("sess-{suffix}")),
+            project_id,
+            format!("ralphx/proj/plan-{suffix}"),
+            "main".to_string(),
+        )
+    };
+
+    let mut candidate = make_branch("candidate", project_id.clone());
+    candidate.pr_eligible = true;
+    candidate.merge_task_id = Some(TaskId::from_string("merge-candidate".to_string()));
+    let candidate_id = candidate.id.clone();
+
+    let mut no_merge_task = make_branch("no-merge", project_id.clone());
+    no_merge_task.pr_eligible = true;
+
+    let mut merged = make_branch("merged", project_id.clone());
+    merged.pr_eligible = true;
+    merged.merge_task_id = Some(TaskId::from_string("merge-merged".to_string()));
+    merged.status = PlanBranchStatus::Merged;
+
+    let mut not_pr_eligible = make_branch("not-pr-eligible", project_id.clone());
+    not_pr_eligible.merge_task_id = Some(TaskId::from_string("merge-not-pr".to_string()));
+
+    let mut other_project = make_branch(
+        "other-project",
+        ProjectId::from_string("other-project".to_string()),
+    );
+    other_project.pr_eligible = true;
+    other_project.merge_task_id = Some(TaskId::from_string("merge-other".to_string()));
+
+    for branch in [
+        candidate,
+        no_merge_task,
+        merged,
+        not_pr_eligible,
+        other_project,
+    ] {
+        repo.create(branch).await.unwrap();
+    }
+
+    let candidates = repo
+        .get_startup_pr_recovery_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, candidate_id);
+}
+
+#[tokio::test]
 async fn test_terminal_cleanup_candidates_skip_marked_rows() {
     let (_db, repo) = setup_repo();
     let project_id = ProjectId::from_string("proj-cleanup-candidates".to_string());
@@ -198,7 +254,11 @@ async fn test_terminal_cleanup_candidates_retry_unsafe_after_ttl() {
         .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
         .await
         .unwrap();
-    assert_eq!(candidates.len(), 1, "unsafe marker older than 24h should be retryable");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "unsafe marker older than 24h should be retryable"
+    );
 }
 
 #[tokio::test]
@@ -224,7 +284,10 @@ async fn test_terminal_cleanup_candidates_skip_recent_unsafe() {
         .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
         .await
         .unwrap();
-    assert!(candidates.is_empty(), "recent unsafe marker should not be retried");
+    assert!(
+        candidates.is_empty(),
+        "recent unsafe marker should not be retried"
+    );
 }
 
 #[tokio::test]
@@ -252,7 +315,11 @@ async fn test_terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
         .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
         .await
         .unwrap();
-    assert_eq!(candidates.len(), 1, "target_ref_missing marker older than 24h should be retryable");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "target_ref_missing marker older than 24h should be retryable"
+    );
 }
 
 #[tokio::test]
@@ -280,7 +347,10 @@ async fn test_terminal_cleanup_candidates_cleaned_stays_terminal() {
         .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
         .await
         .unwrap();
-    assert!(candidates.is_empty(), "cleaned marker should stay terminal regardless of age");
+    assert!(
+        candidates.is_empty(),
+        "cleaned marker should stay terminal regardless of age"
+    );
 }
 
 #[tokio::test]

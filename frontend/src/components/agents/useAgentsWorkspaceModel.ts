@@ -70,8 +70,11 @@ export function useAgentsWorkspaceModel({
   const canInspectActiveWorkspaceFreshness =
     canInspectAgentWorkspaceFreshness(activeWorkspace);
   const activeWorkspaceFreshnessQuery = useQuery({
-    queryKey: agentWorkspaceKeys.freshness(selectedConversationId),
-    queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(selectedConversationId!),
+    queryKey: agentWorkspaceKeys.scopedFreshness(selectedConversationId, "local"),
+    queryFn: () =>
+      chatApi.getAgentConversationWorkspaceFreshness(selectedConversationId!, {
+        scope: "local",
+      }),
     enabled:
       !!selectedConversationId &&
       canInspectActiveWorkspaceFreshness,

@@ -17,7 +17,7 @@ use crate::domain::repositories::{
     ProjectRepository,
 };
 use crate::infrastructure::git_auth::{
-    check_gh_auth_status, git_remote_url_kind_label, inspect_origin_auth_config,
+    check_gh_auth_token_available, git_remote_url_kind_label, inspect_origin_auth_config,
     suggested_github_ssh_origin, GitRemoteAuthConfig, GitRemoteUrlKind,
 };
 
@@ -160,14 +160,6 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
         return StartupGitAuthPreflightSummary::default();
     }
 
-    let gh_started_at = Instant::now();
-    let gh_authenticated = check_gh_auth_status().await;
-    tracing::info!(
-        gh_authenticated,
-        elapsed_ms = gh_started_at.elapsed().as_millis(),
-        "Startup Git auth preflight: GitHub CLI auth check completed"
-    );
-
     let inspected = stream::iter(candidates)
         .map(|(project, active_project)| async move {
             let project_started_at = Instant::now();
@@ -175,21 +167,38 @@ pub(crate) async fn run_startup_git_auth_preflight<R: Runtime>(
                 .await
                 .map_err(|error| error.to_string());
             let project_elapsed_ms = project_started_at.elapsed().as_millis();
-            let issue = evaluate_project_git_auth_issue(
-                &project,
-                active_project,
-                gh_authenticated,
-                config_result,
-            );
-            (project, active_project, issue, project_elapsed_ms)
+            (project, active_project, config_result, project_elapsed_ms)
         })
         .buffer_unordered(4)
         .collect::<Vec<_>>()
         .await;
 
+    let gh_auth_required = inspected
+        .iter()
+        .any(|(project, _, config_result, _)| project_needs_gh_auth_check(project, config_result));
+    let gh_started_at = Instant::now();
+    let gh_authenticated = if gh_auth_required {
+        check_gh_auth_token_available().await
+    } else {
+        false
+    };
+    tracing::info!(
+        gh_authenticated,
+        auth_required = gh_auth_required,
+        method = if gh_auth_required { "token" } else { "skipped" },
+        elapsed_ms = gh_started_at.elapsed().as_millis(),
+        "Startup Git auth preflight: GitHub CLI auth check completed"
+    );
+
     let projects_considered = inspected.len();
     let mut issues = Vec::new();
-    for (project, active_project, issue, project_elapsed_ms) in inspected {
+    for (project, active_project, config_result, project_elapsed_ms) in inspected {
+        let issue = evaluate_project_git_auth_issue(
+            &project,
+            active_project,
+            gh_authenticated,
+            config_result,
+        );
         if let Some(issue) = issue {
             tracing::warn!(
                 project_id = issue.project_id.as_str(),
@@ -246,7 +255,10 @@ async fn project_has_startup_git_work(
     workspace_repo: Option<&Arc<dyn AgentConversationWorkspaceRepository>>,
 ) -> bool {
     if let Some(plan_branch_repo) = plan_branch_repo {
-        match plan_branch_repo.get_by_project_id(&project.id).await {
+        match plan_branch_repo
+            .get_startup_pr_recovery_candidates_by_project_id(&project.id)
+            .await
+        {
             Ok(plan_branches) if plan_branches.iter().any(plan_branch_has_startup_git_work) => {
                 return true;
             }
@@ -293,6 +305,16 @@ fn workspace_has_startup_git_work(workspace: &AgentConversationWorkspace) -> boo
             .publication_pr_status
             .as_deref()
             .is_some_and(|status| matches!(status, "merged" | "closed"))
+}
+
+fn project_needs_gh_auth_check(
+    project: &Project,
+    config_result: &Result<GitRemoteAuthConfig, String>,
+) -> bool {
+    let Ok(config) = config_result else {
+        return false;
+    };
+    config.fetch_url.is_some() && project.github_pr_enabled || has_github_https_remote(config)
 }
 
 pub(crate) fn evaluate_project_git_auth_issue(
@@ -560,6 +582,9 @@ mod tests {
         );
         plan_branch.status = PlanBranchStatus::Active;
         plan_branch.pr_eligible = true;
+        plan_branch.merge_task_id = Some(crate::domain::entities::TaskId::from_string(
+            "merge-task-active".to_string(),
+        ));
         app_state
             .plan_branch_repo
             .create(plan_branch)
@@ -606,6 +631,42 @@ mod tests {
             )
             .await
         );
+    }
+
+    #[test]
+    fn gh_auth_check_is_needed_only_for_pr_mode_or_github_https() {
+        assert!(project_needs_gh_auth_check(
+            &project(true),
+            &Ok(GitRemoteAuthConfig {
+                fetch_url: Some("git@github.com:owner/repo.git".to_string()),
+                push_url: Some("git@github.com:owner/repo.git".to_string()),
+            }),
+        ));
+        assert!(project_needs_gh_auth_check(
+            &project(false),
+            &Ok(GitRemoteAuthConfig {
+                fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+                push_url: Some("https://github.com/owner/repo.git".to_string()),
+            }),
+        ));
+        assert!(!project_needs_gh_auth_check(
+            &project(false),
+            &Ok(GitRemoteAuthConfig {
+                fetch_url: Some("git@github.com:owner/repo.git".to_string()),
+                push_url: Some("git@github.com:owner/repo.git".to_string()),
+            }),
+        ));
+        assert!(!project_needs_gh_auth_check(
+            &project(true),
+            &Ok(GitRemoteAuthConfig {
+                fetch_url: None,
+                push_url: None,
+            }),
+        ));
+        assert!(!project_needs_gh_auth_check(
+            &project(true),
+            &Err("repo unavailable".to_string()),
+        ));
     }
 
     #[tokio::test]

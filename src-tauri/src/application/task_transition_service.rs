@@ -16,6 +16,7 @@ use std::future::Future;
 use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::application::agent_client_bundle::{AgentClientBundle, AgentClientFactoryBundle};
@@ -935,11 +936,20 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
 }
 
 impl<R: Runtime> TaskTransitionService<R> {
+    fn log_build_step(step: &'static str, started_at: Instant) {
+        tracing::info!(
+            step,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "Task transition service build step completed"
+        );
+    }
+
     fn default_agent_client_factories() -> AgentClientFactoryBundle {
         AgentClientFactoryBundle::standard_production_runtime_factories()
     }
 
     fn rebuild_agent_spawner(&mut self) {
+        let started_at = Instant::now();
         self.agent_spawner = Self::build_agent_spawner(
             &self.agent_client_factories,
             Arc::clone(&self.task_repo),
@@ -955,6 +965,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             ),
             Arc::clone(&self.running_agent_registry),
         );
+        Self::log_build_step("rebuild_agent_spawner", started_at);
     }
 
     fn build_agent_spawner(
@@ -1023,12 +1034,14 @@ impl<R: Runtime> TaskTransitionService<R> {
     }
 
     fn rebuild_chat_service(&mut self) {
+        let started_at = Instant::now();
         if let Some(handle) = self._app_handle.as_ref() {
             if let Some(app_state) = handle.try_state::<AppState>() {
                 self.chat_service = Arc::new(app_state.build_chat_service_for_runtime(
                     Some(Arc::clone(&self.execution_state)),
                     self._app_handle.clone(),
                 ));
+                Self::log_build_step("rebuild_chat_service_app_state", started_at);
                 return;
             }
         }
@@ -1082,6 +1095,7 @@ impl<R: Runtime> TaskTransitionService<R> {
         }
 
         self.chat_service = Arc::new(service);
+        Self::log_build_step("rebuild_chat_service_fallback", started_at);
     }
 
     /// Create a new TaskTransitionService with all required dependencies.
@@ -1101,7 +1115,11 @@ impl<R: Runtime> TaskTransitionService<R> {
         app_handle: Option<AppHandle<R>>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
     ) -> Self {
+        let total_started_at = Instant::now();
+        let started_at = Instant::now();
         let agent_client_factories = Self::default_agent_client_factories();
+        Self::log_build_step("default_agent_client_factories", started_at);
+        let started_at = Instant::now();
         let agent_spawner = Self::build_agent_spawner(
             &agent_client_factories,
             Arc::clone(&task_repo),
@@ -1113,12 +1131,14 @@ impl<R: Runtime> TaskTransitionService<R> {
             Arc::clone(&ideation_session_repo),
             Arc::clone(&running_agent_registry),
         );
+        Self::log_build_step("initial_agent_spawner", started_at);
 
         // Clone activity_event_repo before consuming it in the chat service
         // so the transition handler can also use it for merge pipeline audit events.
         let activity_event_repo_for_services = Arc::clone(&activity_event_repo);
 
         // Create the unified chat service for worker spawning
+        let started_at = Instant::now();
         let chat_service: Arc<dyn ChatService> = {
             let mut service = if let Some(ref handle) = app_handle {
                 if let Some(app_state) = handle.try_state::<AppState>() {
@@ -1169,8 +1189,10 @@ impl<R: Runtime> TaskTransitionService<R> {
             }
             Arc::new(service)
         };
+        Self::log_build_step("initial_chat_service", started_at);
 
         // Create other services
+        let started_at = Instant::now();
         let event_emitter: Arc<dyn EventEmitter> = Arc::new(
             TauriEventEmitter::new(app_handle.clone()).with_enrichment_repos(
                 Arc::clone(&task_repo),
@@ -1178,17 +1200,20 @@ impl<R: Runtime> TaskTransitionService<R> {
                 Arc::clone(&ideation_session_repo),
             ),
         );
+        Self::log_build_step("event_emitter", started_at);
         let notifier: Arc<dyn Notifier> = Arc::new(LoggingNotifier);
         // Use real dependency manager for automatic blocking/unblocking based on dependency graph
+        let started_at = Instant::now();
         let dependency_manager: Arc<dyn DependencyManager> =
             Arc::new(RepoBackedDependencyManager::new(
                 Arc::clone(&task_dep_repo),
                 Arc::clone(&task_repo),
                 app_handle.clone(),
             ));
+        Self::log_build_step("dependency_manager", started_at);
         let review_starter: Arc<dyn ReviewStarter> = Arc::new(NoOpReviewStarter);
 
-        Self {
+        let service = Self {
             task_repo,
             task_dependency_repo: task_dep_repo,
             project_repo,
@@ -1229,7 +1254,9 @@ impl<R: Runtime> TaskTransitionService<R> {
             webhook_publisher: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
             self_arc: std::sync::Mutex::new(None),
-        }
+        };
+        Self::log_build_step("task_transition_service_new_total", total_started_at);
+        service
     }
 
     /// Set the self-arc for passing to TaskServices (PR merge poller — AD17).
@@ -1338,6 +1365,76 @@ impl<R: Runtime> TaskTransitionService<R> {
         self.agent_provider_settings_repo = Some(Arc::clone(&repo));
         self.rebuild_chat_service();
         self.rebuild_agent_spawner();
+        self
+    }
+
+    pub(crate) fn with_runtime_resolution_context(
+        mut self,
+        agent_clients: Option<AgentClientBundle>,
+        execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
+        agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
+        agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+        plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+        interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
+    ) -> Self {
+        let started_at = Instant::now();
+        let agent_clients_changed = agent_clients.is_some();
+        let runtime_settings_changed = execution_settings_repo.is_some()
+            || agent_lane_settings_repo.is_some()
+            || agent_provider_settings_repo.is_some();
+        let app_agent_lane_settings_repo =
+            if execution_settings_repo.is_some() && agent_lane_settings_repo.is_none() {
+                self._app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<AppState>())
+                    .map(|app_state| Arc::clone(&app_state.agent_lane_settings_repo))
+            } else {
+                None
+            };
+        let app_agent_provider_settings_repo =
+            if execution_settings_repo.is_some() && agent_provider_settings_repo.is_none() {
+                self._app_handle
+                    .as_ref()
+                    .and_then(|handle| handle.try_state::<AppState>())
+                    .map(|app_state| Arc::clone(&app_state.agent_provider_settings_repo))
+            } else {
+                None
+            };
+
+        if let Some(clients) = agent_clients {
+            self.agent_client_factories = AgentClientFactoryBundle::from_client_bundle(&clients);
+        }
+        if let Some(repo) = execution_settings_repo {
+            self.execution_settings_repo = Some(repo);
+        }
+        if let Some(repo) = agent_lane_settings_repo.or(app_agent_lane_settings_repo) {
+            self.agent_lane_settings_repo = Some(repo);
+        }
+        if let Some(repo) = agent_provider_settings_repo.or(app_agent_provider_settings_repo) {
+            self.agent_provider_settings_repo = Some(repo);
+        }
+
+        if let Some(repo) = plan_branch_repo {
+            if !runtime_settings_changed {
+                self.chat_service.set_plan_branch_repo(Arc::clone(&repo));
+            }
+            self.plan_branch_repo = Some(repo);
+        }
+        if let Some(ipr) = interactive_process_registry {
+            if !runtime_settings_changed {
+                self.chat_service
+                    .set_interactive_process_registry(Arc::clone(&ipr));
+            }
+            self.interactive_process_registry = Some(ipr);
+        }
+
+        if runtime_settings_changed {
+            self.rebuild_chat_service();
+        }
+        if agent_clients_changed || runtime_settings_changed {
+            self.rebuild_agent_spawner();
+        }
+        Self::log_build_step("runtime_resolution_context", started_at);
         self
     }
 

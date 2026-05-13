@@ -2011,6 +2011,7 @@ mod tests {
         assert_eq!(path_entries.first(), Some(&expected_node_bin));
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn register_mcp_server_prepends_resolved_node_for_env_shim() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX

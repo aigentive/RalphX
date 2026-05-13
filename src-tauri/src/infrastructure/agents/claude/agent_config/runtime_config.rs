@@ -438,6 +438,8 @@ pub struct GitRuntimeConfig {
     pub workspace_review_cache_ttl_ms: u64,
     /// Short TTL for precomputed agent workspace PR descriptions, in milliseconds.
     pub workspace_pr_description_cache_ttl_ms: u64,
+    /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
+    pub orphan_worktree_cleanup_marker_retry_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
     pub agent_kill_settle_secs: u64,
     /// Timeout in seconds for each stop_agent() call in pre-merge cleanup step 0.
@@ -465,6 +467,7 @@ impl Default for GitRuntimeConfig {
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
+            orphan_worktree_cleanup_marker_retry_secs: 86_400,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
             cleanup_worktree_timeout_secs: 15,
@@ -615,48 +618,159 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         "RALPHX_MERGER_TIMEOUT_SECS"
     );
     // New canonical key (takes precedence if both set)
-    env_u64!(cfg.reconciliation.merger_timeout_secs, "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS");
-    env_u64!(cfg.reconciliation.merging_max_retries, "RALPHX_RECONCILIATION_MERGING_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.pending_merge_stale_minutes, "RALPHX_RECONCILIATION_PENDING_MERGE_STALE_MINUTES");
-    env_u64!(cfg.reconciliation.qa_stale_minutes, "RALPHX_RECONCILIATION_QA_STALE_MINUTES");
-    env_u64!(cfg.reconciliation.merge_incomplete_retry_base_secs, "RALPHX_RECONCILIATION_MERGE_INCOMPLETE_RETRY_BASE_SECS");
-    env_u64!(cfg.reconciliation.merge_incomplete_retry_max_secs, "RALPHX_RECONCILIATION_MERGE_INCOMPLETE_RETRY_MAX_SECS");
-    env_u64!(cfg.reconciliation.merge_incomplete_max_retries, "RALPHX_RECONCILIATION_MERGE_INCOMPLETE_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.validation_revert_max_count, "RALPHX_RECONCILIATION_VALIDATION_REVERT_MAX_COUNT");
-    env_u64!(cfg.reconciliation.merge_conflict_retry_base_secs, "RALPHX_RECONCILIATION_MERGE_CONFLICT_RETRY_BASE_SECS");
-    env_u64!(cfg.reconciliation.merge_conflict_retry_max_secs, "RALPHX_RECONCILIATION_MERGE_CONFLICT_RETRY_MAX_SECS");
-    env_u64!(cfg.reconciliation.merge_conflict_max_retries, "RALPHX_RECONCILIATION_MERGE_CONFLICT_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.executing_max_retries, "RALPHX_RECONCILIATION_EXECUTING_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.reviewing_max_retries, "RALPHX_RECONCILIATION_REVIEWING_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.qa_max_retries, "RALPHX_RECONCILIATION_QA_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.executing_max_wall_clock_minutes, "RALPHX_RECONCILIATION_EXECUTING_MAX_WALL_CLOCK_MINUTES");
-    env_u64!(cfg.reconciliation.reviewing_max_wall_clock_minutes, "RALPHX_RECONCILIATION_REVIEWING_MAX_WALL_CLOCK_MINUTES");
-    env_u64!(cfg.reconciliation.qa_max_wall_clock_minutes, "RALPHX_RECONCILIATION_QA_MAX_WALL_CLOCK_MINUTES");
-    env_u64!(cfg.reconciliation.pre_merge_cleanup_timeout_secs, "RALPHX_RECONCILIATION_PRE_MERGE_CLEANUP_TIMEOUT_SECS");
-    env_u64!(cfg.reconciliation.attempt_merge_deadline_secs, "RALPHX_RECONCILIATION_ATTEMPT_MERGE_DEADLINE_SECS");
-    env_u64!(cfg.reconciliation.validation_deadline_secs, "RALPHX_RECONCILIATION_VALIDATION_DEADLINE_SECS");
-    env_u64!(cfg.reconciliation.merge_registry_grace_period_secs, "RALPHX_RECONCILIATION_MERGE_REGISTRY_GRACE_PERIOD_SECS");
-    env_u64!(cfg.reconciliation.validation_retry_min_cooldown_secs, "RALPHX_RECONCILIATION_VALIDATION_RETRY_MIN_COOLDOWN_SECS");
-    env_u64!(cfg.reconciliation.validation_failure_circuit_breaker_count, "RALPHX_RECONCILIATION_VALIDATION_FAILURE_CIRCUIT_BREAKER_COUNT");
-    env_u64!(cfg.reconciliation.merge_starvation_guard_secs, "RALPHX_RECONCILIATION_MERGE_STARVATION_GUARD_SECS");
-    env_u64!(cfg.reconciliation.branch_freshness_timeout_secs, "RALPHX_RECONCILIATION_BRANCH_FRESHNESS_TIMEOUT_SECS");
-    env_u64!(cfg.reconciliation.merge_watcher_grace_secs, "RALPHX_RECONCILIATION_MERGE_WATCHER_GRACE_SECS");
-    env_u64!(cfg.reconciliation.merge_watcher_poll_secs, "RALPHX_RECONCILIATION_MERGE_WATCHER_POLL_SECS");
-    env_u64!(cfg.reconciliation.execution_failed_max_retries, "RALPHX_RECONCILIATION_EXECUTION_FAILED_MAX_RETRIES");
-    env_u64!(cfg.reconciliation.execution_failed_retry_base_secs, "RALPHX_RECONCILIATION_EXECUTION_FAILED_RETRY_BASE_SECS");
-    env_u64!(cfg.reconciliation.execution_failed_retry_max_secs, "RALPHX_RECONCILIATION_EXECUTION_FAILED_RETRY_MAX_SECS");
-    env_u64!(cfg.reconciliation.recovery_staleness_secs, "RALPHX_RECONCILIATION_RECOVERY_STALENESS_SECS");
-    env_u64!(cfg.reconciliation.merge_circuit_breaker_threshold, "RALPHX_MERGE_CIRCUIT_BREAKER_THRESHOLD");
-    env_u64!(cfg.reconciliation.merge_circuit_breaker_window, "RALPHX_MERGE_CIRCUIT_BREAKER_WINDOW");
-    env_u64!(cfg.reconciliation.freshness_backoff_base_secs, "RALPHX_RECONCILIATION_FRESHNESS_BACKOFF_BASE_SECS");
-    env_u64!(cfg.reconciliation.freshness_backoff_max_secs, "RALPHX_RECONCILIATION_FRESHNESS_BACKOFF_MAX_SECS");
-    env_u64!(cfg.reconciliation.freshness_auto_reset_cooldown_secs, "RALPHX_RECONCILIATION_FRESHNESS_AUTO_RESET_COOLDOWN_SECS");
+    env_u64!(
+        cfg.reconciliation.merger_timeout_secs,
+        "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merging_max_retries,
+        "RALPHX_RECONCILIATION_MERGING_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.pending_merge_stale_minutes,
+        "RALPHX_RECONCILIATION_PENDING_MERGE_STALE_MINUTES"
+    );
+    env_u64!(
+        cfg.reconciliation.qa_stale_minutes,
+        "RALPHX_RECONCILIATION_QA_STALE_MINUTES"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_incomplete_retry_base_secs,
+        "RALPHX_RECONCILIATION_MERGE_INCOMPLETE_RETRY_BASE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_incomplete_retry_max_secs,
+        "RALPHX_RECONCILIATION_MERGE_INCOMPLETE_RETRY_MAX_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_incomplete_max_retries,
+        "RALPHX_RECONCILIATION_MERGE_INCOMPLETE_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.validation_revert_max_count,
+        "RALPHX_RECONCILIATION_VALIDATION_REVERT_MAX_COUNT"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_conflict_retry_base_secs,
+        "RALPHX_RECONCILIATION_MERGE_CONFLICT_RETRY_BASE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_conflict_retry_max_secs,
+        "RALPHX_RECONCILIATION_MERGE_CONFLICT_RETRY_MAX_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_conflict_max_retries,
+        "RALPHX_RECONCILIATION_MERGE_CONFLICT_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.executing_max_retries,
+        "RALPHX_RECONCILIATION_EXECUTING_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.reviewing_max_retries,
+        "RALPHX_RECONCILIATION_REVIEWING_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.qa_max_retries,
+        "RALPHX_RECONCILIATION_QA_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.executing_max_wall_clock_minutes,
+        "RALPHX_RECONCILIATION_EXECUTING_MAX_WALL_CLOCK_MINUTES"
+    );
+    env_u64!(
+        cfg.reconciliation.reviewing_max_wall_clock_minutes,
+        "RALPHX_RECONCILIATION_REVIEWING_MAX_WALL_CLOCK_MINUTES"
+    );
+    env_u64!(
+        cfg.reconciliation.qa_max_wall_clock_minutes,
+        "RALPHX_RECONCILIATION_QA_MAX_WALL_CLOCK_MINUTES"
+    );
+    env_u64!(
+        cfg.reconciliation.pre_merge_cleanup_timeout_secs,
+        "RALPHX_RECONCILIATION_PRE_MERGE_CLEANUP_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.attempt_merge_deadline_secs,
+        "RALPHX_RECONCILIATION_ATTEMPT_MERGE_DEADLINE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.validation_deadline_secs,
+        "RALPHX_RECONCILIATION_VALIDATION_DEADLINE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_registry_grace_period_secs,
+        "RALPHX_RECONCILIATION_MERGE_REGISTRY_GRACE_PERIOD_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.validation_retry_min_cooldown_secs,
+        "RALPHX_RECONCILIATION_VALIDATION_RETRY_MIN_COOLDOWN_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.validation_failure_circuit_breaker_count,
+        "RALPHX_RECONCILIATION_VALIDATION_FAILURE_CIRCUIT_BREAKER_COUNT"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_starvation_guard_secs,
+        "RALPHX_RECONCILIATION_MERGE_STARVATION_GUARD_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.branch_freshness_timeout_secs,
+        "RALPHX_RECONCILIATION_BRANCH_FRESHNESS_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_watcher_grace_secs,
+        "RALPHX_RECONCILIATION_MERGE_WATCHER_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_watcher_poll_secs,
+        "RALPHX_RECONCILIATION_MERGE_WATCHER_POLL_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.execution_failed_max_retries,
+        "RALPHX_RECONCILIATION_EXECUTION_FAILED_MAX_RETRIES"
+    );
+    env_u64!(
+        cfg.reconciliation.execution_failed_retry_base_secs,
+        "RALPHX_RECONCILIATION_EXECUTION_FAILED_RETRY_BASE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.execution_failed_retry_max_secs,
+        "RALPHX_RECONCILIATION_EXECUTION_FAILED_RETRY_MAX_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.recovery_staleness_secs,
+        "RALPHX_RECONCILIATION_RECOVERY_STALENESS_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_circuit_breaker_threshold,
+        "RALPHX_MERGE_CIRCUIT_BREAKER_THRESHOLD"
+    );
+    env_u64!(
+        cfg.reconciliation.merge_circuit_breaker_window,
+        "RALPHX_MERGE_CIRCUIT_BREAKER_WINDOW"
+    );
+    env_u64!(
+        cfg.reconciliation.freshness_backoff_base_secs,
+        "RALPHX_RECONCILIATION_FRESHNESS_BACKOFF_BASE_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.freshness_backoff_max_secs,
+        "RALPHX_RECONCILIATION_FRESHNESS_BACKOFF_MAX_SECS"
+    );
+    env_u64!(
+        cfg.reconciliation.freshness_auto_reset_cooldown_secs,
+        "RALPHX_RECONCILIATION_FRESHNESS_AUTO_RESET_COOLDOWN_SECS"
+    );
     if let Some(v) = lookup("RALPHX_RECONCILIATION_FRESHNESS_MAX_CONFLICT_RETRIES") {
         if let Ok(n) = v.parse::<u32>() {
             cfg.reconciliation.freshness_max_conflict_retries = n;
         }
     }
-    env_u64!(cfg.reconciliation.git_isolation_retry_base_secs, "RALPHX_RECONCILIATION_GIT_ISOLATION_RETRY_BASE_SECS");
+    env_u64!(
+        cfg.reconciliation.git_isolation_retry_base_secs,
+        "RALPHX_RECONCILIATION_GIT_ISOLATION_RETRY_BASE_SECS"
+    );
     if let Some(v) = lookup("RALPHX_RECONCILIATION_GIT_ISOLATION_MAX_RETRIES") {
         if let Ok(n) = v.parse::<u32>() {
             cfg.reconciliation.git_isolation_max_retries = n;
@@ -683,6 +797,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_pr_description_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.orphan_worktree_cleanup_marker_retry_secs,
+        "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS"
     );
     env_u64!(
         cfg.git.agent_kill_settle_secs,
@@ -842,15 +960,13 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
         cfg.ui_feature_flags.activity_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_EXTENSIBILITY_PAGE") {
-        cfg.ui_feature_flags.extensibility_page =
-            matches!(v.to_lowercase().as_str(), "true" | "1");
+        cfg.ui_feature_flags.extensibility_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
         cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_TEAM_MODE") {
-        cfg.ui_feature_flags.team_mode =
-            matches!(v.to_lowercase().as_str(), "true" | "1");
+        cfg.ui_feature_flags.team_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
 }
 
@@ -928,9 +1044,7 @@ pub fn validate_verification_config(cfg: &mut VerificationConfig) {
         cfg.auto_verify_stale_secs = 600;
     }
     if cfg.accept_stale_execution_plan_secs == 0 {
-        warn!(
-            "verification.accept_stale_execution_plan_secs must be > 0; clamping to 30"
-        );
+        warn!("verification.accept_stale_execution_plan_secs must be > 0; clamping to 30");
         cfg.accept_stale_execution_plan_secs = 30;
     }
     if cfg.auto_verify_stale_secs >= cfg.reconciliation_stale_after_secs {
@@ -959,9 +1073,7 @@ pub fn validate_external_mcp_config(cfg: &ExternalMcpConfig) -> Result<(), Strin
         return Err("external_mcp.host must not be empty".to_string());
     }
     if cfg.human_wait_timeout_secs == 0 {
-        return Err(
-            "external_mcp.human_wait_timeout_secs must be greater than 0".to_string(),
-        );
+        return Err("external_mcp.human_wait_timeout_secs must be greater than 0".to_string());
     }
     if cfg.enabled {
         let is_local = cfg.host == "localhost" || cfg.host == "127.0.0.1";

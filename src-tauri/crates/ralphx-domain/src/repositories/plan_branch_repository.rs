@@ -6,11 +6,11 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     ArtifactId, ExecutionPlanId, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
     ProjectId, TaskId,
 };
-use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::error::AppResult;
 
 /// Repository trait for PlanBranch persistence.
@@ -30,10 +30,8 @@ pub trait PlanBranchRepository: Send + Sync {
     async fn get_by_plan_artifact_id(&self, id: &ArtifactId) -> AppResult<Vec<PlanBranch>>;
 
     /// Get plan branch by execution plan ID (unique constraint)
-    async fn get_by_execution_plan_id(
-        &self,
-        id: &ExecutionPlanId,
-    ) -> AppResult<Option<PlanBranch>>;
+    async fn get_by_execution_plan_id(&self, id: &ExecutionPlanId)
+        -> AppResult<Option<PlanBranch>>;
 
     /// Get plan branch by session ID (unique constraint, primary lookup)
     async fn get_by_session_id(
@@ -46,6 +44,22 @@ pub trait PlanBranchRepository: Send + Sync {
 
     /// Get all plan branches for a project
     async fn get_by_project_id(&self, project_id: &ProjectId) -> AppResult<Vec<PlanBranch>>;
+
+    /// Get active PR-eligible branches that may need startup PR creation or metadata recovery.
+    async fn get_startup_pr_recovery_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PlanBranch>> {
+        let branches = self.get_by_project_id(project_id).await?;
+        Ok(branches
+            .into_iter()
+            .filter(|branch| {
+                branch.status == PlanBranchStatus::Active
+                    && branch.pr_eligible
+                    && branch.merge_task_id.is_some()
+            })
+            .collect())
+    }
 
     /// Get terminal plan branches that still need startup local-artifact cleanup.
     async fn get_terminal_local_cleanup_candidates_by_project_id(
@@ -128,9 +142,6 @@ pub trait PlanBranchRepository: Send + Sync {
     async fn find_pr_polling_task_ids(&self) -> AppResult<Vec<TaskId>>;
 
     /// Update pr_push_status only
-    async fn update_pr_push_status(
-        &self,
-        id: &PlanBranchId,
-        status: PrPushStatus,
-    ) -> AppResult<()>;
+    async fn update_pr_push_status(&self, id: &PlanBranchId, status: PrPushStatus)
+        -> AppResult<()>;
 }

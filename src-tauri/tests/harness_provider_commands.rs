@@ -33,7 +33,7 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
 async fn ipc_contract_provider_settings_read_returns_all_known_providers() {
     let app = provider_command_app();
 
-    let response = get_agent_provider_settings(app.state::<AppState>())
+    let response = get_agent_provider_settings(None, app.state::<AppState>())
         .await
         .expect("provider settings should load");
 
@@ -69,7 +69,7 @@ async fn ipc_contract_provider_settings_update_round_trips_provider_defaults() {
     assert_eq!(codex.approval_policy.as_deref(), Some("never"));
     assert_eq!(codex.sandbox_mode.as_deref(), Some("danger-full-access"));
 
-    let read_back = get_agent_provider_settings(app.state::<AppState>())
+    let read_back = get_agent_provider_settings(None, app.state::<AppState>())
         .await
         .expect("provider settings should read back");
     let read_back_codex = read_back

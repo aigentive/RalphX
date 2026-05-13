@@ -134,9 +134,7 @@ fn cached_agent_workspace_pr_description(
         return None;
     }
     let cache_key = key.cache_key();
-    let Some(entry) = agent_workspace_pr_description_cache().get(&cache_key) else {
-        return None;
-    };
+    let entry = agent_workspace_pr_description_cache().get(&cache_key)?;
     let age = entry.inserted_at.elapsed();
     if age <= ttl {
         return Some((entry.description.clone(), age.as_millis()));

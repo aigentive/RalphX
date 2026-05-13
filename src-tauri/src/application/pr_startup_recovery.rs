@@ -8,10 +8,10 @@
 //! BEFORE `StartupJobRunner::run()` to ensure pollers exist before the reconciler
 //! can re-enter PR-mode entry actions for waiting-on-PR tasks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::StreamExt as _;
@@ -29,7 +29,7 @@ use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     AgentConversationWorkspace, ExecutionPlanId, ExecutionPlanStatus, InternalStatus, PlanBranch,
-    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, ExecutionPlanRepository,
@@ -44,8 +44,11 @@ use crate::domain::state_machine::transition_handler::{
 };
 
 const PR_METADATA_REFRESH_CONCURRENCY: usize = 8;
+const PR_CREATION_RECOVERY_PROJECT_CONCURRENCY: usize = 4;
 const PR_POLLER_RECOVERY_CONCURRENCY: usize = 4;
 const AGENT_WORKSPACE_PR_POLLER_RECOVERY_CONCURRENCY: usize = 4;
+const SLOW_PR_RECOVERY_CANDIDATE_MS: u64 = 100;
+const STARTUP_BACKGROUND_DB_GRACE: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
 struct PrMetadataRefreshJob {
@@ -53,6 +56,134 @@ struct PrMetadataRefreshJob {
     merge_task: Task,
     plan_branch: PlanBranch,
     review_state: PrReviewState,
+}
+
+#[derive(Default)]
+struct PrCreationRecoveryProjectResult {
+    projects_blocked: usize,
+    plan_branches_seen: usize,
+    existing_pr_branches: usize,
+    missing_pr_candidates: usize,
+    missing_pr_repairs: usize,
+    pending_push_syncs: usize,
+    candidate_load_elapsed_ms: u64,
+    project_task_load_elapsed_ms: u64,
+    project_tasks_seen: usize,
+    merge_task_read_elapsed_ms: u64,
+    needs_recovery_elapsed_ms: u64,
+    review_state_elapsed_ms: u64,
+    existing_pr_refresh_lookup_elapsed_ms: u64,
+    reviewable_diff_elapsed_ms: u64,
+    create_pr_elapsed_ms: u64,
+    slow_candidates: usize,
+    metadata_refresh_jobs: Vec<PrMetadataRefreshJob>,
+}
+
+impl PrCreationRecoveryProjectResult {
+    fn merge(&mut self, other: Self) {
+        self.projects_blocked += other.projects_blocked;
+        self.plan_branches_seen += other.plan_branches_seen;
+        self.existing_pr_branches += other.existing_pr_branches;
+        self.missing_pr_candidates += other.missing_pr_candidates;
+        self.missing_pr_repairs += other.missing_pr_repairs;
+        self.pending_push_syncs += other.pending_push_syncs;
+        self.candidate_load_elapsed_ms += other.candidate_load_elapsed_ms;
+        self.project_task_load_elapsed_ms += other.project_task_load_elapsed_ms;
+        self.project_tasks_seen += other.project_tasks_seen;
+        self.merge_task_read_elapsed_ms += other.merge_task_read_elapsed_ms;
+        self.needs_recovery_elapsed_ms += other.needs_recovery_elapsed_ms;
+        self.review_state_elapsed_ms += other.review_state_elapsed_ms;
+        self.existing_pr_refresh_lookup_elapsed_ms += other.existing_pr_refresh_lookup_elapsed_ms;
+        self.reviewable_diff_elapsed_ms += other.reviewable_diff_elapsed_ms;
+        self.create_pr_elapsed_ms += other.create_pr_elapsed_ms;
+        self.slow_candidates += other.slow_candidates;
+        self.metadata_refresh_jobs
+            .extend(other.metadata_refresh_jobs);
+    }
+}
+
+struct ProjectPrRecoveryTaskSnapshot {
+    by_id: HashMap<String, Task>,
+    merged_regular_plan_keys: HashSet<(String, String)>,
+    task_count: usize,
+}
+
+impl ProjectPrRecoveryTaskSnapshot {
+    fn from_targeted_tasks(
+        tasks: Vec<Task>,
+        merged_regular_plan_keys: HashSet<(
+            crate::domain::entities::IdeationSessionId,
+            ExecutionPlanId,
+        )>,
+    ) -> Self {
+        let task_count = tasks.len();
+        let mut by_id = HashMap::with_capacity(task_count);
+
+        for task in tasks {
+            by_id.insert(task.id.as_str().to_string(), task);
+        }
+
+        Self {
+            by_id,
+            merged_regular_plan_keys: merged_regular_plan_keys
+                .into_iter()
+                .map(|(session_id, execution_plan_id)| {
+                    (
+                        session_id.as_str().to_string(),
+                        execution_plan_id.as_str().to_string(),
+                    )
+                })
+                .collect(),
+            task_count,
+        }
+    }
+
+    fn get_task(&self, task_id: &TaskId) -> Option<&Task> {
+        self.by_id.get(task_id.as_str())
+    }
+
+    fn has_merged_regular_plan_task(
+        &self,
+        session_id: &crate::domain::entities::IdeationSessionId,
+        execution_plan_id: &ExecutionPlanId,
+    ) -> bool {
+        self.merged_regular_plan_keys.contains(&(
+            session_id.as_str().to_string(),
+            execution_plan_id.as_str().to_string(),
+        ))
+    }
+}
+
+fn elapsed_ms_u64(started_at: Instant) -> u64 {
+    started_at
+        .elapsed()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn record_slow_pr_recovery_candidate(
+    result: &mut PrCreationRecoveryProjectResult,
+    project: &Project,
+    plan_branch: &PlanBranch,
+    candidate_started_at: Instant,
+    outcome: &'static str,
+) {
+    let candidate_elapsed_ms = elapsed_ms_u64(candidate_started_at);
+    if candidate_elapsed_ms < SLOW_PR_RECOVERY_CANDIDATE_MS {
+        return;
+    }
+
+    result.slow_candidates += 1;
+    tracing::info!(
+        project_id = project.id.as_str(),
+        branch_id = plan_branch.id.as_str(),
+        branch = %plan_branch.branch_name,
+        pr_number = plan_branch.pr_number,
+        outcome,
+        elapsed_ms = candidate_elapsed_ms,
+        "PR startup recovery: slow candidate scan completed"
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,8 +375,8 @@ pub async fn recover_missing_draft_prs(
     github_service: Arc<dyn GithubServiceTrait>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
+    let started_at = Instant::now();
     let pr_creation_guard = Arc::new(dashmap::DashMap::new());
-    let mut metadata_refresh_jobs = Vec::new();
 
     let projects = match project_repo.get_all().await {
         Ok(projects) => projects,
@@ -254,187 +385,74 @@ pub async fn recover_missing_draft_prs(
             return;
         }
     };
+    let projects_seen = projects.len();
 
-    for project in projects {
-        if blocked_git_project_ids.contains(&project.id) {
-            tracing::warn!(
-                project_id = project.id.as_str(),
-                "PR startup recovery: skipping missing-draft-PR recovery due to Git auth preflight"
-            );
-            continue;
-        }
-
-        let plan_branches = match plan_branch_repo.get_by_project_id(&project.id).await {
-            Ok(branches) => branches,
-            Err(e) => {
-                tracing::warn!(
-                    project_id = project.id.as_str(),
-                    error = %e,
-                    "PR startup recovery: failed to load plan branches for project"
-                );
-                continue;
+    let project_results = futures::stream::iter(projects)
+        .map(|project| {
+            let task_repo = Arc::clone(&task_repo);
+            let plan_branch_repo = Arc::clone(&plan_branch_repo);
+            let execution_plan_repo = Arc::clone(&execution_plan_repo);
+            let ideation_session_repo = Arc::clone(&ideation_session_repo);
+            let artifact_repo = Arc::clone(&artifact_repo);
+            let github_service = Arc::clone(&github_service);
+            let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+            let pr_creation_guard = Arc::clone(&pr_creation_guard);
+            async move {
+                recover_missing_draft_prs_for_project(
+                    project,
+                    task_repo,
+                    plan_branch_repo,
+                    execution_plan_repo,
+                    ideation_session_repo,
+                    artifact_repo,
+                    github_service,
+                    blocked_git_project_ids,
+                    pr_creation_guard,
+                )
+                .await
             }
-        };
+        })
+        .buffer_unordered(PR_CREATION_RECOVERY_PROJECT_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
 
-        for plan_branch in plan_branches {
-            let Some(merge_task_id) = plan_branch.merge_task_id.as_ref() else {
-                tracing::debug!(
-                    branch_id = plan_branch.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    "PR startup recovery: active PR-eligible plan branch has no merge task"
-                );
-                continue;
-            };
-
-            let merge_task = match task_repo.get_by_id(merge_task_id).await {
-                Ok(Some(task)) => task,
-                Ok(None) => {
-                    tracing::debug!(
-                        branch_id = plan_branch.id.as_str(),
-                        branch = %plan_branch.branch_name,
-                        merge_task_id = merge_task_id.as_str(),
-                        "PR startup recovery: merge task not found for PR-eligible plan branch"
-                    );
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        branch_id = plan_branch.id.as_str(),
-                        branch = %plan_branch.branch_name,
-                        merge_task_id = merge_task_id.as_str(),
-                        error = %e,
-                        "PR startup recovery: failed to load merge task for PR-eligible plan branch"
-                    );
-                    continue;
-                }
-            };
-
-            if !plan_branch_needs_pr_recovery(
-                &task_repo,
-                &execution_plan_repo,
-                &project,
-                &plan_branch,
-                &merge_task,
-            )
-            .await
-            {
-                continue;
-            }
-
-            let review_state =
-                if plan_regular_tasks_complete(&merge_task, &plan_branch, Some(&task_repo)).await {
-                    PrReviewState::Ready
-                } else {
-                    PrReviewState::Draft
-                };
-
-            if plan_branch.pr_number.is_some() {
-                if !matches!(
-                    plan_branch.pr_push_status,
-                    crate::domain::entities::plan_branch::PrPushStatus::Pushed
-                ) {
-                    tracing::info!(
-                        branch_id = plan_branch.id.as_str(),
-                        branch = %plan_branch.branch_name,
-                        merge_task_id = merge_task.id.as_str(),
-                        status = ?merge_task.internal_status,
-                        push_status = %plan_branch.pr_push_status,
-                        "PR startup recovery: syncing pending PR branch push for active plan branch"
-                    );
-                    sync_plan_branch_pr_if_needed(
-                        &project,
-                        &plan_branch,
-                        &github_service,
-                        &plan_branch_repo,
-                    )
-                    .await;
-                }
-
-                let refreshed_plan_branch = plan_branch_repo
-                    .get_by_id(&plan_branch.id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| plan_branch.clone());
-                metadata_refresh_jobs.push(PrMetadataRefreshJob {
-                    project: project.clone(),
-                    merge_task: merge_task.clone(),
-                    plan_branch: refreshed_plan_branch,
-                    review_state,
-                });
-                continue;
-            }
-
-            let branch_has_reviewable_diff = match plan_branch_has_reviewable_diff(
-                &project,
-                &plan_branch,
-            )
-            .await
-            {
-                Ok(has_diff) => has_diff,
-                Err(e) => {
-                    tracing::warn!(
-                        branch_id = plan_branch.id.as_str(),
-                        branch = %plan_branch.branch_name,
-                        merge_task_id = merge_task.id.as_str(),
-                        error = %e,
-                        "PR startup recovery: failed to determine whether the active plan branch is ahead of base"
-                    );
-                    false
-                }
-            };
-            if !branch_has_reviewable_diff {
-                tracing::debug!(
-                    branch_id = plan_branch.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    merge_task_id = merge_task.id.as_str(),
-                    status = ?merge_task.internal_status,
-                    "PR startup recovery: skipping active plan branch with no reviewable diff"
-                );
-                continue;
-            }
-
-            tracing::info!(
-                branch_id = plan_branch.id.as_str(),
-                branch = %plan_branch.branch_name,
-                merge_task_id = merge_task.id.as_str(),
-                status = ?merge_task.internal_status,
-                "PR startup recovery: repairing missing draft PR for active plan branch"
-            );
-
-            create_draft_pr_if_needed(
-                &merge_task,
-                &project,
-                &plan_branch,
-                &pr_creation_guard,
-                &github_service,
-                &plan_branch_repo,
-                Some(&ideation_session_repo),
-                Some(&artifact_repo),
-            )
-            .await;
-
-            if let Ok(Some(refreshed_plan_branch)) =
-                plan_branch_repo.get_by_id(&plan_branch.id).await
-            {
-                if refreshed_plan_branch.pr_number.is_some() {
-                    metadata_refresh_jobs.push(PrMetadataRefreshJob {
-                        project: project.clone(),
-                        merge_task: merge_task.clone(),
-                        plan_branch: refreshed_plan_branch,
-                        review_state,
-                    });
-                }
-            }
-        }
+    let mut totals = PrCreationRecoveryProjectResult::default();
+    for result in project_results {
+        totals.merge(result);
     }
 
-    if !metadata_refresh_jobs.is_empty() {
+    tracing::info!(
+        projects_seen,
+        projects_blocked = totals.projects_blocked,
+        plan_branches_seen = totals.plan_branches_seen,
+        existing_pr_branches = totals.existing_pr_branches,
+        missing_pr_candidates = totals.missing_pr_candidates,
+        missing_pr_repairs = totals.missing_pr_repairs,
+        pending_push_syncs = totals.pending_push_syncs,
+        metadata_refresh_jobs = totals.metadata_refresh_jobs.len(),
+        candidate_load_elapsed_ms = totals.candidate_load_elapsed_ms,
+        project_task_load_elapsed_ms = totals.project_task_load_elapsed_ms,
+        project_tasks_seen = totals.project_tasks_seen,
+        merge_task_read_elapsed_ms = totals.merge_task_read_elapsed_ms,
+        needs_recovery_elapsed_ms = totals.needs_recovery_elapsed_ms,
+        review_state_elapsed_ms = totals.review_state_elapsed_ms,
+        existing_pr_refresh_lookup_elapsed_ms = totals.existing_pr_refresh_lookup_elapsed_ms,
+        reviewable_diff_elapsed_ms = totals.reviewable_diff_elapsed_ms,
+        create_pr_elapsed_ms = totals.create_pr_elapsed_ms,
+        slow_candidates = totals.slow_candidates,
+        concurrency = PR_CREATION_RECOVERY_PROJECT_CONCURRENCY,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "PR startup recovery: missing draft PR scan completed"
+    );
+
+    if !totals.metadata_refresh_jobs.is_empty() {
         tracing::info!(
-            count = metadata_refresh_jobs.len(),
+            count = totals.metadata_refresh_jobs.len(),
             "PR startup recovery: scheduling existing PR metadata refresh in background"
         );
+        let metadata_refresh_jobs = totals.metadata_refresh_jobs;
         tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(STARTUP_BACKGROUND_DB_GRACE).await;
             git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
                 refresh_existing_pr_metadata(
                     metadata_refresh_jobs,
@@ -447,6 +465,294 @@ pub async fn recover_missing_draft_prs(
             .await;
         });
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn recover_missing_draft_prs_for_project(
+    project: Project,
+    task_repo: Arc<dyn TaskRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    execution_plan_repo: Arc<dyn ExecutionPlanRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    github_service: Arc<dyn GithubServiceTrait>,
+    blocked_git_project_ids: Arc<HashSet<ProjectId>>,
+    pr_creation_guard: Arc<dashmap::DashMap<PlanBranchId, ()>>,
+) -> PrCreationRecoveryProjectResult {
+    let mut result = PrCreationRecoveryProjectResult::default();
+    if blocked_git_project_ids.contains(&project.id) {
+        result.projects_blocked += 1;
+        tracing::warn!(
+            project_id = project.id.as_str(),
+            "PR startup recovery: skipping missing-draft-PR recovery due to Git auth preflight"
+        );
+        return result;
+    }
+
+    let candidate_load_started_at = Instant::now();
+    let plan_branches = match plan_branch_repo
+        .get_startup_pr_recovery_candidates_by_project_id(&project.id)
+        .await
+    {
+        Ok(branches) => branches,
+        Err(e) => {
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                error = %e,
+                "PR startup recovery: failed to load startup PR recovery candidates for project"
+            );
+            return result;
+        }
+    };
+    result.candidate_load_elapsed_ms += elapsed_ms_u64(candidate_load_started_at);
+
+    if plan_branches.is_empty() {
+        return result;
+    }
+
+    let project_task_load_started_at = Instant::now();
+    let merge_task_ids = plan_branches
+        .iter()
+        .filter_map(|branch| branch.merge_task_id.clone())
+        .collect::<Vec<_>>();
+    let merge_tasks = match task_repo.get_by_ids(&merge_task_ids).await {
+        Ok(tasks) => tasks,
+        Err(e) => {
+            result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                error = %e,
+                "PR startup recovery: failed to load candidate merge tasks"
+            );
+            return result;
+        }
+    };
+    let mut active_execution_plan_ids = HashMap::new();
+    let mut active_plan_keys = Vec::new();
+    for plan_branch in &plan_branches {
+        let Some(execution_plan_id) =
+            active_execution_plan_id_for_branch(&execution_plan_repo, plan_branch).await
+        else {
+            continue;
+        };
+        active_plan_keys.push((plan_branch.session_id.clone(), execution_plan_id.clone()));
+        active_execution_plan_ids.insert(plan_branch.id.clone(), execution_plan_id);
+    }
+    let merged_regular_plan_keys = match task_repo
+        .find_merged_regular_plan_keys(&project.id, &active_plan_keys)
+        .await
+    {
+        Ok(keys) => keys,
+        Err(e) => {
+            result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                error = %e,
+                "PR startup recovery: failed to load merged regular plan keys"
+            );
+            return result;
+        }
+    };
+    let task_snapshot =
+        ProjectPrRecoveryTaskSnapshot::from_targeted_tasks(merge_tasks, merged_regular_plan_keys);
+    result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
+    result.project_tasks_seen += task_snapshot.task_count;
+
+    for plan_branch in plan_branches {
+        let candidate_started_at = Instant::now();
+        result.plan_branches_seen += 1;
+        let Some(merge_task_id) = plan_branch.merge_task_id.as_ref() else {
+            tracing::debug!(
+                branch_id = plan_branch.id.as_str(),
+                branch = %plan_branch.branch_name,
+                "PR startup recovery: active PR-eligible plan branch has no merge task"
+            );
+            continue;
+        };
+
+        let merge_task_read_started_at = Instant::now();
+        let Some(merge_task) = task_snapshot.get_task(merge_task_id) else {
+            result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
+            tracing::debug!(
+                branch_id = plan_branch.id.as_str(),
+                branch = %plan_branch.branch_name,
+                merge_task_id = merge_task_id.as_str(),
+                "PR startup recovery: merge task not found for PR-eligible plan branch"
+            );
+            record_slow_pr_recovery_candidate(
+                &mut result,
+                &project,
+                &plan_branch,
+                candidate_started_at,
+                "merge_task_missing",
+            );
+            continue;
+        };
+        result.merge_task_read_elapsed_ms += elapsed_ms_u64(merge_task_read_started_at);
+
+        let needs_recovery_started_at = Instant::now();
+        if !plan_branch_needs_pr_recovery(
+            &task_snapshot,
+            &project,
+            &plan_branch,
+            merge_task,
+            active_execution_plan_ids.get(&plan_branch.id),
+        )
+        .await
+        {
+            result.needs_recovery_elapsed_ms += elapsed_ms_u64(needs_recovery_started_at);
+            record_slow_pr_recovery_candidate(
+                &mut result,
+                &project,
+                &plan_branch,
+                candidate_started_at,
+                "not_needed",
+            );
+            continue;
+        }
+        result.needs_recovery_elapsed_ms += elapsed_ms_u64(needs_recovery_started_at);
+
+        let review_state_started_at = Instant::now();
+        let review_state =
+            if plan_regular_tasks_complete(merge_task, &plan_branch, Some(&task_repo)).await {
+                PrReviewState::Ready
+            } else {
+                PrReviewState::Draft
+            };
+        result.review_state_elapsed_ms += elapsed_ms_u64(review_state_started_at);
+
+        if plan_branch.pr_number.is_some() {
+            result.existing_pr_branches += 1;
+            if !matches!(
+                plan_branch.pr_push_status,
+                crate::domain::entities::plan_branch::PrPushStatus::Pushed
+            ) {
+                result.pending_push_syncs += 1;
+                tracing::info!(
+                    branch_id = plan_branch.id.as_str(),
+                    branch = %plan_branch.branch_name,
+                    merge_task_id = merge_task.id.as_str(),
+                    status = ?merge_task.internal_status,
+                    push_status = %plan_branch.pr_push_status,
+                    "PR startup recovery: syncing pending PR branch push for active plan branch"
+                );
+                sync_plan_branch_pr_if_needed(
+                    &project,
+                    &plan_branch,
+                    &github_service,
+                    &plan_branch_repo,
+                )
+                .await;
+            }
+
+            let refresh_lookup_started_at = Instant::now();
+            let refreshed_plan_branch = plan_branch_repo
+                .get_by_id(&plan_branch.id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| plan_branch.clone());
+            result.existing_pr_refresh_lookup_elapsed_ms +=
+                elapsed_ms_u64(refresh_lookup_started_at);
+            result.metadata_refresh_jobs.push(PrMetadataRefreshJob {
+                project: project.clone(),
+                merge_task: (*merge_task).clone(),
+                plan_branch: refreshed_plan_branch,
+                review_state,
+            });
+            record_slow_pr_recovery_candidate(
+                &mut result,
+                &project,
+                &plan_branch,
+                candidate_started_at,
+                "existing_pr",
+            );
+            continue;
+        }
+
+        result.missing_pr_candidates += 1;
+        let reviewable_diff_started_at = Instant::now();
+        let branch_has_reviewable_diff = match plan_branch_has_reviewable_diff(
+            &project,
+            &plan_branch,
+        )
+        .await
+        {
+            Ok(has_diff) => has_diff,
+            Err(e) => {
+                tracing::warn!(
+                    branch_id = plan_branch.id.as_str(),
+                    branch = %plan_branch.branch_name,
+                    merge_task_id = merge_task.id.as_str(),
+                    error = %e,
+                    "PR startup recovery: failed to determine whether the active plan branch is ahead of base"
+                );
+                false
+            }
+        };
+        result.reviewable_diff_elapsed_ms += elapsed_ms_u64(reviewable_diff_started_at);
+        if !branch_has_reviewable_diff {
+            tracing::debug!(
+                branch_id = plan_branch.id.as_str(),
+                branch = %plan_branch.branch_name,
+                merge_task_id = merge_task.id.as_str(),
+                status = ?merge_task.internal_status,
+                "PR startup recovery: skipping active plan branch with no reviewable diff"
+            );
+            record_slow_pr_recovery_candidate(
+                &mut result,
+                &project,
+                &plan_branch,
+                candidate_started_at,
+                "no_reviewable_diff",
+            );
+            continue;
+        }
+
+        tracing::info!(
+            branch_id = plan_branch.id.as_str(),
+            branch = %plan_branch.branch_name,
+            merge_task_id = merge_task.id.as_str(),
+            status = ?merge_task.internal_status,
+            "PR startup recovery: repairing missing draft PR for active plan branch"
+        );
+
+        let create_pr_started_at = Instant::now();
+        create_draft_pr_if_needed(
+            merge_task,
+            &project,
+            &plan_branch,
+            &pr_creation_guard,
+            &github_service,
+            &plan_branch_repo,
+            Some(&ideation_session_repo),
+            Some(&artifact_repo),
+        )
+        .await;
+        result.create_pr_elapsed_ms += elapsed_ms_u64(create_pr_started_at);
+
+        if let Ok(Some(refreshed_plan_branch)) = plan_branch_repo.get_by_id(&plan_branch.id).await {
+            if refreshed_plan_branch.pr_number.is_some() {
+                result.missing_pr_repairs += 1;
+                result.metadata_refresh_jobs.push(PrMetadataRefreshJob {
+                    project: project.clone(),
+                    merge_task: (*merge_task).clone(),
+                    plan_branch: refreshed_plan_branch,
+                    review_state,
+                });
+            }
+        }
+
+        record_slow_pr_recovery_candidate(
+            &mut result,
+            &project,
+            &plan_branch,
+            candidate_started_at,
+            "missing_pr_attempted",
+        );
+    }
+
+    result
 }
 
 async fn refresh_existing_pr_metadata(
@@ -567,11 +873,11 @@ async fn refresh_existing_pr_metadata(
 }
 
 async fn plan_branch_needs_pr_recovery(
-    task_repo: &Arc<dyn TaskRepository>,
-    execution_plan_repo: &Arc<dyn ExecutionPlanRepository>,
+    task_snapshot: &ProjectPrRecoveryTaskSnapshot,
     project: &Project,
     plan_branch: &PlanBranch,
     merge_task: &Task,
+    active_execution_plan_id: Option<&ExecutionPlanId>,
 ) -> bool {
     if project.archived_at.is_some() {
         tracing::debug!(
@@ -614,44 +920,23 @@ async fn plan_branch_needs_pr_recovery(
         return false;
     }
 
-    let Some(execution_plan_id) =
-        active_execution_plan_id_for_branch(execution_plan_repo, plan_branch).await
-    else {
+    let Some(execution_plan_id) = active_execution_plan_id else {
         return false;
     };
 
-    match task_repo.get_by_project_filtered(&project.id, false).await {
-        Ok(tasks) => {
-            let has_merged_plan_task = tasks.iter().any(|task| {
-                task.category == TaskCategory::Regular
-                    && task.internal_status == InternalStatus::Merged
-                    && task.archived_at.is_none()
-                    && task.ideation_session_id.as_ref() == Some(&plan_branch.session_id)
-                    && task.execution_plan_id.as_ref() == Some(&execution_plan_id)
-            });
+    let has_merged_plan_task =
+        task_snapshot.has_merged_regular_plan_task(&plan_branch.session_id, execution_plan_id);
 
-            if !has_merged_plan_task {
-                tracing::debug!(
-                    branch_id = plan_branch.id.as_str(),
-                    branch = %plan_branch.branch_name,
-                    execution_plan_id = execution_plan_id.as_str(),
-                    "PR startup recovery: skipping active plan branch with no merged regular task"
-                );
-            }
-
-            has_merged_plan_task
-        }
-        Err(e) => {
-            tracing::warn!(
-                branch_id = plan_branch.id.as_str(),
-                branch = %plan_branch.branch_name,
-                execution_plan_id = execution_plan_id.as_str(),
-                error = %e,
-                "PR startup recovery: failed to inspect plan tasks"
-            );
-            false
-        }
+    if !has_merged_plan_task {
+        tracing::debug!(
+            branch_id = plan_branch.id.as_str(),
+            branch = %plan_branch.branch_name,
+            execution_plan_id = execution_plan_id.as_str(),
+            "PR startup recovery: skipping active plan branch with no merged regular task"
+        );
     }
+
+    has_merged_plan_task
 }
 
 async fn active_execution_plan_id_for_branch(
@@ -1732,8 +2017,8 @@ mod tests {
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus, ArtifactId, ChatConversationId,
-        IdeationAnalysisBaseRefKind, IdeationSessionId,
+        AgentConversationWorkspaceStatus, Artifact, ArtifactId, ArtifactType, ChatConversationId,
+        ExecutionPlan, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
     };
     use crate::domain::services::github_service::{
         PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
@@ -1841,6 +2126,80 @@ mod tests {
             head_ref_oid: None,
             base_ref_oid: None,
         }
+    }
+
+    async fn create_existing_pr_recovery_candidate(
+        app_state: &AppState,
+        project: &Project,
+        branch_name: &str,
+        pr_number: i64,
+    ) -> (Task, PlanBranch) {
+        let mut session = IdeationSession::new_with_title(project.id.clone(), "Startup PR Plan");
+        session.mark_accepted();
+        let session = app_state
+            .ideation_session_repo
+            .create(session)
+            .await
+            .expect("create ideation session");
+        let execution_plan = app_state
+            .execution_plan_repo
+            .create(ExecutionPlan::new(session.id.clone()))
+            .await
+            .expect("create execution plan");
+        let plan_artifact = app_state
+            .artifact_repo
+            .create(Artifact::new_inline(
+                format!("Plan artifact {pr_number}"),
+                ArtifactType::Specification,
+                "Deliver the startup performance recovery plan.",
+                "test",
+            ))
+            .await
+            .expect("create artifact");
+
+        let mut merge_task = Task::new(project.id.clone(), "Merge plan into main".to_string());
+        merge_task.category = TaskCategory::PlanMerge;
+        merge_task.internal_status = InternalStatus::WaitingOnPr;
+        merge_task.ideation_session_id = Some(session.id.clone());
+        merge_task.execution_plan_id = Some(execution_plan.id.clone());
+        let merge_task = app_state
+            .task_repo
+            .create(merge_task)
+            .await
+            .expect("create merge task");
+
+        let mut regular_task = Task::new(project.id.clone(), "Implement plan".to_string());
+        regular_task.category = TaskCategory::Regular;
+        regular_task.internal_status = InternalStatus::Merged;
+        regular_task.ideation_session_id = Some(session.id.clone());
+        regular_task.execution_plan_id = Some(execution_plan.id.clone());
+        app_state
+            .task_repo
+            .create(regular_task)
+            .await
+            .expect("create completed regular task");
+
+        let mut plan_branch = PlanBranch::new(
+            plan_artifact.id,
+            session.id,
+            project.id.clone(),
+            branch_name.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.status = PlanBranchStatus::Active;
+        plan_branch.execution_plan_id = Some(execution_plan.id);
+        plan_branch.merge_task_id = Some(merge_task.id.clone());
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(pr_number);
+        plan_branch.pr_status = Some(DbPrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pending;
+        let plan_branch = app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("create plan branch");
+
+        (merge_task, plan_branch)
     }
 
     #[test]
@@ -1979,6 +2338,237 @@ mod tests {
         assert_eq!(state.update_pr_details_calls, 1);
         assert_eq!(state.mark_pr_ready_calls, 1);
         assert_eq!(state.last_mark_pr_ready_number, Some(42));
+    }
+
+    #[test]
+    fn pr_creation_project_result_merge_accumulates_timings_and_jobs() {
+        let project = Project::new("Startup Metadata".to_string(), "/tmp/repo".to_string());
+        let merge_task = Task::new(project.id.clone(), "Merge plan into main".to_string());
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("metadata-artifact".to_string()),
+            IdeationSessionId::from_string("metadata-session".to_string()),
+            project.id.clone(),
+            "ralphx/startup/metadata".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.pr_number = Some(42);
+
+        let mut left = PrCreationRecoveryProjectResult {
+            projects_blocked: 1,
+            plan_branches_seen: 2,
+            existing_pr_branches: 3,
+            missing_pr_candidates: 4,
+            missing_pr_repairs: 5,
+            pending_push_syncs: 6,
+            candidate_load_elapsed_ms: 7,
+            project_task_load_elapsed_ms: 8,
+            project_tasks_seen: 9,
+            merge_task_read_elapsed_ms: 10,
+            needs_recovery_elapsed_ms: 11,
+            review_state_elapsed_ms: 12,
+            existing_pr_refresh_lookup_elapsed_ms: 13,
+            reviewable_diff_elapsed_ms: 14,
+            create_pr_elapsed_ms: 15,
+            slow_candidates: 16,
+            metadata_refresh_jobs: Vec::new(),
+        };
+        let right = PrCreationRecoveryProjectResult {
+            projects_blocked: 2,
+            plan_branches_seen: 3,
+            existing_pr_branches: 4,
+            missing_pr_candidates: 5,
+            missing_pr_repairs: 6,
+            pending_push_syncs: 7,
+            candidate_load_elapsed_ms: 8,
+            project_task_load_elapsed_ms: 9,
+            project_tasks_seen: 10,
+            merge_task_read_elapsed_ms: 11,
+            needs_recovery_elapsed_ms: 12,
+            review_state_elapsed_ms: 13,
+            existing_pr_refresh_lookup_elapsed_ms: 14,
+            reviewable_diff_elapsed_ms: 15,
+            create_pr_elapsed_ms: 16,
+            slow_candidates: 17,
+            metadata_refresh_jobs: vec![PrMetadataRefreshJob {
+                project,
+                merge_task,
+                plan_branch,
+                review_state: PrReviewState::Draft,
+            }],
+        };
+
+        left.merge(right);
+
+        assert_eq!(left.projects_blocked, 3);
+        assert_eq!(left.plan_branches_seen, 5);
+        assert_eq!(left.existing_pr_branches, 7);
+        assert_eq!(left.missing_pr_candidates, 9);
+        assert_eq!(left.missing_pr_repairs, 11);
+        assert_eq!(left.pending_push_syncs, 13);
+        assert_eq!(left.candidate_load_elapsed_ms, 15);
+        assert_eq!(left.project_task_load_elapsed_ms, 17);
+        assert_eq!(left.project_tasks_seen, 19);
+        assert_eq!(left.merge_task_read_elapsed_ms, 21);
+        assert_eq!(left.needs_recovery_elapsed_ms, 23);
+        assert_eq!(left.review_state_elapsed_ms, 25);
+        assert_eq!(left.existing_pr_refresh_lookup_elapsed_ms, 27);
+        assert_eq!(left.reviewable_diff_elapsed_ms, 29);
+        assert_eq!(left.create_pr_elapsed_ms, 31);
+        assert_eq!(left.slow_candidates, 33);
+        assert_eq!(left.metadata_refresh_jobs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn recover_missing_draft_prs_uses_targeted_candidates_and_refreshes_existing_prs() {
+        let app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let project = app_state
+            .project_repo
+            .create(Project::new(
+                "Startup PR Recovery".to_string(),
+                "/tmp/startup-pr-recovery".to_string(),
+            ))
+            .await
+            .expect("create project");
+        let (merge_task, plan_branch) = create_existing_pr_recovery_candidate(
+            &app_state,
+            &project,
+            "ralphx/startup/existing-pr",
+            77,
+        )
+        .await;
+
+        recover_missing_draft_prs(
+            Arc::clone(&app_state.task_repo),
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.project_repo),
+            Arc::clone(&app_state.execution_plan_repo),
+            Arc::clone(&app_state.ideation_session_repo),
+            Arc::clone(&app_state.artifact_repo),
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            Arc::new(HashSet::new()),
+        )
+        .await;
+
+        let refreshed_branch = app_state
+            .plan_branch_repo
+            .get_by_id(&plan_branch.id)
+            .await
+            .expect("load refreshed branch")
+            .expect("plan branch exists");
+        assert_eq!(refreshed_branch.pr_push_status, PrPushStatus::Pushed);
+        assert_eq!(github.state().push_branch_calls, 1);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if github.state().update_pr_details_calls > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("metadata refresh should run in background");
+
+        {
+            let state = github.state();
+            assert_eq!(state.update_pr_details_calls, 1);
+            assert_eq!(state.mark_pr_ready_calls, 1);
+            assert_eq!(state.last_mark_pr_ready_number, Some(77));
+            assert_eq!(
+                state.last_push_branch_name.as_deref(),
+                Some("ralphx/startup/existing-pr")
+            );
+            assert!(state
+                .last_update_pr_details_body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Ready for GitHub review"));
+        }
+
+        let stored_merge_task = app_state
+            .task_repo
+            .get_by_id(&merge_task.id)
+            .await
+            .expect("load merge task")
+            .expect("merge task exists");
+        assert_eq!(
+            stored_merge_task.internal_status,
+            InternalStatus::WaitingOnPr
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_recovery_snapshot_and_execution_plan_checks_are_targeted() {
+        let app_state = AppState::new_test();
+        let project = Project::new(
+            "Startup PR Snapshot".to_string(),
+            "/tmp/startup-pr-snapshot".to_string(),
+        );
+        let (_, plan_branch) = create_existing_pr_recovery_candidate(
+            &app_state,
+            &project,
+            "ralphx/startup/snapshot",
+            78,
+        )
+        .await;
+        let execution_plan_id = plan_branch
+            .execution_plan_id
+            .clone()
+            .expect("plan branch has execution plan");
+        let merge_task_id = plan_branch
+            .merge_task_id
+            .clone()
+            .expect("plan branch has merge task");
+        let merge_task = app_state
+            .task_repo
+            .get_by_id(&merge_task_id)
+            .await
+            .expect("load merge task")
+            .expect("merge task exists");
+        let snapshot = ProjectPrRecoveryTaskSnapshot::from_targeted_tasks(
+            vec![merge_task.clone()],
+            HashSet::from([(plan_branch.session_id.clone(), execution_plan_id.clone())]),
+        );
+
+        assert_eq!(snapshot.task_count, 1);
+        assert!(snapshot.get_task(&merge_task_id).is_some());
+        assert!(snapshot.has_merged_regular_plan_task(&plan_branch.session_id, &execution_plan_id));
+        assert!(
+            plan_branch_needs_pr_recovery(
+                &snapshot,
+                &project,
+                &plan_branch,
+                &merge_task,
+                Some(&execution_plan_id),
+            )
+            .await
+        );
+
+        let mut archived_project = project.clone();
+        archived_project.archived_at = Some(Utc::now());
+        assert!(
+            !plan_branch_needs_pr_recovery(
+                &snapshot,
+                &archived_project,
+                &plan_branch,
+                &merge_task,
+                Some(&execution_plan_id),
+            )
+            .await
+        );
+        assert_eq!(
+            active_execution_plan_id_for_branch(&app_state.execution_plan_repo, &plan_branch).await,
+            Some(execution_plan_id.clone())
+        );
+
+        let mut fallback_branch = plan_branch.clone();
+        fallback_branch.execution_plan_id = None;
+        assert_eq!(
+            active_execution_plan_id_for_branch(&app_state.execution_plan_repo, &fallback_branch)
+                .await,
+            Some(execution_plan_id)
+        );
     }
 
     async fn create_waiting_pr_merge_task(

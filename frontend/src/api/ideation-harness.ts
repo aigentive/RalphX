@@ -77,6 +77,10 @@ export interface UpdateAgentHarnessLaneInput {
   sandboxMode?: string | null;
 }
 
+export interface GetAgentHarnessOptions {
+  refreshRuntime?: boolean;
+}
+
 export const IDEATION_LANES: AgentLane[] = [
   "ideation_primary",
   "ideation_verifier",
@@ -133,7 +137,14 @@ export function mergeAgentHarnessState(
 }
 
 export const agentHarnessApi = {
-  async get(projectId: string | null): Promise<AgentHarnessLaneView[]> {
+  async get(
+    projectId: string | null,
+    options: GetAgentHarnessOptions = {},
+  ): Promise<AgentHarnessLaneView[]> {
+    const input = {
+      projectId,
+      refreshRuntime: options.refreshRuntime ?? false,
+    };
     const [rows, availability] = await Promise.all([
       typedInvoke(
         "get_agent_lane_settings",
@@ -142,7 +153,7 @@ export const agentHarnessApi = {
       ),
       typedInvoke(
         "get_agent_harness_availability",
-        { projectId },
+        { input },
         z.array(AgentHarnessAvailabilityResponseSchema),
       ),
     ]);

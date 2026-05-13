@@ -248,7 +248,7 @@ async fn setup_ipc_workspace_state(
         .await
         .expect("project should be persisted");
     let mut conversation = ChatConversation::new_project(project.id.clone());
-    conversation.id = conversation_id.clone();
+    conversation.id = conversation_id;
     state
         .chat_conversation_repo
         .create(conversation)
@@ -564,7 +564,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         Arc::clone(&state.plan_branch_repo),
     );
     registry.start_agent_workspace_polling(
-        conversation_id.clone(),
+        conversation_id,
         303,
         project.clone(),
         repo_path.clone(),
@@ -646,7 +646,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         Arc::clone(&state.plan_branch_repo),
     );
     registry.start_agent_workspace_polling(
-        conversation_id.clone(),
+        conversation_id,
         405,
         project,
         repo_path.clone(),
@@ -996,10 +996,13 @@ mod ipc_contract {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should return blocked state");
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should return blocked state");
 
         assert_eq!(response.base_status, "blocked");
         assert_eq!(response.base_ref, "feature/deleted-base");
@@ -1027,10 +1030,13 @@ mod ipc_contract {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should resolve retargeted base");
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should resolve retargeted base");
 
         assert_eq!(response.base_status, "retargeted");
         assert_eq!(response.base_ref, "feature/deleted-base");
@@ -1125,9 +1131,13 @@ mod ipc_contract {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-            .await
-            .expect("freshness should load");
+        get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should load");
         let refreshed = app
             .state::<AppState>()
             .agent_conversation_workspace_repo
@@ -1253,7 +1263,7 @@ mod ipc_contract {
             &state,
             &execution_state,
             None,
-            conversation_id.clone(),
+            conversation_id,
             false,
         )
         .await
@@ -1275,7 +1285,7 @@ mod ipc_contract {
         let state = AppState::new_test();
         let project_id = ProjectId::from_string("project-preview-ipc".to_string());
         let conversation = ChatConversation::new_project(project_id.clone());
-        let conversation_id = conversation.id.clone();
+        let conversation_id = conversation.id;
         state
             .chat_conversation_repo
             .create(conversation)
@@ -1288,7 +1298,7 @@ mod ipc_contract {
             .join("\n");
         let mut message = ChatMessage::user_in_project(project_id, "assistant preview");
         message.role = MessageRole::Orchestrator;
-        message.conversation_id = Some(conversation_id.clone());
+        message.conversation_id = Some(conversation_id);
         message.tool_calls = Some(
             serde_json::json!([
                 {
@@ -1336,7 +1346,7 @@ mod ipc_contract {
 
         let page = get_agent_conversation_messages_page_for_app_state(
             app.state::<AppState>().inner(),
-            conversation_id.clone(),
+            conversation_id,
             10,
             0,
         )
@@ -1396,7 +1406,7 @@ mod ipc_contract {
         let project_id = ProjectId::from_string("project-summary-ipc".to_string());
         let mut conversation = ChatConversation::new_project(project_id);
         conversation.set_title("Cheap breadcrumb title");
-        let conversation_id = conversation.id.clone();
+        let conversation_id = conversation.id;
         state
             .chat_conversation_repo
             .create(conversation)
@@ -1447,14 +1457,14 @@ mod ipc_contract {
 
         let mut conversation = ChatConversation::new_project(project_id.clone());
         conversation.title = Some("Read no bridge".to_string());
-        let conversation_id = conversation.id.clone();
+        let conversation_id = conversation.id;
         state
             .chat_conversation_repo
             .create(conversation)
             .await
             .expect("conversation should persist");
         let workspace = AgentConversationWorkspace::new(
-            conversation_id.clone(),
+            conversation_id,
             project_id,
             AgentConversationWorkspaceMode::Edit,
             IdeationAnalysisBaseRefKind::CurrentBranch,
@@ -1481,7 +1491,7 @@ mod ipc_contract {
 
         let page = get_agent_conversation_messages_page_for_app_state(
             &state,
-            conversation_id.clone(),
+            conversation_id,
             1,
             0,
         )
@@ -1509,14 +1519,14 @@ mod ipc_contract {
             .expect("project should persist");
 
         let conversation = ChatConversation::new_project(project_id.clone());
-        let conversation_id = conversation.id.clone();
+        let conversation_id = conversation.id;
         state
             .chat_conversation_repo
             .create(conversation)
             .await
             .expect("conversation should persist");
         let mut workspace = AgentConversationWorkspace::new(
-            conversation_id.clone(),
+            conversation_id,
             project_id.clone(),
             AgentConversationWorkspaceMode::Ideation,
             IdeationAnalysisBaseRefKind::CurrentBranch,

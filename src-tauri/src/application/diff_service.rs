@@ -628,7 +628,7 @@ fn file_changes_from_name_status(
 fn parse_name_status_line(line: &str) -> Option<(FileChangeStatus, String)> {
     let mut parts = line.split('\t');
     let status_token = parts.next()?;
-    let path = parts.last()?.trim();
+    let path = parts.next_back()?.trim();
     if path.is_empty() {
         return None;
     }
