@@ -13,6 +13,7 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::agent_conversation_workspace_base::{resolve_workspace_base, BaseStatus};
 use crate::application::chat_service::events::{AGENT_RUN_COMPLETED, AGENT_TURN_COMPLETED};
+use crate::application::git_service::git_cmd;
 use crate::application::publish_resilience::{
     count_unpublished_publish_commits, inspect_publish_branch_freshness_for_source_after_fetch,
 };
@@ -173,11 +174,14 @@ fn spawn_auto_publish_existing_pr<R>(
 
     tauri::async_runtime::spawn(async move {
         let _guard = _guard;
-        match auto_publish_existing_agent_workspace_pr_from_app_handle(
-            &app_handle,
-            conversation_id,
-            trigger,
-        )
+        match git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async {
+            auto_publish_existing_agent_workspace_pr_from_app_handle(
+                &app_handle,
+                conversation_id,
+                trigger,
+            )
+            .await
+        })
         .await
         {
             Ok(AutoPublishDecision::Publish) => {}
@@ -264,14 +268,17 @@ where
             continue;
         };
 
-        match auto_publish_existing_agent_workspace_pr(
-            state.inner(),
-            &execution_state,
-            team_service.clone(),
-            Some(app_handle.clone()),
-            conversation_id,
-            AutoPublishTrigger::BaseFreshness,
-        )
+        match git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async {
+            auto_publish_existing_agent_workspace_pr(
+                state.inner(),
+                &execution_state,
+                team_service.clone(),
+                Some(app_handle.clone()),
+                conversation_id,
+                AutoPublishTrigger::BaseFreshness,
+            )
+            .await
+        })
         .await
         {
             Ok(AutoPublishDecision::Publish) => {

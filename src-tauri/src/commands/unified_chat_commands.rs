@@ -15,10 +15,11 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Instant,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Runtime, State};
@@ -65,6 +66,7 @@ use crate::domain::entities::{
     PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::services::{AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 
 // ============================================================================
@@ -535,7 +537,7 @@ pub struct PublishAgentConversationWorkspaceResponse {
 }
 
 /// Read-only freshness state for an edit-agent workspace base branch.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentConversationWorkspaceFreshnessResponse {
     pub conversation_id: String,
     pub base_ref: String,
@@ -613,6 +615,122 @@ impl AgentConversationWorkspaceFreshnessResponse {
             effective_base_display_name: None,
             base_block_reason: base_resolution.block_reason.clone(),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkspaceFreshnessCacheEntry {
+    inserted_at: Instant,
+    response: AgentConversationWorkspaceFreshnessResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentWorkspaceFreshnessCacheStatus {
+    Hit,
+    Coalesced,
+    Miss,
+}
+
+impl AgentWorkspaceFreshnessCacheStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Coalesced => "coalesced",
+            Self::Miss => "miss",
+        }
+    }
+}
+
+fn agent_workspace_freshness_cache(
+) -> &'static DashMap<String, AgentWorkspaceFreshnessCacheEntry> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspaceFreshnessCacheEntry>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_freshness_locks(
+) -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_freshness_cache_ttl() -> Duration {
+    Duration::from_millis(git_runtime_config().workspace_freshness_cache_ttl_ms)
+}
+
+fn agent_workspace_freshness_cache_key(
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    if conversation_id.as_uuid().is_nil() {
+        return None;
+    }
+    Some(conversation_id.as_str())
+}
+
+fn cached_agent_workspace_freshness(
+    conversation_id: &ChatConversationId,
+) -> Option<AgentConversationWorkspaceFreshnessResponse> {
+    let ttl = agent_workspace_freshness_cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let key = agent_workspace_freshness_cache_key(conversation_id)?;
+    let Some(entry) = agent_workspace_freshness_cache().get(&key) else {
+        return None;
+    };
+    if entry.inserted_at.elapsed() <= ttl {
+        return Some(entry.response.clone());
+    }
+    drop(entry);
+    agent_workspace_freshness_cache().remove(&key);
+    None
+}
+
+fn store_agent_workspace_freshness(
+    conversation_id: &ChatConversationId,
+    response: &AgentConversationWorkspaceFreshnessResponse,
+) {
+    if agent_workspace_freshness_cache_ttl().is_zero() {
+        return;
+    }
+    let Some(key) = agent_workspace_freshness_cache_key(conversation_id) else {
+        return;
+    };
+    agent_workspace_freshness_cache().insert(
+        key,
+        AgentWorkspaceFreshnessCacheEntry {
+            inserted_at: Instant::now(),
+            response: response.clone(),
+        },
+    );
+}
+
+pub(crate) fn invalidate_agent_workspace_freshness_cache(
+    conversation_id: &ChatConversationId,
+) {
+    let Some(key) = agent_workspace_freshness_cache_key(conversation_id) else {
+        return;
+    };
+    if let Some(cache) = agent_workspace_freshness_cache().remove(&key) {
+        drop(cache);
+    }
+}
+
+struct AgentWorkspaceFreshnessInvalidationGuard {
+    conversation_id: ChatConversationId,
+}
+
+impl AgentWorkspaceFreshnessInvalidationGuard {
+    fn new(conversation_id: &ChatConversationId) -> Self {
+        invalidate_agent_workspace_freshness_cache(conversation_id);
+        Self {
+            conversation_id: conversation_id.clone(),
+        }
+    }
+}
+
+impl Drop for AgentWorkspaceFreshnessInvalidationGuard {
+    fn drop(&mut self) {
+        invalidate_agent_workspace_freshness_cache(&self.conversation_id);
     }
 }
 
@@ -2605,13 +2723,14 @@ pub async fn get_agent_conversation_workspace_freshness(
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let started = Instant::now();
-    let result =
-        get_agent_conversation_workspace_freshness_for_state(&conversation_id, state.inner()).await;
+    let result = get_agent_conversation_workspace_freshness_cached(&conversation_id, state.inner())
+        .await;
     match &result {
-        Ok(response) => tracing::info!(
+        Ok((response, cache_status)) => tracing::info!(
             target: "ralphx_lib::commands::agent_workspace_freshness",
             conversation_id = %conversation_id,
             elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
             base_status = response.base_status.as_str(),
             has_uncommitted_changes = response.has_uncommitted_changes,
             unpublished_commit_count = ?response.unpublished_commit_count,
@@ -2626,7 +2745,38 @@ pub async fn get_agent_conversation_workspace_freshness(
             "Failed to load agent workspace freshness"
         ),
     }
-    result
+    result.map(|(response, _)| response)
+}
+
+async fn get_agent_conversation_workspace_freshness_cached(
+    conversation_id: &ChatConversationId,
+    state: &AppState,
+) -> Result<
+    (
+        AgentConversationWorkspaceFreshnessResponse,
+        AgentWorkspaceFreshnessCacheStatus,
+    ),
+    String,
+> {
+    if let Some(response) = cached_agent_workspace_freshness(conversation_id) {
+        return Ok((response, AgentWorkspaceFreshnessCacheStatus::Hit));
+    }
+
+    let key = conversation_id.as_str();
+    let lock = agent_workspace_freshness_locks()
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = lock.lock().await;
+
+    if let Some(response) = cached_agent_workspace_freshness(conversation_id) {
+        return Ok((response, AgentWorkspaceFreshnessCacheStatus::Coalesced));
+    }
+
+    let response =
+        get_agent_conversation_workspace_freshness_for_state(conversation_id, state).await?;
+    store_agent_workspace_freshness(conversation_id, &response);
+    Ok((response, AgentWorkspaceFreshnessCacheStatus::Miss))
 }
 
 async fn get_agent_conversation_workspace_freshness_for_state(
@@ -2837,6 +2987,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
     conversation_id: ChatConversationId,
     selection: AgentConversationWorkspaceBaseSelection,
 ) -> Result<UpdateAgentConversationWorkspaceFromBaseResponse, String> {
+    let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let mut workspace = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -3185,6 +3336,7 @@ pub async fn close_agent_workspace_pr(
     app: tauri::AppHandle,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
+    let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
     let workspace = state
         .agent_conversation_workspace_repo
@@ -3276,6 +3428,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let publish_started = Instant::now();
     let mut workspace = state
         .agent_conversation_workspace_repo
@@ -4733,9 +4886,11 @@ mod tests {
     use super::{
         apply_base_resolution_to_publish_target,
         build_agent_workspace_publish_repair_message_for_target, existing_pr_retarget_block_reason,
+        cached_agent_workspace_freshness,
         get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
+        invalidate_agent_workspace_freshness_cache,
         merge_delegated_snapshot_into_result, normalize_agent_runtime_selection,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
         parse_wrapped_mcp_result_object, persist_workspace_base_resolution_if_retargeted,
@@ -4744,6 +4899,7 @@ mod tests {
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
         send_agent_workspace_publish_repair_message_for_target,
+        store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
@@ -5509,6 +5665,64 @@ mod tests {
         );
         assert_eq!(blocked_response.effective_base_ref, None);
         assert_eq!(blocked_response.target_ref, "");
+    }
+
+    #[test]
+    fn workspace_freshness_cache_hits_and_invalidates_recent_response() {
+        let conversation_id = ChatConversationId::from_string(
+            "77777777-7777-4777-8777-777777777777".to_string(),
+        );
+        invalidate_agent_workspace_freshness_cache(&conversation_id);
+        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+
+        let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            conversation_id.as_str().to_string(),
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            PublishBranchFreshnessStatus {
+                target_ref: "origin/main".to_string(),
+                captured_base_commit: Some("old-base-sha".to_string()),
+                target_base_commit: "main-sha".to_string(),
+                is_base_ahead: true,
+            },
+            false,
+            Some(1),
+        );
+        store_agent_workspace_freshness(&conversation_id, &response);
+
+        let cached = cached_agent_workspace_freshness(&conversation_id)
+            .expect("recent freshness response should be cached");
+        assert_eq!(cached.conversation_id, response.conversation_id);
+        assert_eq!(cached.target_base_commit, "main-sha");
+        assert!(cached.is_base_ahead);
+
+        invalidate_agent_workspace_freshness_cache(&conversation_id);
+        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
+    }
+
+    #[test]
+    fn workspace_freshness_cache_skips_nil_conversation_ids() {
+        let conversation_id = ChatConversationId::from_string("not-a-uuid");
+        assert!(conversation_id.as_uuid().is_nil());
+
+        let response = AgentConversationWorkspaceFreshnessResponse::from_target_status(
+            conversation_id.as_str(),
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            PublishBranchFreshnessStatus {
+                target_ref: "origin/main".to_string(),
+                captured_base_commit: None,
+                target_base_commit: "main-sha".to_string(),
+                is_base_ahead: false,
+            },
+            false,
+            Some(0),
+        );
+        store_agent_workspace_freshness(&conversation_id, &response);
+
+        assert!(cached_agent_workspace_freshness(&conversation_id).is_none());
     }
 
     #[tokio::test]

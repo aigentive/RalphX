@@ -21,6 +21,7 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 60);
     assert_eq!(cfg.git.cmd_timeout_secs, 60);
     assert_eq!(cfg.git.retry_backoff_secs, vec![1, 2, 4]);
+    assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
     assert_eq!(cfg.scheduler.watchdog_interval_secs, 60);
     assert_eq!(cfg.supervisor.time_threshold_secs, 600);
     assert_eq!(cfg.limits.max_resume_attempts, 5);
@@ -109,6 +110,7 @@ fn test_env_overrides_apply() {
         "RALPHX_RECONCILIATION_MERGER_TIMEOUT_SECS" => Some("2400".to_string()),
         "RALPHX_GIT_CMD_TIMEOUT_SECS" => Some("120".to_string()),
         "RALPHX_GIT_RETRY_BACKOFF_SECS" => Some("2,4,8,16".to_string()),
+        "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
         "RALPHX_SCHEDULER_READY_SETTLE_MS" => Some("500".to_string()),
         "RALPHX_SUPERVISOR_MAX_TOKENS" => Some("200000".to_string()),
         "RALPHX_LIMITS_MAX_RESUME_ATTEMPTS" => Some("10".to_string()),
@@ -122,6 +124,7 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.git.cmd_timeout_secs, 120);
     assert_eq!(cfg.git.retry_backoff_secs, vec![2, 4, 8, 16]);
+    assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
     assert_eq!(cfg.scheduler.ready_settle_ms, 500);
     assert_eq!(cfg.supervisor.max_tokens, 200000);
     assert_eq!(cfg.limits.max_resume_attempts, 10);
