@@ -343,10 +343,12 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_base = tempfile::tempdir().expect("worktree base");
-    let worktree_base_canonical =
-        std::fs::canonicalize(worktree_base.path()).expect("canonicalize");
+    let project = project_with_worktree_parent("test-project", repo_path, worktree_base.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
 
-    let orphan_path = worktree_base_canonical.join("orphan-wt");
+    let orphan_path = project_dir.join("agent-conversation-orphan-wt");
     run_git(
         repo_path,
         &[
@@ -357,7 +359,7 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
         ],
     );
 
-    let known_path = worktree_base_canonical.join("known-wt");
+    let known_path = project_dir.join("agent-conversation-known-wt");
     run_git(
         repo_path,
         &[
@@ -367,12 +369,6 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
             "ralphx/test/agent-known",
         ],
     );
-
-    let mut project = Project::new(
-        "test-project".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.worktree_parent_directory = Some(worktree_base_canonical.to_string_lossy().to_string());
 
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -411,6 +407,57 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
         !orphan_path.exists(),
         "orphan worktree directory should be removed"
     );
+}
+
+#[tokio::test]
+async fn cleanup_project_orphan_worktrees_ignores_task_worktrees_under_shared_parent() {
+    let repo_dir = init_repo();
+    let repo_path = repo_dir.path();
+
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/task-ignored"]);
+    run_git(repo_path, &["checkout", "main"]);
+
+    let worktree_parent = tempfile::tempdir().expect("worktree parent");
+    let task_parent = worktree_parent.path().join("ralphx");
+    std::fs::create_dir_all(&task_parent).expect("create task parent");
+    let task_worktree = task_parent.join("task-ignored");
+    run_git(
+        repo_path,
+        &[
+            "worktree",
+            "add",
+            &task_worktree.to_string_lossy(),
+            "ralphx/test/task-ignored",
+        ],
+    );
+
+    let project = project_with_worktree_parent("test-project", repo_path, worktree_parent.path());
+    let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let registry: Arc<dyn crate::domain::services::RunningAgentRegistry> =
+        Arc::new(MemoryRunningAgentRegistry::new());
+    let mut stats = OrphanCleanupStats::default();
+
+    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+
+    assert_eq!(
+        stats.db_missing_candidates, 0,
+        "task worktrees should not become agent-conversation orphan candidates"
+    );
+    assert_eq!(stats.contained_removals, 0);
+    assert_eq!(stats.dirty_skips, 0);
+    assert_eq!(stats.unsafe_skips, 0);
+    assert!(
+        task_worktree.exists(),
+        "task worktree should not be touched by agent-conversation orphan cleanup"
+    );
+
+    let branch_check = Command::new("git")
+        .args(["rev-parse", "--verify", "ralphx/test/task-ignored"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git branch check");
+    assert!(branch_check.status.success());
 }
 
 #[tokio::test]
@@ -1144,7 +1191,12 @@ async fn cleanup_project_matches_known_worktree_paths() {
     let worktree_dir = tempfile::tempdir().expect("worktree temp");
     let worktree_parent_canonical =
         std::fs::canonicalize(worktree_dir.path()).expect("canonicalize");
-    let worktree_path = worktree_parent_canonical.join("dbknown-wt");
+    let project =
+        project_with_worktree_parent("test-db-known", repo_path, &worktree_parent_canonical);
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+    let worktree_path = project_dir.join("agent-conversation-dbknown-wt");
     run_git(
         repo_path,
         &[
@@ -1154,13 +1206,6 @@ async fn cleanup_project_matches_known_worktree_paths() {
             "ralphx/test/agent-dbknown",
         ],
     );
-
-    let mut project = Project::new(
-        "test-db-known".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.worktree_parent_directory =
-        Some(worktree_parent_canonical.to_string_lossy().to_string());
 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     {

@@ -156,6 +156,28 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         }
     };
 
+    let project_dir = match resolve_agent_conversation_project_workspace_dir(project) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::debug!(
+                project_id = project.id.as_str(),
+                error = %error,
+                "Orphan cleanup: failed to resolve canonical project directory"
+            );
+            return;
+        }
+    };
+
+    if !is_under_worktree_parent(&project_dir, &worktree_parent) {
+        tracing::warn!(
+            project_id = project.id.as_str(),
+            project_dir = %project_dir.display(),
+            worktree_parent = %worktree_parent.display(),
+            "Orphan cleanup: canonical project directory escaped worktree parent"
+        );
+        return;
+    }
+
     let local_branches = GitService::list_local_branch_names(repo_path)
         .await
         .unwrap_or_default();
@@ -192,7 +214,7 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         }
 
         let worktree_path = PathBuf::from(&worktree.path);
-        if !is_under_worktree_parent(&worktree_path, &worktree_parent) {
+        if !is_current_project_agent_conversation_worktree(&worktree_path, &project_dir) {
             stats.non_ralphx_skips += 1;
             continue;
         }
@@ -217,6 +239,20 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         stats,
     )
     .await;
+}
+
+fn is_current_project_agent_conversation_worktree(
+    worktree_path: &Path,
+    project_dir: &Path,
+) -> bool {
+    if worktree_path.parent() != Some(project_dir) {
+        return false;
+    }
+
+    worktree_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(AGENT_CONVERSATION_DIR_PREFIX))
 }
 
 pub(super) async fn scan_canonical_directories(
