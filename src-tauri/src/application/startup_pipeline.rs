@@ -5,6 +5,7 @@ use tracing::info;
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
 use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
+use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::runtime_factory::{ChatRuntimeFactoryDeps, RuntimeFactoryDeps};
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::startup_runtime_builders::{
@@ -287,13 +288,16 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            crate::application::pr_startup_recovery::cleanup_terminal_plan_branch_local_artifacts_on_startup(
-                plan_branch_repo,
-                project_repo,
-                github_service,
-                blocked_git_project_ids,
-                running_agent_registry,
-            )
+            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
+                crate::application::pr_startup_recovery::cleanup_terminal_plan_branch_local_artifacts_on_startup(
+                    plan_branch_repo,
+                    project_repo,
+                    github_service,
+                    blocked_git_project_ids,
+                    running_agent_registry,
+                )
+                .await;
+            })
             .await;
         });
     }
@@ -355,13 +359,16 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
-                agent_conversation_workspace_repo,
-                project_repo,
-                github_service,
-                blocked_git_project_ids,
-                running_agent_registry,
-            )
+            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
+                crate::application::pr_startup_recovery::cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+                    agent_conversation_workspace_repo,
+                    project_repo,
+                    github_service,
+                    blocked_git_project_ids,
+                    running_agent_registry,
+                )
+                .await;
+            })
             .await;
         });
     }
@@ -373,12 +380,15 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
-            crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
-                project_repo,
-                agent_conversation_workspace_repo,
-                blocked_git_project_ids,
-                running_agent_registry,
-            )
+            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
+                crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
+                    project_repo,
+                    agent_conversation_workspace_repo,
+                    blocked_git_project_ids,
+                    running_agent_registry,
+                )
+                .await;
+            })
             .await;
         });
     }

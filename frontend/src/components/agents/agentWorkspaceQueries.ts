@@ -9,7 +9,7 @@ import {
 } from "./agentWorkspacePublishState";
 
 export const AGENT_WORKSPACE_STALE_MS = 5_000;
-export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 5_000;
+export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 60_000;
 
 export const agentWorkspaceKeys = {
   workspace: (conversationId: string | null | undefined) => [

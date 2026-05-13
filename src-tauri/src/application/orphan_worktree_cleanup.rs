@@ -3,17 +3,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::application::agent_conversation_workspace::expand_worktree_parent_public;
+use crate::application::agent_conversation_workspace::{
+    expand_worktree_parent_public, resolve_agent_conversation_project_workspace_dir,
+};
 use crate::application::git_service::GitService;
 use crate::domain::entities::{Project, ProjectId};
-use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, ProjectRepository,
-};
+use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
 use crate::domain::services::RunningAgentRegistry;
 
 const RALPHX_BRANCH_PREFIX: &str = "ralphx/";
 const AGENT_CONVERSATION_DIR_PREFIX: &str = "agent-conversation-";
-const PROJECT_DIR_PREFIX: &str = "project-";
 
 #[derive(Debug, Default)]
 pub(crate) struct OrphanCleanupStats {
@@ -57,13 +56,22 @@ pub(super) fn is_ralphx_owned_branch(branch: &str) -> bool {
 }
 
 pub(super) async fn resolve_target_ref_for_orphan(repo_path: &Path) -> String {
-    if GitService::ref_exists(repo_path, "origin/main").await.unwrap_or(false) {
+    if GitService::ref_exists(repo_path, "origin/main")
+        .await
+        .unwrap_or(false)
+    {
         return "origin/main".to_string();
     }
-    if GitService::ref_exists(repo_path, "origin/master").await.unwrap_or(false) {
+    if GitService::ref_exists(repo_path, "origin/master")
+        .await
+        .unwrap_or(false)
+    {
         return "origin/master".to_string();
     }
-    if GitService::ref_exists(repo_path, "main").await.unwrap_or(false) {
+    if GitService::ref_exists(repo_path, "main")
+        .await
+        .unwrap_or(false)
+    {
         return "main".to_string();
     }
     "master".to_string()
@@ -135,9 +143,8 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         }
     };
 
-    let worktree_parent = match expand_worktree_parent_public(
-        project.worktree_parent_or_default(),
-    ) {
+    let worktree_parent = match expand_worktree_parent_public(project.worktree_parent_or_default())
+    {
         Ok(p) => p,
         Err(error) => {
             tracing::debug!(
@@ -196,14 +203,8 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         }
         stats.db_missing_candidates += 1;
 
-        try_cleanup_orphan_worktree(
-            repo_path,
-            &worktree_path,
-            branch,
-            &local_branches,
-            stats,
-        )
-        .await;
+        try_cleanup_orphan_worktree(repo_path, &worktree_path, branch, &local_branches, stats)
+            .await;
     }
 
     scan_canonical_directories(
@@ -227,76 +228,88 @@ pub(super) async fn scan_canonical_directories(
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     stats: &mut OrphanCleanupStats,
 ) {
-    let project_dirs = match std::fs::read_dir(worktree_parent) {
-        Ok(entries) => entries,
-        Err(_) => return,
+    let project_dir = match resolve_agent_conversation_project_workspace_dir(project) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::debug!(
+                project_id = project.id.as_str(),
+                error = %error,
+                "Orphan cleanup: failed to resolve canonical project directory"
+            );
+            return;
+        }
     };
 
-    for entry in project_dirs.flatten() {
-        let dir_name = entry.file_name();
-        let dir_name_str = dir_name.to_string_lossy();
-        if !dir_name_str.starts_with(PROJECT_DIR_PREFIX) {
-            continue;
-        }
-
-        let project_dir = entry.path();
-        if !project_dir.is_dir() {
-            continue;
-        }
-
-        let conversation_dirs = match std::fs::read_dir(&project_dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-
-        for conv_entry in conversation_dirs.flatten() {
-            let conv_name = conv_entry.file_name();
-            let conv_name_str = conv_name.to_string_lossy();
-            if !conv_name_str.starts_with(AGENT_CONVERSATION_DIR_PREFIX) {
-                continue;
-            }
-
-            let conv_path = conv_entry.path();
-            if !conv_path.is_dir() {
-                continue;
-            }
-
-            stats.directories_scanned += 1;
-
-            if should_pause(running_agent_registry).await {
-                return;
-            }
-
-            let conv_path_str = conv_path.to_string_lossy().to_string();
-            if known_workspace_paths.contains(&conv_path_str) {
-                stats.db_matches += 1;
-                continue;
-            }
-
-            let branch = match detect_worktree_branch(&conv_path).await {
-                Some(b) => b,
-                None => continue,
-            };
-
-            if !is_ralphx_owned_branch(&branch) {
-                stats.non_ralphx_skips += 1;
-                continue;
-            }
-
-            stats.db_missing_candidates += 1;
-
-            try_cleanup_orphan_worktree(
-                repo_path,
-                &conv_path,
-                &branch,
-                local_branches,
-                stats,
-            )
-            .await;
-        }
+    if !is_under_worktree_parent(&project_dir, worktree_parent) {
+        tracing::warn!(
+            project_id = project.id.as_str(),
+            project_dir = %project_dir.display(),
+            worktree_parent = %worktree_parent.display(),
+            "Orphan cleanup: canonical project directory escaped worktree parent"
+        );
+        return;
     }
 
-    let _ = project;
+    if !project_dir.is_dir() {
+        tracing::debug!(
+            project_id = project.id.as_str(),
+            project_dir = %project_dir.display(),
+            "Orphan cleanup: canonical project directory is absent"
+        );
+        return;
+    }
+
+    let conversation_dirs = match std::fs::read_dir(&project_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::debug!(
+                project_id = project.id.as_str(),
+                project_dir = %project_dir.display(),
+                error = %error,
+                "Orphan cleanup: failed to read canonical project directory"
+            );
+            return;
+        }
+    };
+
+    for conv_entry in conversation_dirs.flatten() {
+        let conv_name = conv_entry.file_name();
+        let conv_name_str = conv_name.to_string_lossy();
+        if !conv_name_str.starts_with(AGENT_CONVERSATION_DIR_PREFIX) {
+            continue;
+        }
+
+        let conv_path = conv_entry.path();
+        if !conv_path.is_dir() {
+            continue;
+        }
+
+        stats.directories_scanned += 1;
+
+        if should_pause(running_agent_registry).await {
+            return;
+        }
+
+        let conv_path_str = conv_path.to_string_lossy().to_string();
+        if known_workspace_paths.contains(&conv_path_str) {
+            stats.db_matches += 1;
+            continue;
+        }
+
+        let branch = match detect_worktree_branch(&conv_path).await {
+            Some(b) => b,
+            None => continue,
+        };
+
+        if !is_ralphx_owned_branch(&branch) {
+            stats.non_ralphx_skips += 1;
+            continue;
+        }
+
+        stats.db_missing_candidates += 1;
+
+        try_cleanup_orphan_worktree(repo_path, &conv_path, &branch, local_branches, stats).await;
+    }
 }
 
 pub(super) async fn try_cleanup_orphan_worktree(
@@ -325,8 +338,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
 
     let target_ref = resolve_target_ref_for_orphan(repo_path).await;
     let (is_contained, reason) =
-        GitService::is_branch_merged_or_content_equivalent(repo_path, branch, &target_ref)
-            .await;
+        GitService::is_branch_merged_or_content_equivalent(repo_path, branch, &target_ref).await;
 
     if !is_contained {
         stats.unsafe_skips += 1;
@@ -380,10 +392,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
             );
         } else {
             stats.branch_deletions += 1;
-            tracing::info!(
-                branch,
-                "Orphan cleanup: deleted contained orphan branch"
-            );
+            tracing::info!(branch, "Orphan cleanup: deleted contained orphan branch");
         }
     }
 }

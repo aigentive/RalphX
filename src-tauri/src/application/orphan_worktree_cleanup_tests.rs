@@ -9,6 +9,7 @@ use super::orphan_worktree_cleanup::{
     detect_worktree_branch, is_ralphx_owned_branch, is_under_worktree_parent,
     resolve_target_ref_for_orphan, scan_canonical_directories, should_pause, OrphanCleanupStats,
 };
+use crate::application::agent_conversation_workspace::resolve_agent_conversation_project_workspace_dir;
 use crate::domain::entities::Project;
 use crate::domain::services::running_agent_registry::MemoryRunningAgentRegistry;
 use crate::domain::services::RunningAgentRegistry;
@@ -43,6 +44,12 @@ fn init_repo() -> tempfile::TempDir {
     run_git(repo, &["add", "."]);
     run_git(repo, &["commit", "-m", "initial"]);
     dir
+}
+
+fn project_with_worktree_parent(name: &str, repo_path: &Path, worktree_parent: &Path) -> Project {
+    let mut project = Project::new(name.to_string(), repo_path.to_string_lossy().to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    project
 }
 
 #[test]
@@ -115,7 +122,9 @@ fn is_under_worktree_parent_matches_exact() {
 #[tokio::test]
 async fn should_pause_returns_false_when_no_agents() {
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
-    assert!(!should_pause(&(registry as Arc<dyn crate::domain::services::RunningAgentRegistry>)).await);
+    assert!(
+        !should_pause(&(registry as Arc<dyn crate::domain::services::RunningAgentRegistry>)).await
+    );
 }
 
 #[tokio::test]
@@ -123,10 +132,7 @@ async fn detect_worktree_branch_returns_branch_for_worktree() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(
-        repo_path,
-        &["checkout", "-b", "ralphx/test/agent-detect"],
-    );
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-detect"]);
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_dir = tempfile::tempdir().expect("worktree temp");
@@ -172,7 +178,10 @@ async fn try_cleanup_skips_dirty_worktree() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(repo_path, &["checkout", "-b", "ralphx/test-proj/agent-dirty"]);
+    run_git(
+        repo_path,
+        &["checkout", "-b", "ralphx/test-proj/agent-dirty"],
+    );
     std::fs::write(repo_path.join("file.txt"), "work\n").expect("write");
     run_git(repo_path, &["add", "."]);
     run_git(repo_path, &["commit", "-m", "work"]);
@@ -214,7 +223,10 @@ async fn try_cleanup_skips_non_contained_branch() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(repo_path, &["checkout", "-b", "ralphx/test-proj/agent-ahead"]);
+    run_git(
+        repo_path,
+        &["checkout", "-b", "ralphx/test-proj/agent-ahead"],
+    );
     std::fs::write(repo_path.join("ahead.txt"), "ahead\n").expect("write");
     run_git(repo_path, &["add", "."]);
     run_git(repo_path, &["commit", "-m", "ahead of main"]);
@@ -324,20 +336,15 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(
-        repo_path,
-        &["checkout", "-b", "ralphx/test/agent-orphan"],
-    );
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-orphan"]);
     run_git(repo_path, &["checkout", "main"]);
 
-    run_git(
-        repo_path,
-        &["checkout", "-b", "ralphx/test/agent-known"],
-    );
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-known"]);
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_base = tempfile::tempdir().expect("worktree base");
-    let worktree_base_canonical = std::fs::canonicalize(worktree_base.path()).expect("canonicalize");
+    let worktree_base_canonical =
+        std::fs::canonicalize(worktree_base.path()).expect("canonicalize");
 
     let orphan_path = worktree_base_canonical.join("orphan-wt");
     run_git(
@@ -365,8 +372,7 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
         "test-project".to_string(),
         repo_path.to_string_lossy().to_string(),
     );
-    project.worktree_parent_directory =
-        Some(worktree_base_canonical.to_string_lossy().to_string());
+    project.worktree_parent_directory = Some(worktree_base_canonical.to_string_lossy().to_string());
 
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -376,8 +382,8 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
     let known_path_str = known_path.to_string_lossy().to_string();
     {
         use crate::domain::entities::{
-            AgentConversationWorkspace, AgentConversationWorkspaceMode,
-            ChatConversationId, IdeationAnalysisBaseRefKind,
+            AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+            IdeationAnalysisBaseRefKind,
         };
         let workspace = AgentConversationWorkspace::new(
             ChatConversationId::new(),
@@ -397,8 +403,14 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
 
     cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
 
-    assert!(stats.contained_removals >= 1, "at least the orphan contained worktree should be removed");
-    assert!(!orphan_path.exists(), "orphan worktree directory should be removed");
+    assert!(
+        stats.contained_removals >= 1,
+        "at least the orphan contained worktree should be removed"
+    );
+    assert!(
+        !orphan_path.exists(),
+        "orphan worktree directory should be removed"
+    );
 }
 
 #[tokio::test]
@@ -413,7 +425,9 @@ async fn scan_canonical_directories_finds_orphan_conversation_dirs() {
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_parent = tempfile::tempdir().expect("worktree parent");
-    let project_dir = worktree_parent.path().join("project-abc123");
+    let project = project_with_worktree_parent("test-scan", repo_path, worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     let conv_path = project_dir.join("agent-conversation-def456");
@@ -426,13 +440,6 @@ async fn scan_canonical_directories_finds_orphan_conversation_dirs() {
             "ralphx/test/agent-scan-orphan",
         ],
     );
-
-    let mut project = Project::new(
-        "test-scan".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.worktree_parent_directory =
-        Some(worktree_parent.path().to_string_lossy().to_string());
 
     let known_paths: HashSet<String> = HashSet::new();
     let local_branches = HashSet::from(["ralphx/test/agent-scan-orphan".to_string()]);
@@ -451,9 +458,18 @@ async fn scan_canonical_directories_finds_orphan_conversation_dirs() {
     )
     .await;
 
-    assert!(stats.directories_scanned >= 1, "should scan agent-conversation dirs");
-    assert_eq!(stats.contained_removals, 1, "contained orphan should be removed");
-    assert!(!conv_path.exists(), "orphan conversation dir should be removed");
+    assert!(
+        stats.directories_scanned >= 1,
+        "should scan agent-conversation dirs"
+    );
+    assert_eq!(
+        stats.contained_removals, 1,
+        "contained orphan should be removed"
+    );
+    assert!(
+        !conv_path.exists(),
+        "orphan conversation dir should be removed"
+    );
 }
 
 #[tokio::test]
@@ -467,10 +483,8 @@ async fn scan_canonical_directories_skips_non_matching_dirs() {
     std::fs::create_dir_all(&non_project).expect("create non-project dir");
 
     let repo_dir = init_repo();
-    let project = Project::new(
-        "test-skip".to_string(),
-        repo_dir.path().to_string_lossy().to_string(),
-    );
+    let project =
+        project_with_worktree_parent("test-skip", repo_dir.path(), worktree_parent.path());
 
     let known_paths: HashSet<String> = HashSet::new();
     let local_branches: HashSet<String> = HashSet::new();
@@ -489,7 +503,10 @@ async fn scan_canonical_directories_skips_non_matching_dirs() {
     )
     .await;
 
-    assert_eq!(stats.directories_scanned, 0, "non-matching dirs should not be scanned");
+    assert_eq!(
+        stats.directories_scanned, 0,
+        "non-matching dirs should not be scanned"
+    );
 }
 
 #[tokio::test]
@@ -497,11 +514,17 @@ async fn scan_canonical_directories_skips_known_paths() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-known-scan"]);
+    run_git(
+        repo_path,
+        &["checkout", "-b", "ralphx/test/agent-known-scan"],
+    );
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_parent = tempfile::tempdir().expect("worktree parent");
-    let project_dir = worktree_parent.path().join("project-known123");
+    let project =
+        project_with_worktree_parent("test-known-scan", repo_path, worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     let conv_path = project_dir.join("agent-conversation-known789");
@@ -513,11 +536,6 @@ async fn scan_canonical_directories_skips_known_paths() {
             &conv_path.to_string_lossy(),
             "ralphx/test/agent-known-scan",
         ],
-    );
-
-    let project = Project::new(
-        "test-known-scan".to_string(),
-        repo_path.to_string_lossy().to_string(),
     );
 
     let conv_path_str = conv_path.to_string_lossy().to_string();
@@ -539,8 +557,68 @@ async fn scan_canonical_directories_skips_known_paths() {
     .await;
 
     assert!(stats.db_matches >= 1, "known path should be matched");
-    assert_eq!(stats.contained_removals, 0, "known path should not be removed");
+    assert_eq!(
+        stats.contained_removals, 0,
+        "known path should not be removed"
+    );
     assert!(conv_path.exists(), "known worktree should still exist");
+}
+
+#[tokio::test]
+async fn scan_canonical_directories_scopes_to_current_project_dir() {
+    let repo_a = init_repo();
+    let repo_b = init_repo();
+    let worktree_parent = tempfile::tempdir().expect("worktree parent");
+
+    run_git(
+        repo_a.path(),
+        &["checkout", "-b", "ralphx/test/agent-project-a"],
+    );
+    run_git(repo_a.path(), &["checkout", "main"]);
+
+    let project_a =
+        project_with_worktree_parent("test-project-a", repo_a.path(), worktree_parent.path());
+    let project_b =
+        project_with_worktree_parent("test-project-b", repo_b.path(), worktree_parent.path());
+    let project_a_dir =
+        resolve_agent_conversation_project_workspace_dir(&project_a).expect("project A dir");
+    std::fs::create_dir_all(&project_a_dir).expect("create project A dir");
+
+    let conv_path = project_a_dir.join("agent-conversation-project-a");
+    run_git(
+        repo_a.path(),
+        &[
+            "worktree",
+            "add",
+            &conv_path.to_string_lossy(),
+            "ralphx/test/agent-project-a",
+        ],
+    );
+
+    let known_paths: HashSet<String> = HashSet::new();
+    let local_branches: HashSet<String> = HashSet::new();
+    let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
+    let mut stats = OrphanCleanupStats::default();
+
+    scan_canonical_directories(
+        &project_b,
+        repo_b.path(),
+        worktree_parent.path(),
+        &known_paths,
+        &local_branches,
+        &registry,
+        &mut stats,
+    )
+    .await;
+
+    assert_eq!(
+        stats.directories_scanned, 0,
+        "project B cleanup must not scan project A's canonical worktree dir"
+    );
+    assert!(
+        conv_path.exists(),
+        "project A worktree should be untouched by project B cleanup"
+    );
 }
 
 #[tokio::test]
@@ -554,20 +632,17 @@ async fn startup_cleanup_skips_blocked_projects() {
     );
     project.worktree_parent_directory = Some(repo_path.to_string_lossy().to_string());
 
-    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project.clone()]));
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(
+        vec![project.clone()],
+    ));
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
 
     let blocked = Arc::new(HashSet::from([project.id.clone()]));
 
-    cleanup_orphan_agent_worktrees_on_startup(
-        project_repo,
-        workspace_repo,
-        blocked,
-        registry,
-    )
-    .await;
+    cleanup_orphan_agent_worktrees_on_startup(project_repo, workspace_repo, blocked, registry)
+        .await;
 }
 
 #[tokio::test]
@@ -586,10 +661,12 @@ async fn startup_cleanup_pauses_when_agent_running() {
 
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
     registry
-        .set_running(crate::domain::services::running_agent_registry::RunningAgentKey {
-            context_type: "task".to_string(),
-            context_id: "task-1".to_string(),
-        })
+        .set_running(
+            crate::domain::services::running_agent_registry::RunningAgentKey {
+                context_type: "task".to_string(),
+                context_id: "task-1".to_string(),
+            },
+        )
         .await;
 
     let running_registry: Arc<dyn RunningAgentRegistry> = Arc::clone(&registry) as _;
@@ -612,23 +689,20 @@ async fn startup_cleanup_with_empty_projects() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let blocked = Arc::new(HashSet::new());
 
-    cleanup_orphan_agent_worktrees_on_startup(
-        project_repo,
-        workspace_repo,
-        blocked,
-        registry,
-    )
-    .await;
+    cleanup_orphan_agent_worktrees_on_startup(project_repo, workspace_repo, blocked, registry)
+        .await;
 }
 
 #[tokio::test]
 async fn should_pause_returns_true_when_agent_running() {
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
     registry
-        .set_running(crate::domain::services::running_agent_registry::RunningAgentKey {
-            context_type: "task".to_string(),
-            context_id: "task-busy".to_string(),
-        })
+        .set_running(
+            crate::domain::services::running_agent_registry::RunningAgentKey {
+                context_type: "task".to_string(),
+                context_id: "task-busy".to_string(),
+            },
+        )
         .await;
     let reg: Arc<dyn RunningAgentRegistry> = registry;
     assert!(should_pause(&reg).await);
@@ -670,7 +744,10 @@ async fn try_cleanup_removes_worktree_but_skips_branch_deletion_when_not_local()
     .await;
 
     assert_eq!(stats.contained_removals, 1);
-    assert_eq!(stats.branch_deletions, 0, "branch should not be deleted when not in local_branches");
+    assert_eq!(
+        stats.branch_deletions, 0,
+        "branch should not be deleted when not in local_branches"
+    );
     assert!(!worktree_path.exists());
 }
 
@@ -683,7 +760,10 @@ async fn scan_canonical_directories_skips_non_ralphx_branches() {
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_parent = tempfile::tempdir().expect("worktree parent");
-    let project_dir = worktree_parent.path().join("project-nonralphx");
+    let project =
+        project_with_worktree_parent("test-non-ralphx", repo_path, worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     let conv_path = project_dir.join("agent-conversation-nonralphx");
@@ -695,11 +775,6 @@ async fn scan_canonical_directories_skips_non_ralphx_branches() {
             &conv_path.to_string_lossy(),
             "feature/not-ralphx",
         ],
-    );
-
-    let project = Project::new(
-        "test-non-ralphx".to_string(),
-        repo_path.to_string_lossy().to_string(),
     );
 
     let known_paths: HashSet<String> = HashSet::new();
@@ -718,9 +793,18 @@ async fn scan_canonical_directories_skips_non_ralphx_branches() {
     )
     .await;
 
-    assert!(stats.directories_scanned >= 1, "should scan the conversation dir");
-    assert_eq!(stats.non_ralphx_skips, 1, "non-ralphx branch should be skipped");
-    assert_eq!(stats.contained_removals, 0, "should not remove non-ralphx worktree");
+    assert!(
+        stats.directories_scanned >= 1,
+        "should scan the conversation dir"
+    );
+    assert_eq!(
+        stats.non_ralphx_skips, 1,
+        "non-ralphx branch should be skipped"
+    );
+    assert_eq!(
+        stats.contained_removals, 0,
+        "should not remove non-ralphx worktree"
+    );
     assert!(conv_path.exists(), "non-ralphx worktree should still exist");
 }
 
@@ -750,37 +834,35 @@ async fn startup_cleanup_processes_multiple_projects() {
         "multi-project-1".to_string(),
         repo_dir1.path().to_string_lossy().to_string(),
     );
-    project1.worktree_parent_directory =
-        Some(repo_dir1.path().to_string_lossy().to_string());
+    project1.worktree_parent_directory = Some(repo_dir1.path().to_string_lossy().to_string());
 
     let mut project2 = Project::new(
         "multi-project-2".to_string(),
         repo_dir2.path().to_string_lossy().to_string(),
     );
-    project2.worktree_parent_directory =
-        Some(repo_dir2.path().to_string_lossy().to_string());
+    project2.worktree_parent_directory = Some(repo_dir2.path().to_string_lossy().to_string());
 
     let blocked = Arc::new(HashSet::from([project2.id.clone()]));
 
-    let project_repo =
-        Arc::new(MemoryProjectRepository::with_projects(vec![project1, project2]));
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![
+        project1, project2,
+    ]));
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
 
-    cleanup_orphan_agent_worktrees_on_startup(
-        project_repo,
-        workspace_repo,
-        blocked,
-        registry,
-    )
-    .await;
+    cleanup_orphan_agent_worktrees_on_startup(project_repo, workspace_repo, blocked, registry)
+        .await;
 }
 
 #[tokio::test]
 async fn scan_canonical_skips_file_entries_not_dirs() {
     let worktree_parent = tempfile::tempdir().expect("worktree parent");
-    let project_dir = worktree_parent.path().join("project-filedir");
+    let repo_dir = init_repo();
+    let project =
+        project_with_worktree_parent("test-file-entry", repo_dir.path(), worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     std::fs::write(
@@ -789,12 +871,6 @@ async fn scan_canonical_skips_file_entries_not_dirs() {
     )
     .expect("write file");
 
-    let repo_dir = init_repo();
-    let project = Project::new(
-        "test-file-entry".to_string(),
-        repo_dir.path().to_string_lossy().to_string(),
-    );
-
     let known_paths: HashSet<String> = HashSet::new();
     let local_branches: HashSet<String> = HashSet::new();
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
@@ -811,23 +887,24 @@ async fn scan_canonical_skips_file_entries_not_dirs() {
     )
     .await;
 
-    assert_eq!(stats.directories_scanned, 0, "file entries should not be scanned as dirs");
+    assert_eq!(
+        stats.directories_scanned, 0,
+        "file entries should not be scanned as dirs"
+    );
 }
 
 #[tokio::test]
 async fn scan_canonical_skips_non_conversation_dirs_under_project() {
     let worktree_parent = tempfile::tempdir().expect("worktree parent");
-    let project_dir = worktree_parent.path().join("project-mixed");
+    let repo_dir = init_repo();
+    let project =
+        project_with_worktree_parent("test-mixed", repo_dir.path(), worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     std::fs::create_dir_all(project_dir.join("not-a-conversation")).expect("create random dir");
     std::fs::create_dir_all(project_dir.join("some-other-thing")).expect("create random dir");
-
-    let repo_dir = init_repo();
-    let project = Project::new(
-        "test-mixed".to_string(),
-        repo_dir.path().to_string_lossy().to_string(),
-    );
 
     let known_paths: HashSet<String> = HashSet::new();
     let local_branches: HashSet<String> = HashSet::new();
@@ -845,7 +922,10 @@ async fn scan_canonical_skips_non_conversation_dirs_under_project() {
     )
     .await;
 
-    assert_eq!(stats.directories_scanned, 0, "non-conversation dirs should be skipped");
+    assert_eq!(
+        stats.directories_scanned, 0,
+        "non-conversation dirs should be skipped"
+    );
 }
 
 #[tokio::test]
@@ -869,18 +949,16 @@ async fn cleanup_project_handles_bad_working_directory() {
 #[tokio::test]
 async fn scan_canonical_skips_conversation_dirs_without_git() {
     let worktree_parent = tempfile::tempdir().expect("worktree parent");
-    let project_dir = worktree_parent.path().join("project-nogit");
+    let repo_dir = init_repo();
+    let project =
+        project_with_worktree_parent("test-nogit", repo_dir.path(), worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
     std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     let conv_dir = project_dir.join("agent-conversation-nogit123");
     std::fs::create_dir_all(&conv_dir).expect("create conversation dir");
     std::fs::write(conv_dir.join("some-file.txt"), "not a git worktree").expect("write file");
-
-    let repo_dir = init_repo();
-    let project = Project::new(
-        "test-nogit".to_string(),
-        repo_dir.path().to_string_lossy().to_string(),
-    );
 
     let known_paths: HashSet<String> = HashSet::new();
     let local_branches: HashSet<String> = HashSet::new();
@@ -899,8 +977,14 @@ async fn scan_canonical_skips_conversation_dirs_without_git() {
     .await;
 
     assert!(stats.directories_scanned >= 1, "should scan the dir");
-    assert_eq!(stats.contained_removals, 0, "non-git dirs should not be cleaned");
-    assert_eq!(stats.db_missing_candidates, 0, "no branch detected means no cleanup candidate");
+    assert_eq!(
+        stats.contained_removals, 0,
+        "non-git dirs should not be cleaned"
+    );
+    assert_eq!(
+        stats.db_missing_candidates, 0,
+        "no branch detected means no cleanup candidate"
+    );
 }
 
 #[tokio::test]
@@ -948,8 +1032,14 @@ async fn cleanup_project_handles_worktree_with_no_branch() {
 
     cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
 
-    assert!(stats.worktrees_scanned >= 1, "should scan worktrees including detached");
-    assert_eq!(stats.contained_removals, 0, "detached worktree has no branch, should be skipped");
+    assert!(
+        stats.worktrees_scanned >= 1,
+        "should scan worktrees including detached"
+    );
+    assert_eq!(
+        stats.contained_removals, 0,
+        "detached worktree has no branch, should be skipped"
+    );
 }
 
 #[tokio::test]
@@ -989,9 +1079,15 @@ async fn cleanup_project_skips_non_ralphx_worktrees() {
 
     cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
 
-    assert!(stats.non_ralphx_skips >= 1, "non-ralphx branch should be skipped");
+    assert!(
+        stats.non_ralphx_skips >= 1,
+        "non-ralphx branch should be skipped"
+    );
     assert_eq!(stats.contained_removals, 0);
-    assert!(worktree_path.exists(), "non-ralphx worktree should not be removed");
+    assert!(
+        worktree_path.exists(),
+        "non-ralphx worktree should not be removed"
+    );
 }
 
 #[tokio::test]
@@ -999,10 +1095,7 @@ async fn cleanup_project_skips_worktree_outside_parent() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(
-        repo_path,
-        &["checkout", "-b", "ralphx/test/agent-outside"],
-    );
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-outside"]);
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_dir = tempfile::tempdir().expect("worktree temp");
@@ -1023,8 +1116,7 @@ async fn cleanup_project_skips_worktree_outside_parent() {
         "test-outside-parent".to_string(),
         repo_path.to_string_lossy().to_string(),
     );
-    project.worktree_parent_directory =
-        Some(different_parent.path().to_string_lossy().to_string());
+    project.worktree_parent_directory = Some(different_parent.path().to_string_lossy().to_string());
 
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -1033,7 +1125,10 @@ async fn cleanup_project_skips_worktree_outside_parent() {
 
     cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
 
-    assert!(stats.non_ralphx_skips >= 1, "worktree outside parent should be skipped (counted as non_ralphx)");
+    assert!(
+        stats.non_ralphx_skips >= 1,
+        "worktree outside parent should be skipped (counted as non_ralphx)"
+    );
     assert_eq!(stats.contained_removals, 0);
     assert!(worktree_path.exists());
 }
@@ -1043,10 +1138,7 @@ async fn cleanup_project_matches_known_worktree_paths() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    run_git(
-        repo_path,
-        &["checkout", "-b", "ralphx/test/agent-dbknown"],
-    );
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-dbknown"]);
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_dir = tempfile::tempdir().expect("worktree temp");
@@ -1073,8 +1165,8 @@ async fn cleanup_project_matches_known_worktree_paths() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     {
         use crate::domain::entities::{
-            AgentConversationWorkspace, AgentConversationWorkspaceMode,
-            ChatConversationId, IdeationAnalysisBaseRefKind,
+            AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+            IdeationAnalysisBaseRefKind,
         };
         let workspace = AgentConversationWorkspace::new(
             ChatConversationId::new(),
@@ -1099,19 +1191,23 @@ async fn cleanup_project_matches_known_worktree_paths() {
 
     cleanup_project_orphan_worktrees(&project, &ws_repo, &registry, &mut stats).await;
 
-    assert!(stats.db_matches >= 1, "known workspace path should be matched");
-    assert_eq!(stats.contained_removals, 0, "known worktree should not be removed");
+    assert!(
+        stats.db_matches >= 1,
+        "known workspace path should be matched"
+    );
+    assert_eq!(
+        stats.contained_removals, 0,
+        "known worktree should not be removed"
+    );
     assert!(worktree_path.exists());
 }
 
 #[tokio::test]
 async fn scan_canonical_nonexistent_parent_is_noop() {
     let repo_dir = init_repo();
-    let project = Project::new(
-        "test-nonexistent-parent".to_string(),
-        repo_dir.path().to_string_lossy().to_string(),
-    );
     let nonexistent = Path::new("/tmp/ralphx-test-nonexistent-worktree-parent-12345");
+    let project =
+        project_with_worktree_parent("test-nonexistent-parent", repo_dir.path(), nonexistent);
 
     let known_paths: HashSet<String> = HashSet::new();
     let local_branches: HashSet<String> = HashSet::new();

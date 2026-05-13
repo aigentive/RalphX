@@ -652,13 +652,19 @@ pub fn resolve_agent_conversation_workspace_path(
     project: &Project,
     conversation_id: &ChatConversationId,
 ) -> AppResult<PathBuf> {
-    let parent = expand_worktree_parent(project.worktree_parent_or_default())?;
-    Ok(parent
-        .join(hashed_path_component("project", project.id.as_str()))
-        .join(hashed_path_component(
+    Ok(
+        resolve_agent_conversation_project_workspace_dir(project)?.join(hashed_path_component(
             "agent-conversation",
             &conversation_id.as_str(),
-        )))
+        )),
+    )
+}
+
+pub(crate) fn resolve_agent_conversation_project_workspace_dir(
+    project: &Project,
+) -> AppResult<PathBuf> {
+    let parent = expand_worktree_parent(project.worktree_parent_or_default())?;
+    Ok(parent.join(hashed_path_component("project", project.id.as_str())))
 }
 
 pub async fn resolve_valid_agent_conversation_workspace_path(
