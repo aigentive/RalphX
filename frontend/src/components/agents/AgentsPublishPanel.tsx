@@ -63,7 +63,7 @@ import {
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
-import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
+import { agentWorkspaceKeys, invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -135,10 +135,10 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
-  const changesQuery = useQuery({
-    queryKey: ["agents", "workspace-diff", conversationId],
-    queryFn: () => diffApi.getAgentConversationWorkspaceFileChanges(conversationId!),
-    enabled: canHydratePublishFacts && !!conversationId,
+  const reviewQuery = useQuery({
+    queryKey: agentWorkspaceKeys.review(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
+    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -148,25 +148,6 @@ export function AgentPublishPanel({
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 1_500 : false,
-  });
-  const commitsQuery = useQuery({
-    queryKey: ["agents", "workspace-commits", conversationId],
-    queryFn: async (): Promise<DiffViewerCommit[]> => {
-      const commits = await diffApi.getAgentConversationWorkspaceCommits(
-        conversationId!,
-      );
-      return commits
-        .map((commit) => ({
-          sha: commit.sha,
-          shortSha: commit.shortSha,
-          message: commit.message,
-          author: commit.author,
-          date: commit.date,
-        }))
-        .reverse();
-    },
-    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
-    staleTime: 2_000,
   });
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
@@ -285,16 +266,28 @@ export function AgentPublishPanel({
       );
     },
   });
-  const changesError = changesQuery.error;
-  const changes = changesQuery.data ?? [];
-  const commits = commitsQuery.data ?? [];
+  const changesError = reviewQuery.error;
+  const changes = reviewQuery.data?.changes ?? [];
+  const commits = useMemo<DiffViewerCommit[]>(
+    () =>
+      (reviewQuery.data?.commits ?? [])
+        .map((commit) => ({
+          sha: commit.sha,
+          shortSha: commit.shortSha,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+        }))
+        .reverse(),
+    [reviewQuery.data?.commits],
+  );
   const publicationEvents = publicationEventsQuery.data ?? [];
   const isChangesLoading =
-    Boolean(conversationId) && (!canHydratePublishFacts || changesQuery.isLoading);
+    Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
-  const hasNoDetectedChanges = changesQuery.isSuccess && changes.length === 0;
+  const hasNoDetectedChanges = reviewQuery.isSuccess && changes.length === 0;
 
   if (!workspace) {
     return <EmptyArtifactState title="No workspace selected" />;
@@ -383,12 +376,14 @@ export function AgentPublishPanel({
         : isChangesLoading
           ? "Loading changed files..."
           : isPublishCurrent
-            ? changes.length > 0
+            ? reviewQuery.isSuccess && changes.length > 0
               ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
               : "Workspace is published and current."
-            : changes.length > 0
+            : reviewQuery.isSuccess && changes.length > 0
               ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`
-              : "No changed files detected yet.";
+              : reviewQuery.isSuccess
+                ? "No changed files detected yet."
+                : "Review changes before publishing.";
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
@@ -797,8 +792,8 @@ export function AgentPublishPanel({
                     setIsLoadingCommitFiles(false);
                   }
                 }}
-                isLoadingChanges={changesQuery.isLoading}
-                isLoadingHistory={commitsQuery.isLoading}
+                isLoadingChanges={reviewQuery.isLoading}
+                isLoadingHistory={reviewQuery.isLoading}
                 isLoadingCommitFiles={isLoadingCommitFiles}
                 changesLabel="Workspace Changes"
                 changesEmptyTitle="No workspace changes"

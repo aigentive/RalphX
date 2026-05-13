@@ -14,6 +14,7 @@ const deferredHydrationTimeout = { timeout: 3_000 };
 
 const {
   getWorkspaceChangesMock,
+  getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
@@ -40,6 +41,7 @@ const {
   toastSuccessMock,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
@@ -88,6 +90,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceReview: (...args: unknown[]) =>
+      getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
       getWorkspaceDiffMock(...args),
     getAgentConversationWorkspaceCommits: (...args: unknown[]) =>
@@ -308,6 +312,19 @@ describe("AgentsArtifactPane", () => {
     getWorkspaceChangesMock.mockResolvedValue([
       { path: "frontend/src/App.tsx", status: "modified", additions: 4, deletions: 1 },
     ]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "frontend/src/App.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
     getWorkspaceDiffMock.mockResolvedValue({
       filePath: "frontend/src/App.tsx",
       oldContent: "old",
@@ -702,15 +719,15 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    expect(screen.getByText("Loading changed files...")).toBeInTheDocument();
+    expect(screen.getByText("Review changes before publishing.")).toBeInTheDocument();
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(getWorkspaceChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceFreshnessMock).not.toHaveBeenCalled();
     expect(listPublicationEventsMock).not.toHaveBeenCalled();
 
     await waitFor(() =>
-      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1")
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1")
     );
-    expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1");
     expect(listPublicationEventsMock).toHaveBeenCalledWith("conversation-1");
   });
 
@@ -724,9 +741,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1")
-    );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(useConversationMock).toHaveBeenCalledWith("conversation-1", {
       enabled: false,
       pageSize: 40,
@@ -1256,29 +1271,37 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("opens review changes while the file list is still loading", async () => {
-    const changesDeferred = deferred<unknown>();
-    getWorkspaceChangesMock.mockReturnValue(changesDeferred.promise);
+    const reviewDeferred = deferred<unknown>();
+    getWorkspaceReviewMock.mockReturnValue(reviewDeferred.promise);
 
     renderPane("publish", workspace({ mode: "edit" }));
 
     const reviewButton = await screen.findByTestId("agents-review-changes");
-    await waitFor(() =>
-      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1"),
-    );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(reviewButton).toBeEnabled();
 
     fireEvent.click(reviewButton);
 
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
+    );
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 
   it("disables publish when no changed files are detected", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
-    getWorkspaceChangesMock.mockResolvedValue([]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
 
     renderPane("publish", workspace({ mode: "edit" }), publish);
 
     const publishButton = await screen.findByTestId("agents-publish-confirm");
+    expect(publishButton).toBeEnabled();
+    fireEvent.click(screen.getByTestId("agents-review-changes"));
     await screen.findByText("No changed files detected yet.");
     await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
     expect(publishButton).toBeDisabled();
@@ -1318,7 +1341,7 @@ describe("AgentsArtifactPane", () => {
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
-    expect(screen.getByText("1 changed file published for review.")).toBeInTheDocument();
+    expect(screen.getByText("Workspace is published and current.")).toBeInTheDocument();
 
     fireEvent.click(publishButton);
 
@@ -1353,7 +1376,7 @@ describe("AgentsArtifactPane", () => {
 
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() => expect(publishButton).toHaveTextContent("Commit & Publish"));
-    await screen.findByText("1 changed file ready for review.");
+    await screen.findByText("Review changes before publishing.");
     expect(publishButton).toBeEnabled();
     expect(publishButton).not.toHaveTextContent("PR is up to date");
 
@@ -1861,28 +1884,42 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     await waitFor(() => expect(screen.getByTestId("agents-review-changes")).toBeEnabled());
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("agents-review-changes"));
     await waitFor(() =>
-      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1"),
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
     );
   });
 
   it("shows workspace branch commits in the review dialog history tab", async () => {
     const user = userEvent.setup();
-    getWorkspaceCommitsMock.mockResolvedValue([
-      {
-        sha: "abc123def456",
-        shortSha: "abc123d",
-        message: "Update Codex model catalog",
-        author: "Agent",
-        date: new Date("2026-04-26T09:00:00Z"),
-      },
-    ]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "frontend/src/App.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+        },
+      ],
+      commits: [
+        {
+          sha: "abc123def456",
+          shortSha: "abc123d",
+          message: "Update Codex model catalog",
+          author: "Agent",
+          date: new Date("2026-04-26T09:00:00Z"),
+        },
+      ],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
     renderPane("publish", workspace({ mode: "edit" }));
 
     await waitFor(() => expect(screen.getByTestId("agents-review-changes")).toBeEnabled());
     fireEvent.click(screen.getByTestId("agents-review-changes"));
     await waitFor(() =>
-      expect(getWorkspaceCommitsMock).toHaveBeenCalledWith("conversation-1")
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1")
     );
     await user.click(
       await screen.findByTestId("tab-history", undefined, deferredHydrationTimeout)

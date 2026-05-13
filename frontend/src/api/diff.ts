@@ -6,16 +6,29 @@ import {
   FileChangesResponseSchema,
   FileDiffSchema,
   TaskCommitsResponseSchema,
+  AgentWorkspaceReviewResponseSchema,
 } from "./diff.schemas";
 import {
   transformFileChange,
   transformFileDiff,
   transformCommitInfo,
+  transformAgentWorkspaceReview,
 } from "./diff.transforms";
-import type { FileChange, FileDiff, CommitInfo } from "./diff.types";
+import type {
+  AgentWorkspaceReview,
+  FileChange,
+  FileDiff,
+  CommitInfo,
+} from "./diff.types";
 
 // Re-export types for convenience
-export type { FileChange, FileDiff, FileChangeStatus, CommitInfo } from "./diff.types";
+export type {
+  AgentWorkspaceReview,
+  FileChange,
+  FileDiff,
+  FileChangeStatus,
+  CommitInfo,
+} from "./diff.types";
 
 // Re-export schemas for consumers that need validation
 export {
@@ -25,10 +38,16 @@ export {
   FileChangesResponseSchema,
   CommitInfoSchema,
   TaskCommitsResponseSchema,
+  AgentWorkspaceReviewResponseSchema,
 } from "./diff.schemas";
 
 // Re-export transforms for consumers that need manual transformation
-export { transformFileChange, transformFileDiff, transformCommitInfo } from "./diff.transforms";
+export {
+  transformAgentWorkspaceReview,
+  transformFileChange,
+  transformFileDiff,
+  transformCommitInfo,
+} from "./diff.transforms";
 
 // ============================================================================
 // Typed Invoke Helper
@@ -134,6 +153,16 @@ export const diffApi = {
       { conversationId },
       FileChangesResponseSchema,
       (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceReview: (
+    conversationId: string
+  ): Promise<AgentWorkspaceReview> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_review",
+      { conversationId },
+      AgentWorkspaceReviewResponseSchema,
+      transformAgentWorkspaceReview
     ),
 
   getAgentConversationWorkspaceFileDiff: (

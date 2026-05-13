@@ -847,6 +847,9 @@ describe("useAgentEvents", () => {
         queryKey: ["agents", "conversation-workspace-publication-events", "conv-snake"],
       });
       expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "workspace-review", "conv-camel"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "workspace-diff", "conv-camel"],
       });
       expect(invalidateSpy).toHaveBeenCalledWith({

@@ -10,6 +10,7 @@ use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{ChatConversationId, PlanBranch, Project, Task, TaskId};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -215,6 +216,14 @@ struct AgentWorkspaceContext {
     diff_target: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AgentWorkspaceReviewResponse {
+    pub changes: Vec<FileChange>,
+    pub commits: Vec<CommitInfoResponse>,
+    pub base_ref: String,
+    pub head_ref: String,
+}
+
 async fn get_agent_workspace_context(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
@@ -287,6 +296,91 @@ async fn ensure_agent_workspace_commit_in_range(
         "Commit {} is not part of this agent workspace branch",
         commit_sha
     )))
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_review(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<AgentWorkspaceReviewResponse> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result =
+        get_agent_conversation_workspace_review_for_state(app_state.inner(), &conversation_id)
+            .await;
+    match &result {
+        Ok(response) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "review",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = response.changes.len(),
+            commits = response.commits.len(),
+            base_ref = response.base_ref.as_str(),
+            head_ref = response.head_ref.as_str(),
+            "Loaded agent workspace review payload"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "review",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace review payload"
+        ),
+    }
+    result
+}
+
+async fn get_agent_conversation_workspace_review_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceReviewResponse> {
+    let ctx = get_agent_workspace_context(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    let base_ref = ctx.base_ref.clone();
+    let head_ref = ctx
+        .diff_target
+        .clone()
+        .unwrap_or_else(|| "HEAD".to_string());
+
+    let changes_path = working_path.clone();
+    let changes_base_ref = base_ref.clone();
+    let changes_target = ctx.diff_target.clone();
+    let changes_fut = async move {
+        tokio::task::spawn_blocking(move || {
+            let diff_service = DiffService::new();
+            if let Some(target) = changes_target {
+                diff_service.get_file_changes_between_refs(
+                    &changes_path,
+                    &changes_base_ref,
+                    &target,
+                )
+            } else {
+                diff_service.get_worktree_file_changes_from_ref(&changes_path, &changes_base_ref)
+            }
+        })
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!(
+                "agent workspace review file change task failed: {error}"
+            ))
+        })?
+    };
+
+    let commits_path = ctx.working_path.clone();
+    let commits_base_ref = base_ref.clone();
+    let commits_head_ref = head_ref.clone();
+    let commits_fut =
+        GitService::get_commits_between(&commits_path, &commits_base_ref, &commits_head_ref);
+
+    let (changes, commits) = tokio::try_join!(changes_fut, commits_fut)?;
+    Ok(AgentWorkspaceReviewResponse {
+        changes,
+        commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
+        base_ref,
+        head_ref,
+    })
 }
 
 #[tauri::command]

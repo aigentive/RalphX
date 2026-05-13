@@ -27,6 +27,11 @@ export const agentWorkspaceKeys = {
     "conversation-workspace-publication-events",
     conversationId,
   ] as const,
+  review: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-review",
+    conversationId,
+  ] as const,
   diff: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-diff",
@@ -100,6 +105,9 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.publicationEvents(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.review(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.diff(conversationId),

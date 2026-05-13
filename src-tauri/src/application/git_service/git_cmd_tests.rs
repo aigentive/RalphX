@@ -231,9 +231,18 @@ fn git_command_telemetry_helpers_cover_success_error_and_timeout_paths() {
         .output()
         .expect("git --version should run");
 
-    log_git_command_result("run", &args, &cwd, Instant::now(), caller, Ok(&output));
     log_git_command_result(
         "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        Ok(&output),
+    );
+    log_git_command_result(
+        "run",
+        GitCommandLane::Foreground,
         &args,
         &cwd,
         Instant::now() - Duration::from_millis(SLOW_GIT_COMMAND_MS + 1),
@@ -242,11 +251,28 @@ fn git_command_telemetry_helpers_cover_success_error_and_timeout_paths() {
     );
 
     let error = AppError::GitOperation("test git failure".to_string());
-    log_git_command_result("run", &args, &cwd, Instant::now(), caller, Err(&error));
+    log_git_command_result(
+        "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        Err(&error),
+    );
 
-    log_git_status_result("run_status", &args, &cwd, Instant::now(), caller, true);
     log_git_status_result(
         "run_status",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        true,
+    );
+    log_git_status_result(
+        "run_status",
+        GitCommandLane::Foreground,
         &args,
         &cwd,
         Instant::now() - Duration::from_millis(SLOW_GIT_COMMAND_MS + 1),
@@ -254,7 +280,22 @@ fn git_command_telemetry_helpers_cover_success_error_and_timeout_paths() {
         false,
     );
 
-    log_git_command_timeout("run", &args, &cwd, Instant::now(), caller, 5);
+    log_git_command_timeout(
+        "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        5,
+    );
+    log_git_admission_wait(
+        "run",
+        GitCommandLane::Background,
+        &args,
+        &cwd,
+        Instant::now() - Duration::from_millis(GIT_ADMISSION_WAIT_LOG_MS as u64 + 1),
+    );
 }
 
 // ── Async public API tests ───────────────────────────────────────────────
@@ -267,11 +308,48 @@ async fn test_run_basic_git_version() {
 }
 
 #[tokio::test]
+async fn test_run_background_basic_git_version() {
+    let tmpdir = std::env::temp_dir();
+    let result = run_background(&["--version"], &tmpdir).await;
+    assert!(
+        result.is_ok(),
+        "background git --version should succeed: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn scoped_git_lane_overrides_default_lane() {
+    assert_eq!(
+        current_git_command_lane(GitCommandLane::Foreground),
+        GitCommandLane::Foreground
+    );
+
+    let lane = with_git_command_lane(GitCommandLane::Background, async {
+        current_git_command_lane(GitCommandLane::Foreground)
+    })
+    .await;
+
+    assert_eq!(lane, GitCommandLane::Background);
+}
+
+#[tokio::test]
 async fn test_run_status_basic() {
     let tmpdir = std::env::temp_dir();
     let result = run_status(&["--version"], &tmpdir).await;
     assert!(result.is_ok());
     assert!(result.unwrap(), "git --version should report success");
+}
+
+#[tokio::test]
+async fn test_run_status_background_basic() {
+    let tmpdir = std::env::temp_dir();
+    let result = run_status_background(&["--version"], &tmpdir).await;
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap(),
+        "background git --version should report success"
+    );
 }
 
 #[tokio::test]
