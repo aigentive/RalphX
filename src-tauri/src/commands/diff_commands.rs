@@ -493,11 +493,8 @@ pub async fn get_agent_conversation_workspace_review(
 ) -> AppResult<AgentWorkspaceReviewResponse> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result = get_agent_conversation_workspace_review_cached(
-        app_state.inner(),
-        &conversation_id,
-    )
-    .await;
+    let result =
+        get_agent_conversation_workspace_review_cached(app_state.inner(), &conversation_id).await;
     match &result {
         Ok((snapshot, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
@@ -539,8 +536,8 @@ async fn get_agent_conversation_workspace_review_cached(
         return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Hit));
     }
     let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
-        let snapshot = get_agent_conversation_workspace_review_for_state(app_state, conversation_id)
-            .await?;
+        let snapshot =
+            get_agent_conversation_workspace_review_for_state(app_state, conversation_id).await?;
         return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Miss));
     };
     let lock = agent_workspace_review_locks()
@@ -759,11 +756,7 @@ pub async fn get_agent_conversation_workspace_commit_file_changes(
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
         let changes = if diff_service.is_merge_commit(&working_path, &commit_sha) {
-            diff_service.get_file_changes_between_refs(
-                &working_path,
-                &ctx.base_ref,
-                &commit_sha,
-            )
+            diff_service.get_file_changes_between_refs(&working_path, &ctx.base_ref, &commit_sha)
         } else {
             diff_service.get_commit_file_changes(&commit_sha, &working_path)
         }?;
@@ -1043,7 +1036,15 @@ pub async fn get_conflict_file_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
     use crate::application::FileChangeStatus;
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
+    };
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
     use tempfile::TempDir;
 
     fn test_conversation_id() -> ChatConversationId {
@@ -1078,12 +1079,73 @@ mod tests {
         let base = run_git(&repo, &["rev-parse", "HEAD"]);
 
         std::fs::create_dir_all(repo.join("src")).unwrap();
-        std::fs::write(repo.join("src").join("lib.rs"), "pub fn answer() -> u8 { 42 }\n")
-            .unwrap();
+        std::fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn answer() -> u8 { 42 }\n",
+        )
+        .unwrap();
         run_git(&repo, &["add", "."]);
         run_git(&repo, &["commit", "-m", "Add source file"]);
 
         (temp_dir, repo, base)
+    }
+
+    async fn create_agent_workspace_command_state(
+    ) -> (TempDir, AppState, ChatConversationId, PathBuf, String) {
+        let temp_dir = TempDir::new().expect("temp repo should be created");
+        let repo = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo root should be created");
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test User"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Initial commit"]);
+
+        let mut project = Project::new(
+            "Agent Workspace Diff".to_string(),
+            repo.display().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory =
+            Some(temp_dir.path().join("worktrees").display().to_string());
+        let conversation_id = test_conversation_id();
+        let workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("agent workspace should be prepared");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        std::fs::create_dir_all(worktree_path.join("src")).unwrap();
+        std::fs::write(
+            worktree_path.join("src").join("lib.rs"),
+            "pub fn answer() -> u8 { 42 }\n",
+        )
+        .unwrap();
+        run_git(&worktree_path, &["add", "."]);
+        run_git(&worktree_path, &["commit", "-m", "Add workspace change"]);
+        let commit_sha = run_git(&worktree_path, &["rev-parse", "HEAD"]);
+
+        let state = AppState::new_test();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be persisted");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be persisted");
+
+        (temp_dir, state, conversation_id, worktree_path, commit_sha)
     }
 
     fn sample_review_snapshot(sha: &str) -> AgentWorkspaceReviewSnapshot {
@@ -1157,11 +1219,32 @@ mod tests {
         let cached_review =
             cached_agent_workspace_review(&conversation_id).expect("review should hit");
         assert_eq!(cached_review.response.changes.len(), 1);
-        assert_eq!(cached_review.response.commits[0].sha, snapshot.response.commits[0].sha);
+        assert_eq!(
+            cached_review.response.commits[0].sha,
+            snapshot.response.commits[0].sha
+        );
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
         assert!(cached_agent_workspace_context(&conversation_id).is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
+    }
+
+    #[test]
+    fn agent_workspace_diff_cache_stores_skip_uncacheable_ids() {
+        let conversation_id = ChatConversationId::from_string(uuid::Uuid::nil().to_string());
+        let context = AgentWorkspaceContext {
+            working_path: PathBuf::from("/tmp/uncacheable-agent-workspace"),
+            base_ref: "base-sha".to_string(),
+            diff_target: None,
+        };
+        let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
+
+        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_review(&conversation_id, &snapshot);
+
+        assert!(cached_agent_workspace_context(&conversation_id).is_none());
+        assert!(cached_agent_workspace_review(&conversation_id).is_none());
+        invalidate_agent_workspace_diff_caches(&conversation_id);
     }
 
     #[tokio::test]
@@ -1233,6 +1316,74 @@ mod tests {
         assert_eq!(status.as_str(), "hit");
         assert_eq!(cached.response.commits.len(), 1);
         assert_eq!(cached.response.commits[0].short_sha, "abcdef0");
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_diff_commands_use_shared_review_cache() {
+        let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
+            create_agent_workspace_command_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let review =
+            get_agent_conversation_workspace_review(app.state(), conversation_id.as_str()).await;
+        let review = review.expect("review payload should load");
+        assert_eq!(review.head_ref, "HEAD");
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "src/lib.rs"));
+        assert!(review.commits.iter().any(|commit| commit.sha == commit_sha));
+
+        let changes =
+            get_agent_conversation_workspace_file_changes(app.state(), conversation_id.as_str())
+                .await
+                .expect("cached file changes should load");
+        assert!(changes.iter().any(|change| change.path == "src/lib.rs"));
+
+        let commits =
+            get_agent_conversation_workspace_commits(app.state(), conversation_id.as_str())
+                .await
+                .expect("cached commits should load");
+        let commit = commits
+            .commits
+            .iter()
+            .find(|commit| commit.sha == commit_sha)
+            .expect("workspace commit should be present");
+
+        let file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+        )
+        .await
+        .expect("workspace file diff should load");
+        assert!(file_diff.new_content.contains("answer"));
+
+        let commit_changes = get_agent_conversation_workspace_commit_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+            commit.short_sha.clone(),
+        )
+        .await
+        .expect("commit file changes should load through cached commit validation");
+        assert!(commit_changes
+            .iter()
+            .any(|change| change.path == "src/lib.rs"));
+
+        let commit_diff = get_agent_conversation_workspace_commit_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            commit.sha.clone(),
+            "src/lib.rs".to_string(),
+        )
+        .await
+        .expect("commit file diff should load through cached commit validation");
+        assert!(commit_diff.new_content.contains("answer"));
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
     }
