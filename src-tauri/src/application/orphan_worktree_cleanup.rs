@@ -310,6 +310,7 @@ fn is_current_project_agent_conversation_worktree(
         .is_some_and(|name| name.starts_with(AGENT_CONVERSATION_DIR_PREFIX))
 }
 
+#[cfg(test)]
 pub(super) async fn scan_canonical_directories(
     project: &Project,
     repo_path: &Path,
@@ -618,6 +619,7 @@ fn record_candidate_path(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn detect_worktree_branch(worktree_path: &Path) -> Option<String> {
     detect_worktree_branch_and_head(worktree_path)
         .await
