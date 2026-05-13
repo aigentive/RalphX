@@ -25,9 +25,9 @@ use crate::domain::repositories::{
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
     IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, PlanBranchRepository,
-    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
-    TaskStepRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -55,6 +55,7 @@ pub(crate) struct StartupPipelineDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
@@ -140,6 +141,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         artifact_repo,
         conversation_repo,
         agent_conversation_workspace_repo,
+        orphan_worktree_cleanup_marker_repo,
         agent_run_repo,
         ideation_session_repo,
         activity_event_repo,
@@ -377,6 +379,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     {
         let project_repo = Arc::clone(&project_repo);
         let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let orphan_worktree_cleanup_marker_repo = Arc::clone(&orphan_worktree_cleanup_marker_repo);
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
         let running_agent_registry = Arc::clone(&running_agent_registry);
         tauri::async_runtime::spawn(async move {
@@ -384,6 +387,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 crate::application::orphan_worktree_cleanup::cleanup_orphan_agent_worktrees_on_startup(
                     project_repo,
                     agent_conversation_workspace_repo,
+                    orphan_worktree_cleanup_marker_repo,
                     blocked_git_project_ids,
                     running_agent_registry,
                 )

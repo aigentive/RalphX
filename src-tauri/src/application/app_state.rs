@@ -39,11 +39,12 @@ use crate::domain::repositories::{
     ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
-    WebhookRegistrationRepository, WorkflowRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
+    TeamMessageRepository, TeamSessionRepository, WebhookRegistrationRepository,
+    WorkflowRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -61,7 +62,8 @@ use crate::infrastructure::memory::{
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
-    MemoryIdeationSettingsRepository, MemoryMethodologyRepository, MemoryPermissionRepository,
+    MemoryIdeationSettingsRepository, MemoryMethodologyRepository,
+    MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
@@ -85,14 +87,14 @@ use crate::infrastructure::sqlite::{
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
     SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository, SqliteMemoryEventRepository,
-    SqliteMethodologyRepository, SqlitePermissionRepository, SqlitePlanBranchRepository,
-    SqlitePlanSelectionStatsRepository, SqliteProcessRepository, SqliteProjectRepository,
-    SqliteProposalDependencyRepository, SqliteQuestionRepository, SqliteReviewIssueRepository,
-    SqliteReviewRepository, SqliteReviewSettingsRepository, SqliteRunningAgentRegistry,
-    SqliteSessionLinkRepository, SqliteTaskDependencyRepository, SqliteTaskProposalRepository,
-    SqliteTaskQARepository, SqliteTaskRepository, SqliteTaskStepRepository,
-    SqliteTeamMessageRepository, SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository,
-    SqliteWorkflowRepository,
+    SqliteMethodologyRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
+    SqlitePermissionRepository, SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository,
+    SqliteProcessRepository, SqliteProjectRepository, SqliteProposalDependencyRepository,
+    SqliteQuestionRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
+    SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 
@@ -165,6 +167,8 @@ pub struct AppState {
     pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    /// Startup orphan agent-worktree cleanup backoff markers
+    pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
     pub agent_terminal_service: Arc<AgentTerminalService>,
     /// Agent run repository (for tracking Claude agent executions)
@@ -334,16 +338,14 @@ impl AppState {
             .explicit_available_harness_client(harness)
             .await
         {
-            return Ok(
-                self.background_agent_runtime_for_harness(
-                    client,
-                    harness,
-                    provider_settings.model,
-                    provider_settings.effort,
-                    provider_settings.approval_policy,
-                    provider_settings.sandbox_mode,
-                )
-            );
+            return Ok(self.background_agent_runtime_for_harness(
+                client,
+                harness,
+                provider_settings.model,
+                provider_settings.effort,
+                provider_settings.approval_policy,
+                provider_settings.sandbox_mode,
+            ));
         }
 
         Err(AppError::Infrastructure(format!(
@@ -689,6 +691,9 @@ impl AppState {
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -869,6 +874,9 @@ impl AppState {
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
             ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                MemoryOrphanWorktreeCleanupMarkerRepository::new(),
+            ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -984,6 +992,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -1113,6 +1124,9 @@ impl AppState {
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -1224,6 +1238,9 @@ impl AppState {
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),

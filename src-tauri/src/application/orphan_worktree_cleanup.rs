@@ -3,16 +3,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use chrono::{Duration as ChronoDuration, Utc};
+
 use crate::application::agent_conversation_workspace::{
     expand_worktree_parent_public, resolve_agent_conversation_project_workspace_dir,
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{Project, ProjectId};
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, OrphanWorktreeCleanupMarker,
+    OrphanWorktreeCleanupMarkerKey, OrphanWorktreeCleanupMarkerRepository, ProjectRepository,
+};
 use crate::domain::services::RunningAgentRegistry;
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 const RALPHX_BRANCH_PREFIX: &str = "ralphx/";
 const AGENT_CONVERSATION_DIR_PREFIX: &str = "agent-conversation-";
+const CLEANUP_STATUS_DIRTY: &str = "dirty";
+const CLEANUP_STATUS_UNSAFE: &str = "unsafe";
 
 #[derive(Debug, Default)]
 pub(crate) struct OrphanCleanupStats {
@@ -25,6 +33,7 @@ pub(crate) struct OrphanCleanupStats {
     pub contained_removals: usize,
     pub dirty_skips: usize,
     pub unsafe_skips: usize,
+    pub marker_skips: usize,
     pub non_ralphx_skips: usize,
     pub branch_deletions: usize,
 }
@@ -43,6 +52,7 @@ impl OrphanCleanupStats {
             contained_removals = self.contained_removals,
             dirty_skips = self.dirty_skips,
             unsafe_skips = self.unsafe_skips,
+            marker_skips = self.marker_skips,
             non_ralphx_skips = self.non_ralphx_skips,
             branch_deletions = self.branch_deletions,
             elapsed_ms = started_at.elapsed().as_millis(),
@@ -80,6 +90,7 @@ pub(super) async fn resolve_target_ref_for_orphan(repo_path: &Path) -> String {
 pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
     project_repo: Arc<dyn ProjectRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     running_agent_registry: Arc<dyn RunningAgentRegistry>,
 ) {
@@ -114,6 +125,7 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
         cleanup_project_orphan_worktrees(
             &project,
             &workspace_repo,
+            &marker_repo,
             &running_agent_registry,
             &mut stats,
         )
@@ -126,6 +138,7 @@ pub(crate) async fn cleanup_orphan_agent_worktrees_on_startup(
 pub(super) async fn cleanup_project_orphan_worktrees(
     project: &Project,
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
     stats: &mut OrphanCleanupStats,
 ) {
@@ -190,6 +203,7 @@ pub(super) async fn cleanup_project_orphan_worktrees(
     let local_branches = GitService::list_local_branch_names(repo_path)
         .await
         .unwrap_or_default();
+    let target_ref = resolve_target_ref_for_orphan(repo_path).await;
 
     let known_workspace_paths = match workspace_repo
         .list_worktree_paths_by_project_id(&project.id)
@@ -234,8 +248,18 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         }
         stats.db_missing_candidates += 1;
 
-        try_cleanup_orphan_worktree(repo_path, &worktree_path, branch, &local_branches, stats)
-            .await;
+        try_cleanup_orphan_worktree(
+            project,
+            repo_path,
+            &worktree_path,
+            branch,
+            worktree.head.as_deref(),
+            &target_ref,
+            &local_branches,
+            marker_repo,
+            stats,
+        )
+        .await;
     }
 
     scan_canonical_directories(
@@ -243,8 +267,10 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         repo_path,
         &worktree_parent,
         &known_workspace_paths,
+        &target_ref,
         &local_branches,
         running_agent_registry,
+        marker_repo,
         stats,
     )
     .await;
@@ -269,8 +295,10 @@ pub(super) async fn scan_canonical_directories(
     repo_path: &Path,
     worktree_parent: &Path,
     known_workspace_paths: &HashSet<String>,
+    target_ref: &str,
     local_branches: &HashSet<String>,
     running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     stats: &mut OrphanCleanupStats,
 ) {
     let project_dir = match resolve_agent_conversation_project_workspace_dir(project) {
@@ -341,8 +369,8 @@ pub(super) async fn scan_canonical_directories(
             continue;
         }
 
-        let branch = match detect_worktree_branch(&conv_path).await {
-            Some(b) => b,
+        let (branch, head_sha) = match detect_worktree_branch_and_head(&conv_path).await {
+            Some(result) => result,
             None => continue,
         };
 
@@ -353,18 +381,74 @@ pub(super) async fn scan_canonical_directories(
 
         stats.db_missing_candidates += 1;
 
-        try_cleanup_orphan_worktree(repo_path, &conv_path, &branch, local_branches, stats).await;
+        try_cleanup_orphan_worktree(
+            project,
+            repo_path,
+            &conv_path,
+            &branch,
+            head_sha.as_deref(),
+            target_ref,
+            local_branches,
+            marker_repo,
+            stats,
+        )
+        .await;
     }
 }
 
 pub(super) async fn try_cleanup_orphan_worktree(
+    project: &Project,
     repo_path: &Path,
     worktree_path: &Path,
     branch: &str,
+    head_sha: Option<&str>,
+    target_ref: &str,
     local_branches: &HashSet<String>,
+    marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     stats: &mut OrphanCleanupStats,
 ) {
     if !worktree_path.exists() {
+        return;
+    }
+
+    let dirty_marker_key = cleanup_marker_key(
+        &project.id,
+        worktree_path,
+        branch,
+        head_sha,
+        CLEANUP_STATUS_DIRTY,
+        None,
+    );
+    if has_recent_cleanup_marker(marker_repo, &dirty_marker_key).await {
+        stats.dirty_skips += 1;
+        stats.marker_skips += 1;
+        tracing::debug!(
+            path = %worktree_path.display(),
+            branch,
+            head_sha = ?head_sha,
+            "Orphan cleanup: skipped recently dirty worktree"
+        );
+        return;
+    }
+
+    let unsafe_marker_key = cleanup_marker_key(
+        &project.id,
+        worktree_path,
+        branch,
+        head_sha,
+        CLEANUP_STATUS_UNSAFE,
+        Some(target_ref),
+    );
+    if has_recent_cleanup_marker(marker_repo, &unsafe_marker_key).await {
+        stats.unsafe_skips += 1;
+        stats.marker_skips += 1;
+        tracing::debug!(
+            path = %worktree_path.display(),
+            branch,
+            head_sha = ?head_sha,
+            target_ref,
+            "Orphan cleanup: skipped recently unsafe worktree"
+        );
         return;
     }
 
@@ -373,6 +457,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
         .unwrap_or(true)
     {
         stats.dirty_skips += 1;
+        mark_cleanup_marker(marker_repo, dirty_marker_key).await;
         tracing::debug!(
             path = %worktree_path.display(),
             branch,
@@ -381,12 +466,12 @@ pub(super) async fn try_cleanup_orphan_worktree(
         return;
     }
 
-    let target_ref = resolve_target_ref_for_orphan(repo_path).await;
     let (is_contained, reason) =
         GitService::is_branch_merged_or_content_equivalent(repo_path, branch, &target_ref).await;
 
     if !is_contained {
         stats.unsafe_skips += 1;
+        mark_cleanup_marker(marker_repo, unsafe_marker_key).await;
         tracing::debug!(
             path = %worktree_path.display(),
             branch,
@@ -396,6 +481,8 @@ pub(super) async fn try_cleanup_orphan_worktree(
         );
         return;
     }
+
+    clear_cleanup_marker(marker_repo, &project.id, worktree_path, branch).await;
 
     let safe_path = match crate::utils::path_safety::validate_absolute_non_root_path(
         worktree_path,
@@ -443,13 +530,19 @@ pub(super) async fn try_cleanup_orphan_worktree(
 }
 
 pub(super) async fn detect_worktree_branch(worktree_path: &Path) -> Option<String> {
+    detect_worktree_branch_and_head(worktree_path)
+        .await
+        .map(|(branch, _)| branch)
+}
+
+async fn detect_worktree_branch_and_head(worktree_path: &Path) -> Option<(String, Option<String>)> {
     let head_file = worktree_path.join(".git");
     if !head_file.exists() {
         return None;
     }
 
     let output = crate::application::git_service::git_cmd::run(
-        &["rev-parse", "--abbrev-ref", "HEAD"],
+        &["rev-parse", "--abbrev-ref", "HEAD", "HEAD"],
         worktree_path,
     )
     .await
@@ -459,11 +552,105 @@ pub(super) async fn detect_worktree_branch(worktree_path: &Path) -> Option<Strin
         return None;
     }
 
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let branch = lines.next().unwrap_or_default().trim().to_string();
     if branch.is_empty() || branch == "HEAD" {
         None
     } else {
-        Some(branch)
+        let head = lines
+            .next()
+            .map(str::trim)
+            .filter(|head| !head.is_empty())
+            .map(str::to_string);
+        Some((branch, head))
+    }
+}
+
+fn cleanup_marker_key(
+    project_id: &ProjectId,
+    worktree_path: &Path,
+    branch: &str,
+    head_sha: Option<&str>,
+    cleanup_status: &str,
+    target_ref: Option<&str>,
+) -> OrphanWorktreeCleanupMarkerKey {
+    OrphanWorktreeCleanupMarkerKey {
+        project_id: project_id.clone(),
+        worktree_path: worktree_path.to_string_lossy().to_string(),
+        branch_name: branch.to_string(),
+        cleanup_status: cleanup_status.to_string(),
+        head_sha: head_sha.map(str::to_string),
+        target_ref: target_ref.map(str::to_string),
+    }
+}
+
+fn cleanup_marker_retry_after() -> chrono::DateTime<Utc> {
+    let retry_secs = i64::try_from(git_runtime_config().orphan_worktree_cleanup_marker_retry_secs)
+        .unwrap_or(i64::MAX);
+    Utc::now() - ChronoDuration::seconds(retry_secs)
+}
+
+async fn has_recent_cleanup_marker(
+    marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    key: &OrphanWorktreeCleanupMarkerKey,
+) -> bool {
+    match marker_repo
+        .has_recent_marker(key, cleanup_marker_retry_after())
+        .await
+    {
+        Ok(found) => found,
+        Err(error) => {
+            tracing::debug!(
+                branch = %key.branch_name,
+                path = %key.worktree_path,
+                status = %key.cleanup_status,
+                error = %error,
+                "Orphan cleanup: failed to read cleanup marker"
+            );
+            false
+        }
+    }
+}
+
+async fn mark_cleanup_marker(
+    marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    key: OrphanWorktreeCleanupMarkerKey,
+) {
+    if let Err(error) = marker_repo
+        .mark(OrphanWorktreeCleanupMarker {
+            key: key.clone(),
+            checked_at: Utc::now(),
+        })
+        .await
+    {
+        tracing::debug!(
+            branch = %key.branch_name,
+            path = %key.worktree_path,
+            status = %key.cleanup_status,
+            error = %error,
+            "Orphan cleanup: failed to write cleanup marker"
+        );
+    }
+}
+
+async fn clear_cleanup_marker(
+    marker_repo: &Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    project_id: &ProjectId,
+    worktree_path: &Path,
+    branch: &str,
+) {
+    let worktree_path = worktree_path.to_string_lossy().to_string();
+    if let Err(error) = marker_repo
+        .clear_for_worktree(project_id, &worktree_path, branch)
+        .await
+    {
+        tracing::debug!(
+            branch,
+            path = %worktree_path,
+            error = %error,
+            "Orphan cleanup: failed to clear cleanup marker"
+        );
     }
 }
 

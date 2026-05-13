@@ -24,6 +24,7 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 300_000);
+    assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
     assert_eq!(cfg.scheduler.watchdog_interval_secs, 60);
     assert_eq!(cfg.supervisor.time_threshold_secs, 600);
     assert_eq!(cfg.limits.max_resume_attempts, 5);
@@ -36,13 +37,22 @@ fn test_merge_speed_defaults() {
     let git = GitRuntimeConfig::default();
 
     // Reconciliation — merge-speed targets
-    assert_eq!(recon.attempt_merge_deadline_secs, 120, "merge deadline: 600→120");
-    assert_eq!(recon.merge_incomplete_retry_base_secs, 5, "retry base: 30→5");
+    assert_eq!(
+        recon.attempt_merge_deadline_secs, 120,
+        "merge deadline: 600→120"
+    );
+    assert_eq!(
+        recon.merge_incomplete_retry_base_secs, 5,
+        "retry base: 30→5"
+    );
 
     // Git — agent cleanup speed targets
     assert_eq!(git.agent_stop_timeout_secs, 3, "agent stop: 10→3");
     assert_eq!(git.agent_kill_settle_secs, 0, "kill settle: 1→0");
-    assert_eq!(git.cleanup_worktree_timeout_secs, 15, "worktree cleanup: 5→15 for TOCTOU fix");
+    assert_eq!(
+        git.cleanup_worktree_timeout_secs, 15,
+        "worktree cleanup: 5→15 for TOCTOU fix"
+    );
     assert_eq!(git.step_0b_kill_timeout_secs, 5, "step 0b kill: 20→5");
 }
 
@@ -115,6 +125,7 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS" => Some("900".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS" => Some("1200".to_string()),
+        "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
         "RALPHX_SCHEDULER_READY_SETTLE_MS" => Some("500".to_string()),
         "RALPHX_SUPERVISOR_MAX_TOKENS" => Some("200000".to_string()),
         "RALPHX_LIMITS_MAX_RESUME_ATTEMPTS" => Some("10".to_string()),
@@ -131,6 +142,7 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 900);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 1200);
+    assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 3600);
     assert_eq!(cfg.scheduler.ready_settle_ms, 500);
     assert_eq!(cfg.supervisor.max_tokens, 200000);
     assert_eq!(cfg.limits.max_resume_attempts, 10);
@@ -294,9 +306,18 @@ fn test_branch_freshness_timeout_env_override() {
 fn test_execution_failed_config_defaults_are_sensible() {
     let recon = ReconciliationConfig::default();
 
-    assert_eq!(recon.execution_failed_max_retries, 3, "default max retries: 3");
-    assert_eq!(recon.execution_failed_retry_base_secs, 30, "default base: 30s");
-    assert_eq!(recon.execution_failed_retry_max_secs, 600, "default max: 600s");
+    assert_eq!(
+        recon.execution_failed_max_retries, 3,
+        "default max retries: 3"
+    );
+    assert_eq!(
+        recon.execution_failed_retry_base_secs, 30,
+        "default base: 30s"
+    );
+    assert_eq!(
+        recon.execution_failed_retry_max_secs, 600,
+        "default max: 600s"
+    );
 }
 
 /// GAP M7: base_secs must be ≤ max_secs in default config.
@@ -553,7 +574,10 @@ fn test_external_mcp_env_overrides_enabled_false() {
         supervisor: SupervisorRuntimeConfig::default(),
         limits: LimitsConfig::default(),
         verification: VerificationConfig::default(),
-        external_mcp: ExternalMcpConfig { enabled: true, ..ExternalMcpConfig::default() },
+        external_mcp: ExternalMcpConfig {
+            enabled: true,
+            ..ExternalMcpConfig::default()
+        },
         child_session_activity_threshold_secs: None,
         ui_feature_flags: Default::default(),
     };
@@ -608,7 +632,10 @@ fn test_external_mcp_env_override_node_path() {
         "RALPHX_NODE_PATH" => Some("/usr/local/bin/node".to_string()),
         _ => None,
     });
-    assert_eq!(cfg.external_mcp.node_path, Some("/usr/local/bin/node".to_string()));
+    assert_eq!(
+        cfg.external_mcp.node_path,
+        Some("/usr/local/bin/node".to_string())
+    );
 }
 
 #[test]
@@ -657,13 +684,19 @@ fn test_external_mcp_invalid_port_env_keeps_default() {
 
 #[test]
 fn test_validate_external_mcp_config_valid_local() {
-    let cfg = ExternalMcpConfig { enabled: true, ..ExternalMcpConfig::default() };
+    let cfg = ExternalMcpConfig {
+        enabled: true,
+        ..ExternalMcpConfig::default()
+    };
     assert!(validate_external_mcp_config(&cfg).is_ok());
 }
 
 #[test]
 fn test_validate_external_mcp_config_port_zero() {
-    let cfg = ExternalMcpConfig { port: 0, ..ExternalMcpConfig::default() };
+    let cfg = ExternalMcpConfig {
+        port: 0,
+        ..ExternalMcpConfig::default()
+    };
     let result = validate_external_mcp_config(&cfg);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("port"));
@@ -671,7 +704,10 @@ fn test_validate_external_mcp_config_port_zero() {
 
 #[test]
 fn test_validate_external_mcp_config_empty_host() {
-    let cfg = ExternalMcpConfig { host: String::new(), ..ExternalMcpConfig::default() };
+    let cfg = ExternalMcpConfig {
+        host: String::new(),
+        ..ExternalMcpConfig::default()
+    };
     let result = validate_external_mcp_config(&cfg);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("host"));
@@ -704,8 +740,14 @@ fn test_validate_external_mcp_config_disabled_non_local_no_tls_ok() {
 #[test]
 fn test_git_isolation_config_defaults() {
     let cfg = ReconciliationConfig::default();
-    assert_eq!(cfg.git_isolation_retry_base_secs, 5, "default base should be 5s (shorter than execution_failed_retry_base_secs=30)");
-    assert_eq!(cfg.git_isolation_max_retries, 3, "default max retries should be 3");
+    assert_eq!(
+        cfg.git_isolation_retry_base_secs, 5,
+        "default base should be 5s (shorter than execution_failed_retry_base_secs=30)"
+    );
+    assert_eq!(
+        cfg.git_isolation_max_retries, 3,
+        "default max retries should be 3"
+    );
 }
 
 #[test]
@@ -743,8 +785,8 @@ execution_failed_max_retries: 3
 execution_failed_retry_base_secs: 30
 execution_failed_retry_max_secs: 600
 "#;
-    let cfg: ReconciliationConfig =
-        serde_yaml::from_str(yaml_without_new_keys).expect("deserialize without git_isolation keys");
+    let cfg: ReconciliationConfig = serde_yaml::from_str(yaml_without_new_keys)
+        .expect("deserialize without git_isolation keys");
     assert_eq!(
         cfg.git_isolation_retry_base_secs, 5,
         "serde default should apply when key is absent"

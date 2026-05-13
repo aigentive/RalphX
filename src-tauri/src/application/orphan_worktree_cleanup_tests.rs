@@ -14,8 +14,13 @@ use crate::domain::entities::Project;
 use crate::domain::services::running_agent_registry::MemoryRunningAgentRegistry;
 use crate::domain::services::RunningAgentRegistry;
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryProjectRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryOrphanWorktreeCleanupMarkerRepository,
+    MemoryProjectRepository,
 };
+
+fn marker_repo() -> Arc<dyn crate::domain::repositories::OrphanWorktreeCleanupMarkerRepository> {
+    Arc::new(MemoryOrphanWorktreeCleanupMarkerRepository::new())
+}
 
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -79,6 +84,7 @@ fn orphan_cleanup_stats_default_is_zero() {
     assert_eq!(stats.db_matches, 0);
     assert_eq!(stats.db_missing_candidates, 0);
     assert_eq!(stats.unsafe_skips, 0);
+    assert_eq!(stats.marker_skips, 0);
 }
 
 #[test]
@@ -203,12 +209,20 @@ async fn try_cleanup_skips_dirty_worktree() {
 
     let local_branches = HashSet::from(["ralphx/test-proj/agent-dirty".to_string()]);
     let mut stats = OrphanCleanupStats::default();
+    let project = Project::new(
+        "dirty-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
 
     super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
         repo_path,
         &worktree_path,
         "ralphx/test-proj/agent-dirty",
+        None,
+        "main",
         &local_branches,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -246,16 +260,100 @@ async fn try_cleanup_skips_non_contained_branch() {
 
     let local_branches = HashSet::from(["ralphx/test-proj/agent-ahead".to_string()]);
     let mut stats = OrphanCleanupStats::default();
+    let project = Project::new(
+        "ahead-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
 
     super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
         repo_path,
         &worktree_path,
         "ralphx/test-proj/agent-ahead",
+        None,
+        "main",
         &local_branches,
+        &marker_repo(),
         &mut stats,
     )
     .await;
 
+    assert_eq!(stats.unsafe_skips, 1);
+    assert_eq!(stats.contained_removals, 0);
+    assert!(worktree_path.exists());
+}
+
+#[tokio::test]
+async fn try_cleanup_skips_recent_unsafe_marker() {
+    let repo_dir = init_repo();
+    let repo_path = repo_dir.path();
+
+    run_git(
+        repo_path,
+        &["checkout", "-b", "ralphx/test-proj/agent-marked-unsafe"],
+    );
+    std::fs::write(repo_path.join("unsafe.txt"), "ahead\n").expect("write");
+    run_git(repo_path, &["add", "."]);
+    run_git(repo_path, &["commit", "-m", "ahead of main"]);
+    run_git(repo_path, &["checkout", "main"]);
+
+    let worktree_dir = tempfile::tempdir().expect("worktree temp");
+    let worktree_path = worktree_dir.path().join("marked-unsafe-wt");
+    run_git(
+        repo_path,
+        &[
+            "worktree",
+            "add",
+            &worktree_path.to_string_lossy(),
+            "ralphx/test-proj/agent-marked-unsafe",
+        ],
+    );
+
+    let head_sha = {
+        let output = Command::new("git")
+            .args(["rev-parse", "ralphx/test-proj/agent-marked-unsafe"])
+            .current_dir(repo_path)
+            .output()
+            .expect("git rev-parse");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    let project = Project::new(
+        "marked-unsafe-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    let marker_repo = marker_repo();
+    marker_repo
+        .mark(crate::domain::repositories::OrphanWorktreeCleanupMarker {
+            key: crate::domain::repositories::OrphanWorktreeCleanupMarkerKey {
+                project_id: project.id.clone(),
+                worktree_path: worktree_path.to_string_lossy().to_string(),
+                branch_name: "ralphx/test-proj/agent-marked-unsafe".to_string(),
+                cleanup_status: "unsafe".to_string(),
+                head_sha: Some(head_sha.clone()),
+                target_ref: Some("main".to_string()),
+            },
+            checked_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let local_branches = HashSet::from(["ralphx/test-proj/agent-marked-unsafe".to_string()]);
+    let mut stats = OrphanCleanupStats::default();
+
+    super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
+        repo_path,
+        &worktree_path,
+        "ralphx/test-proj/agent-marked-unsafe",
+        Some(&head_sha),
+        "main",
+        &local_branches,
+        &marker_repo,
+        &mut stats,
+    )
+    .await;
+
+    assert_eq!(stats.marker_skips, 1);
     assert_eq!(stats.unsafe_skips, 1);
     assert_eq!(stats.contained_removals, 0);
     assert!(worktree_path.exists());
@@ -286,12 +384,20 @@ async fn try_cleanup_removes_contained_worktree_and_branch() {
 
     let local_branches = HashSet::from(["ralphx/test-proj/agent-merged".to_string()]);
     let mut stats = OrphanCleanupStats::default();
+    let project = Project::new(
+        "merged-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
 
     super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
         repo_path,
         &worktree_path,
         "ralphx/test-proj/agent-merged",
+        None,
+        "main",
         &local_branches,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -316,12 +422,20 @@ async fn try_cleanup_skips_nonexistent_worktree() {
 
     let local_branches = HashSet::from(["ralphx/test/agent-gone".to_string()]);
     let mut stats = OrphanCleanupStats::default();
+    let project = Project::new(
+        "gone-project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
 
     super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
         repo_path,
         &nonexistent,
         "ralphx/test/agent-gone",
+        None,
+        "main",
         &local_branches,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -396,8 +510,16 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
     }
 
     let mut stats = OrphanCleanupStats::default();
+    let marker_repo = marker_repo();
 
-    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo,
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert!(
         stats.contained_removals >= 1,
@@ -437,8 +559,16 @@ async fn cleanup_project_orphan_worktrees_ignores_task_worktrees_under_shared_pa
     let registry: Arc<dyn crate::domain::services::RunningAgentRegistry> =
         Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
+    let marker_repo = marker_repo();
 
-    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo,
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert_eq!(
         stats.worktrees_scanned, 0,
@@ -503,8 +633,10 @@ async fn scan_canonical_directories_finds_orphan_conversation_dirs() {
         repo_path,
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -548,8 +680,10 @@ async fn scan_canonical_directories_skips_non_matching_dirs() {
         repo_dir.path(),
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -601,8 +735,10 @@ async fn scan_canonical_directories_skips_known_paths() {
         repo_path,
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -656,8 +792,10 @@ async fn scan_canonical_directories_scopes_to_current_project_dir() {
         repo_b.path(),
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -692,8 +830,14 @@ async fn startup_cleanup_skips_blocked_projects() {
 
     let blocked = Arc::new(HashSet::from([project.id.clone()]));
 
-    cleanup_orphan_agent_worktrees_on_startup(project_repo, workspace_repo, blocked, registry)
-        .await;
+    cleanup_orphan_agent_worktrees_on_startup(
+        project_repo,
+        workspace_repo,
+        marker_repo(),
+        blocked,
+        registry,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -726,6 +870,7 @@ async fn startup_cleanup_pauses_when_agent_running() {
     cleanup_orphan_agent_worktrees_on_startup(
         project_repo,
         workspace_repo,
+        marker_repo(),
         blocked,
         running_registry,
     )
@@ -740,8 +885,14 @@ async fn startup_cleanup_with_empty_projects() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let blocked = Arc::new(HashSet::new());
 
-    cleanup_orphan_agent_worktrees_on_startup(project_repo, workspace_repo, blocked, registry)
-        .await;
+    cleanup_orphan_agent_worktrees_on_startup(
+        project_repo,
+        workspace_repo,
+        marker_repo(),
+        blocked,
+        registry,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -784,12 +935,20 @@ async fn try_cleanup_removes_worktree_but_skips_branch_deletion_when_not_local()
 
     let local_branches = HashSet::new();
     let mut stats = OrphanCleanupStats::default();
+    let project = Project::new(
+        "remote-only".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
 
     super::orphan_worktree_cleanup::try_cleanup_orphan_worktree(
+        &project,
         repo_path,
         &worktree_path,
         "ralphx/test-proj/agent-remote-only",
+        None,
+        "main",
         &local_branches,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -838,8 +997,10 @@ async fn scan_canonical_directories_skips_non_ralphx_branches() {
         repo_path,
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -902,8 +1063,14 @@ async fn startup_cleanup_processes_multiple_projects() {
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
 
-    cleanup_orphan_agent_worktrees_on_startup(project_repo, workspace_repo, blocked, registry)
-        .await;
+    cleanup_orphan_agent_worktrees_on_startup(
+        project_repo,
+        workspace_repo,
+        marker_repo(),
+        blocked,
+        registry,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -932,8 +1099,10 @@ async fn scan_canonical_skips_file_entries_not_dirs() {
         repo_dir.path(),
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -967,8 +1136,10 @@ async fn scan_canonical_skips_non_conversation_dirs_under_project() {
         repo_dir.path(),
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -991,7 +1162,14 @@ async fn cleanup_project_handles_bad_working_directory() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
 
-    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo(),
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert_eq!(stats.worktrees_scanned, 0);
     assert_eq!(stats.contained_removals, 0);
@@ -1021,8 +1199,10 @@ async fn scan_canonical_skips_conversation_dirs_without_git() {
         repo_dir.path(),
         worktree_parent.path(),
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
@@ -1075,7 +1255,14 @@ async fn cleanup_project_handles_worktree_with_no_branch() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
 
-    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo(),
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert!(
         stats.worktrees_scanned >= 1,
@@ -1119,7 +1306,14 @@ async fn cleanup_project_skips_non_ralphx_worktrees() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
 
-    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo(),
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert!(
         stats.non_ralphx_skips >= 1,
@@ -1164,7 +1358,14 @@ async fn cleanup_project_skips_worktree_outside_parent() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
 
-    cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo(),
+        &registry,
+        &mut stats,
+    )
+    .await;
 
     assert!(
         stats.non_ralphx_skips >= 1,
@@ -1228,7 +1429,8 @@ async fn cleanup_project_matches_known_worktree_paths() {
     let registry: Arc<dyn RunningAgentRegistry> = Arc::new(MemoryRunningAgentRegistry::new());
     let mut stats = OrphanCleanupStats::default();
 
-    cleanup_project_orphan_worktrees(&project, &ws_repo, &registry, &mut stats).await;
+    cleanup_project_orphan_worktrees(&project, &ws_repo, &marker_repo(), &registry, &mut stats)
+        .await;
 
     assert!(
         stats.db_matches >= 1,
@@ -1258,8 +1460,10 @@ async fn scan_canonical_nonexistent_parent_is_noop() {
         repo_dir.path(),
         nonexistent,
         &known_paths,
+        "main",
         &local_branches,
         &registry,
+        &marker_repo(),
         &mut stats,
     )
     .await;
