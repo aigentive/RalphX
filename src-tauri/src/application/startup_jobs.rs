@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Runtime};
 use tracing::{debug, info};
 
@@ -66,6 +67,19 @@ pub fn is_startup_recovery_disabled() -> bool {
             std::env::var_os(RALPHX_DISABLE_STARTUP_RECOVERY_ENV).as_deref(),
         )
     }
+}
+
+fn startup_job_step_started(step: &'static str) -> Instant {
+    tracing::info!(step, "Startup job runner step starting");
+    Instant::now()
+}
+
+fn startup_job_step_completed(step: &'static str, started_at: Instant) {
+    tracing::info!(
+        step,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "Startup job runner step completed"
+    );
 }
 
 /// Returns true if a task's metadata indicates it should be auto-recovered on startup.
@@ -509,10 +523,7 @@ impl<R: Runtime> StartupJobRunner<R> {
     }
 
     /// Set the app boot cutoff for previous-session cleanup.
-    pub fn with_previous_session_cutoff(
-        mut self,
-        cutoff: chrono::DateTime<chrono::Utc>,
-    ) -> Self {
+    pub fn with_previous_session_cutoff(mut self, cutoff: chrono::DateTime<chrono::Utc>) -> Self {
         self.previous_session_cutoff = cutoff;
         self
     }
@@ -554,6 +565,7 @@ impl<R: Runtime> StartupJobRunner<R> {
         // Phase 0: Snapshot ideation agents BEFORE previous-session cleanup clears old rows.
         // This captures orphaned ideation session PIDs for Phase N+1 recovery.
         // Must be called before cleanup — after that, old previous-session rows are gone.
+        let step_started_at = startup_job_step_started("ideation_agent_snapshot");
         let ideation_snapshot = match self
             .running_agent_registry
             .list_by_context_type("ideation")
@@ -576,6 +588,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                 Vec::new()
             }
         };
+        startup_job_step_completed("ideation_agent_snapshot", step_started_at);
         // Phase N+1: Ideation recovery — fire-and-forget tokio::spawn.
         // Runs after all existing phases so it doesn't interfere with task/review/merge recovery.
         // Triggered at the end of run(); the spawn is set up here early to capture the snapshot.
@@ -588,10 +601,12 @@ impl<R: Runtime> StartupJobRunner<R> {
         // The SQLite-backed registry persists PIDs across restarts, so we can
         // SIGTERM old processes before spawning new ones. Scope by app boot time:
         // delayed PR/workspace recovery must not stop agents spawned by this process.
+        let step_started_at = startup_job_step_started("previous_session_agent_cleanup");
         let killed = self
             .running_agent_registry
             .stop_all_started_before(self.previous_session_cutoff)
             .await;
+        startup_job_step_completed("previous_session_agent_cleanup", step_started_at);
         let interrupted_agent_contexts: HashSet<RunningAgentKey> = killed.iter().cloned().collect();
         if !killed.is_empty() {
             info!(
@@ -603,6 +618,7 @@ impl<R: Runtime> StartupJobRunner<R> {
 
         // Clean up orphaned agent runs from previous sessions
         // These are runs that were left in "running" status when the app was closed/crashed
+        let step_started_at = startup_job_step_started("orphan_agent_run_cleanup");
         match self
             .agent_run_repo
             .cancel_running_started_before(self.previous_session_cutoff)
@@ -622,19 +638,25 @@ impl<R: Runtime> StartupJobRunner<R> {
                 tracing::warn!(error = %e, "Failed to clean up orphaned agent runs");
             }
         }
+        startup_job_step_completed("orphan_agent_run_cleanup", step_started_at);
 
         // Unblock tasks that got stuck due to app crash (safety net)
         // This runs before pause check since unblocking doesn't spawn agents
+        let step_started_at = startup_job_step_started("ready_task_unblock");
         self.unblock_ready_tasks().await;
+        startup_job_step_completed("ready_task_unblock", step_started_at);
 
         // Re-block tasks whose dependencies are no longer satisfied (reverse of above).
         // Catches Ready/Executing/etc. tasks with Failed blockers that weren't caught
         // before app shutdown.
+        let step_started_at = startup_job_step_started("dependency_violation_reconcile");
         self.reconcile_dependency_violations().await;
+        startup_job_step_completed("dependency_violation_reconcile", step_started_at);
 
         // Phase 90+: Read persisted app state (active project + halt mode) from DB.
         // No waiting needed — DB has the value from the previous session.
         debug!("Reading persisted app_state from DB...");
+        let step_started_at = startup_job_step_started("app_state_load_and_quota");
         let app_settings = match self.app_state_repo.get().await {
             Ok(settings) => settings,
             Err(e) => {
@@ -670,6 +692,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                 }
             }
         }
+        startup_job_step_completed("app_state_load_and_quota", step_started_at);
 
         match app_settings.execution_halt_mode {
             ExecutionHaltMode::Running => {}
@@ -685,8 +708,10 @@ impl<R: Runtime> StartupJobRunner<R> {
             }
         }
 
+        let step_started_at = startup_job_step_started("phase_n1_snapshot_refresh");
         self.refresh_phase_n1_snapshot_sessions(&phase_n1_snapshot)
             .await;
+        startup_job_step_completed("phase_n1_snapshot_refresh", step_started_at);
 
         // Check if execution is paused - skip resumption if so
         if self.execution_state.is_paused() {
@@ -699,13 +724,20 @@ impl<R: Runtime> StartupJobRunner<R> {
             info!("No active project in DB, skipping task resumption");
             // Still try to schedule Ready tasks if scheduler is set
             if let Some(ref scheduler) = self.task_scheduler {
+                let step_started_at =
+                    startup_job_step_started("ready_task_scheduling_no_active_project");
                 info!("Scheduling Ready tasks (no resumption)");
                 scheduler.try_schedule_ready_tasks().await;
+                startup_job_step_completed(
+                    "ready_task_scheduling_no_active_project",
+                    step_started_at,
+                );
             }
             return HashSet::new();
         }
 
         // Get projects to process (scoped to active project in Phase 82)
+        let step_started_at = startup_job_step_started("active_project_load");
         let projects = if let Some(ref active_pid) = active_project_id {
             // Scope to active project only
             match self.project_repo.get_by_id(active_pid).await {
@@ -715,10 +747,12 @@ impl<R: Runtime> StartupJobRunner<R> {
                         project_id = active_pid.as_str(),
                         "Active project not found, skipping resumption"
                     );
+                    startup_job_step_completed("active_project_load", step_started_at);
                     return HashSet::new();
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to get active project for startup resumption");
+                    startup_job_step_completed("active_project_load", step_started_at);
                     return HashSet::new();
                 }
             }
@@ -728,10 +762,12 @@ impl<R: Runtime> StartupJobRunner<R> {
                 Ok(projects) => projects,
                 Err(e) => {
                     tracing::error!(error = %e, "Failed to get projects for startup resumption");
+                    startup_job_step_completed("active_project_load", step_started_at);
                     return HashSet::new();
                 }
             }
         };
+        startup_job_step_completed("active_project_load", step_started_at);
 
         if let Some(ref active_pid) = active_project_id {
             if self.git_startup_blocked_project_ids.contains(active_pid) {
@@ -752,27 +788,37 @@ impl<R: Runtime> StartupJobRunner<R> {
         );
 
         // Phase 0: Clean up stale git state before any task recovery
+        let step_started_at = startup_job_step_started("stale_git_state_cleanup");
         self.cleanup_stale_git_state(&projects).await;
+        startup_job_step_completed("stale_git_state_cleanup", step_started_at);
 
         // Phase 0.5: Resume deferred cleanup for tasks that were Merged but had
         // Phase 3 cleanup interrupted (app crash/restart). Runs before merge
         // recovery so worktrees and branches are cleaned before new merges.
+        let step_started_at = startup_job_step_started("pending_cleanup_resume");
         self.resume_pending_cleanup(&projects).await;
+        startup_job_step_completed("pending_cleanup_resume", step_started_at);
 
         // Phase 0.6: Repair stale non-merge worktree paths before spawning any agents.
         // Prevents task/review contexts from ever falling back to main repo checkout.
+        let step_started_at = startup_job_step_started("non_merge_worktree_repair");
         self.repair_non_merge_task_worktrees(&projects).await;
+        startup_job_step_completed("non_merge_worktree_repair", step_started_at);
 
         // Phase 0.8: Recover tasks escalated by app crash / unclean shutdown.
         // Finds Escalated tasks with crash metadata and transitions them back to their
         // pre-escalation states so Phase 1/2/3 can re-process them normally.
+        let step_started_at = startup_job_step_started("crash_escalation_recovery");
         self.recover_crash_escalated_tasks(&projects).await;
+        startup_job_step_completed("crash_escalation_recovery", step_started_at);
 
         // Phase 0.9: Remediate legacy MergeIncomplete rows that are actually commit-hook
         // rework failures. These should rejoin the normal RevisionNeeded -> ReExecuting flow,
         // not remain in merge recovery forever across restarts.
+        let step_started_at = startup_job_step_started("commit_hook_merge_incomplete_remediation");
         self.remediate_commit_hook_merge_incomplete_tasks(&projects)
             .await;
+        startup_job_step_completed("commit_hook_merge_incomplete_remediation", step_started_at);
 
         // Phase 1: Merge-first recovery — process PendingMerge, local Merging,
         // and PR-waiting tasks
@@ -785,6 +831,9 @@ impl<R: Runtime> StartupJobRunner<R> {
             InternalStatus::WaitingOnPr,
         ];
 
+        let step_started_at = startup_job_step_started("merge_first_recovery");
+        let mut merge_recovery_tasks_seen = 0usize;
+        let mut merge_recovery_resumed = 0u32;
         info!("Phase 1: Merge-first recovery — processing merge states before agent spawning");
 
         'merge_recovery: for project in &projects {
@@ -801,6 +850,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                         continue;
                     }
                 };
+                merge_recovery_tasks_seen += tasks.len();
 
                 debug!(
                     count = tasks.len(),
@@ -881,12 +931,22 @@ impl<R: Runtime> StartupJobRunner<R> {
                         .execute_entry_actions(&task.id, &task, *status)
                         .await;
 
+                    merge_recovery_resumed += 1;
                     resumed += 1;
                 }
             }
         }
+        info!(
+            tasks_seen = merge_recovery_tasks_seen,
+            tasks_resumed = merge_recovery_resumed,
+            "Startup job runner merge-first recovery summary"
+        );
+        startup_job_step_completed("merge_first_recovery", step_started_at);
 
         // Iterate through projects and their tasks in agent-active states
+        let step_started_at = startup_job_step_started("agent_active_recovery");
+        let mut agent_active_tasks_seen = 0usize;
+        let mut agent_active_resumed = 0u32;
         for project in &projects {
             debug!(
                 project_id = project.id.as_str(),
@@ -911,6 +971,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                         continue;
                     }
                 };
+                agent_active_tasks_seen += tasks.len();
 
                 debug!(count = tasks.len(), ?status, "Found tasks in status");
                 for task in tasks {
@@ -959,6 +1020,12 @@ impl<R: Runtime> StartupJobRunner<R> {
                             "Global execution capacity reached, stopping resumption"
                         );
                         info!(count = resumed, "Task resumption complete (partial)");
+                        info!(
+                            tasks_seen = agent_active_tasks_seen,
+                            tasks_resumed = agent_active_resumed,
+                            "Startup job runner agent-active recovery summary"
+                        );
+                        startup_job_step_completed("agent_active_recovery", step_started_at);
                         return HashSet::new();
                     }
 
@@ -982,15 +1049,25 @@ impl<R: Runtime> StartupJobRunner<R> {
                         .execute_entry_actions(&task.id, &task, *status)
                         .await;
 
+                    agent_active_resumed += 1;
                     resumed += 1;
                 }
             }
         }
+        info!(
+            tasks_seen = agent_active_tasks_seen,
+            tasks_resumed = agent_active_resumed,
+            "Startup job runner agent-active recovery summary"
+        );
+        startup_job_step_completed("agent_active_recovery", step_started_at);
 
         info!(count = resumed, "Task resumption complete");
 
         // Re-trigger auto-transition states that may have been interrupted mid-transition
         // These states have on_enter side effects that trigger auto-transitions to spawn agents
+        let step_started_at = startup_job_step_started("auto_transition_recovery");
+        let mut auto_transition_tasks_seen = 0usize;
+        let mut auto_transition_retriggered = 0u32;
         for project in &projects {
             for status in AUTO_TRANSITION_STATES {
                 // Skip PendingMerge — already handled in Phase 1 merge-first recovery
@@ -1010,6 +1087,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                         continue;
                     }
                 };
+                auto_transition_tasks_seen += tasks.len();
 
                 debug!(
                     count = tasks.len(),
@@ -1043,6 +1121,12 @@ impl<R: Runtime> StartupJobRunner<R> {
                             running_count = self.execution_state.running_count(),
                             "Global execution capacity reached, stopping auto-transition recovery"
                         );
+                        info!(
+                            tasks_seen = auto_transition_tasks_seen,
+                            tasks_retriggered = auto_transition_retriggered,
+                            "Startup job runner auto-transition recovery summary"
+                        );
+                        startup_job_step_completed("auto_transition_recovery", step_started_at);
                         return HashSet::new();
                     }
 
@@ -1065,15 +1149,24 @@ impl<R: Runtime> StartupJobRunner<R> {
                     self.transition_service
                         .execute_entry_actions(&task.id, &task, *status)
                         .await;
+                    auto_transition_retriggered += 1;
                 }
             }
         }
+        info!(
+            tasks_seen = auto_transition_tasks_seen,
+            tasks_retriggered = auto_transition_retriggered,
+            "Startup job runner auto-transition recovery summary"
+        );
+        startup_job_step_completed("auto_transition_recovery", step_started_at);
 
         // After resuming agent-active tasks, try to schedule any Ready tasks
         // that may be waiting in the queue (if scheduler is configured)
         if let Some(ref scheduler) = self.task_scheduler {
+            let step_started_at = startup_job_step_started("ready_task_scheduling");
             info!("Scheduling Ready tasks after resumption");
             scheduler.try_schedule_ready_tasks().await;
+            startup_job_step_completed("ready_task_scheduling", step_started_at);
         }
 
         // Boot recovery: if no agents were spawned during startup (quiescent boot),
@@ -1084,15 +1177,19 @@ impl<R: Runtime> StartupJobRunner<R> {
         // sit stuck indefinitely after a reboot.
         if self.execution_state.running_count() == 0 {
             if let Some(ref scheduler) = self.task_scheduler {
+                let step_started_at = startup_job_step_started("boot_main_merge_retry");
                 info!("Boot recovery: invoking try_retry_main_merges for deferred main-branch merges (running_count == 0)");
                 scheduler.try_retry_main_merges().await;
+                startup_job_step_completed("boot_main_merge_retry", step_started_at);
             }
         }
 
         // Phase 4: Startup recovery for pending ideation sessions.
         // Drains sessions that were deferred at creation time due to capacity limits.
         // Runs after main startup recovery to avoid competing with orphaned-agent re-spawning.
+        let step_started_at = startup_job_step_started("pending_ideation_drain");
         self.drain_pending_ideation_sessions().await;
+        startup_job_step_completed("pending_ideation_drain", step_started_at);
 
         // Phase N+1: Ideation agent recovery — fire-and-forget.
         // Processes the snapshot captured in Phase 0, after all other startup phases complete.
