@@ -34,6 +34,47 @@ fn file_changes_parse_counts_from_single_numstat_output() {
     assert_eq!(changes[1].deletions, 4);
 }
 
+#[test]
+fn numstat_parser_handles_binary_files_renames_and_invalid_lines() {
+    let counts = numstat_map_from_stdout(
+        "-\t-\tassets/logo.png\n12\t3\told/path.rs\tnew/path.rs\ninvalid\n",
+    );
+
+    assert_eq!(counts.get("assets/logo.png"), Some(&(0, 0)));
+    assert_eq!(counts.get("new/path.rs"), Some(&(12, 3)));
+    assert!(!counts.contains_key("old/path.rs"));
+    assert_eq!(counts.len(), 2);
+}
+
+#[test]
+fn file_changes_parse_deleted_renamed_and_skip_empty_paths() {
+    let mut counts = HashMap::new();
+    counts.insert("old.rs".to_string(), (0, 7));
+    counts.insert("new/name.rs".to_string(), (4, 1));
+
+    let changes = file_changes_from_name_status(
+        "D\told.rs\nR100\told/name.rs\tnew/name.rs\nA\t   \n",
+        &counts,
+    );
+
+    assert_eq!(changes.len(), 2);
+    let renamed = changes
+        .iter()
+        .find(|change| change.path == "new/name.rs")
+        .expect("renamed destination should be tracked");
+    assert!(matches!(renamed.status, FileChangeStatus::Modified));
+    assert_eq!(renamed.additions, 4);
+    assert_eq!(renamed.deletions, 1);
+
+    let deleted = changes
+        .iter()
+        .find(|change| change.path == "old.rs")
+        .expect("deleted file should be tracked");
+    assert!(matches!(deleted.status, FileChangeStatus::Deleted));
+    assert_eq!(deleted.additions, 0);
+    assert_eq!(deleted.deletions, 7);
+}
+
 // =========================================================================
 // Conflict Detection Tests
 // =========================================================================
@@ -194,6 +235,24 @@ fn test_get_file_changes_between_refs_uses_combined_numstat_counts() {
     assert!(matches!(changes[0].status, FileChangeStatus::Added));
     assert_eq!(changes[0].additions, 2);
     assert_eq!(changes[0].deletions, 0);
+}
+
+#[test]
+fn test_get_file_diff_for_worktree_uses_current_disk_content() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(repo_path.join("README.md"), "# Test Repo\n\nUncommitted\n")
+        .expect("Failed to update README");
+
+    let diff_service = DiffService::new();
+    let diff = diff_service
+        .get_file_diff("README.md", &repo_path.to_string_lossy(), &base)
+        .unwrap();
+
+    assert_eq!(diff.file_path, "README.md");
+    assert_eq!(diff.old_content, "# Test Repo\n");
+    assert_eq!(diff.new_content, "# Test Repo\n\nUncommitted\n");
+    assert_eq!(diff.language, "markdown");
 }
 
 #[tokio::test]

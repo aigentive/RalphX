@@ -1039,3 +1039,261 @@ pub async fn get_conflict_file_diff(
     // get_conflict_diff params: (file_path, project_path, task_branch=theirs, base_branch=ours)
     diff_service.get_conflict_diff(&file_path, &working_path_str, &theirs_ref, &ours_ref)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::FileChangeStatus;
+    use tempfile::TempDir;
+
+    fn test_conversation_id() -> ChatConversationId {
+        ChatConversationId::from_string(uuid::Uuid::new_v4().to_string())
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn create_review_repo() -> (TempDir, PathBuf, String) {
+        let temp_dir = TempDir::new().expect("temp repo should be created");
+        let repo = temp_dir.path().to_path_buf();
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test User"]);
+
+        std::fs::write(repo.join("README.md"), "initial\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Initial commit"]);
+        let base = run_git(&repo, &["rev-parse", "HEAD"]);
+
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join("src").join("lib.rs"), "pub fn answer() -> u8 { 42 }\n")
+            .unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Add source file"]);
+
+        (temp_dir, repo, base)
+    }
+
+    fn sample_review_snapshot(sha: &str) -> AgentWorkspaceReviewSnapshot {
+        AgentWorkspaceReviewSnapshot {
+            response: AgentWorkspaceReviewResponse {
+                changes: vec![FileChange {
+                    path: "src/lib.rs".to_string(),
+                    status: FileChangeStatus::Modified,
+                    additions: 3,
+                    deletions: 1,
+                }],
+                commits: vec![CommitInfoResponse {
+                    sha: sha.to_string(),
+                    short_sha: sha.chars().take(7).collect(),
+                    message: "Improve review cache".to_string(),
+                    author: "Test User".to_string(),
+                    timestamp: "2026-05-13T10:00:00Z".to_string(),
+                }],
+                base_ref: "base-sha".to_string(),
+                head_ref: "HEAD".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn agent_workspace_diff_cache_status_labels_are_stable() {
+        assert_eq!(AgentWorkspaceDiffCacheStatus::Hit.as_str(), "hit");
+        assert_eq!(
+            AgentWorkspaceDiffCacheStatus::Coalesced.as_str(),
+            "coalesced"
+        );
+        assert_eq!(AgentWorkspaceDiffCacheStatus::Miss.as_str(), "miss");
+    }
+
+    #[test]
+    fn agent_workspace_diff_cache_keys_skip_nil_ids() {
+        let nil_id = ChatConversationId::from_string(uuid::Uuid::nil().to_string());
+        assert!(agent_workspace_diff_cache_key(&nil_id).is_none());
+
+        let conversation_id = test_conversation_id();
+        assert_eq!(
+            agent_workspace_diff_cache_key(&conversation_id),
+            Some(conversation_id.as_str())
+        );
+    }
+
+    #[test]
+    fn agent_workspace_diff_caches_store_hit_and_invalidate_by_conversation() {
+        let conversation_id = test_conversation_id();
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+
+        let context = AgentWorkspaceContext {
+            working_path: PathBuf::from("/tmp/agent-workspace-review-cache"),
+            base_ref: "base-sha".to_string(),
+            diff_target: Some("feature/review-cache".to_string()),
+        };
+        let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
+
+        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_review(&conversation_id, &snapshot);
+
+        let cached_context =
+            cached_agent_workspace_context(&conversation_id).expect("context should hit");
+        assert_eq!(cached_context.working_path, context.working_path);
+        assert_eq!(cached_context.base_ref, "base-sha");
+        assert_eq!(
+            cached_context.diff_target.as_deref(),
+            Some("feature/review-cache")
+        );
+
+        let cached_review =
+            cached_agent_workspace_review(&conversation_id).expect("review should hit");
+        assert_eq!(cached_review.response.changes.len(), 1);
+        assert_eq!(cached_review.response.commits[0].sha, snapshot.response.commits[0].sha);
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        assert!(cached_agent_workspace_context(&conversation_id).is_none());
+        assert!(cached_agent_workspace_review(&conversation_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn commit_range_validation_uses_cached_review_full_and_short_sha() {
+        let conversation_id = test_conversation_id();
+        let sha = "abcdef0123456789abcdef0123456789abcdef01";
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        store_agent_workspace_review(&conversation_id, &sample_review_snapshot(sha));
+
+        ensure_agent_workspace_commit_in_range(
+            &conversation_id,
+            Path::new("/path/that/does/not/exist"),
+            "missing-base",
+            "missing-head",
+            sha,
+        )
+        .await
+        .expect("full cached sha should validate without hitting git");
+
+        ensure_agent_workspace_commit_in_range(
+            &conversation_id,
+            Path::new("/path/that/does/not/exist"),
+            "missing-base",
+            "missing-head",
+            "abcdef0",
+        )
+        .await
+        .expect("short cached sha should validate without hitting git");
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn cached_context_loader_returns_hit_without_repository_lookup() {
+        let conversation_id = test_conversation_id();
+        let state = AppState::new_test();
+        let context = AgentWorkspaceContext {
+            working_path: PathBuf::from("/tmp/pre-resolved-agent-workspace"),
+            base_ref: "base-sha".to_string(),
+            diff_target: None,
+        };
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        store_agent_workspace_context(&conversation_id, &context);
+
+        let (cached, status) = get_agent_workspace_context_cached(&state, &conversation_id)
+            .await
+            .expect("cached context should be returned before repository lookup");
+
+        assert_eq!(status.as_str(), "hit");
+        assert_eq!(cached.working_path, context.working_path);
+        assert_eq!(cached.base_ref, context.base_ref);
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn cached_review_loader_returns_hit_without_repository_lookup() {
+        let conversation_id = test_conversation_id();
+        let state = AppState::new_test();
+        let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        store_agent_workspace_review(&conversation_id, &snapshot);
+
+        let (cached, status) =
+            get_agent_conversation_workspace_review_cached(&state, &conversation_id)
+                .await
+                .expect("cached review should be returned before repository lookup");
+
+        assert_eq!(status.as_str(), "hit");
+        assert_eq!(cached.response.commits.len(), 1);
+        assert_eq!(cached.response.commits[0].short_sha, "abcdef0");
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_review_for_context_collects_changes_and_commits_from_head() {
+        let (_temp_dir, repo, base) = create_review_repo();
+
+        let snapshot = get_agent_workspace_review_for_context(AgentWorkspaceContext {
+            working_path: repo,
+            base_ref: base,
+            diff_target: None,
+        })
+        .await
+        .expect("review payload should load");
+
+        assert_eq!(snapshot.response.base_ref.len(), 40);
+        assert_eq!(snapshot.response.head_ref, "HEAD");
+        assert_eq!(snapshot.response.commits.len(), 1);
+        assert_eq!(
+            snapshot.response.commits[0].message,
+            "Add source file".to_string()
+        );
+        let source_change = snapshot
+            .response
+            .changes
+            .iter()
+            .find(|change| change.path == "src/lib.rs")
+            .expect("source file change should be present");
+        assert!(matches!(source_change.status, FileChangeStatus::Added));
+        assert_eq!(source_change.additions, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_review_for_context_uses_explicit_diff_target_branch() {
+        let (_temp_dir, repo, base) = create_review_repo();
+        run_git(&repo, &["checkout", "main"]);
+        run_git(&repo, &["checkout", "-b", "feature/target-review"]);
+        std::fs::write(repo.join("README.md"), "initial\nfeature\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Update readme on target branch"]);
+        run_git(&repo, &["checkout", "main"]);
+
+        let snapshot = get_agent_workspace_review_for_context(AgentWorkspaceContext {
+            working_path: repo,
+            base_ref: base,
+            diff_target: Some("feature/target-review".to_string()),
+        })
+        .await
+        .expect("targeted review payload should load");
+
+        assert_eq!(snapshot.response.head_ref, "feature/target-review");
+        assert!(snapshot
+            .response
+            .changes
+            .iter()
+            .any(|change| change.path == "README.md"));
+        assert!(snapshot
+            .response
+            .commits
+            .iter()
+            .any(|commit| commit.message == "Update readme on target branch"));
+    }
+}

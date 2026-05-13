@@ -1044,6 +1044,20 @@ mod tests {
     }
 
     #[test]
+    fn pr_description_cache_status_labels_are_stable() {
+        assert_eq!(AgentWorkspacePrDescriptionCacheStatus::Hit.as_str(), "hit");
+        assert_eq!(
+            AgentWorkspacePrDescriptionCacheStatus::Coalesced.as_str(),
+            "coalesced"
+        );
+        assert_eq!(AgentWorkspacePrDescriptionCacheStatus::Miss.as_str(), "miss");
+        assert_eq!(
+            AgentWorkspacePrDescriptionCacheStatus::Disabled.as_str(),
+            "disabled"
+        );
+    }
+
+    #[test]
     fn pr_description_cache_hits_and_invalidates_by_conversation() {
         let key = test_cache_key();
         invalidate_agent_workspace_pr_description_cache(&key.conversation_id);
@@ -1061,6 +1075,101 @@ mod tests {
 
         invalidate_agent_workspace_pr_description_cache(&key.conversation_id);
         assert!(cached_agent_workspace_pr_description(&key).is_none());
+    }
+
+    #[test]
+    fn pr_description_cache_invalidation_is_conversation_scoped() {
+        let first_key = test_cache_key();
+        let second_key = test_cache_key();
+        invalidate_agent_workspace_pr_description_cache(&first_key.conversation_id);
+        invalidate_agent_workspace_pr_description_cache(&second_key.conversation_id);
+
+        let first_description = AgentWorkspacePrDescription::new(
+            Some("First title".to_string()),
+            "## Summary\n\nFirst body".to_string(),
+        );
+        let second_description = AgentWorkspacePrDescription::new(
+            Some("Second title".to_string()),
+            "## Summary\n\nSecond body".to_string(),
+        );
+
+        store_agent_workspace_pr_description(&first_key, &first_description);
+        store_agent_workspace_pr_description(&second_key, &second_description);
+        invalidate_agent_workspace_pr_description_cache(&first_key.conversation_id);
+
+        assert!(cached_agent_workspace_pr_description(&first_key).is_none());
+        let (cached_second, _) = cached_agent_workspace_pr_description(&second_key)
+            .expect("other conversation cache entry should remain");
+        assert_eq!(cached_second, second_description);
+
+        invalidate_agent_workspace_pr_description_cache(&second_key.conversation_id);
+    }
+
+    #[tokio::test]
+    async fn get_or_draft_pr_description_caches_miss_then_hit() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let conversation = conversation_for(&project);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let head = run_git(&repo, &["rev-parse", "HEAD"]);
+        let key = AgentWorkspacePrDescriptionCacheKey::new(
+            conversation.id.clone(),
+            base.clone(),
+            head,
+            1,
+        )
+        .expect("cache key should be valid");
+        invalidate_agent_workspace_pr_description_cache(&conversation.id);
+
+        let state = AppState::new_test();
+        let client = Arc::new(SubmittingPrDescriptionClient::success(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            Some("Cached draft title".to_string()),
+            "## Summary\n\nCached draft body.",
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let first = get_or_draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+            key.clone(),
+        )
+        .await
+        .expect("first draft should succeed");
+
+        assert_eq!(first.cache_status, AgentWorkspacePrDescriptionCacheStatus::Miss);
+        assert!(first.cache_age_ms.is_none());
+        assert_eq!(first.description.title.as_deref(), Some("Cached draft title"));
+        assert_eq!(client.spawned_configs().await.len(), 1);
+
+        let second = get_or_draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+            key,
+        )
+        .await
+        .expect("second draft should hit cache");
+
+        assert_eq!(second.cache_status, AgentWorkspacePrDescriptionCacheStatus::Hit);
+        assert!(second.cache_age_ms.is_some());
+        assert_eq!(second.cache_wait_ms, 0);
+        assert_eq!(second.description.body_markdown, "## Summary\n\nCached draft body.");
+        assert_eq!(
+            client.spawned_configs().await.len(),
+            1,
+            "cache hit should not spawn another PR describer"
+        );
+
+        invalidate_agent_workspace_pr_description_cache(&conversation.id);
     }
 
     #[test]

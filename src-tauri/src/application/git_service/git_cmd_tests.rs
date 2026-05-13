@@ -211,6 +211,12 @@ fn test_transient_patterns_constant_coverage() {
 }
 
 #[test]
+fn git_command_lane_labels_are_stable() {
+    assert_eq!(GitCommandLane::Foreground.as_str(), "foreground");
+    assert_eq!(GitCommandLane::Background.as_str(), "background");
+}
+
+#[test]
 fn test_retry_backoff_array_length() {
     let git_cfg = git_runtime_config();
     assert_eq!(
