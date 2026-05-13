@@ -722,6 +722,7 @@ struct AgentWorkspaceFreshnessInvalidationGuard {
 impl AgentWorkspaceFreshnessInvalidationGuard {
     fn new(conversation_id: &ChatConversationId) -> Self {
         invalidate_agent_workspace_freshness_cache(conversation_id);
+        crate::commands::diff_commands::invalidate_agent_workspace_diff_caches(conversation_id);
         Self {
             conversation_id: conversation_id.clone(),
         }
@@ -731,6 +732,9 @@ impl AgentWorkspaceFreshnessInvalidationGuard {
 impl Drop for AgentWorkspaceFreshnessInvalidationGuard {
     fn drop(&mut self) {
         invalidate_agent_workspace_freshness_cache(&self.conversation_id);
+        crate::commands::diff_commands::invalidate_agent_workspace_diff_caches(
+            &self.conversation_id,
+        );
     }
 }
 

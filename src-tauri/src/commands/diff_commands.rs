@@ -9,11 +9,14 @@ use crate::application::{
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{ChatConversationId, PlanBranch, Project, Task, TaskId};
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use dashmap::DashMap;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::State;
 use tracing::{info, warn};
 
@@ -209,6 +212,7 @@ pub async fn get_file_diff_for_state(
     diff_service.get_file_diff(&file_path, &working_path_str, base_branch)
 }
 
+#[derive(Clone)]
 struct AgentWorkspaceContext {
     working_path: PathBuf,
     base_ref: String,
@@ -216,12 +220,161 @@ struct AgentWorkspaceContext {
     diff_target: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentWorkspaceReviewResponse {
     pub changes: Vec<FileChange>,
     pub commits: Vec<CommitInfoResponse>,
     pub base_ref: String,
     pub head_ref: String,
+}
+
+#[derive(Clone)]
+struct AgentWorkspaceReviewSnapshot {
+    response: AgentWorkspaceReviewResponse,
+}
+
+#[derive(Clone)]
+struct AgentWorkspaceContextCacheEntry {
+    inserted_at: Instant,
+    context: AgentWorkspaceContext,
+}
+
+#[derive(Clone)]
+struct AgentWorkspaceReviewCacheEntry {
+    inserted_at: Instant,
+    snapshot: AgentWorkspaceReviewSnapshot,
+}
+
+#[derive(Clone, Copy)]
+enum AgentWorkspaceDiffCacheStatus {
+    Hit,
+    Coalesced,
+    Miss,
+}
+
+impl AgentWorkspaceDiffCacheStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Coalesced => "coalesced",
+            Self::Miss => "miss",
+        }
+    }
+}
+
+fn agent_workspace_review_cache_ttl() -> Duration {
+    Duration::from_millis(git_runtime_config().workspace_review_cache_ttl_ms)
+}
+
+fn agent_workspace_diff_cache_key(conversation_id: &ChatConversationId) -> Option<String> {
+    if conversation_id.as_uuid().is_nil() {
+        return None;
+    }
+    Some(conversation_id.as_str())
+}
+
+fn agent_workspace_context_cache() -> &'static DashMap<String, AgentWorkspaceContextCacheEntry> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspaceContextCacheEntry>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_context_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_review_cache() -> &'static DashMap<String, AgentWorkspaceReviewCacheEntry> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspaceReviewCacheEntry>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_review_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn cached_agent_workspace_context(
+    conversation_id: &ChatConversationId,
+) -> Option<AgentWorkspaceContext> {
+    let ttl = agent_workspace_review_cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let key = agent_workspace_diff_cache_key(conversation_id)?;
+    let Some(entry) = agent_workspace_context_cache().get(&key) else {
+        return None;
+    };
+    if entry.inserted_at.elapsed() <= ttl {
+        return Some(entry.context.clone());
+    }
+    drop(entry);
+    agent_workspace_context_cache().remove(&key);
+    None
+}
+
+fn store_agent_workspace_context(
+    conversation_id: &ChatConversationId,
+    context: &AgentWorkspaceContext,
+) {
+    if agent_workspace_review_cache_ttl().is_zero() {
+        return;
+    }
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        return;
+    };
+    agent_workspace_context_cache().insert(
+        key,
+        AgentWorkspaceContextCacheEntry {
+            inserted_at: Instant::now(),
+            context: context.clone(),
+        },
+    );
+}
+
+fn cached_agent_workspace_review(
+    conversation_id: &ChatConversationId,
+) -> Option<AgentWorkspaceReviewSnapshot> {
+    let ttl = agent_workspace_review_cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let key = agent_workspace_diff_cache_key(conversation_id)?;
+    let Some(entry) = agent_workspace_review_cache().get(&key) else {
+        return None;
+    };
+    if entry.inserted_at.elapsed() <= ttl {
+        return Some(entry.snapshot.clone());
+    }
+    drop(entry);
+    agent_workspace_review_cache().remove(&key);
+    None
+}
+
+fn store_agent_workspace_review(
+    conversation_id: &ChatConversationId,
+    snapshot: &AgentWorkspaceReviewSnapshot,
+) {
+    if agent_workspace_review_cache_ttl().is_zero() {
+        return;
+    }
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        return;
+    };
+    agent_workspace_review_cache().insert(
+        key,
+        AgentWorkspaceReviewCacheEntry {
+            inserted_at: Instant::now(),
+            snapshot: snapshot.clone(),
+        },
+    );
+}
+
+pub(crate) fn invalidate_agent_workspace_diff_caches(conversation_id: &ChatConversationId) {
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        return;
+    };
+    agent_workspace_context_cache().remove(&key);
+    agent_workspace_review_cache().remove(&key);
 }
 
 async fn get_agent_workspace_context(
@@ -278,12 +431,47 @@ async fn get_agent_workspace_context(
     })
 }
 
+async fn get_agent_workspace_context_cached(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    if let Some(context) = cached_agent_workspace_context(conversation_id) {
+        return Ok((context, AgentWorkspaceDiffCacheStatus::Hit));
+    }
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        let context = get_agent_workspace_context(app_state, conversation_id).await?;
+        return Ok((context, AgentWorkspaceDiffCacheStatus::Miss));
+    };
+    let lock = agent_workspace_context_locks()
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = lock.lock().await;
+    if let Some(context) = cached_agent_workspace_context(conversation_id) {
+        return Ok((context, AgentWorkspaceDiffCacheStatus::Coalesced));
+    }
+    let context = get_agent_workspace_context(app_state, conversation_id).await?;
+    store_agent_workspace_context(conversation_id, &context);
+    Ok((context, AgentWorkspaceDiffCacheStatus::Miss))
+}
+
 async fn ensure_agent_workspace_commit_in_range(
+    conversation_id: &ChatConversationId,
     worktree_path: &Path,
     base_ref: &str,
     head_ref: &str,
     commit_sha: &str,
 ) -> AppResult<()> {
+    if cached_agent_workspace_review(conversation_id).is_some_and(|snapshot| {
+        snapshot
+            .response
+            .commits
+            .iter()
+            .any(|commit| commit.sha == commit_sha || commit.short_sha == commit_sha)
+    }) {
+        return Ok(());
+    }
+
     let commits = GitService::get_commits_between(worktree_path, base_ref, head_ref).await?;
     if commits
         .iter()
@@ -305,19 +493,22 @@ pub async fn get_agent_conversation_workspace_review(
 ) -> AppResult<AgentWorkspaceReviewResponse> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result =
-        get_agent_conversation_workspace_review_for_state(app_state.inner(), &conversation_id)
-            .await;
+    let result = get_agent_conversation_workspace_review_cached(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
     match &result {
-        Ok(response) => info!(
+        Ok((snapshot, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
             operation = "review",
             conversation_id = %conversation_id,
             elapsed_ms = started.elapsed().as_millis(),
-            files = response.changes.len(),
-            commits = response.commits.len(),
-            base_ref = response.base_ref.as_str(),
-            head_ref = response.head_ref.as_str(),
+            cache_status = cache_status.as_str(),
+            files = snapshot.response.changes.len(),
+            commits = snapshot.response.commits.len(),
+            base_ref = snapshot.response.base_ref.as_str(),
+            head_ref = snapshot.response.head_ref.as_str(),
             "Loaded agent workspace review payload"
         ),
         Err(error) => warn!(
@@ -329,14 +520,46 @@ pub async fn get_agent_conversation_workspace_review(
             "Failed to load agent workspace review payload"
         ),
     }
-    result
+    result.map(|(snapshot, _)| snapshot.response)
 }
 
 async fn get_agent_conversation_workspace_review_for_state(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
-) -> AppResult<AgentWorkspaceReviewResponse> {
-    let ctx = get_agent_workspace_context(app_state, conversation_id).await?;
+) -> AppResult<AgentWorkspaceReviewSnapshot> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    get_agent_workspace_review_for_context(ctx).await
+}
+
+async fn get_agent_conversation_workspace_review_cached(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<(AgentWorkspaceReviewSnapshot, AgentWorkspaceDiffCacheStatus)> {
+    if let Some(snapshot) = cached_agent_workspace_review(conversation_id) {
+        return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Hit));
+    }
+    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+        let snapshot = get_agent_conversation_workspace_review_for_state(app_state, conversation_id)
+            .await?;
+        return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Miss));
+    };
+    let lock = agent_workspace_review_locks()
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = lock.lock().await;
+    if let Some(snapshot) = cached_agent_workspace_review(conversation_id) {
+        return Ok((snapshot, AgentWorkspaceDiffCacheStatus::Coalesced));
+    }
+    let snapshot =
+        get_agent_conversation_workspace_review_for_state(app_state, conversation_id).await?;
+    store_agent_workspace_review(conversation_id, &snapshot);
+    Ok((snapshot, AgentWorkspaceDiffCacheStatus::Miss))
+}
+
+async fn get_agent_workspace_review_for_context(
+    ctx: AgentWorkspaceContext,
+) -> AppResult<AgentWorkspaceReviewSnapshot> {
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
     let head_ref = ctx
@@ -375,11 +598,13 @@ async fn get_agent_conversation_workspace_review_for_state(
         GitService::get_commits_between(&commits_path, &commits_base_ref, &commits_head_ref);
 
     let (changes, commits) = tokio::try_join!(changes_fut, commits_fut)?;
-    Ok(AgentWorkspaceReviewResponse {
-        changes,
-        commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
-        base_ref,
-        head_ref,
+    Ok(AgentWorkspaceReviewSnapshot {
+        response: AgentWorkspaceReviewResponse {
+            changes,
+            commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
+            base_ref,
+            head_ref,
+        },
     })
 }
 
@@ -390,23 +615,20 @@ pub async fn get_agent_conversation_workspace_file_changes(
 ) -> AppResult<Vec<FileChange>> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result: AppResult<Vec<FileChange>> = async {
-        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-        let working_path = ctx.working_path.to_string_lossy().to_string();
-        let diff_service = DiffService::new();
-        if let Some(target) = &ctx.diff_target {
-            diff_service.get_file_changes_between_refs(&working_path, &ctx.base_ref, target)
-        } else {
-            diff_service.get_worktree_file_changes_from_ref(&working_path, &ctx.base_ref)
-        }
+    let result: AppResult<(Vec<FileChange>, AgentWorkspaceDiffCacheStatus)> = async {
+        let (snapshot, cache_status) =
+            get_agent_conversation_workspace_review_cached(app_state.inner(), &conversation_id)
+                .await?;
+        Ok((snapshot.response.changes, cache_status))
     }
     .await;
     match &result {
-        Ok(changes) => info!(
+        Ok((changes, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
             operation = "file_changes",
             conversation_id = %conversation_id,
             elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
             files = changes.len(),
             "Loaded agent workspace file changes"
         ),
@@ -419,7 +641,7 @@ pub async fn get_agent_conversation_workspace_file_changes(
             "Failed to load agent workspace file changes"
         ),
     }
-    result
+    result.map(|(changes, _)| changes)
 }
 
 #[tauri::command]
@@ -430,11 +652,12 @@ pub async fn get_agent_conversation_workspace_file_diff(
 ) -> AppResult<FileDiff> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result: AppResult<FileDiff> = async {
-        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+    let result: AppResult<(FileDiff, AgentWorkspaceDiffCacheStatus)> = async {
+        let (ctx, cache_status) =
+            get_agent_workspace_context_cached(app_state.inner(), &conversation_id).await?;
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
-        if let Some(target) = &ctx.diff_target {
+        let diff = if let Some(target) = &ctx.diff_target {
             diff_service.get_file_diff_between_refs(
                 &file_path,
                 &working_path,
@@ -443,16 +666,18 @@ pub async fn get_agent_conversation_workspace_file_diff(
             )
         } else {
             diff_service.get_file_diff(&file_path, &working_path, &ctx.base_ref)
-        }
+        }?;
+        Ok((diff, cache_status))
     }
     .await;
     match &result {
-        Ok(diff) => info!(
+        Ok((diff, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
             operation = "file_diff",
             conversation_id = %conversation_id,
             file_path,
             elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
             old_chars = diff.old_content.chars().count(),
             new_chars = diff.new_content.chars().count(),
             "Loaded agent workspace file diff"
@@ -467,7 +692,7 @@ pub async fn get_agent_conversation_workspace_file_diff(
             "Failed to load agent workspace file diff"
         ),
     }
-    result
+    result.map(|(diff, _)| diff)
 }
 
 #[tauri::command]
@@ -477,22 +702,25 @@ pub async fn get_agent_conversation_workspace_commits(
 ) -> AppResult<TaskCommitsResponse> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result: AppResult<TaskCommitsResponse> = async {
-        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
-        let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
-        let commits =
-            GitService::get_commits_between(&ctx.working_path, &ctx.base_ref, head_ref).await?;
-        Ok(TaskCommitsResponse {
-            commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
-        })
+    let result: AppResult<(TaskCommitsResponse, AgentWorkspaceDiffCacheStatus)> = async {
+        let (snapshot, cache_status) =
+            get_agent_conversation_workspace_review_cached(app_state.inner(), &conversation_id)
+                .await?;
+        Ok((
+            TaskCommitsResponse {
+                commits: snapshot.response.commits,
+            },
+            cache_status,
+        ))
     }
     .await;
     match &result {
-        Ok(response) => info!(
+        Ok((response, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
             operation = "commits",
             conversation_id = %conversation_id,
             elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
             commits = response.commits.len(),
             "Loaded agent workspace commits"
         ),
@@ -505,7 +733,7 @@ pub async fn get_agent_conversation_workspace_commits(
             "Failed to load agent workspace commits"
         ),
     }
-    result
+    result.map(|(response, _)| response)
 }
 
 #[tauri::command]
@@ -516,10 +744,12 @@ pub async fn get_agent_conversation_workspace_commit_file_changes(
 ) -> AppResult<Vec<FileChange>> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result: AppResult<Vec<FileChange>> = async {
-        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+    let result: AppResult<(Vec<FileChange>, AgentWorkspaceDiffCacheStatus)> = async {
+        let (ctx, cache_status) =
+            get_agent_workspace_context_cached(app_state.inner(), &conversation_id).await?;
         let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
         ensure_agent_workspace_commit_in_range(
+            &conversation_id,
             &ctx.working_path,
             &ctx.base_ref,
             head_ref,
@@ -528,23 +758,26 @@ pub async fn get_agent_conversation_workspace_commit_file_changes(
         .await?;
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
-        if diff_service.is_merge_commit(&working_path, &commit_sha) {
-            return diff_service.get_file_changes_between_refs(
+        let changes = if diff_service.is_merge_commit(&working_path, &commit_sha) {
+            diff_service.get_file_changes_between_refs(
                 &working_path,
                 &ctx.base_ref,
                 &commit_sha,
-            );
-        }
-        diff_service.get_commit_file_changes(&commit_sha, &working_path)
+            )
+        } else {
+            diff_service.get_commit_file_changes(&commit_sha, &working_path)
+        }?;
+        Ok((changes, cache_status))
     }
     .await;
     match &result {
-        Ok(changes) => info!(
+        Ok((changes, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
             operation = "commit_file_changes",
             conversation_id = %conversation_id,
             commit_sha,
             elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
             files = changes.len(),
             "Loaded agent workspace commit file changes"
         ),
@@ -558,7 +791,7 @@ pub async fn get_agent_conversation_workspace_commit_file_changes(
             "Failed to load agent workspace commit file changes"
         ),
     }
-    result
+    result.map(|(changes, _)| changes)
 }
 
 #[tauri::command]
@@ -570,10 +803,12 @@ pub async fn get_agent_conversation_workspace_commit_file_diff(
 ) -> AppResult<FileDiff> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let result: AppResult<FileDiff> = async {
-        let ctx = get_agent_workspace_context(app_state.inner(), &conversation_id).await?;
+    let result: AppResult<(FileDiff, AgentWorkspaceDiffCacheStatus)> = async {
+        let (ctx, cache_status) =
+            get_agent_workspace_context_cached(app_state.inner(), &conversation_id).await?;
         let head_ref = ctx.diff_target.as_deref().unwrap_or("HEAD");
         ensure_agent_workspace_commit_in_range(
+            &conversation_id,
             &ctx.working_path,
             &ctx.base_ref,
             head_ref,
@@ -582,25 +817,28 @@ pub async fn get_agent_conversation_workspace_commit_file_diff(
         .await?;
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
-        if diff_service.is_merge_commit(&working_path, &commit_sha) {
-            return diff_service.get_file_diff_between_refs(
+        let diff = if diff_service.is_merge_commit(&working_path, &commit_sha) {
+            diff_service.get_file_diff_between_refs(
                 &file_path,
                 &working_path,
                 &ctx.base_ref,
                 &commit_sha,
-            );
-        }
-        diff_service.get_commit_file_diff(&commit_sha, &file_path, &working_path)
+            )
+        } else {
+            diff_service.get_commit_file_diff(&commit_sha, &file_path, &working_path)
+        }?;
+        Ok((diff, cache_status))
     }
     .await;
     match &result {
-        Ok(diff) => info!(
+        Ok((diff, cache_status)) => info!(
             target: "ralphx_lib::commands::agent_workspace_diff",
             operation = "commit_file_diff",
             conversation_id = %conversation_id,
             commit_sha,
             file_path,
             elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
             old_chars = diff.old_content.chars().count(),
             new_chars = diff.new_content.chars().count(),
             "Loaded agent workspace commit file diff"
@@ -616,7 +854,7 @@ pub async fn get_agent_conversation_workspace_commit_file_diff(
             "Failed to load agent workspace commit file diff"
         ),
     }
-    result
+    result.map(|(diff, _)| diff)
 }
 
 /// Get files changed in a specific commit

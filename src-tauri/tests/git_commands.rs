@@ -1,5 +1,10 @@
+use ralphx_lib::application::agent_conversation_workspace::{
+    prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+};
 use ralphx_lib::application::{AppState, CommitInfo, DiffStats};
 use ralphx_lib::commands::diff_commands::{
+    get_agent_conversation_workspace_commit_file_changes,
+    get_agent_conversation_workspace_commit_file_diff, get_agent_conversation_workspace_review,
     get_file_diff_for_state, get_task_file_changes_for_state,
 };
 use ralphx_lib::commands::git_commands::{
@@ -7,13 +12,16 @@ use ralphx_lib::commands::git_commands::{
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    ArtifactId, IdeationSessionId, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranch,
-    Project, ReviewScopeMetadata, Task, TaskCategory, TaskId,
+    AgentConversationWorkspaceMode, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, InternalStatus, MergeStrategy, MergeValidationMode, PlanBranch, Project,
+    ReviewScopeMetadata, Task, TaskCategory, TaskId,
 };
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::Manager;
 
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -70,6 +78,60 @@ fn setup_plan_branch_repo() -> tempfile::TempDir {
     run_git(repo, &["checkout", "main"]);
 
     dir
+}
+
+async fn setup_agent_workspace_review_state() -> (tempfile::TempDir, AppState, ChatConversationId) {
+    let dir = tempfile::TempDir::new().expect("create temp dir");
+    let repo = dir.path().join("repo");
+    let worktrees = dir.path().join("worktrees");
+    std::fs::create_dir_all(&repo).expect("create repo dir");
+
+    run_git(&repo, &["init", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "test@test.com"]);
+    run_git(&repo, &["config", "user.name", "Test"]);
+    std::fs::write(repo.join("README.md"), "# test repo\n").expect("write readme");
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "initial commit"]);
+
+    let app_state = AppState::new_test();
+    let mut project = Project::new(
+        "Agent Workspace Review".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktrees.to_string_lossy().to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .expect("create project");
+
+    let conversation_id = ChatConversationId::new();
+    let workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            base_ref: Some("main".to_string()),
+            display_name: None,
+        },
+    )
+    .await
+    .expect("prepare agent workspace");
+
+    let worktree_path = Path::new(&workspace.worktree_path);
+    std::fs::write(worktree_path.join("feature.txt"), "hello\n").expect("write feature");
+    run_git(worktree_path, &["add", "feature.txt"]);
+    run_git(worktree_path, &["commit", "-m", "feat: add feature"]);
+
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("create workspace");
+
+    (dir, app_state, conversation_id)
 }
 
 async fn setup_branchless_plan_merge_state(repo: &Path) -> (AppState, Task) {
@@ -558,6 +620,51 @@ async fn test_diff_commands_use_plan_branch_for_branchless_plan_merge_task() {
         .expect("get file diff");
     assert_eq!(diff.old_content, "");
     assert_eq!(diff.new_content, "first\nsecond\n");
+}
+
+#[tokio::test]
+async fn test_agent_workspace_review_drilldown_uses_review_payload_context() {
+    let (_repo, app_state, conversation_id) = setup_agent_workspace_review_state().await;
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let review = get_agent_conversation_workspace_review(app.state(), conversation_id.as_str())
+        .await
+        .expect("agent workspace review should load");
+    assert_eq!(review.changes.len(), 1);
+    assert_eq!(review.changes[0].path, "feature.txt");
+    assert_eq!(review.commits.len(), 1);
+
+    let cached_review =
+        get_agent_conversation_workspace_review(app.state(), conversation_id.as_str())
+            .await
+            .expect("agent workspace review cache should load");
+    assert_eq!(cached_review.commits[0].sha, review.commits[0].sha);
+
+    let commit_sha = review.commits[0].sha.clone();
+    let commit_files = get_agent_conversation_workspace_commit_file_changes(
+        app.state(),
+        conversation_id.as_str(),
+        commit_sha.clone(),
+    )
+    .await
+    .expect("commit file changes should load");
+    assert_eq!(commit_files.len(), 1);
+    assert_eq!(commit_files[0].path, "feature.txt");
+
+    let diff = get_agent_conversation_workspace_commit_file_diff(
+        app.state(),
+        conversation_id.as_str(),
+        commit_sha,
+        "feature.txt".to_string(),
+    )
+    .await
+    .expect("commit file diff should load");
+    assert_eq!(diff.file_path, "feature.txt");
+    assert_eq!(diff.old_content, "");
+    assert_eq!(diff.new_content, "hello\n");
 }
 
 /// Verify that the retry_merge metadata reset logic clears all loop-prevention

@@ -634,6 +634,7 @@ impl GithubServiceTrait for GhCliGithubService {
 
 // ── Output parsers ────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 pub(crate) fn parse_pr_create_output(json_str: &str) -> AppResult<(i64, String)> {
     let v: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         AppError::Infrastructure(format!(

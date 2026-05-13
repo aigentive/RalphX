@@ -434,6 +434,8 @@ pub struct GitRuntimeConfig {
     pub index_lock_stale_secs: u64,
     /// Short TTL for agent workspace freshness responses, in milliseconds.
     pub workspace_freshness_cache_ttl_ms: u64,
+    /// Short TTL for agent workspace review context and payload cache, in milliseconds.
+    pub workspace_review_cache_ttl_ms: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
     pub agent_kill_settle_secs: u64,
     /// Timeout in seconds for each stop_agent() call in pre-merge cleanup step 0.
@@ -459,6 +461,7 @@ impl Default for GitRuntimeConfig {
             retry_backoff_secs: vec![1, 2, 4],
             index_lock_stale_secs: 5,
             workspace_freshness_cache_ttl_ms: 2_000,
+            workspace_review_cache_ttl_ms: 2_000,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
             cleanup_worktree_timeout_secs: 15,
@@ -669,6 +672,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_freshness_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.workspace_review_cache_ttl_ms,
+        "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS"
     );
     env_u64!(
         cfg.git.agent_kill_settle_secs,

@@ -19,13 +19,13 @@ use crate::domain::repositories::ExecutionSettingsRepository;
 use crate::domain::state_machine::services::TaskScheduler;
 
 /// Response for get_task_commits command
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TaskCommitsResponse {
     pub commits: Vec<CommitInfoResponse>,
 }
 
 /// Individual commit info for response
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CommitInfoResponse {
     pub sha: String,
     pub short_sha: String,

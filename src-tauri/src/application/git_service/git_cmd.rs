@@ -223,6 +223,7 @@ pub(crate) fn run<'a>(
 }
 
 /// Run a git command in the background lane.
+#[cfg(test)]
 #[track_caller]
 pub(crate) fn run_background<'a>(
     args: &'a [&'a str],
@@ -348,6 +349,7 @@ pub(crate) fn run_status<'a>(
 }
 
 /// Run a git status-style command in the background lane.
+#[cfg(test)]
 #[track_caller]
 pub(crate) fn run_status_background<'a>(
     args: &'a [&'a str],
