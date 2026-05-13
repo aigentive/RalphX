@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::{collections::HashMap, time::Instant};
 
 use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
@@ -213,9 +213,27 @@ static CODEX_CLI_CAPABILITY_CACHE: OnceLock<
 static HARNESS_RUNTIME_PROBE_CACHE: OnceLock<
     Mutex<HashMap<AgentHarnessKind, HarnessRuntimeProbe>>,
 > = OnceLock::new();
+static HARNESS_RUNTIME_PROBE_IN_FLIGHT: OnceLock<
+    Mutex<HashMap<AgentHarnessKind, Arc<HarnessRuntimeProbeInFlight>>>,
+> = OnceLock::new();
 static CHAT_HARNESS_CLI_CACHE: OnceLock<
     Mutex<HashMap<(AgentHarnessKind, PathBuf), Result<ResolvedChatHarnessCli, String>>>,
 > = OnceLock::new();
+
+#[derive(Debug)]
+struct HarnessRuntimeProbeInFlight {
+    result: Mutex<Option<HarnessRuntimeProbe>>,
+    completed: Condvar,
+}
+
+impl HarnessRuntimeProbeInFlight {
+    fn new() -> Self {
+        Self {
+            result: Mutex::new(None),
+            completed: Condvar::new(),
+        }
+    }
+}
 
 fn resolve_codex_cli_cached() -> Result<ResolvedCodexCli, String> {
     let cache = RESOLVED_CODEX_CLI_CACHE.get_or_init(|| Mutex::new(None));
@@ -362,8 +380,50 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
         }
     }
 
+    let in_flight = HARNESS_RUNTIME_PROBE_IN_FLIGHT.get_or_init(|| Mutex::new(HashMap::new()));
+    let (is_owner, probe_in_flight) = {
+        let mut probes = in_flight.lock().unwrap();
+        if let Some(probe) = probes.get(&harness) {
+            (false, Arc::clone(probe))
+        } else {
+            let probe = Arc::new(HarnessRuntimeProbeInFlight::new());
+            probes.insert(harness, Arc::clone(&probe));
+            (true, probe)
+        }
+    };
+
+    if !is_owner {
+        return wait_for_in_flight_harness_probe(harness, probe_in_flight);
+    }
+
+    {
+        let cached = cache.lock().unwrap();
+        if let Some(probe) = cached.get(&harness) {
+            complete_in_flight_harness_probe(harness, &probe_in_flight, probe.clone());
+            return probe.clone();
+        }
+    }
+
     let started = Instant::now();
-    let probe = probe_harness_uncached(harness);
+    let probe = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        probe_harness_uncached(harness)
+    })) {
+        Ok(probe) => probe,
+        Err(_) => {
+            tracing::warn!(
+                harness = %harness,
+                "Harness runtime probe panicked"
+            );
+            HarnessRuntimeProbe {
+                binary_path: None,
+                binary_found: false,
+                probe_succeeded: false,
+                available: false,
+                missing_core_exec_features: Vec::new(),
+                error: Some("Harness runtime probe panicked".to_string()),
+            }
+        }
+    };
     tracing::info!(
         harness = %harness,
         available = probe.available,
@@ -375,10 +435,55 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
     );
 
     let mut cached = cache.lock().unwrap();
-    cached
+    let probe = cached
         .entry(harness)
         .or_insert_with(|| probe.clone())
-        .clone()
+        .clone();
+    complete_in_flight_harness_probe(harness, &probe_in_flight, probe.clone());
+    probe
+}
+
+fn wait_for_in_flight_harness_probe(
+    harness: AgentHarnessKind,
+    probe_in_flight: Arc<HarnessRuntimeProbeInFlight>,
+) -> HarnessRuntimeProbe {
+    let started = Instant::now();
+    let mut result = probe_in_flight.result.lock().unwrap();
+    loop {
+        if let Some(probe) = result.as_ref() {
+            tracing::debug!(
+                harness = %harness,
+                available = probe.available,
+                binary_path = ?probe.binary_path,
+                wait_ms = started.elapsed().as_millis() as u64,
+                "Harness runtime probe reused from in-flight app-session probe"
+            );
+            return probe.clone();
+        }
+        result = probe_in_flight.completed.wait(result).unwrap();
+    }
+}
+
+fn complete_in_flight_harness_probe(
+    harness: AgentHarnessKind,
+    probe_in_flight: &Arc<HarnessRuntimeProbeInFlight>,
+    probe: HarnessRuntimeProbe,
+) {
+    {
+        let mut result = probe_in_flight.result.lock().unwrap();
+        *result = Some(probe);
+    }
+    probe_in_flight.completed.notify_all();
+
+    if let Some(in_flight) = HARNESS_RUNTIME_PROBE_IN_FLIGHT.get() {
+        let mut probes = in_flight.lock().unwrap();
+        if probes
+            .get(&harness)
+            .is_some_and(|current| Arc::ptr_eq(current, probe_in_flight))
+        {
+            probes.remove(&harness);
+        }
+    }
 }
 
 pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
@@ -1133,6 +1238,45 @@ mod tests {
         CHAT_HARNESS_CLI_CACHE
             .get()
             .expect("chat CLI cache should exist")
+            .lock()
+            .unwrap()
+            .clear();
+    }
+
+    #[test]
+    fn harness_probe_reuses_in_flight_probe_result() {
+        let _lock = plugin_override_lock().lock().expect("lock harness caches");
+        if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
+            cache.lock().unwrap().clear();
+        }
+        if let Some(in_flight) = HARNESS_RUNTIME_PROBE_IN_FLIGHT.get() {
+            in_flight.lock().unwrap().clear();
+        }
+
+        let expected = HarnessRuntimeProbe {
+            binary_path: Some("/tmp/in-flight-claude".to_string()),
+            binary_found: true,
+            probe_succeeded: true,
+            available: true,
+            missing_core_exec_features: Vec::new(),
+            error: None,
+        };
+        let probe_in_flight = Arc::new(HarnessRuntimeProbeInFlight::new());
+        {
+            let mut result = probe_in_flight.result.lock().unwrap();
+            *result = Some(expected.clone());
+        }
+        HARNESS_RUNTIME_PROBE_IN_FLIGHT
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(AgentHarnessKind::Claude, probe_in_flight);
+
+        assert_eq!(probe_harness(AgentHarnessKind::Claude), expected);
+
+        HARNESS_RUNTIME_PROBE_IN_FLIGHT
+            .get()
+            .expect("in-flight probe map should exist")
             .lock()
             .unwrap()
             .clear();

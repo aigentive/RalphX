@@ -6,8 +6,9 @@ use std::time::Instant;
 
 use super::orphan_worktree_cleanup::{
     cleanup_orphan_agent_worktrees_on_startup, cleanup_project_orphan_worktrees,
-    detect_worktree_branch, is_ralphx_owned_branch, is_under_worktree_parent,
-    resolve_target_ref_for_orphan, scan_canonical_directories, should_pause, OrphanCleanupStats,
+    detect_worktree_branch, detect_worktree_branch_and_head, is_ralphx_owned_branch,
+    is_under_worktree_parent, resolve_target_ref_for_orphan, scan_canonical_directories,
+    should_pause, OrphanCleanupStats,
 };
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_project_workspace_dir;
 use crate::domain::entities::Project;
@@ -83,8 +84,14 @@ fn orphan_cleanup_stats_default_is_zero() {
     assert_eq!(stats.directories_scanned, 0);
     assert_eq!(stats.db_matches, 0);
     assert_eq!(stats.db_missing_candidates, 0);
+    assert_eq!(stats.unique_candidates, 0);
+    assert_eq!(stats.duplicate_candidate_skips, 0);
     assert_eq!(stats.unsafe_skips, 0);
     assert_eq!(stats.marker_skips, 0);
+    assert_eq!(stats.dirty_markers_written, 0);
+    assert_eq!(stats.unsafe_markers_written, 0);
+    assert_eq!(stats.marker_read_failures, 0);
+    assert_eq!(stats.marker_write_failures, 0);
 }
 
 #[test]
@@ -155,6 +162,26 @@ async fn detect_worktree_branch_returns_branch_for_worktree() {
 
     let branch = detect_worktree_branch(&worktree_path).await;
     assert_eq!(branch.as_deref(), Some("ralphx/test/agent-detect"));
+
+    let (branch, head_sha) = detect_worktree_branch_and_head(&worktree_path)
+        .await
+        .expect("branch and head should be detected");
+    let expected_head = {
+        let output = Command::new("git")
+            .args(["rev-parse", "ralphx/test/agent-detect"])
+            .current_dir(repo_path)
+            .output()
+            .expect("git rev-parse branch");
+        assert!(output.status.success());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    assert_eq!(branch, "ralphx/test/agent-detect");
+    assert_eq!(head_sha.as_deref(), Some(expected_head.as_str()));
+    assert_ne!(
+        head_sha.as_deref(),
+        Some("ralphx/test/agent-detect"),
+        "marker head identity must be the commit SHA, not the branch name"
+    );
 }
 
 #[tokio::test]
@@ -529,6 +556,61 @@ async fn cleanup_project_orphan_worktrees_removes_orphan_and_skips_known() {
         !orphan_path.exists(),
         "orphan worktree directory should be removed"
     );
+}
+
+#[tokio::test]
+async fn cleanup_project_orphan_worktrees_dedupes_registered_and_canonical_candidates() {
+    let repo_dir = init_repo();
+    let repo_path = repo_dir.path();
+
+    run_git(repo_path, &["checkout", "-b", "ralphx/test/agent-dedupe"]);
+    run_git(repo_path, &["checkout", "main"]);
+
+    let worktree_base = tempfile::tempdir().expect("worktree base");
+    let project = project_with_worktree_parent("test-dedupe", repo_path, worktree_base.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+
+    let orphan_path = project_dir.join("agent-conversation-dedupe");
+    run_git(
+        repo_path,
+        &[
+            "worktree",
+            "add",
+            &orphan_path.to_string_lossy(),
+            "ralphx/test/agent-dedupe",
+        ],
+    );
+    std::fs::write(orphan_path.join("README.md"), "dirty\n").expect("dirty tracked file");
+
+    let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let registry: Arc<dyn crate::domain::services::RunningAgentRegistry> =
+        Arc::new(MemoryRunningAgentRegistry::new());
+    let marker_repo = marker_repo();
+    let mut stats = OrphanCleanupStats::default();
+
+    cleanup_project_orphan_worktrees(
+        &project,
+        &workspace_repo,
+        &marker_repo,
+        &registry,
+        &mut stats,
+    )
+    .await;
+
+    assert_eq!(
+        stats.unique_candidates, 1,
+        "the same orphan path should be a single cleanup candidate"
+    );
+    assert_eq!(
+        stats.duplicate_candidate_skips, 1,
+        "canonical scan should skip the already-processed worktree-list path"
+    );
+    assert_eq!(stats.dirty_skips, 1);
+    assert_eq!(stats.dirty_markers_written, 1);
+    assert!(orphan_path.exists(), "dirty worktree must not be removed");
 }
 
 #[tokio::test]
