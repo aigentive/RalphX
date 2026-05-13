@@ -349,15 +349,17 @@ fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
 
 pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
     let cache = HARNESS_RUNTIME_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cached = cache.lock().unwrap();
-    if let Some(probe) = cached.get(&harness) {
-        tracing::debug!(
-            harness = %harness,
-            available = probe.available,
-            binary_path = ?probe.binary_path,
-            "Harness runtime probe reused from app-session cache"
-        );
-        return probe.clone();
+    {
+        let cached = cache.lock().unwrap();
+        if let Some(probe) = cached.get(&harness) {
+            tracing::debug!(
+                harness = %harness,
+                available = probe.available,
+                binary_path = ?probe.binary_path,
+                "Harness runtime probe reused from app-session cache"
+            );
+            return probe.clone();
+        }
     }
 
     let started = Instant::now();
@@ -371,8 +373,12 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "Harness runtime probe completed"
     );
-    cached.insert(harness, probe.clone());
-    probe
+
+    let mut cached = cache.lock().unwrap();
+    cached
+        .entry(harness)
+        .or_insert_with(|| probe.clone())
+        .clone()
 }
 
 pub(crate) fn refresh_harness_runtime_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
@@ -732,10 +738,39 @@ fn external_mcp_entry_for_plugin_dir(plugin_dir: &Path) -> PathBuf {
 }
 
 pub(crate) fn probe_supported_harnesses() -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
-    standard_harness_runtime_adapters()
+    let started = Instant::now();
+    let harnesses = standard_harness_runtime_adapters()
         .into_keys()
-        .map(|harness| (harness, probe_harness(harness)))
-        .collect()
+        .collect::<Vec<_>>();
+    let mut probes = HashMap::new();
+
+    std::thread::scope(|scope| {
+        let handles = harnesses
+            .into_iter()
+            .map(|harness| (harness, scope.spawn(move || probe_harness(harness))))
+            .collect::<Vec<_>>();
+
+        for (harness, handle) in handles {
+            match handle.join() {
+                Ok(probe) => {
+                    probes.insert(harness, probe);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        harness = %harness,
+                        "Harness runtime probe worker panicked"
+                    );
+                }
+            }
+        }
+    });
+
+    tracing::info!(
+        harnesses = probes.len(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "Harness runtime probe batch completed"
+    );
+    probes
 }
 
 pub(crate) fn probe_codex_harness_with_capabilities(
