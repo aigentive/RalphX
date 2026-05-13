@@ -8,11 +8,11 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
 use super::DbConnection;
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     ArtifactId, ExecutionPlanId, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
     ProjectId, TaskId,
 };
-use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::{AppError, AppResult};
 
@@ -255,6 +255,50 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| {
                         AppError::Database(format!("Failed to collect plan branches: {}", e))
+                    })?;
+                Ok(branches)
+            })
+            .await
+    }
+
+    async fn get_startup_pr_recovery_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PlanBranch>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT * FROM plan_branches
+                         WHERE project_id = ?1
+                           AND status = 'active'
+                           AND pr_eligible = 1
+                           AND merge_task_id IS NOT NULL
+                         ORDER BY created_at DESC",
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to prepare startup PR recovery query: {}",
+                            e
+                        ))
+                    })?;
+                let branches = stmt
+                    .query_map(rusqlite::params![project_id.as_str()], |row| {
+                        PlanBranch::from_row(row)
+                    })
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to query startup PR recovery branches: {}",
+                            e
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to collect startup PR recovery branches: {}",
+                            e
+                        ))
                     })?;
                 Ok(branches)
             })

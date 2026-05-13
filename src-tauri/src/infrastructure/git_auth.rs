@@ -156,6 +156,31 @@ pub(crate) async fn check_gh_auth_status() -> bool {
     }
 }
 
+pub(crate) async fn check_gh_auth_token_available() -> bool {
+    let child = match Command::new(resolve_gh_cli_path())
+        .args(gh_auth_token_args())
+        .envs(git_subprocess_env())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    match timeout(Duration::from_secs(2), child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            output.status.success() && output.stdout.iter().any(|byte| !byte.is_ascii_whitespace())
+        }
+        _ => false,
+    }
+}
+
+fn gh_auth_token_args() -> [&'static str; 4] {
+    ["auth", "token", "--hostname", "github.com"]
+}
+
 pub(crate) fn github_https_remote_to_ssh(url: &str) -> Option<String> {
     let trimmed = url.trim().trim_end_matches('/');
     let path = trimmed.strip_prefix("https://github.com/")?;
@@ -601,6 +626,14 @@ mod tests {
                 "branch".to_string()
             ]),
             Some(GitNetworkOperation::DeleteRemoteBranch)
+        );
+    }
+
+    #[test]
+    fn gh_token_probe_targets_github_without_status_network_check() {
+        assert_eq!(
+            gh_auth_token_args(),
+            ["auth", "token", "--hostname", "github.com"]
         );
     }
 

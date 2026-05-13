@@ -372,13 +372,16 @@ async fn recover_missing_draft_prs_for_project(
         return result;
     }
 
-    let plan_branches = match plan_branch_repo.get_by_project_id(&project.id).await {
+    let plan_branches = match plan_branch_repo
+        .get_startup_pr_recovery_candidates_by_project_id(&project.id)
+        .await
+    {
         Ok(branches) => branches,
         Err(e) => {
             tracing::warn!(
                 project_id = project.id.as_str(),
                 error = %e,
-                "PR startup recovery: failed to load plan branches for project"
+                "PR startup recovery: failed to load startup PR recovery candidates for project"
             );
             return result;
         }
