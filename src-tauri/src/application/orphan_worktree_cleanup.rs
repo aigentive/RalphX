@@ -131,18 +131,6 @@ pub(super) async fn cleanup_project_orphan_worktrees(
 ) {
     let repo_path = Path::new(&project.working_directory);
 
-    let worktrees = match GitService::list_worktrees(repo_path).await {
-        Ok(w) => w,
-        Err(error) => {
-            tracing::debug!(
-                project_id = project.id.as_str(),
-                error = %error,
-                "Orphan cleanup: failed to list worktrees"
-            );
-            return;
-        }
-    };
-
     let worktree_parent = match expand_worktree_parent_public(project.worktree_parent_or_default())
     {
         Ok(p) => p,
@@ -177,6 +165,27 @@ pub(super) async fn cleanup_project_orphan_worktrees(
         );
         return;
     }
+
+    if !project_dir.is_dir() {
+        tracing::debug!(
+            project_id = project.id.as_str(),
+            project_dir = %project_dir.display(),
+            "Orphan cleanup: canonical project directory is absent"
+        );
+        return;
+    }
+
+    let worktrees = match GitService::list_worktrees(repo_path).await {
+        Ok(w) => w,
+        Err(error) => {
+            tracing::debug!(
+                project_id = project.id.as_str(),
+                error = %error,
+                "Orphan cleanup: failed to list worktrees"
+            );
+            return;
+        }
+    };
 
     let local_branches = GitService::list_local_branch_names(repo_path)
         .await

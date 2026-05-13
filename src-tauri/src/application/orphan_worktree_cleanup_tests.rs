@@ -441,6 +441,10 @@ async fn cleanup_project_orphan_worktrees_ignores_task_worktrees_under_shared_pa
     cleanup_project_orphan_worktrees(&project, &workspace_repo, &registry, &mut stats).await;
 
     assert_eq!(
+        stats.worktrees_scanned, 0,
+        "absent agent-conversation project dir should skip registered worktree Git scans"
+    );
+    assert_eq!(
         stats.db_missing_candidates, 0,
         "task worktrees should not become agent-conversation orphan candidates"
     );
@@ -1039,8 +1043,12 @@ async fn cleanup_project_handles_worktree_with_no_branch() {
     let repo_dir = init_repo();
     let repo_path = repo_dir.path();
 
-    let worktree_dir = tempfile::tempdir().expect("worktree temp");
-    let worktree_path = worktree_dir.path().join("detached-wt");
+    let worktree_parent = tempfile::tempdir().expect("worktree temp");
+    let project = project_with_worktree_parent("test-detached", repo_path, worktree_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+    let worktree_path = project_dir.join("agent-conversation-detached-wt");
 
     let head_sha = {
         let output = Command::new("git")
@@ -1061,16 +1069,6 @@ async fn cleanup_project_handles_worktree_with_no_branch() {
             &head_sha,
         ],
     );
-
-    let worktree_parent_canonical =
-        std::fs::canonicalize(worktree_dir.path()).expect("canonicalize worktree parent");
-
-    let mut project = Project::new(
-        "test-detached".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.worktree_parent_directory =
-        Some(worktree_parent_canonical.to_string_lossy().to_string());
 
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -1098,7 +1096,14 @@ async fn cleanup_project_skips_non_ralphx_worktrees() {
     run_git(repo_path, &["checkout", "main"]);
 
     let worktree_dir = tempfile::tempdir().expect("worktree temp");
-    let worktree_path = worktree_dir.path().join("user-wt");
+    let worktree_parent_canonical =
+        std::fs::canonicalize(worktree_dir.path()).expect("canonicalize");
+    let project =
+        project_with_worktree_parent("test-non-ralphx-wt", repo_path, &worktree_parent_canonical);
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
+    let worktree_path = project_dir.join("agent-conversation-user-wt");
     run_git(
         repo_path,
         &[
@@ -1108,16 +1113,6 @@ async fn cleanup_project_skips_non_ralphx_worktrees() {
             "feature/user-branch",
         ],
     );
-
-    let worktree_parent_canonical =
-        std::fs::canonicalize(worktree_dir.path()).expect("canonicalize");
-
-    let mut project = Project::new(
-        "test-non-ralphx-wt".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.worktree_parent_directory =
-        Some(worktree_parent_canonical.to_string_lossy().to_string());
 
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -1158,12 +1153,11 @@ async fn cleanup_project_skips_worktree_outside_parent() {
     );
 
     let different_parent = tempfile::tempdir().expect("different parent");
-
-    let mut project = Project::new(
-        "test-outside-parent".to_string(),
-        repo_path.to_string_lossy().to_string(),
-    );
-    project.worktree_parent_directory = Some(different_parent.path().to_string_lossy().to_string());
+    let project =
+        project_with_worktree_parent("test-outside-parent", repo_path, different_parent.path());
+    let project_dir =
+        resolve_agent_conversation_project_workspace_dir(&project).expect("project dir");
+    std::fs::create_dir_all(&project_dir).expect("create project dir");
 
     let workspace_repo: Arc<dyn crate::domain::repositories::AgentConversationWorkspaceRepository> =
         Arc::new(MemoryAgentConversationWorkspaceRepository::new());
