@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 #[cfg(test)]
 pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -225,6 +226,22 @@ fn find_cli_path_with_candidate_groups(
     extra_candidates: &[PathBuf],
     user_candidates: &[PathBuf],
 ) -> Vec<PathBuf> {
+    find_cli_path_with_candidate_groups_and_shell(
+        tool_name,
+        fixed_candidates,
+        extra_candidates,
+        user_candidates,
+        find_login_shell_cli,
+    )
+}
+
+fn find_cli_path_with_candidate_groups_and_shell(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+    user_candidates: &[PathBuf],
+    find_login_shell: impl FnOnce(&'static str) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(path) = which::which(tool_name) {
@@ -259,11 +276,38 @@ fn find_cli_path_with_candidate_groups(
         }
     }
 
-    if let Some(path) = find_login_shell_cli(tool_name) {
-        push_unique_path(&mut candidates, path);
+    if candidates.is_empty() {
+        let shell_started_at = Instant::now();
+        let shell_path = find_login_shell(tool_name);
+        tracing::info!(
+            tool = tool_name,
+            success = shell_path.is_some(),
+            elapsed_ms = shell_started_at.elapsed().as_millis() as u64,
+            "CLI login-shell fallback resolution completed"
+        );
+        if let Some(path) = shell_path {
+            push_unique_path(&mut candidates, path);
+        }
     }
 
     candidates
+}
+
+#[cfg(test)]
+fn find_cli_path_with_candidate_groups_for_test(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+    user_candidates: &[PathBuf],
+    find_login_shell: impl FnOnce(&'static str) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    find_cli_path_with_candidate_groups_and_shell(
+        tool_name,
+        fixed_candidates,
+        extra_candidates,
+        user_candidates,
+        find_login_shell,
+    )
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
@@ -498,11 +542,13 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, find_claude_cli_path, find_codex_cli_candidates,
+        agent_subprocess_env_path_from_parts, find_claude_cli_path,
+        find_cli_path_with_candidate_groups_for_test, find_codex_cli_candidates,
         find_codex_cli_path, nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
         prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
         TEST_ENV_MUTEX,
     };
+    use std::cell::Cell;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
@@ -564,6 +610,46 @@ mod tests {
     fn shell_output_rejects_relative_or_mismatched_paths() {
         assert!(safe_cli_path_from_shell_output("claude", "../bin/claude").is_none());
         assert!(safe_cli_path_from_shell_output("claude", "/tmp/codex").is_none());
+    }
+
+    #[test]
+    fn cli_resolution_skips_login_shell_when_candidate_exists() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let candidate = temp_dir.path().join("fake-ralphx-cli");
+        write_fake_tool(&candidate);
+        let shell_called = Cell::new(false);
+
+        let paths = find_cli_path_with_candidate_groups_for_test(
+            "fake-ralphx-cli",
+            &[],
+            std::slice::from_ref(&candidate),
+            &[],
+            |_| {
+                shell_called.set(true);
+                None
+            },
+        );
+
+        assert_eq!(paths, vec![candidate]);
+        assert!(
+            !shell_called.get(),
+            "login shell fallback must be last-resort only"
+        );
+    }
+
+    #[test]
+    fn cli_resolution_uses_login_shell_when_no_candidate_exists() {
+        let shell_candidate = PathBuf::from("/tmp/fake-ralphx-cli");
+        let shell_called = Cell::new(false);
+
+        let paths =
+            find_cli_path_with_candidate_groups_for_test("fake-ralphx-cli", &[], &[], &[], |_| {
+                shell_called.set(true);
+                Some(shell_candidate.clone())
+            });
+
+        assert!(shell_called.get());
+        assert_eq!(paths, vec![shell_candidate]);
     }
 
     #[test]

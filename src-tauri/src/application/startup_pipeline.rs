@@ -121,9 +121,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
     // Pattern-based MCP cleanup cannot reliably distinguish current-boot agent
     // servers after user actions begin, so run it before delayed PR/workspace recovery.
+    let phase_started_at = startup_phase_started("orphan_mcp_cleanup");
     run_startup_orphan_mcp_cleanup(kill_orphaned_mcp_servers);
+    startup_phase_completed("orphan_mcp_cleanup", phase_started_at);
 
+    let phase_started_at = startup_phase_started("startup_recovery_initial_delay");
     tokio::time::sleep(Duration::from_millis(500)).await;
+    startup_phase_completed("startup_recovery_initial_delay", phase_started_at);
 
     info!("Starting startup job runner...");
 
