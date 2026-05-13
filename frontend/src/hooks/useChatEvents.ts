@@ -19,6 +19,7 @@ import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEventBus } from "@/providers/EventProvider";
 import {
+  chatKeys,
   getCachedConversationMessages,
   invalidateConversationDataQueries,
 } from "@/hooks/useChat";
@@ -1068,6 +1069,12 @@ export function useChatEvents({
           // If no message_id in payload, the safety timeout alone handles cleanup
         }
 
+        // Cancel in-flight fetches so invalidation starts a fresh refetch
+        // instead of deduplicating with a stale in-flight request.
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversation(payload.conversation_id), exact: true });
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversationSummary(payload.conversation_id) });
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversationHistory(payload.conversation_id) });
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversationTimeline(payload.conversation_id) });
         invalidateConversationDataQueries(queryClient, payload.conversation_id);
         queryClient.invalidateQueries({
           queryKey: conversationStatsKey(payload.conversation_id),
