@@ -17,7 +17,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Runtime};
 use tracing::{debug, info};
 
@@ -184,13 +184,22 @@ impl<R: Runtime> StartupJobRunner<R> {
         from_status: InternalStatus,
         trigger: &str,
     ) -> AppResult<bool> {
-        let updated = self
-            .task_repo
+        Self::persist_startup_status_change_with_repo(&self.task_repo, task, from_status, trigger)
+            .await
+    }
+
+    async fn persist_startup_status_change_with_repo(
+        task_repo: &Arc<dyn TaskRepository>,
+        task: &crate::domain::entities::Task,
+        from_status: InternalStatus,
+        trigger: &str,
+    ) -> AppResult<bool> {
+        let updated = task_repo
             .update_with_expected_status(task, from_status)
             .await?;
 
         if updated {
-            self.task_repo
+            task_repo
                 .persist_status_change(&task.id, from_status, task.internal_status, trigger)
                 .await?;
         }
@@ -546,6 +555,41 @@ impl<R: Runtime> StartupJobRunner<R> {
         self
     }
 
+    pub fn spawn_post_ready_safety_net(&self, delay: Duration)
+    where
+        R: 'static,
+    {
+        let task_repo = Arc::clone(&self.task_repo);
+        let task_dep_repo = Arc::clone(&self.task_dep_repo);
+        let project_repo = Arc::clone(&self.project_repo);
+        let app_handle = self.app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if delay > Duration::ZERO {
+                tokio::time::sleep(delay).await;
+            }
+
+            let step_started_at = startup_job_step_started("ready_task_unblock");
+            Self::unblock_ready_tasks_for(
+                Arc::clone(&task_repo),
+                Arc::clone(&task_dep_repo),
+                Arc::clone(&project_repo),
+                app_handle.clone(),
+            )
+            .await;
+            startup_job_step_completed("ready_task_unblock", step_started_at);
+
+            let step_started_at = startup_job_step_started("dependency_violation_reconcile");
+            Self::reconcile_dependency_violations_for(
+                task_repo,
+                task_dep_repo,
+                project_repo,
+                app_handle,
+            )
+            .await;
+            startup_job_step_completed("dependency_violation_reconcile", step_started_at);
+        });
+    }
+
     /// Run startup jobs, resuming tasks in agent-active states.
     ///
     /// Skips if execution is paused. Stops early if max_concurrent is reached.
@@ -639,19 +683,6 @@ impl<R: Runtime> StartupJobRunner<R> {
             }
         }
         startup_job_step_completed("orphan_agent_run_cleanup", step_started_at);
-
-        // Unblock tasks that got stuck due to app crash (safety net)
-        // This runs before pause check since unblocking doesn't spawn agents
-        let step_started_at = startup_job_step_started("ready_task_unblock");
-        self.unblock_ready_tasks().await;
-        startup_job_step_completed("ready_task_unblock", step_started_at);
-
-        // Re-block tasks whose dependencies are no longer satisfied (reverse of above).
-        // Catches Ready/Executing/etc. tasks with Failed blockers that weren't caught
-        // before app shutdown.
-        let step_started_at = startup_job_step_started("dependency_violation_reconcile");
-        self.reconcile_dependency_violations().await;
-        startup_job_step_completed("dependency_violation_reconcile", step_started_at);
 
         // Phase 90+: Read persisted app state (active project + halt mode) from DB.
         // No waiting needed — DB has the value from the previous session.
@@ -1555,9 +1586,14 @@ impl<R: Runtime> StartupJobRunner<R> {
     ///
     /// Scans all Blocked tasks across all projects and transitions those
     /// whose blockers satisfy the shared dependency classifier to Ready status.
-    async fn unblock_ready_tasks(&self) {
+    async fn unblock_ready_tasks_for(
+        task_repo: Arc<dyn TaskRepository>,
+        task_dep_repo: Arc<dyn TaskDependencyRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
+        app_handle: Option<AppHandle<R>>,
+    ) {
         // Get all projects to scan for blocked tasks
-        let projects = match self.project_repo.get_all().await {
+        let projects = match project_repo.get_all().await {
             Ok(projects) => projects,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to fetch projects for startup unblock");
@@ -1569,8 +1605,7 @@ impl<R: Runtime> StartupJobRunner<R> {
 
         for project in projects {
             // Get all blocked tasks for this project
-            let blocked_tasks = match self
-                .task_repo
+            let blocked_tasks = match task_repo
                 .get_by_status(&project.id, InternalStatus::Blocked)
                 .await
             {
@@ -1603,7 +1638,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                 }
 
                 // Get blockers for this task
-                let blockers = match self.task_dep_repo.get_blockers(&task.id).await {
+                let blockers = match task_dep_repo.get_blockers(&task.id).await {
                     Ok(b) => b,
                     Err(e) => {
                         tracing::warn!(
@@ -1616,7 +1651,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                 };
 
                 // Check if all blockers are complete
-                if !self.all_blockers_complete(&blockers).await {
+                if !Self::all_blockers_complete_with_repo(&task_repo, &blockers).await {
                     continue;
                 }
 
@@ -1625,13 +1660,13 @@ impl<R: Runtime> StartupJobRunner<R> {
                 task.blocked_reason = None;
                 task.touch();
 
-                match self
-                    .persist_startup_status_change(
-                        &task,
-                        InternalStatus::Blocked,
-                        "startup_unblock",
-                    )
-                    .await
+                match Self::persist_startup_status_change_with_repo(
+                    &task_repo,
+                    &task,
+                    InternalStatus::Blocked,
+                    "startup_unblock",
+                )
+                .await
                 {
                     Ok(true) => {}
                     Ok(false) => {
@@ -1657,8 +1692,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                     "Task unblocked on startup - all blockers complete"
                 );
 
-                // Emit task:unblocked event for UI update
-                if let Some(ref handle) = self.app_handle {
+                if let Some(ref handle) = app_handle {
                     let _ = handle.emit(
                         "task:unblocked",
                         serde_json::json!({
@@ -1684,9 +1718,12 @@ impl<R: Runtime> StartupJobRunner<R> {
     /// Delegates to the shared dependency blocker classifier.
     /// MergeIncomplete, Failed, and Stopped are terminal but do NOT satisfy dependencies.
     /// If a blocker doesn't exist (was deleted), it's considered satisfied.
-    async fn all_blockers_complete(&self, blocker_ids: &[crate::domain::entities::TaskId]) -> bool {
+    async fn all_blockers_complete_with_repo(
+        task_repo: &Arc<dyn TaskRepository>,
+        blocker_ids: &[crate::domain::entities::TaskId],
+    ) -> bool {
         for blocker_id in blocker_ids {
-            match self.task_repo.get_by_id(blocker_id).await {
+            match task_repo.get_by_id(blocker_id).await {
                 Ok(Some(task)) => {
                     if task.internal_status.is_active_dependency_blocker() {
                         return false;
@@ -1722,7 +1759,22 @@ impl<R: Runtime> StartupJobRunner<R> {
     /// - Ready/Executing/ReExecuting → Blocked (valid transition)
     /// - QaRefining/QaTesting/Reviewing → Stopped (Blocked not valid from these)
     pub async fn reconcile_dependency_violations(&self) {
-        let projects = match self.project_repo.get_all().await {
+        Self::reconcile_dependency_violations_for(
+            Arc::clone(&self.task_repo),
+            Arc::clone(&self.task_dep_repo),
+            Arc::clone(&self.project_repo),
+            self.app_handle.clone(),
+        )
+        .await;
+    }
+
+    async fn reconcile_dependency_violations_for(
+        task_repo: Arc<dyn TaskRepository>,
+        task_dep_repo: Arc<dyn TaskDependencyRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
+        app_handle: Option<AppHandle<R>>,
+    ) {
+        let projects = match project_repo.get_all().await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to fetch projects for dependency reconciliation");
@@ -1758,7 +1810,7 @@ impl<R: Runtime> StartupJobRunner<R> {
 
         for project in &projects {
             for &status in SCAN_STATUSES {
-                let tasks = match self.task_repo.get_by_status(&project.id, status).await {
+                let tasks = match task_repo.get_by_status(&project.id, status).await {
                     Ok(t) => t,
                     Err(e) => {
                         tracing::warn!(
@@ -1777,7 +1829,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                     }
 
                     // Get blockers for this task
-                    let blockers = match self.task_dep_repo.get_blockers(&task.id).await {
+                    let blockers = match task_dep_repo.get_blockers(&task.id).await {
                         Ok(b) => b,
                         Err(_) => continue,
                     };
@@ -1789,7 +1841,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                     // Check if any blocker is unsatisfied
                     let mut unsatisfied_names: Vec<String> = Vec::new();
                     for blocker_id in &blockers {
-                        match self.task_repo.get_by_id(blocker_id).await {
+                        match task_repo.get_by_id(blocker_id).await {
                             Ok(Some(blocker)) => {
                                 if blocker.internal_status.is_active_dependency_blocker() {
                                     let label = if blocker.internal_status == InternalStatus::Failed
@@ -1823,9 +1875,13 @@ impl<R: Runtime> StartupJobRunner<R> {
                     task.blocked_reason = Some(reason);
                     task.touch();
 
-                    match self
-                        .persist_startup_status_change(&task, from_status, "dep_reconciliation")
-                        .await
+                    match Self::persist_startup_status_change_with_repo(
+                        &task_repo,
+                        &task,
+                        from_status,
+                        "dep_reconciliation",
+                    )
+                    .await
                     {
                         Ok(true) => {}
                         Ok(false) => {
@@ -1847,8 +1903,7 @@ impl<R: Runtime> StartupJobRunner<R> {
                         }
                     }
 
-                    // Emit event for UI
-                    if let Some(ref handle) = self.app_handle {
+                    if let Some(ref handle) = app_handle {
                         let _ = handle.emit(
                             "task:event",
                             serde_json::json!({
@@ -1929,12 +1984,10 @@ impl<R: Runtime> StartupJobRunner<R> {
     /// metadata flag. For each, runs the deferred cleanup (worktree removal,
     /// branch deletion, metadata clearing).
     async fn resume_pending_cleanup(&self, projects: &[crate::domain::entities::Project]) {
-        use crate::domain::state_machine::transition_handler::{
-            deferred_merge_cleanup, has_pending_cleanup_metadata,
-        };
+        use crate::domain::state_machine::transition_handler::deferred_merge_cleanup;
 
         let started_at = Instant::now();
-        let mut merged_tasks_seen = 0usize;
+        let mut cleanup_query_tasks_seen = 0usize;
         let mut pending_cleanup_tasks = 0usize;
         let mut task_scan_elapsed_ms = 0u128;
         let mut plan_branch_lookup_elapsed_ms = 0u128;
@@ -1942,9 +1995,13 @@ impl<R: Runtime> StartupJobRunner<R> {
 
         for project in projects {
             let task_scan_started_at = Instant::now();
-            let merged_tasks = match self
+            let pending_tasks = match self
                 .task_repo
-                .get_by_status(&project.id, InternalStatus::Merged)
+                .get_by_status_with_metadata_bool(
+                    &project.id,
+                    InternalStatus::Merged,
+                    "pending_cleanup",
+                )
                 .await
             {
                 Ok(tasks) => tasks,
@@ -1953,18 +2010,15 @@ impl<R: Runtime> StartupJobRunner<R> {
                     tracing::warn!(
                         error = %e,
                         project_id = project.id.as_str(),
-                        "Failed to fetch Merged tasks for pending cleanup resumption"
+                        "Failed to fetch pending-cleanup Merged tasks for startup cleanup resumption"
                     );
                     continue;
                 }
             };
             task_scan_elapsed_ms += task_scan_started_at.elapsed().as_millis();
-            merged_tasks_seen += merged_tasks.len();
+            cleanup_query_tasks_seen += pending_tasks.len();
 
-            for task in merged_tasks {
-                if !has_pending_cleanup_metadata(&task) {
-                    continue;
-                }
+            for task in pending_tasks {
                 pending_cleanup_tasks += 1;
 
                 info!(
@@ -2014,7 +2068,7 @@ impl<R: Runtime> StartupJobRunner<R> {
 
         info!(
             projects_seen = projects.len(),
-            merged_tasks_seen,
+            cleanup_query_tasks_seen,
             pending_cleanup_tasks,
             cleanup_jobs_spawned = resumed,
             task_scan_elapsed_ms,

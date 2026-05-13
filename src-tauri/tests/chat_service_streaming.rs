@@ -955,6 +955,13 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
     // let will_process_queue =
     //     initial_queue_count > 0 && has_session_for_queue && !(silent_interactive_exit && cancellation_requested);
 
+    let initial_queue_count = 2;
+    let will_process_queue = |outcome: &StreamOutcome, cancellation_requested: bool| {
+        initial_queue_count > 0
+            && outcome.session_id.is_some()
+            && !(outcome.silent_interactive_exit && cancellation_requested)
+    };
+
     // Case 1: Normal exit — queue should be processed
     let outcome_normal = StreamOutcome {
         response_text: String::new(),
@@ -967,11 +974,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         silent_interactive_exit: false,
     };
-    let initial_queue_count = 2;
-    let has_session_for_queue = outcome_normal.session_id.is_some();
-    let will_process_queue_normal = initial_queue_count > 0
-        && has_session_for_queue
-        && !(outcome_normal.silent_interactive_exit && false);
+    let will_process_queue_normal = will_process_queue(&outcome_normal, false);
     assert!(
         will_process_queue_normal,
         "Normal exit with queued messages + session → must process queue"
@@ -989,18 +992,14 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         silent_interactive_exit: true,
     };
-    let will_process_queue_silent = initial_queue_count > 0
-        && has_session_for_queue
-        && !(outcome_silent.silent_interactive_exit && true);
+    let will_process_queue_silent = will_process_queue(&outcome_silent, true);
     assert!(
         !will_process_queue_silent,
         "Cancelled silent exit → must NOT process queue even with queued messages and valid session"
     );
 
     // Case 2b: Timeout/EOF silent interactive exit — queue should still drain.
-    let will_process_queue_non_cancel_silent = initial_queue_count > 0
-        && has_session_for_queue
-        && !(outcome_silent.silent_interactive_exit && false);
+    let will_process_queue_non_cancel_silent = will_process_queue(&outcome_silent, false);
     assert!(
         will_process_queue_non_cancel_silent,
         "Non-cancel silent exit with queued messages + session → must process queue"
@@ -1018,10 +1017,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         silent_interactive_exit: false,
     };
-    let has_session_no_session = outcome_no_session.session_id.is_some();
-    let will_process_queue_no_session = initial_queue_count > 0
-        && has_session_no_session
-        && !(outcome_no_session.silent_interactive_exit && false);
+    let will_process_queue_no_session = will_process_queue(&outcome_no_session, false);
     assert!(
         !will_process_queue_no_session,
         "No session → queue cannot be processed regardless"

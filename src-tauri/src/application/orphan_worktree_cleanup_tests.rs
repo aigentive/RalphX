@@ -96,10 +96,12 @@ fn orphan_cleanup_stats_default_is_zero() {
 
 #[test]
 fn log_summary_does_not_panic() {
-    let mut stats = OrphanCleanupStats::default();
-    stats.projects_seen = 3;
-    stats.contained_removals = 1;
-    stats.dirty_skips = 2;
+    let stats = OrphanCleanupStats {
+        projects_seen: 3,
+        contained_removals: 1,
+        dirty_skips: 2,
+        ..Default::default()
+    };
     let started_at = Instant::now();
     stats.log_summary(started_at, false);
     stats.log_summary(started_at, true);

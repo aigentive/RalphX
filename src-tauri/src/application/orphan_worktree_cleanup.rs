@@ -526,7 +526,7 @@ pub(super) async fn try_cleanup_orphan_worktree(
     }
 
     let (is_contained, reason) =
-        GitService::is_branch_merged_or_content_equivalent(repo_path, branch, &target_ref).await;
+        GitService::is_branch_merged_or_content_equivalent(repo_path, branch, target_ref).await;
 
     if !is_contained {
         stats.unsafe_skips += 1;

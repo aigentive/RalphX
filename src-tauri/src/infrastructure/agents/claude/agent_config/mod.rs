@@ -724,12 +724,18 @@ fn resolve_tool_spec(project_root: &Path, raw: &AgentConfigRaw) -> AgentToolsSpe
     };
 
     let canonical_spec = runtime_tools_spec_from_canonical(&spec);
-    if raw.tools != canonical_spec {
+    if raw.tools != canonical_spec && !tools_spec_is_default(&raw.tools) {
         tracing::warn!(
             agent = %raw.name,
             runtime_tools = ?raw.tools,
             canonical_tools = ?canonical_spec,
             "Canonical Claude metadata overrides divergent runtime tools spec"
+        );
+    } else if raw.tools != canonical_spec {
+        tracing::debug!(
+            agent = %raw.name,
+            canonical_tools = ?canonical_spec,
+            "Canonical Claude metadata fills default runtime tools spec"
         );
     }
 

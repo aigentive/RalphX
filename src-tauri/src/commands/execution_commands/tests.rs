@@ -67,6 +67,18 @@ fn test_execution_state_decrement_no_underflow() {
     assert_eq!(state.running_count(), 0);
 }
 
+#[tokio::test]
+async fn test_active_project_state_set_if_changed_dedupes_same_project() {
+    let state = ActiveProjectState::new();
+    let project_id = ProjectId::from_string("project-1".to_string());
+
+    assert!(state.set_if_changed(Some(project_id.clone())).await);
+    assert!(!state.set_if_changed(Some(project_id.clone())).await);
+    assert_eq!(state.get().await, Some(project_id));
+    assert!(state.set_if_changed(None).await);
+    assert!(!state.set_if_changed(None).await);
+}
+
 #[test]
 fn test_execution_state_set_max_concurrent() {
     let state = ExecutionState::new();

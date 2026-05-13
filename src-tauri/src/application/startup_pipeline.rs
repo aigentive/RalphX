@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,8 @@ pub(crate) enum StartupPipelineMode {
     Full,
     DeferredGitResume,
 }
+
+const STARTUP_BACKGROUND_DB_GRACE: Duration = Duration::from_millis(750);
 
 pub(crate) struct StartupPipelineDeps {
     pub execution_state: Arc<ExecutionState>,
@@ -106,6 +109,25 @@ fn startup_phase_completed(phase: &'static str, started_at: Instant) {
         elapsed_ms = started_at.elapsed().as_millis(),
         "Startup phase completed"
     );
+}
+
+fn spawn_startup_background_phase<F>(phase: &'static str, delay: Duration, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    tracing::info!(
+        phase,
+        delay_ms = delay.as_millis(),
+        "Startup background phase scheduled"
+    );
+    tauri::async_runtime::spawn(async move {
+        if delay > Duration::ZERO {
+            tokio::time::sleep(delay).await;
+        }
+        let phase_started_at = startup_phase_started(phase);
+        future.await;
+        startup_phase_completed(phase, phase_started_at);
+    });
 }
 
 pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult<()> {
@@ -428,33 +450,35 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         "Startup phase completed: agent workspace PR poller recovery"
     );
 
-    let runner = StartupJobRunner::new(
-        Arc::clone(&task_repo),
-        Arc::clone(&task_dependency_repo),
-        Arc::clone(&project_repo),
-        Arc::clone(&artifact_repo),
-        Arc::clone(&conversation_repo),
-        Arc::clone(&chat_message_repo),
-        Arc::clone(&chat_attachment_repo),
-        Arc::clone(&ideation_session_repo),
-        Arc::clone(&activity_event_repo),
-        Arc::clone(&message_queue),
-        Arc::clone(&running_agent_registry),
-        Arc::clone(&memory_event_repo),
-        Arc::clone(&agent_run_repo),
-        Arc::clone(&transition_service),
-        Arc::clone(&execution_state),
-        Arc::clone(&active_project_state),
-        Arc::clone(&app_state_repo),
-        Arc::clone(&execution_settings_repo),
-        Some(Arc::clone(&plan_branch_repo)),
-    )
-    .with_task_scheduler(Arc::clone(&task_scheduler))
-    .with_app_handle(app_handle.clone())
-    .with_review_repo(Arc::clone(&review_repo))
-    .with_chat_service(recovery_chat_service)
-    .with_previous_session_cutoff(previous_session_cutoff)
-    .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids));
+    let runner = Arc::new(
+        StartupJobRunner::new(
+            Arc::clone(&task_repo),
+            Arc::clone(&task_dependency_repo),
+            Arc::clone(&project_repo),
+            Arc::clone(&artifact_repo),
+            Arc::clone(&conversation_repo),
+            Arc::clone(&chat_message_repo),
+            Arc::clone(&chat_attachment_repo),
+            Arc::clone(&ideation_session_repo),
+            Arc::clone(&activity_event_repo),
+            Arc::clone(&message_queue),
+            Arc::clone(&running_agent_registry),
+            Arc::clone(&memory_event_repo),
+            Arc::clone(&agent_run_repo),
+            Arc::clone(&transition_service),
+            Arc::clone(&execution_state),
+            Arc::clone(&active_project_state),
+            Arc::clone(&app_state_repo),
+            Arc::clone(&execution_settings_repo),
+            Some(Arc::clone(&plan_branch_repo)),
+        )
+        .with_task_scheduler(Arc::clone(&task_scheduler))
+        .with_app_handle(app_handle.clone())
+        .with_review_repo(Arc::clone(&review_repo))
+        .with_chat_service(recovery_chat_service)
+        .with_previous_session_cutoff(previous_session_cutoff)
+        .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids)),
+    );
 
     let phase_started_at = startup_phase_started("startup_job_runner");
     let startup_ideation_recovery_claims = runner.run().await;
@@ -497,9 +521,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             interactive_process_registry: Arc::clone(&interactive_process_registry),
             app_handle: app_handle.clone(),
         });
-        let phase_started_at = startup_phase_started("chat_resumption");
-        chat_resumption.run().await;
-        startup_phase_completed("chat_resumption", phase_started_at);
+        spawn_startup_background_phase(
+            "chat_resumption",
+            STARTUP_BACKGROUND_DB_GRACE,
+            async move {
+                chat_resumption.run().await;
+            },
+        );
     }
 
     let phase_started_at = startup_phase_started("reconcile_transition_service_reuse");
@@ -507,29 +535,31 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     startup_phase_completed("reconcile_transition_service_reuse", phase_started_at);
 
     let phase_started_at = startup_phase_started("reconciliation_runner_build");
-    let reconcile_runner = build_startup_reconciliation_runner(StartupReconciliationDeps {
-        task_repo: Arc::clone(&task_repo),
-        task_dependency_repo: Arc::clone(&task_dependency_repo),
-        project_repo: Arc::clone(&project_repo),
-        artifact_repo: Arc::clone(&artifact_repo),
-        conversation_repo: Arc::clone(&conversation_repo),
-        chat_message_repo: Arc::clone(&chat_message_repo),
-        chat_attachment_repo: Arc::clone(&chat_attachment_repo),
-        ideation_session_repo: Arc::clone(&ideation_session_repo),
-        activity_event_repo: Arc::clone(&activity_event_repo),
-        message_queue: Arc::clone(&message_queue),
-        running_agent_registry: Arc::clone(&running_agent_registry),
-        memory_event_repo: Arc::clone(&memory_event_repo),
-        agent_run_repo: Arc::clone(&agent_run_repo),
-        transition_service: reconcile_transition_service,
-        execution_state: Arc::clone(&execution_state),
-        execution_settings_repo: Arc::clone(&execution_settings_repo),
-        plan_branch_repo: Arc::clone(&plan_branch_repo),
-        pr_poller_registry: Arc::clone(&pr_poller_registry),
-        interactive_process_registry: Arc::clone(&interactive_process_registry),
-        review_repo: Arc::clone(&review_repo),
-        app_handle: app_handle.clone(),
-    });
+    let reconcile_runner = Arc::new(build_startup_reconciliation_runner(
+        StartupReconciliationDeps {
+            task_repo: Arc::clone(&task_repo),
+            task_dependency_repo: Arc::clone(&task_dependency_repo),
+            project_repo: Arc::clone(&project_repo),
+            artifact_repo: Arc::clone(&artifact_repo),
+            conversation_repo: Arc::clone(&conversation_repo),
+            chat_message_repo: Arc::clone(&chat_message_repo),
+            chat_attachment_repo: Arc::clone(&chat_attachment_repo),
+            ideation_session_repo: Arc::clone(&ideation_session_repo),
+            activity_event_repo: Arc::clone(&activity_event_repo),
+            message_queue: Arc::clone(&message_queue),
+            running_agent_registry: Arc::clone(&running_agent_registry),
+            memory_event_repo: Arc::clone(&memory_event_repo),
+            agent_run_repo: Arc::clone(&agent_run_repo),
+            transition_service: reconcile_transition_service,
+            execution_state: Arc::clone(&execution_state),
+            execution_settings_repo: Arc::clone(&execution_settings_repo),
+            plan_branch_repo: Arc::clone(&plan_branch_repo),
+            pr_poller_registry: Arc::clone(&pr_poller_registry),
+            interactive_process_registry: Arc::clone(&interactive_process_registry),
+            review_repo: Arc::clone(&review_repo),
+            app_handle: app_handle.clone(),
+        },
+    ));
     startup_phase_completed("reconciliation_runner_build", phase_started_at);
 
     if active_git_startup_blocked {
@@ -541,16 +571,22 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         reconcile_runner.recover_timeout_failures().await;
         startup_phase_completed("timeout_failure_recovery", phase_started_at);
 
-        let phase_started_at = startup_phase_started("stuck_task_reconciliation");
-        reconcile_runner.reconcile_stuck_tasks().await;
-        startup_phase_completed("stuck_task_reconciliation", phase_started_at);
+        let immediate_reconcile_runner = Arc::clone(&reconcile_runner);
+        spawn_startup_background_phase(
+            "stuck_task_reconciliation",
+            STARTUP_BACKGROUND_DB_GRACE,
+            async move {
+                immediate_reconcile_runner.reconcile_stuck_tasks().await;
+            },
+        );
 
         let phase_started_at = startup_phase_started("stuck_task_reconciliation_loop_spawn");
+        let loop_reconcile_runner = Arc::clone(&reconcile_runner);
         tauri::async_runtime::spawn(async move {
             let interval = Duration::from_secs(30);
             loop {
                 tokio::time::sleep(interval).await;
-                reconcile_runner.reconcile_stuck_tasks().await;
+                loop_reconcile_runner.reconcile_stuck_tasks().await;
             }
         });
         startup_phase_completed("stuck_task_reconciliation_loop_spawn", phase_started_at);
@@ -605,13 +641,18 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             .with_recovery_queue(Arc::clone(&recovery_queue))
             .with_running_agent_registry(Arc::clone(&running_agent_registry)),
         );
-        let phase_started_at = startup_phase_started("verification_startup_scan");
-        startup_background::startup_scan_verification_reconciliation(
-            svc,
-            &startup_ideation_recovery_claims,
-        )
-        .await;
-        startup_phase_completed("verification_startup_scan", phase_started_at);
+        let startup_ideation_recovery_claims = startup_ideation_recovery_claims.clone();
+        spawn_startup_background_phase(
+            "verification_startup_scan",
+            STARTUP_BACKGROUND_DB_GRACE,
+            async move {
+                startup_background::startup_scan_verification_reconciliation(
+                    svc,
+                    &startup_ideation_recovery_claims,
+                )
+                .await;
+            },
+        );
     }
 
     if active_git_startup_blocked {
@@ -647,6 +688,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         );
         startup_phase_completed("cleanup_loop_spawn", phase_started_at);
     }
+
+    runner.spawn_post_ready_safety_net(STARTUP_BACKGROUND_DB_GRACE);
 
     if mode == StartupPipelineMode::DeferredGitResume && !has_git_startup_blocked_projects {
         git_auth_recovery_state.clear_pending();

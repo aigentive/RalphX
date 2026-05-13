@@ -192,7 +192,7 @@ fn extract_codex_usage_reads_turn_completed_usage() {
 
     let usage = extract_codex_usage(&event).expect("usage should extract");
 
-    assert_eq!(usage.input_tokens, Some(1200));
-    assert_eq!(usage.cached_input_tokens, Some(300));
-    assert_eq!(usage.output_tokens, Some(450));
+    assert_eq!(usage.usage.input_tokens, Some(1200));
+    assert_eq!(usage.usage.cached_input_tokens, Some(300));
+    assert_eq!(usage.usage.output_tokens, Some(450));
 }

@@ -783,9 +783,7 @@ fn cached_agent_workspace_freshness(
         return None;
     }
     let key = agent_workspace_freshness_cache_key(conversation_id, freshness_scope)?;
-    let Some(entry) = agent_workspace_freshness_cache().get(&key) else {
-        return None;
-    };
+    let entry = agent_workspace_freshness_cache().get(&key)?;
     if entry.inserted_at.elapsed() <= ttl {
         return Some(entry.response.clone());
     }
@@ -3036,7 +3034,7 @@ async fn get_agent_conversation_workspace_freshness_for_state(
     let phase_started_at = Instant::now();
     let workspace = state
         .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
+        .get_by_conversation_id(conversation_id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| {
@@ -4255,7 +4253,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             review_base,
         )
         .await
-        .map(|description| {
+        .inspect(|_| {
             tracing::info!(
                 target: "ralphx_lib::commands::agent_workspace_publish",
                 operation = "draft_pr_description",
@@ -4268,7 +4266,6 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 elapsed_ms = describe_started.elapsed().as_millis(),
                 "Resolved agent workspace PR description"
             );
-            description
         })
     } {
         Ok(description) => description,

@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::StreamExt as _;
@@ -48,6 +48,7 @@ const PR_CREATION_RECOVERY_PROJECT_CONCURRENCY: usize = 4;
 const PR_POLLER_RECOVERY_CONCURRENCY: usize = 4;
 const AGENT_WORKSPACE_PR_POLLER_RECOVERY_CONCURRENCY: usize = 4;
 const SLOW_PR_RECOVERY_CANDIDATE_MS: u64 = 100;
+const STARTUP_BACKGROUND_DB_GRACE: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
 struct PrMetadataRefreshJob {
@@ -108,32 +109,31 @@ struct ProjectPrRecoveryTaskSnapshot {
 }
 
 impl ProjectPrRecoveryTaskSnapshot {
-    fn from_tasks(tasks: Vec<Task>) -> Self {
+    fn from_targeted_tasks(
+        tasks: Vec<Task>,
+        merged_regular_plan_keys: HashSet<(
+            crate::domain::entities::IdeationSessionId,
+            ExecutionPlanId,
+        )>,
+    ) -> Self {
         let task_count = tasks.len();
         let mut by_id = HashMap::with_capacity(task_count);
-        let mut merged_regular_plan_keys = HashSet::new();
 
         for task in tasks {
-            if task.category == TaskCategory::Regular
-                && task.internal_status == InternalStatus::Merged
-                && task.archived_at.is_none()
-            {
-                if let (Some(session_id), Some(execution_plan_id)) =
-                    (&task.ideation_session_id, &task.execution_plan_id)
-                {
-                    merged_regular_plan_keys.insert((
-                        session_id.as_str().to_string(),
-                        execution_plan_id.as_str().to_string(),
-                    ));
-                }
-            }
-
             by_id.insert(task.id.as_str().to_string(), task);
         }
 
         Self {
             by_id,
-            merged_regular_plan_keys,
+            merged_regular_plan_keys: merged_regular_plan_keys
+                .into_iter()
+                .map(|(session_id, execution_plan_id)| {
+                    (
+                        session_id.as_str().to_string(),
+                        execution_plan_id.as_str().to_string(),
+                    )
+                })
+                .collect(),
             task_count,
         }
     }
@@ -452,6 +452,7 @@ pub async fn recover_missing_draft_prs(
         );
         let metadata_refresh_jobs = totals.metadata_refresh_jobs;
         tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(STARTUP_BACKGROUND_DB_GRACE).await;
             git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
                 refresh_existing_pr_metadata(
                     metadata_refresh_jobs,
@@ -510,18 +511,50 @@ async fn recover_missing_draft_prs_for_project(
     }
 
     let project_task_load_started_at = Instant::now();
-    let task_snapshot = match task_repo.get_by_project(&project.id).await {
-        Ok(tasks) => ProjectPrRecoveryTaskSnapshot::from_tasks(tasks),
+    let merge_task_ids = plan_branches
+        .iter()
+        .filter_map(|branch| branch.merge_task_id.clone())
+        .collect::<Vec<_>>();
+    let merge_tasks = match task_repo.get_by_ids(&merge_task_ids).await {
+        Ok(tasks) => tasks,
         Err(e) => {
             result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
             tracing::warn!(
                 project_id = project.id.as_str(),
                 error = %e,
-                "PR startup recovery: failed to load project task snapshot"
+                "PR startup recovery: failed to load candidate merge tasks"
             );
             return result;
         }
     };
+    let mut active_execution_plan_ids = HashMap::new();
+    let mut active_plan_keys = Vec::new();
+    for plan_branch in &plan_branches {
+        let Some(execution_plan_id) =
+            active_execution_plan_id_for_branch(&execution_plan_repo, plan_branch).await
+        else {
+            continue;
+        };
+        active_plan_keys.push((plan_branch.session_id.clone(), execution_plan_id.clone()));
+        active_execution_plan_ids.insert(plan_branch.id.clone(), execution_plan_id);
+    }
+    let merged_regular_plan_keys = match task_repo
+        .find_merged_regular_plan_keys(&project.id, &active_plan_keys)
+        .await
+    {
+        Ok(keys) => keys,
+        Err(e) => {
+            result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
+            tracing::warn!(
+                project_id = project.id.as_str(),
+                error = %e,
+                "PR startup recovery: failed to load merged regular plan keys"
+            );
+            return result;
+        }
+    };
+    let task_snapshot =
+        ProjectPrRecoveryTaskSnapshot::from_targeted_tasks(merge_tasks, merged_regular_plan_keys);
     result.project_task_load_elapsed_ms += elapsed_ms_u64(project_task_load_started_at);
     result.project_tasks_seen += task_snapshot.task_count;
 
@@ -559,11 +592,11 @@ async fn recover_missing_draft_prs_for_project(
 
         let needs_recovery_started_at = Instant::now();
         if !plan_branch_needs_pr_recovery(
-            &execution_plan_repo,
             &task_snapshot,
             &project,
             &plan_branch,
             merge_task,
+            active_execution_plan_ids.get(&plan_branch.id),
         )
         .await
         {
@@ -840,11 +873,11 @@ async fn refresh_existing_pr_metadata(
 }
 
 async fn plan_branch_needs_pr_recovery(
-    execution_plan_repo: &Arc<dyn ExecutionPlanRepository>,
     task_snapshot: &ProjectPrRecoveryTaskSnapshot,
     project: &Project,
     plan_branch: &PlanBranch,
     merge_task: &Task,
+    active_execution_plan_id: Option<&ExecutionPlanId>,
 ) -> bool {
     if project.archived_at.is_some() {
         tracing::debug!(
@@ -887,14 +920,12 @@ async fn plan_branch_needs_pr_recovery(
         return false;
     }
 
-    let Some(execution_plan_id) =
-        active_execution_plan_id_for_branch(execution_plan_repo, plan_branch).await
-    else {
+    let Some(execution_plan_id) = active_execution_plan_id else {
         return false;
     };
 
     let has_merged_plan_task =
-        task_snapshot.has_merged_regular_plan_task(&plan_branch.session_id, &execution_plan_id);
+        task_snapshot.has_merged_regular_plan_task(&plan_branch.session_id, execution_plan_id);
 
     if !has_merged_plan_task {
         tracing::debug!(

@@ -301,9 +301,7 @@ fn cached_agent_workspace_context(
         return None;
     }
     let key = agent_workspace_diff_cache_key(conversation_id)?;
-    let Some(entry) = agent_workspace_context_cache().get(&key) else {
-        return None;
-    };
+    let entry = agent_workspace_context_cache().get(&key)?;
     if entry.inserted_at.elapsed() <= ttl {
         return Some(entry.context.clone());
     }
@@ -339,9 +337,7 @@ fn cached_agent_workspace_review(
         return None;
     }
     let key = agent_workspace_diff_cache_key(conversation_id)?;
-    let Some(entry) = agent_workspace_review_cache().get(&key) else {
-        return None;
-    };
+    let entry = agent_workspace_review_cache().get(&key)?;
     if entry.inserted_at.elapsed() <= ttl {
         return Some(entry.snapshot.clone());
     }

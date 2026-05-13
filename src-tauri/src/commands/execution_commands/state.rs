@@ -78,6 +78,16 @@ impl ActiveProjectState {
     pub async fn set(&self, project_id: Option<ProjectId>) {
         *self.current.write().await = project_id;
     }
+
+    /// Set the active project only when it changed.
+    pub async fn set_if_changed(&self, project_id: Option<ProjectId>) -> bool {
+        let mut current = self.current.write().await;
+        if *current == project_id {
+            return false;
+        }
+        *current = project_id;
+        true
+    }
 }
 
 /// Global execution state managed atomically for thread safety
