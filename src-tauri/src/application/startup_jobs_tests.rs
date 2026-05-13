@@ -1,6 +1,7 @@
 use super::*;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::application::chat_service::MockChatService;
 use crate::application::{AppState, TaskTransitionService};
@@ -177,6 +178,34 @@ fn build_runner_for_tests(app_state: &AppState) -> StartupJobRunner<tauri::Wry> 
         Arc::clone(&app_state.execution_settings_repo),
         None,
     )
+}
+
+#[tokio::test]
+async fn post_ready_safety_net_runs_deferred_dependency_checks() {
+    let app_state = AppState::new_test();
+    let project = Project::new("Safety Net Project".into(), "/tmp/safety-net".into());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut ready_task = Task::new(project.id.clone(), "Ready task".into());
+    ready_task.internal_status = InternalStatus::Ready;
+    let ready_task = app_state.task_repo.create(ready_task).await.unwrap();
+
+    let runner = build_runner_for_tests(&app_state);
+    runner.spawn_post_ready_safety_net(Duration::ZERO);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let stored = app_state
+        .task_repo
+        .get_by_id(&ready_task.id)
+        .await
+        .unwrap()
+        .expect("ready task should remain available");
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
 }
 
 #[tokio::test]

@@ -701,6 +701,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn startup_previous_session_cutoff_uses_current_time() {
@@ -731,5 +732,23 @@ mod tests {
         let started = startup_phase_started("test_phase");
 
         startup_phase_completed("test_phase", started);
+    }
+
+    #[tokio::test]
+    async fn startup_background_phase_runs_scheduled_future() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_in_task = Arc::clone(&completed);
+
+        spawn_startup_background_phase("test_background_phase", Duration::ZERO, async move {
+            completed_in_task.store(true, Ordering::SeqCst);
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !completed.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("background phase should complete");
     }
 }
