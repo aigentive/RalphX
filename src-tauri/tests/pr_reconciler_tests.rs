@@ -37,6 +37,16 @@ fn empty_startup_blocked_projects() -> Arc<HashSet<ProjectId>> {
     Arc::new(HashSet::new())
 }
 
+async fn wait_for_pr_detail_updates(mock_github: &MockGithubService, expected: u32) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if mock_github.update_pr_details_calls() >= expected {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 fn build_reconciler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
@@ -1351,6 +1361,7 @@ async fn test_startup_recovery_pushes_existing_pr_branch_when_local_sync_pending
         0,
         "startup recovery should not recreate an already-open PR when only branch sync is pending"
     );
+    wait_for_pr_detail_updates(&mock_github, 1).await;
     assert_eq!(
         mock_github.update_pr_details_calls(),
         1,
@@ -1423,6 +1434,7 @@ async fn test_startup_recovery_refreshes_existing_pushed_pr_metadata() {
         0,
         "startup recovery should not recreate existing PRs"
     );
+    wait_for_pr_detail_updates(&mock_github, 1).await;
     assert_eq!(
         mock_github.update_pr_details_calls(),
         1,
@@ -1486,6 +1498,7 @@ async fn test_startup_recovery_refreshes_existing_pr_metadata_without_local_diff
     )
     .await;
 
+    wait_for_pr_detail_updates(&mock_github, 1).await;
     assert_eq!(
         mock_github.update_pr_details_calls(),
         1,
