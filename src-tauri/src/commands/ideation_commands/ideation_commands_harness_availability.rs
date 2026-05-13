@@ -130,6 +130,8 @@ mod tests {
 
     use crate::application::AppState;
     use crate::domain::agents::AgentHarnessKind;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
 
     #[tokio::test]
     async fn availability_helper_loads_stored_provider_probes_for_requested_lanes() {
@@ -186,5 +188,47 @@ mod tests {
             response.error.as_deref(),
             Some("codex missing exec support")
         );
+    }
+
+    #[tokio::test]
+    async fn ideation_availability_command_uses_stored_provider_snapshot() {
+        let state = AppState::new_test();
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let responses = get_ideation_harness_availability(
+            Some(AgentHarnessAvailabilityInput {
+                project_id: Some("project-command".to_string()),
+                refresh_runtime: false,
+            }),
+            app.state(),
+        )
+        .await
+        .expect("ideation availability should load");
+
+        assert_eq!(responses.len(), IDEATION_LANES.len());
+        assert!(responses
+            .iter()
+            .all(|response| response.project_id.as_deref() == Some("project-command")));
+    }
+
+    #[tokio::test]
+    async fn agent_availability_command_defaults_input() {
+        let state = AppState::new_test();
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let responses = get_agent_harness_availability(None, app.state())
+            .await
+            .expect("agent availability should load");
+
+        assert_eq!(responses.len(), AGENT_LANES.len());
+        assert!(responses
+            .iter()
+            .all(|response| response.project_id.is_none()));
     }
 }

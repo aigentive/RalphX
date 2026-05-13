@@ -209,6 +209,98 @@ async fn post_ready_safety_net_runs_deferred_dependency_checks() {
 }
 
 #[tokio::test]
+async fn startup_unblock_marks_blocked_task_ready_when_blockers_are_complete() {
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Unblock Project".into(),
+            "/tmp/unblock".into(),
+        ))
+        .await
+        .unwrap();
+
+    let mut blocker = Task::new(project.id.clone(), "Merged blocker".into());
+    blocker.internal_status = InternalStatus::Merged;
+    let blocker = app_state.task_repo.create(blocker).await.unwrap();
+
+    let mut blocked = Task::new(project.id.clone(), "Blocked dependent".into());
+    blocked.internal_status = InternalStatus::Blocked;
+    blocked.blocked_reason = Some("Waiting for blocker".into());
+    let blocked = app_state.task_repo.create(blocked).await.unwrap();
+
+    app_state
+        .task_dependency_repo
+        .add_dependency(&blocked.id, &blocker.id)
+        .await
+        .unwrap();
+
+    StartupJobRunner::<tauri::Wry>::unblock_ready_tasks_for(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        None,
+    )
+    .await;
+
+    let stored = app_state
+        .task_repo
+        .get_by_id(&blocked.id)
+        .await
+        .unwrap()
+        .expect("blocked task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Ready);
+    assert_eq!(stored.blocked_reason, None);
+}
+
+#[tokio::test]
+async fn dependency_reconciliation_reblocks_ready_task_with_failed_blocker() {
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Dependency Reconcile Project".into(),
+            "/tmp/dependency-reconcile".into(),
+        ))
+        .await
+        .unwrap();
+
+    let mut blocker = Task::new(project.id.clone(), "Failed blocker".into());
+    blocker.internal_status = InternalStatus::Failed;
+    let blocker = app_state.task_repo.create(blocker).await.unwrap();
+
+    let mut ready = Task::new(project.id.clone(), "Ready dependent".into());
+    ready.internal_status = InternalStatus::Ready;
+    let ready = app_state.task_repo.create(ready).await.unwrap();
+
+    app_state
+        .task_dependency_repo
+        .add_dependency(&ready.id, &blocker.id)
+        .await
+        .unwrap();
+
+    StartupJobRunner::<tauri::Wry>::reconcile_dependency_violations_for(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        None,
+    )
+    .await;
+
+    let stored = app_state
+        .task_repo
+        .get_by_id(&ready.id)
+        .await
+        .unwrap()
+        .expect("ready task should exist");
+    assert_eq!(stored.internal_status, InternalStatus::Blocked);
+    assert_eq!(
+        stored.blocked_reason.as_deref(),
+        Some("Waiting for: \"Failed blocker\" (failed)")
+    );
+}
+
+#[tokio::test]
 async fn test_previous_session_cutoff_cleanup_preserves_current_boot_agents_and_runs() {
     let app_state = AppState::new_test();
     let old_key = RunningAgentKey::new("project", "old-conversation");
@@ -459,10 +551,8 @@ async fn test_prepare_active_task_startup_resume_accepts_persisted_registry_clai
         .unwrap()
         .expect("task should exist");
 
-    let interrupted_contexts = std::collections::HashSet::from([RunningAgentKey::new(
-        "task_execution",
-        task_id.as_str(),
-    )]);
+    let interrupted_contexts =
+        std::collections::HashSet::from([RunningAgentKey::new("task_execution", task_id.as_str())]);
     let resumed = runner
         .prepare_active_task_startup_resume(
             &stored,

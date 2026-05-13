@@ -8,9 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{
-    apply_provider_to_global_lanes, merge_input, parse_effort, parse_provider, provider_status,
-    read_provider_settings, read_provider_settings_with_probes, to_lane_settings, to_response,
-    update_provider_settings_with_probes, UpdateAgentProviderSettingsInput,
+    apply_provider_to_global_lanes, merge_input, parse_effort, parse_provider,
+    provider_settings_snapshot_probe, provider_status, read_provider_settings,
+    read_provider_settings_with_probes, snapshot_probes_from_provider_settings, to_lane_settings,
+    to_response, update_provider_settings_with_probes, UpdateAgentProviderSettingsInput,
 };
 
 fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
@@ -316,6 +317,43 @@ fn response_maps_settings_and_probe_fields() {
         vec!["exec".to_string()]
     );
     assert!(!response.updated_at.is_empty());
+}
+
+#[test]
+fn provider_settings_snapshot_probe_reports_disabled_provider() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+
+    let probe = provider_settings_snapshot_probe(&settings);
+
+    assert!(!probe.available);
+    assert!(!probe.binary_found);
+    assert!(!probe.probe_succeeded);
+    assert_eq!(
+        probe.error.as_deref(),
+        Some("codex is disabled. Enable and validate it in Settings before use.")
+    );
+}
+
+#[test]
+fn snapshot_probes_fill_missing_standard_providers_as_disabled() {
+    let mut codex = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex.enabled = true;
+
+    let probes = snapshot_probes_from_provider_settings(&[codex]);
+
+    let codex_probe = probes
+        .get(&AgentHarnessKind::Codex)
+        .expect("codex probe should be present");
+    assert!(codex_probe.available);
+
+    let claude_probe = probes
+        .get(&AgentHarnessKind::Claude)
+        .expect("claude fallback probe should be present");
+    assert!(!claude_probe.available);
+    assert_eq!(
+        claude_probe.error.as_deref(),
+        Some("claude is disabled. Enable and validate it in Settings before use.")
+    );
 }
 
 #[test]
