@@ -28,6 +28,9 @@ coverage:
           - "!src-tauri/src/domain/repositories/mod.rs"
           - "!src-tauri/src/infrastructure/memory/mod.rs"
           - "!src-tauri/src/infrastructure/sqlite/mod.rs"
+          # GitHub auth subprocess probes depend on local gh credential state.
+          # Deterministic URL parsing and auth-preflight logic are covered separately.
+          - "!src-tauri/src/infrastructure/git_auth.rs"
 
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.

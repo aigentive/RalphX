@@ -6,6 +6,8 @@ use crate::commands::execution_commands::lifecycle::{
 use crate::domain::entities::{GitMode, IdeationSession};
 use crate::domain::services::RunningAgentKey;
 use std::sync::Arc;
+use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::Manager;
 
 // ========================================
 // ExecutionState Unit Tests
@@ -77,6 +79,40 @@ async fn test_active_project_state_set_if_changed_dedupes_same_project() {
     assert_eq!(state.get().await, Some(project_id));
     assert!(state.set_if_changed(None).await);
     assert!(!state.set_if_changed(None).await);
+}
+
+#[tokio::test]
+async fn test_set_active_project_skips_when_project_is_already_active() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Active Project".into(),
+            "/tmp/active-project".into(),
+        ))
+        .await
+        .unwrap();
+    active_project_state.set(Some(project.id.clone())).await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(execution_state)
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    set_active_project(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("setting the already-active project should be a no-op");
+
+    assert_eq!(active_project_state.get().await, Some(project.id));
 }
 
 #[test]
