@@ -927,15 +927,17 @@ mod ipc_contract {
         default_model_for_provider, lightweight_model_for_provider, AgentHarnessKind,
         AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource, LogicalEffort,
     };
+    use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus, AgentRun, ChatConversation, ChatConversationId,
-        ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionId, MessageRole, Project,
-        ProjectId,
+        AgentConversationWorkspaceStatus, AgentRun, ArtifactId, ChatConversation,
+        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionId,
+        MessageRole, PlanBranch, Project, ProjectId,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
     };
+    use ralphx_lib::commands::unified_chat_commands::archive_agent_conversation_inner;
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
@@ -2053,5 +2055,168 @@ mod ipc_contract {
             .delete_custom_model(AgentHarnessKind::Codex, "gpt-5.6")
             .await
             .unwrap());
+    }
+
+    // -----------------------------------------------------------------------
+    // Archive conversation: PR close + workspace status
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn archive_conversation_sets_workspace_status_to_archived() {
+        let github = Arc::new(super::common::MockGithubService::new());
+        let (_temp, state, conv_id, _github) =
+            super::setup_ipc_workspace_state("archive-status", true, None, github).await;
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        let ws = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conv_id)
+            .await
+            .expect("repo call should succeed")
+            .expect("workspace should exist");
+        assert_eq!(ws.status, AgentConversationWorkspaceStatus::Archived);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_closes_open_pr() {
+        let github = Arc::new(super::common::MockGithubService::new());
+        let (_temp, state, conv_id, github) =
+            super::setup_ipc_workspace_state("archive-close-pr", true, Some(42), github.clone())
+                .await;
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        assert_eq!(*github.close_pr_calls.lock().unwrap(), 1);
+
+        let ws = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conv_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ws.publication_pr_status.as_deref(), Some("closed"));
+        assert_eq!(ws.status, AgentConversationWorkspaceStatus::Archived);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_skips_close_when_pr_already_closed() {
+        let github = Arc::new(super::common::MockGithubService::new());
+        let (_temp, state, conv_id, github) =
+            super::setup_ipc_workspace_state(
+                "archive-already-closed",
+                true,
+                Some(99),
+                github.clone(),
+            )
+            .await;
+
+        let _ = state
+            .agent_conversation_workspace_repo
+            .update_publication(&conv_id, Some(99), None, Some("closed"), None)
+            .await;
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        assert_eq!(*github.close_pr_calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_skips_close_when_pr_merged() {
+        let github = Arc::new(super::common::MockGithubService::new());
+        let (_temp, state, conv_id, github) =
+            super::setup_ipc_workspace_state("archive-merged", true, Some(77), github.clone())
+                .await;
+
+        let _ = state
+            .agent_conversation_workspace_repo
+            .update_publication(&conv_id, Some(77), None, Some("merged"), None)
+            .await;
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        assert_eq!(*github.close_pr_calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_closes_linked_plan_branch_pr() {
+        let github = Arc::new(super::common::MockGithubService::new());
+        let (_temp, state, conv_id, _github) =
+            super::setup_ipc_workspace_state("archive-plan-branch", true, Some(55), github.clone())
+                .await;
+
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-1".to_string()),
+            IdeationSessionId::from_string("session-1".to_string()),
+            ProjectId::from_string("project-1".to_string()),
+            "plan/feature".to_string(),
+            "main".to_string(),
+        );
+        let plan_branch_id = plan_branch.id.clone();
+        state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be created");
+        state
+            .plan_branch_repo
+            .update_pr_info(
+                &plan_branch_id,
+                55,
+                "https://github.com/mock/repo/pull/55".to_string(),
+                DbPrStatus::Open,
+                false,
+            )
+            .await
+            .expect("pr info update should succeed");
+
+        state
+            .agent_conversation_workspace_repo
+            .update_links(&conv_id, None, Some(&plan_branch_id))
+            .await
+            .expect("link plan branch should succeed");
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        let updated_branch = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch_id)
+            .await
+            .unwrap()
+            .expect("plan branch should still exist");
+        assert_eq!(updated_branch.pr_status, Some(DbPrStatus::Closed));
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_without_workspace_still_succeeds() {
+        let state = AppState::new_test();
+        let conv_id = ChatConversationId::from_string("no-workspace-conv".to_string());
+        let project = Project::new("NoWS".to_string(), "/tmp/nows".to_string());
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .unwrap();
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conv_id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap();
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed even without workspace");
     }
 }

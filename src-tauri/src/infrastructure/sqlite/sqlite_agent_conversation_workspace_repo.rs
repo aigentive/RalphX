@@ -242,7 +242,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
                      WHERE project_id = ?1
-                       AND publication_pr_status IN ('closed', 'merged')
+                       AND (
+                         publication_pr_status IN ('closed', 'merged')
+                         OR status = 'archived'
+                       )
                        AND (
                          local_cleanup_status IS NULL
                          OR (

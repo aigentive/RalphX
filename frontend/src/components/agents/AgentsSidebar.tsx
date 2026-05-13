@@ -1199,13 +1199,23 @@ function PublicationStateGroup({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Archive session?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This hides{" "}
-              <span className="font-medium">
-                {archiveDialogConversation?.title || "Untitled agent"}
-              </span>{" "}
-              from the active conversation list. You can restore it later from
-              archived sessions.
+            <AlertDialogDescription asChild>
+              <div>
+                <p>
+                  This hides{" "}
+                  <span className="font-medium">
+                    {archiveDialogConversation?.title || "Untitled agent"}
+                  </span>{" "}
+                  from the active conversation list. You can restore it later
+                  from archived sessions.
+                </p>
+                {archiveDialogConversation?.contextType === "project" && (
+                  <p className="mt-2 text-text-muted">
+                    Any open PR will be closed. The local workspace branch will
+                    be cleaned up on next app restart.
+                  </p>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1858,13 +1868,23 @@ function ProjectSessionGroup({
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>Archive session?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This hides{" "}
-                  <span className="font-medium">
-                    {archiveDialogConversation?.title || "Untitled agent"}
-                  </span>{" "}
-                  from the active conversation list. You can restore it later from
-                  archived sessions.
+                <AlertDialogDescription asChild>
+                  <div>
+                    <p>
+                      This hides{" "}
+                      <span className="font-medium">
+                        {archiveDialogConversation?.title || "Untitled agent"}
+                      </span>{" "}
+                      from the active conversation list. You can restore it later
+                      from archived sessions.
+                    </p>
+                    {archiveDialogConversation?.contextType === "project" && (
+                      <p className="mt-2 text-text-muted">
+                        Any open PR will be closed. The local workspace branch will
+                        be cleaned up on next app restart.
+                      </p>
+                    )}
+                  </div>
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

@@ -59,10 +59,10 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentRunId, AgentRunStatus, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem, DelegatedSessionId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
-    ProjectId, TaskId,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
+    ChatTimelineItem, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::services::{AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey};
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
@@ -2410,18 +2410,103 @@ pub async fn list_agent_conversations_page(
     })
 }
 
+/// Core archive logic, testable without Tauri `State` wrapper.
+#[doc(hidden)]
+pub async fn archive_agent_conversation_inner(
+    conversation_id: &ChatConversationId,
+    state: &AppState,
+) -> Result<(), String> {
+    state
+        .chat_conversation_repo
+        .archive(conversation_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(Some(workspace)) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+    {
+        state
+            .agent_conversation_workspace_repo
+            .update_status(
+                conversation_id,
+                AgentConversationWorkspaceStatus::Archived,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let has_open_pr = workspace.publication_pr_number.is_some()
+            && workspace.publication_pr_status.as_deref() != Some("closed")
+            && workspace.publication_pr_status.as_deref() != Some("merged");
+
+        if has_open_pr {
+            if let Ok(Some(project)) = state
+                .project_repo
+                .get_by_id(&workspace.project_id)
+                .await
+            {
+                let pr_number = workspace.publication_pr_number.unwrap();
+                let working_dir = std::path::Path::new(&project.working_directory);
+
+                if let Some(github_svc) = &state.github_service {
+                    if let Err(e) = github_svc.close_pr(working_dir, pr_number).await {
+                        tracing::warn!(
+                            pr_number,
+                            error = %e,
+                            "archive_agent_conversation: failed to close PR on remote"
+                        );
+                    }
+                }
+
+                state
+                    .agent_conversation_workspace_repo
+                    .update_publication(
+                        conversation_id,
+                        Some(pr_number),
+                        workspace.publication_pr_url.as_deref(),
+                        Some("closed"),
+                        workspace.publication_push_status.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+
+            if let Some(plan_branch_id) = &workspace.linked_plan_branch_id {
+                if let Ok(Some(plan_branch)) = state
+                    .plan_branch_repo
+                    .get_by_id(plan_branch_id)
+                    .await
+                {
+                    if plan_branch.pr_number.is_some()
+                        && plan_branch.pr_status != Some(PrStatus::Closed)
+                        && plan_branch.pr_status != Some(PrStatus::Merged)
+                    {
+                        let _ = state
+                            .plan_branch_repo
+                            .update_pr_status(plan_branch_id, PrStatus::Closed)
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Archive a conversation.
+/// If the workspace has an open PR, close it immediately on the remote
+/// and mark publication_pr_status as "closed". The local worktree/branch
+/// will be cleaned up on next app restart via the terminal cleanup pipeline.
 #[tauri::command]
 pub async fn archive_agent_conversation(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    state
-        .chat_conversation_repo
-        .archive(&conversation_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    archive_agent_conversation_inner(&conversation_id, &state).await?;
+
     state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
