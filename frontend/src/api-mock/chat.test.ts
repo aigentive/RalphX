@@ -8,6 +8,7 @@ import {
   mockGetConversationSummary,
   mockGetConversationTimelinePage,
   mockListAgentSidebarConversations,
+  mockPrecomputeAgentConversationWorkspacePrDescription,
   resetMockChatState,
   seedMockAgentConversationWorkspace,
   seedMockConversation,
@@ -314,6 +315,34 @@ describe("mockGetConversationTimelinePage", () => {
       outputTokens: null,
       estimatedUsd: null,
       timelineSequence: 2,
+    });
+  });
+});
+
+describe("mockPrecomputeAgentConversationWorkspacePrDescription", () => {
+  beforeEach(() => {
+    resetMockChatState();
+  });
+
+  it("precomputes PR descriptions only for seeded workspaces", async () => {
+    seedMockAgentConversationWorkspace(workspace("conversation-1"));
+
+    await expect(
+      mockPrecomputeAgentConversationWorkspacePrDescription("conversation-1")
+    ).resolves.toEqual({
+      conversationId: "conversation-1",
+      status: "ready",
+      cacheStatus: "miss",
+      reason: null,
+    });
+
+    await expect(
+      mockPrecomputeAgentConversationWorkspacePrDescription("missing")
+    ).resolves.toEqual({
+      conversationId: "missing",
+      status: "skipped",
+      cacheStatus: null,
+      reason: "missing_workspace",
     });
   });
 });

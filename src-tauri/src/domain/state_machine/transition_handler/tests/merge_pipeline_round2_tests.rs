@@ -83,6 +83,9 @@ cmd_timeout_secs: 60
 max_retries: 3
 retry_backoff_secs: [1, 2, 4]
 index_lock_stale_secs: 5
+workspace_freshness_cache_ttl_ms: 2000
+workspace_review_cache_ttl_ms: 2000
+workspace_pr_description_cache_ttl_ms: 300000
 agent_kill_settle_secs: 1
 agent_stop_timeout_secs: 10
 cleanup_worktree_timeout_secs: 10

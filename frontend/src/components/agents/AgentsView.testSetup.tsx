@@ -36,6 +36,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   createConversationMock: vi.fn(),
@@ -47,6 +48,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listIdeationSessionsMock: vi.fn(),
   getLatestChildSessionIdMock: vi.fn(),
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
@@ -122,6 +124,7 @@ const {
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  precomputePrDescriptionMock,
   switchAgentConversationModeMock,
   sendAgentMessageMock,
   createConversationMock,
@@ -133,6 +136,7 @@ const {
   listIdeationSessionsMock,
   getLatestChildSessionIdMock,
   getWorkspaceChangesMock,
+  getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
@@ -393,6 +397,8 @@ vi.mock("@/api/chat", () => ({
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
+      precomputePrDescriptionMock(...args),
     switchAgentConversationMode: (...args: unknown[]) =>
       switchAgentConversationModeMock(...args),
     sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
@@ -426,6 +432,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceReview: (...args: unknown[]) =>
+      getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
       getWorkspaceDiffMock(...args),
     getAgentConversationWorkspaceCommits: (...args: unknown[]) =>
@@ -871,10 +879,12 @@ export function setupAgentsViewTest() {
   getPlanBranchesMock.mockReset();
   listIdeationSessionsMock.mockReset();
   getWorkspaceChangesMock.mockReset();
+  getWorkspaceReviewMock.mockReset();
   getWorkspaceDiffMock.mockReset();
   getWorkspaceCommitsMock.mockReset();
   getWorkspaceCommitChangesMock.mockReset();
   getWorkspaceCommitDiffMock.mockReset();
+  precomputePrDescriptionMock.mockReset();
   toastErrorMock.mockReset();
   toastSuccessMock.mockReset();
   integratedChatPanelRenderMock.mockReset();
@@ -911,10 +921,22 @@ export function setupAgentsViewTest() {
   listIdeationSessionsMock.mockResolvedValue([]);
   mockAgentSidebarData([]);
   getWorkspaceChangesMock.mockResolvedValue([]);
+  getWorkspaceReviewMock.mockResolvedValue({
+    changes: [],
+    commits: [],
+    baseRef: "main",
+    headRef: "HEAD",
+  });
   getWorkspaceDiffMock.mockResolvedValue("");
   getWorkspaceCommitsMock.mockResolvedValue([]);
   getWorkspaceCommitChangesMock.mockResolvedValue([]);
   getWorkspaceCommitDiffMock.mockResolvedValue("");
+  precomputePrDescriptionMock.mockResolvedValue({
+    conversationId: "conversation-1",
+    status: "skipped",
+    cacheStatus: null,
+    reason: "no_reviewable_commits",
+  });
   publishAgentConversationWorkspaceMock.mockResolvedValue({
     workspace: {
       conversationId: "conversation-2",

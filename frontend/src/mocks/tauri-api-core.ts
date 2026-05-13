@@ -854,6 +854,12 @@ const commandHandlers: Record<
   },
   get_agent_conversation_workspace_file_changes: async () =>
     mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_review: async () => ({
+    changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
+    commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
+    base_ref: "main",
+    head_ref: "HEAD",
+  }),
   get_agent_conversation_workspace_file_diff: async (args) =>
     mockWorkspaceFileDiff(args.filePath as string),
   get_agent_conversation_workspace_commits: async () => ({

@@ -23,7 +23,7 @@ use crate::application::git_artifact_cleanup::{
     cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches,
     LocalGitArtifactCleanupReport,
 };
-use crate::application::git_service::{FetchOriginOutcome, GitService};
+use crate::application::git_service::{git_cmd, FetchOriginOutcome, GitService};
 use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
@@ -435,12 +435,15 @@ pub async fn recover_missing_draft_prs(
             "PR startup recovery: scheduling existing PR metadata refresh in background"
         );
         tauri::async_runtime::spawn(async move {
-            refresh_existing_pr_metadata(
-                metadata_refresh_jobs,
-                github_service,
-                ideation_session_repo,
-                artifact_repo,
-            )
+            git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
+                refresh_existing_pr_metadata(
+                    metadata_refresh_jobs,
+                    github_service,
+                    ideation_session_repo,
+                    artifact_repo,
+                )
+                .await;
+            })
             .await;
         });
     }

@@ -31,3 +31,10 @@ export const CommitInfoSchema = z.object({
 export const TaskCommitsResponseSchema = z.object({
   commits: z.array(CommitInfoSchema),
 });
+
+export const AgentWorkspaceReviewResponseSchema = z.object({
+  changes: z.array(FileChangeSchema),
+  commits: z.array(CommitInfoSchema),
+  base_ref: z.string(),
+  head_ref: z.string(),
+});

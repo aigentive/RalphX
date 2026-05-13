@@ -9,7 +9,7 @@ import {
   MoreVertical,
   XCircle,
 } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -63,7 +63,7 @@ import {
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
 } from "./agentWorkspacePublishState";
-import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
+import { agentWorkspaceKeys, invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -131,14 +131,15 @@ export function AgentPublishPanel({
   const [localPublishStartedAtMs, setLocalPublishStartedAtMs] = useState<number | null>(
     null,
   );
+  const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
-  const changesQuery = useQuery({
-    queryKey: ["agents", "workspace-diff", conversationId],
-    queryFn: () => diffApi.getAgentConversationWorkspaceFileChanges(conversationId!),
-    enabled: canHydratePublishFacts && !!conversationId,
+  const reviewQuery = useQuery({
+    queryKey: agentWorkspaceKeys.review(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
+    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -148,25 +149,6 @@ export function AgentPublishPanel({
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 1_500 : false,
-  });
-  const commitsQuery = useQuery({
-    queryKey: ["agents", "workspace-commits", conversationId],
-    queryFn: async (): Promise<DiffViewerCommit[]> => {
-      const commits = await diffApi.getAgentConversationWorkspaceCommits(
-        conversationId!,
-      );
-      return commits
-        .map((commit) => ({
-          sha: commit.sha,
-          shortSha: commit.shortSha,
-          message: commit.message,
-          author: commit.author,
-          date: commit.date,
-        }))
-        .reverse();
-    },
-    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
-    staleTime: 2_000,
   });
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
@@ -285,16 +267,66 @@ export function AgentPublishPanel({
       );
     },
   });
-  const changesError = changesQuery.error;
-  const changes = changesQuery.data ?? [];
-  const commits = commitsQuery.data ?? [];
+  const changesError = reviewQuery.error;
+  const changes = reviewQuery.data?.changes ?? [];
+  const commits = useMemo<DiffViewerCommit[]>(
+    () =>
+      (reviewQuery.data?.commits ?? [])
+        .map((commit) => ({
+          sha: commit.sha,
+          shortSha: commit.shortSha,
+          message: commit.message,
+          author: commit.author,
+          date: commit.date,
+        }))
+        .reverse(),
+    [reviewQuery.data?.commits],
+  );
   const publicationEvents = publicationEventsQuery.data ?? [];
   const isChangesLoading =
-    Boolean(conversationId) && (!canHydratePublishFacts || changesQuery.isLoading);
+    Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
-  const hasNoDetectedChanges = changesQuery.isSuccess && changes.length === 0;
+  const hasNoDetectedChanges = reviewQuery.isSuccess && changes.length === 0;
+  useEffect(() => {
+    if (
+      !conversationId ||
+      !workspace ||
+      !reviewQuery.isSuccess ||
+      !reviewQuery.data ||
+      reviewQuery.data.changes.length === 0 ||
+      isAgentWorkspacePublishCurrent(workspace, freshness) ||
+      (freshness?.baseStatus ?? "valid") === "blocked" ||
+      isPipelineOwnedAgentWorkspace(workspace) ||
+      Boolean(getAgentWorkspaceTerminalPublicationStatus(workspace)) ||
+      workspace.status === "missing"
+    ) {
+      return;
+    }
+    const precomputeKey = [
+      conversationId,
+      reviewQuery.data.baseRef,
+      reviewQuery.data.headRef,
+      reviewQuery.data.commits.length,
+      reviewQuery.data.changes.length,
+    ].join(":");
+    if (prDescriptionPrecomputeKeysRef.current.has(precomputeKey)) {
+      return;
+    }
+    prDescriptionPrecomputeKeysRef.current.add(precomputeKey);
+    void chatApi
+      .precomputeAgentConversationWorkspacePrDescription(conversationId)
+      .catch(() => {
+        prDescriptionPrecomputeKeysRef.current.delete(precomputeKey);
+      });
+  }, [
+    conversationId,
+    freshness,
+    reviewQuery.data,
+    reviewQuery.isSuccess,
+    workspace,
+  ]);
 
   if (!workspace) {
     return <EmptyArtifactState title="No workspace selected" />;
@@ -342,7 +374,6 @@ export function AgentPublishPanel({
     base;
   const shouldShowPublishPipeline =
     effectivePublishing || workspace.publicationPushStatus === "description_failed";
-  const isFreshnessLoading = freshnessQuery.isLoading;
   const publishDisabled =
     !onPublishWorkspace ||
     isPipelineOwnedWorkspace ||
@@ -384,12 +415,14 @@ export function AgentPublishPanel({
         : isChangesLoading
           ? "Loading changed files..."
           : isPublishCurrent
-            ? changes.length > 0
+            ? reviewQuery.isSuccess && changes.length > 0
               ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} published for review.`
               : "Workspace is published and current."
-            : changes.length > 0
+            : reviewQuery.isSuccess && changes.length > 0
               ? `${changes.length} changed file${changes.length === 1 ? "" : "s"} ready for review.`
-              : "No changed files detected yet.";
+              : reviewQuery.isSuccess
+                ? "No changed files detected yet."
+                : "Review changes before publishing.";
   const confirmUpdateFromBase = () => {
     void confirm({
       title: "Update from base branch?",
@@ -631,7 +664,7 @@ export function AgentPublishPanel({
                 variant="ghost"
                 className="h-9 gap-2 px-3 text-xs"
                 onClick={() => setReviewOpen(true)}
-                disabled={baseBlocked || (isChangesLoading && !hasPublishedPr)}
+                disabled={baseBlocked}
                 data-testid="agents-review-changes"
               >
                 <Code className="h-3.5 w-3.5" />
@@ -676,10 +709,10 @@ export function AgentPublishPanel({
                   type="button"
                   className={primaryActionClassName}
                   onClick={confirmPublishWorkspace}
-                  disabled={publishDisabled || isFreshnessLoading}
+                  disabled={publishDisabled}
                   data-testid="agents-publish-confirm"
                 >
-                  {isPublishingThisWorkspace || isFreshnessLoading ? (
+                  {isPublishingThisWorkspace ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : isPublishCurrent || terminalPublicationStatus ? (
                     <CheckCircle2 className="h-3.5 w-3.5" />
@@ -688,9 +721,7 @@ export function AgentPublishPanel({
                   )}
                   {baseBlocked
                     ? "Base unavailable"
-                    : isFreshnessLoading
-                      ? "Checking..."
-                      : publishButtonLabel}
+                    : publishButtonLabel}
                 </Button>
               )}
               {canClosePr && (
@@ -800,8 +831,8 @@ export function AgentPublishPanel({
                     setIsLoadingCommitFiles(false);
                   }
                 }}
-                isLoadingChanges={changesQuery.isLoading}
-                isLoadingHistory={commitsQuery.isLoading}
+                isLoadingChanges={reviewQuery.isLoading}
+                isLoadingHistory={reviewQuery.isLoading}
                 isLoadingCommitFiles={isLoadingCommitFiles}
                 changesLabel="Workspace Changes"
                 changesEmptyTitle="No workspace changes"
@@ -879,7 +910,7 @@ export function AgentPublishPanel({
         base={base}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}
-        confirmDisabled={publishDisabled || isFreshnessLoading}
+        confirmDisabled={publishDisabled}
         onConfirm={handleConfirmPublishWorkspace}
         onOpenChange={handlePublishDialogOpenChange}
       />

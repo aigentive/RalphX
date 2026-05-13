@@ -10,6 +10,7 @@ use crate::domain::entities::TaskId;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -93,103 +94,9 @@ impl DiffService {
         project_path: &str,
         base_ref: &str,
     ) -> AppResult<Vec<FileChange>> {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--name-status", base_ref])
-            .current_dir(project_path)
-            .output()
-            .map_err(|e| AppError::GitOperation(format!("Failed to run git diff: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::GitOperation(format!(
-                "git diff failed: {}",
-                stderr
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut changes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status_char = parts[0].chars().next().unwrap_or('M');
-                let file_path = parts[1];
-
-                let status = match status_char {
-                    'A' => FileChangeStatus::Added,
-                    'D' => FileChangeStatus::Deleted,
-                    _ => FileChangeStatus::Modified,
-                };
-
-                let (additions, deletions) =
-                    self.get_worktree_file_line_counts_from_ref(file_path, project_path, base_ref);
-
-                changes.push(FileChange {
-                    path: file_path.to_string(),
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
-
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(changes)
-    }
-
-    /// Get line additions/deletions for a file compared to base branch
-    #[allow(dead_code)]
-    fn get_file_line_counts(
-        &self,
-        file_path: &str,
-        project_path: &str,
-        base_branch: &str,
-    ) -> (u32, u32) {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--numstat", base_branch, "--", file_path])
-            .current_dir(project_path)
-            .output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let additions: u32 = parts[0].parse().unwrap_or(0);
-                    let deletions: u32 = parts[1].parse().unwrap_or(0);
-                    return (additions, deletions);
-                }
-            }
-        }
-
-        (0, 0)
-    }
-
-    fn get_worktree_file_line_counts_from_ref(
-        &self,
-        file_path: &str,
-        project_path: &str,
-        base_ref: &str,
-    ) -> (u32, u32) {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--numstat", base_ref, "--", file_path])
-            .current_dir(project_path)
-            .output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let additions: u32 = parts[0].parse().unwrap_or(0);
-                    let deletions: u32 = parts[1].parse().unwrap_or(0);
-                    return (additions, deletions);
-                }
-            }
-        }
-
-        (0, 0)
+        let name_status = run_git_text(project_path, &["diff", "--name-status", base_ref])?;
+        let line_counts = run_git_numstat_lossy(project_path, &["diff", "--numstat", base_ref]);
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
     /// Get the diff content for a specific file
@@ -211,95 +118,22 @@ impl DiffService {
         commit_sha: &str,
         project_path: &str,
     ) -> AppResult<Vec<FileChange>> {
-        // Use git diff-tree to get files changed in this commit
-        // Format: status\tpath (e.g., "A\tfile.rs" for added, "M\tfile.rs" for modified)
-        let output = Command::new(resolve_git_cli_path())
-            .args([
+        let name_status = run_git_text(
+            project_path,
+            &[
                 "diff-tree",
                 "--no-commit-id",
                 "--name-status",
                 "-r",
                 commit_sha,
-            ])
-            .current_dir(project_path)
-            .output()
-            .map_err(|e| AppError::GitOperation(format!("Failed to run git diff-tree: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::GitOperation(format!(
-                "git diff-tree failed: {}",
-                stderr
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut changes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status_char = parts[0].chars().next().unwrap_or('M');
-                let file_path = parts[1];
-
-                let status = match status_char {
-                    'A' => FileChangeStatus::Added,
-                    'D' => FileChangeStatus::Deleted,
-                    _ => FileChangeStatus::Modified, // M, R, C, etc.
-                };
-
-                // Get line counts using git diff for this specific commit
-                let (additions, deletions) =
-                    self.get_commit_file_line_counts(commit_sha, file_path, project_path);
-
-                changes.push(FileChange {
-                    path: file_path.to_string(),
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
-
-        // Sort by path for consistent ordering
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-
-        Ok(changes)
-    }
-
-    /// Get line additions/deletions for a file in a specific commit
-    fn get_commit_file_line_counts(
-        &self,
-        commit_sha: &str,
-        file_path: &str,
-        project_path: &str,
-    ) -> (u32, u32) {
-        // git diff commit^..commit --numstat -- file_path
-        let output = Command::new(resolve_git_cli_path())
-            .args([
-                "diff",
-                "--numstat",
-                &format!("{}^", commit_sha),
-                commit_sha,
-                "--",
-                file_path,
-            ])
-            .current_dir(project_path)
-            .output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let additions: u32 = parts[0].parse().unwrap_or(0);
-                    let deletions: u32 = parts[1].parse().unwrap_or(0);
-                    return (additions, deletions);
-                }
-            }
-        }
-
-        (0, 0)
+            ],
+        )?;
+        let parent_ref = format!("{}^", commit_sha);
+        let line_counts = run_git_numstat_lossy(
+            project_path,
+            &["diff", "--numstat", &parent_ref, commit_sha],
+        );
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
     /// Get diff for a file in a specific commit (comparing to its parent)
@@ -324,81 +158,10 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<Vec<FileChange>> {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--name-status", from_ref, to_ref])
-            .current_dir(project_path)
-            .output()
-            .map_err(|e| AppError::GitOperation(format!("Failed to run git diff: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::GitOperation(format!(
-                "git diff failed: {}",
-                stderr
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut changes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status_char = parts[0].chars().next().unwrap_or('M');
-                let file_path = parts[1];
-
-                let status = match status_char {
-                    'A' => FileChangeStatus::Added,
-                    'D' => FileChangeStatus::Deleted,
-                    _ => FileChangeStatus::Modified, // M, R, C, etc.
-                };
-
-                let (additions, deletions) = self.get_file_line_counts_between_refs(
-                    file_path,
-                    project_path,
-                    from_ref,
-                    to_ref,
-                );
-
-                changes.push(FileChange {
-                    path: file_path.to_string(),
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
-
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(changes)
-    }
-
-    /// Get line additions/deletions for a file between two refs
-    fn get_file_line_counts_between_refs(
-        &self,
-        file_path: &str,
-        project_path: &str,
-        from_ref: &str,
-        to_ref: &str,
-    ) -> (u32, u32) {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--numstat", from_ref, to_ref, "--", file_path])
-            .current_dir(project_path)
-            .output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let additions: u32 = parts[0].parse().unwrap_or(0);
-                    let deletions: u32 = parts[1].parse().unwrap_or(0);
-                    return (additions, deletions);
-                }
-            }
-        }
-
-        (0, 0)
+        let name_status = run_git_text(project_path, &["diff", "--name-status", from_ref, to_ref])?;
+        let line_counts =
+            run_git_numstat_lossy(project_path, &["diff", "--numstat", from_ref, to_ref]);
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
     /// Get diff for a file between two refs
@@ -657,7 +420,9 @@ impl DiffService {
     fn is_git_238_or_newer() -> bool {
         static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *CACHE.get_or_init(|| {
-            let output = Command::new(resolve_git_cli_path()).args(["--version"]).output();
+            let output = Command::new(resolve_git_cli_path())
+                .args(["--version"])
+                .output();
 
             if let Ok(output) = output {
                 let version_str = String::from_utf8_lossy(&output.stdout);
@@ -783,6 +548,98 @@ impl DiffService {
             None
         }
     }
+}
+
+fn run_git_text(project_path: &str, args: &[&str]) -> AppResult<String> {
+    let output = Command::new(resolve_git_cli_path())
+        .args(args)
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| AppError::GitOperation(format!("Failed to run git {}: {}", args[0], e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::GitOperation(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn run_git_numstat_lossy(project_path: &str, args: &[&str]) -> HashMap<String, (u32, u32)> {
+    run_git_text(project_path, args)
+        .map(|stdout| numstat_map_from_stdout(&stdout))
+        .unwrap_or_default()
+}
+
+fn numstat_map_from_stdout(stdout: &str) -> HashMap<String, (u32, u32)> {
+    let mut counts = HashMap::new();
+    for line in stdout.lines() {
+        let mut parts = line.split('\t');
+        let Some(additions) = parts.next().and_then(parse_numstat_count) else {
+            continue;
+        };
+        let Some(deletions) = parts.next().and_then(parse_numstat_count) else {
+            continue;
+        };
+        let path_parts: Vec<&str> = parts.collect();
+        let Some(path) = path_parts.last().map(|value| value.trim()) else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        counts.insert(path.to_string(), (additions, deletions));
+    }
+    counts
+}
+
+fn parse_numstat_count(value: &str) -> Option<u32> {
+    if value == "-" {
+        return Some(0);
+    }
+    value.parse().ok()
+}
+
+fn file_changes_from_name_status(
+    name_status: &str,
+    line_counts: &HashMap<String, (u32, u32)>,
+) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+    for line in name_status.lines() {
+        let Some((status, path)) = parse_name_status_line(line) else {
+            continue;
+        };
+        let (additions, deletions) = line_counts.get(&path).copied().unwrap_or((0, 0));
+        changes.push(FileChange {
+            path,
+            status,
+            additions,
+            deletions,
+        });
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    changes
+}
+
+fn parse_name_status_line(line: &str) -> Option<(FileChangeStatus, String)> {
+    let mut parts = line.split('\t');
+    let status_token = parts.next()?;
+    let path = parts.last()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let status = match status_token.chars().next().unwrap_or('M') {
+        'A' => FileChangeStatus::Added,
+        'D' => FileChangeStatus::Deleted,
+        _ => FileChangeStatus::Modified,
+    };
+
+    Some((status, path.to_string()))
 }
 
 /// Get programming language from file path

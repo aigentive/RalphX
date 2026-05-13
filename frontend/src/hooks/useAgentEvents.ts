@@ -241,6 +241,9 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         queryKey: ["agents", "conversation-workspace-publication-events", conversationId],
       });
       queryClient.invalidateQueries({
+        queryKey: ["agents", "workspace-review", conversationId],
+      });
+      queryClient.invalidateQueries({
         queryKey: ["agents", "workspace-diff", conversationId],
       });
       queryClient.invalidateQueries({

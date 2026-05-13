@@ -525,13 +525,10 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
-    async fn create_draft_pr_falls_back_when_create_json_flag_is_unsupported() {
-        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
-            Err(AppError::Infrastructure(
-                "gh exited with code 1: unknown flag: --json".to_string(),
-            )),
-            Ok(vec!["https://github.com/owner/repo/pull/42".to_string()]),
-        ]));
+    async fn create_draft_pr_uses_plain_output_without_json_probe() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "https://github.com/owner/repo/pull/42".to_string(),
+        ])]));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let (number, url) = service
@@ -549,30 +546,9 @@ mod mock_roundtrip {
         assert_eq!(url, "https://github.com/owner/repo/pull/42");
 
         let calls = runner.gh_calls();
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0],
-            vec![
-                "pr",
-                "create",
-                "--draft",
-                "--base",
-                "main",
-                "--head",
-                "feature/pr-mode-fallback",
-                "--title",
-                "Compatibility PR",
-                "--body-file",
-                "/tmp/body.md",
-                "--json",
-                "number,url",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            calls[1],
             vec![
                 "pr",
                 "create",
@@ -761,15 +737,12 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
-    async fn create_draft_pr_preserves_duplicate_error_on_plain_fallback() {
-        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
-            Err(AppError::Infrastructure(
-                "gh exited with code 1: unknown flag: --json".to_string(),
-            )),
-            Err(AppError::Infrastructure(
+    async fn create_draft_pr_preserves_duplicate_error_from_plain_create() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Err(
+            AppError::Infrastructure(
                 "gh exited with code 1: a pull request for branch \"feature/pr-mode-fallback\" already exists".to_string(),
-            )),
-        ]));
+            ),
+        )]));
         let service = GhCliGithubService::with_runner(runner.clone());
 
         let err = service
@@ -784,6 +757,6 @@ mod mock_roundtrip {
             .unwrap_err();
 
         assert!(matches!(err, AppError::DuplicatePr));
-        assert_eq!(runner.gh_calls().len(), 2);
+        assert_eq!(runner.gh_calls().len(), 1);
     }
 }

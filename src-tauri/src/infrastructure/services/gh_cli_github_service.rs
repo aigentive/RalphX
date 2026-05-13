@@ -52,8 +52,6 @@ pub(crate) const DUPLICATE_PR_FRAGMENTS: [&str; 3] = [
     "already a pull request",
 ];
 
-pub(crate) const CREATE_PR_UNSUPPORTED_JSON_FRAGMENTS: [&str; 1] = ["unknown flag: --json"];
-
 #[async_trait]
 pub(crate) trait GhCliCommandRunner: Send + Sync {
     async fn run_gh(&self, working_dir: &Path, args: &[String]) -> AppResult<Vec<String>>;
@@ -344,13 +342,6 @@ fn is_duplicate_pr_error(msg: &str) -> bool {
         .any(|fragment| lower.contains(fragment))
 }
 
-fn is_create_pr_json_unsupported_error(msg: &str) -> bool {
-    let lower = msg.to_lowercase();
-    CREATE_PR_UNSUPPORTED_JSON_FRAGMENTS
-        .iter()
-        .any(|fragment| lower.contains(fragment))
-}
-
 /// Sanitize a single stderr line:
 /// 1. Filter lines containing secret keywords (case-insensitive) — full-line suppression
 /// 2. Scrub token-embedded URLs: `https://<token>@github.com` → `https://***@github.com`
@@ -413,7 +404,6 @@ impl GithubServiceTrait for GhCliGithubService {
         body_file: &Path,
     ) -> AppResult<(i64, String)> {
         // gh pr create --draft --base <base> --head <head> --title <title> --body-file <file>
-        //              --json number,url
         let body_file_str = body_file
             .to_str()
             .ok_or_else(|| {
@@ -421,32 +411,16 @@ impl GithubServiceTrait for GhCliGithubService {
             })?
             .to_string();
 
-        let json_args = build_create_pr_args(base, head, title, &body_file_str, true);
-        let result = self.runner.run_gh(working_dir, &json_args).await;
+        let args = build_create_pr_args(base, head, title, &body_file_str, false);
+        let result = self.runner.run_gh(working_dir, &args).await;
 
         match result {
             Ok(stdout) => {
-                let json_str = stdout.join("\n");
-                parse_pr_create_output(&json_str)
+                let plain_output = stdout.join("\n");
+                parse_pr_create_plain_output(&plain_output)
             }
             Err(AppError::Infrastructure(msg)) if is_duplicate_pr_error(&msg) => {
                 Err(AppError::DuplicatePr)
-            }
-            Err(AppError::Infrastructure(msg)) if is_create_pr_json_unsupported_error(&msg) => {
-                warn!(
-                    head,
-                    "gh pr create does not support --json; retrying without JSON output"
-                );
-                let plain_args = build_create_pr_args(base, head, title, &body_file_str, false);
-                let stdout = match self.runner.run_gh(working_dir, &plain_args).await {
-                    Ok(stdout) => stdout,
-                    Err(AppError::Infrastructure(msg)) if is_duplicate_pr_error(&msg) => {
-                        return Err(AppError::DuplicatePr);
-                    }
-                    Err(other) => return Err(other),
-                };
-                let plain_output = stdout.join("\n");
-                parse_pr_create_plain_output(&plain_output)
             }
             Err(other) => Err(other),
         }
@@ -660,6 +634,7 @@ impl GithubServiceTrait for GhCliGithubService {
 
 // ── Output parsers ────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 pub(crate) fn parse_pr_create_output(json_str: &str) -> AppResult<(i64, String)> {
     let v: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         AppError::Infrastructure(format!(

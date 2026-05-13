@@ -276,6 +276,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::get_agent_conversation_workspace_freshness,
             commands::unified_chat_commands::update_agent_conversation_workspace_from_base,
             commands::unified_chat_commands::publish_agent_conversation_workspace,
+            commands::unified_chat_commands::precompute_agent_conversation_workspace_pr_description,
             commands::unified_chat_commands::close_agent_workspace_pr,
             commands::unified_chat_commands::create_agent_conversation,
             commands::unified_chat_commands::update_agent_conversation_title,
@@ -307,6 +308,7 @@ macro_rules! register_tauri_commands {
             // Diff commands
             commands::diff_commands::get_task_file_changes,
             commands::diff_commands::get_file_diff,
+            commands::diff_commands::get_agent_conversation_workspace_review,
             commands::diff_commands::get_agent_conversation_workspace_file_changes,
             commands::diff_commands::get_agent_conversation_workspace_file_diff,
             commands::diff_commands::get_agent_conversation_workspace_commits,

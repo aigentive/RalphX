@@ -1453,6 +1453,7 @@ export const chatApi = {
   listAgentConversationWorkspacePublicationEvents,
   getAgentConversationWorkspaceFreshness,
   updateAgentConversationWorkspaceFromBase,
+  precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
   closeAgentWorkspacePr,
   getAgentRunStatus,
@@ -1560,6 +1561,13 @@ export interface PublishAgentConversationWorkspaceResult {
   createdPr: boolean;
   prNumber: number | null;
   prUrl: string | null;
+}
+
+export interface PrecomputeAgentConversationWorkspacePrDescriptionResult {
+  conversationId: string;
+  status: "ready" | "skipped";
+  cacheStatus: string | null;
+  reason: string | null;
 }
 
 export interface AgentConversationWorkspacePublicationEvent {
@@ -1707,6 +1715,12 @@ const PublishAgentConversationWorkspaceResponseSchema = z.object({
   pr_number: z.number().nullable(),
   pr_url: z.string().nullable(),
 });
+const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema = z.object({
+  conversation_id: z.string(),
+  status: z.enum(["ready", "skipped"]),
+  cache_status: z.string().nullable(),
+  reason: z.string().nullable(),
+});
 const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   updated: z.boolean(),
@@ -1730,6 +1744,9 @@ type RawSwitchAgentConversationModeResponse = z.infer<
 >;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
+>;
+type RawPrecomputeAgentConversationWorkspacePrDescriptionResponse = z.infer<
+  typeof PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema
 >;
 type RawAgentConversationWorkspacePublicationEvent = z.infer<
   typeof AgentConversationWorkspacePublicationEventResponseSchema
@@ -1829,6 +1846,17 @@ function transformPublishAgentConversationWorkspaceResponse(
     createdPr: raw.created_pr,
     prNumber: raw.pr_number,
     prUrl: raw.pr_url,
+  };
+}
+
+function transformPrecomputeAgentConversationWorkspacePrDescriptionResponse(
+  raw: RawPrecomputeAgentConversationWorkspacePrDescriptionResponse
+): PrecomputeAgentConversationWorkspacePrDescriptionResult {
+  return {
+    conversationId: raw.conversation_id,
+    status: raw.status,
+    cacheStatus: raw.cache_status,
+    reason: raw.reason,
   };
 }
 
@@ -1980,6 +2008,17 @@ export async function publishAgentConversationWorkspace(
     PublishAgentConversationWorkspaceResponseSchema
   );
   return transformPublishAgentConversationWorkspaceResponse(raw);
+}
+
+export async function precomputeAgentConversationWorkspacePrDescription(
+  conversationId: string
+): Promise<PrecomputeAgentConversationWorkspacePrDescriptionResult> {
+  const raw = await typedInvoke(
+    "precompute_agent_conversation_workspace_pr_description",
+    { conversationId },
+    PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema
+  );
+  return transformPrecomputeAgentConversationWorkspacePrDescriptionResponse(raw);
 }
 
 export async function closeAgentWorkspacePr(

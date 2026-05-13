@@ -23,3 +23,10 @@ export interface CommitInfo {
   author: string;
   date: Date;
 }
+
+export interface AgentWorkspaceReview {
+  changes: FileChange[];
+  commits: CommitInfo[];
+  baseRef: string;
+  headRef: string;
+}
