@@ -268,7 +268,10 @@ fn is_active_needs_agent_workspace(workspace: &AgentConversationWorkspace) -> bo
 #[cfg(test)]
 mod tests {
     use crate::domain::entities::{
-        AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+        AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
+        ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
@@ -363,5 +366,71 @@ mod tests {
             .await
             .unwrap();
         assert!(events.is_empty());
+    }
+
+    fn candidate_workspace(id: &str) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            format!("ralphx/demo/agent-{id}"),
+            format!("/tmp/ralphx-demo-{id}"),
+        )
+    }
+
+    #[tokio::test]
+    async fn external_pr_reconciliation_candidates_filter_and_limit_recent_direct_workspaces() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+
+        let first = candidate_workspace("candidate-1");
+        let second = candidate_workspace("candidate-2");
+        let mut already_linked = candidate_workspace("already-linked");
+        already_linked.publication_pr_number = Some(12);
+        let mut linked_plan = candidate_workspace("linked-plan");
+        linked_plan.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1"));
+        let mut blocked_push = candidate_workspace("blocked-push");
+        blocked_push.publication_push_status = Some("needs_agent".to_string());
+        let mut terminal = candidate_workspace("terminal");
+        terminal.publication_pr_status = Some("merged".to_string());
+        let mut chat = candidate_workspace("chat");
+        chat.mode = AgentConversationWorkspaceMode::Chat;
+        let mut archived = candidate_workspace("archived");
+        archived.status = AgentConversationWorkspaceStatus::Archived;
+
+        for workspace in [
+            first.clone(),
+            second.clone(),
+            already_linked,
+            linked_plan,
+            blocked_push,
+            terminal,
+            chat,
+            archived,
+        ] {
+            repo.create_or_update(workspace).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        let limited = repo
+            .list_active_direct_external_pr_reconciliation_candidates(1)
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].conversation_id, second.conversation_id);
+
+        let all = repo
+            .list_active_direct_external_pr_reconciliation_candidates(10)
+            .await
+            .unwrap();
+        assert_eq!(
+            all.into_iter()
+                .map(|workspace| workspace.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![second.conversation_id, first.conversation_id]
+        );
     }
 }

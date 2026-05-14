@@ -510,6 +510,8 @@ pub(crate) async fn agent_workspace_response_for_state(
 fn schedule_external_pr_reconciliation_for_workspace(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
+    trigger: AgentWorkspaceExternalPrReconciliationTrigger,
+    force: bool,
 ) {
     if external_pr_reconciliation_skip_reason(workspace).is_some() {
         return;
@@ -528,9 +530,28 @@ fn schedule_external_pr_reconciliation_for_workspace(
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
-        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
-        false,
+        trigger,
+        force,
     );
+}
+
+async fn schedule_external_pr_reconciliation_for_conversation_id(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspaceExternalPrReconciliationTrigger,
+    force: bool,
+) -> Result<(), String> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+
+    schedule_external_pr_reconciliation_for_workspace(state, &workspace, trigger, force);
+    Ok(())
 }
 
 /// Response from start_agent_conversation command.
@@ -2832,7 +2853,12 @@ pub async fn get_agent_conversation_workspace(
 
     match workspace {
         Some(workspace) => {
-            schedule_external_pr_reconciliation_for_workspace(state.inner(), &workspace);
+            schedule_external_pr_reconciliation_for_workspace(
+                state.inner(),
+                &workspace,
+                AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+                false,
+            );
             Ok(Some(
                 agent_workspace_response_for_state(state.inner(), workspace).await?,
             ))
@@ -2847,38 +2873,13 @@ pub async fn reconcile_agent_conversation_workspace_publication(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conversation_id = ChatConversationId::from_string(conversation_id);
-    let Some(workspace) = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(());
-    };
-
-    if external_pr_reconciliation_skip_reason(&workspace).is_some() {
-        return Ok(());
-    }
-    let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
-        return Ok(());
-    };
-
-    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
-    schedule_agent_workspace_external_pr_reconciliation(
-        AgentWorkspaceExternalPrReconciliationDeps {
-            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            project_repo: Arc::clone(&state.project_repo),
-            github,
-            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
-            chat_service: Some(chat_service),
-            app_handle: state.app_handle.clone(),
-        },
-        workspace.conversation_id.clone(),
+    schedule_external_pr_reconciliation_for_conversation_id(
+        state.inner(),
+        ChatConversationId::from_string(conversation_id),
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
         true,
-    );
-    Ok(())
+    )
+    .await
 }
 
 /// List workspace metadata for project-backed agent conversations.
@@ -5488,17 +5489,19 @@ mod tests {
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
+        schedule_external_pr_reconciliation_for_conversation_id,
+        schedule_external_pr_reconciliation_for_workspace,
         send_agent_workspace_publish_repair_message_for_target, store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
         AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-        AgentTimelineItemResponse, AgentWorkspaceFreshnessCacheEntry,
-        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
-        AgentWorkspaceFreshnessScope, AgentWorkspacePrDescriptionInvalidationGuard,
-        AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
-        SwitchAgentConversationModeInput,
+        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
+        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
+        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
+        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
+        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -5525,7 +5528,7 @@ mod tests {
         PlanBranchStatus, Project, ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
-    use crate::domain::services::GithubServiceTrait;
+    use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus as GithubPrStatus};
     use crate::error::AppError;
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
@@ -5965,6 +5968,142 @@ mod tests {
             base_display_name: Some("Current branch (feature/deleted-base)".to_string()),
             plan_branch: None,
         }
+    }
+
+    fn external_pr_test_project(name: &str) -> Project {
+        let mut project = Project::new(name.to_string(), format!("/tmp/{name}"));
+        project.base_branch = Some("main".to_string());
+        project
+    }
+
+    fn external_pr_test_workspace(project: &Project, suffix: &str) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            ChatConversationId::new(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            format!("ralphx/test/agent-{suffix}"),
+            format!("/tmp/external-pr-command-{suffix}"),
+        )
+    }
+
+    async fn wait_for_latest_pr_lookup_calls(github: &MockGithubService, expected: u32) {
+        for _ in 0..100 {
+            if github.state().find_latest_pr_by_head_branch_calls >= expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "expected at least {expected} latest PR lookups, got {}",
+            github.state().find_latest_pr_by_head_branch_calls
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_load_external_pr_reconciliation_schedules_for_reconcilable_workspace() {
+        let mut state = AppState::new_test();
+        let project = external_pr_test_project("external-pr-command-load");
+        let workspace = external_pr_test_workspace(&project, "load");
+        let github = Arc::new(MockGithubService::new());
+        state.github_service = Some(github.clone());
+        state.project_repo.create(project).await.unwrap();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .unwrap();
+
+        schedule_external_pr_reconciliation_for_workspace(
+            &state,
+            &workspace,
+            AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+            false,
+        );
+
+        wait_for_latest_pr_lookup_calls(&github, 1).await;
+        assert_eq!(
+            github
+                .state()
+                .last_find_latest_pr_by_head_branch_name
+                .as_deref(),
+            Some(workspace.branch_name.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_load_external_pr_reconciliation_skips_unreconcilable_workspace() {
+        let mut state = AppState::new_test();
+        let project = external_pr_test_project("external-pr-command-skip");
+        let mut workspace = external_pr_test_workspace(&project, "skip");
+        workspace.publication_pr_number = Some(77);
+        workspace.publication_pr_status = Some("open".to_string());
+        let github = Arc::new(MockGithubService::new());
+        state.github_service = Some(github.clone());
+
+        schedule_external_pr_reconciliation_for_workspace(
+            &state,
+            &workspace,
+            AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+            false,
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn run_completed_external_pr_reconciliation_links_terminal_pr() {
+        let mut state = AppState::new_test();
+        let project = external_pr_test_project("external-pr-command-run-completed");
+        let workspace = external_pr_test_workspace(&project, "run-completed");
+        let conversation_id = workspace.conversation_id.clone();
+        let github = Arc::new(MockGithubService::new());
+        github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+            number: 123,
+            url: "https://github.com/owner/repo/pull/123".to_string(),
+            status: GithubPrStatus::Closed,
+            is_draft: false,
+            head_ref_name: workspace.branch_name.clone(),
+            updated_at: Some("2026-05-14T10:00:00Z".to_string()),
+        })));
+        state.github_service = Some(github.clone());
+        state.project_repo.create(project).await.unwrap();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        schedule_external_pr_reconciliation_for_conversation_id(
+            &state,
+            conversation_id.clone(),
+            AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+            true,
+        )
+        .await
+        .unwrap();
+
+        wait_for_latest_pr_lookup_calls(&github, 1).await;
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should still exist");
+        assert_eq!(updated.publication_pr_number, Some(123));
+        assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].step, "external_pr_closed");
     }
 
     fn git(repo: &Path, args: &[&str]) -> String {
