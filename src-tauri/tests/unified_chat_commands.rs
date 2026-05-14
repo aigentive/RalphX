@@ -15,17 +15,20 @@ use ralphx_lib::application::pr_startup_recovery::{
 };
 use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendResult};
 use ralphx_lib::commands::unified_chat_commands::{
-    get_agent_running_states_for_service, mark_agent_workspace_publish_failure, parse_context_type,
+    agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
+    mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
-    AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse, SendAgentMessageResponse,
+    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse,
+    SendAgentMessageResponse,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ArtifactId,
-    ChatContextType, ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    PlanBranch, PlanBranchStatus, Project, ProjectId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -860,6 +863,61 @@ async fn workspace_publish_operational_failure_is_not_routed_to_agent() {
     assert!(service.get_sent_messages().await.is_empty());
 }
 
+#[test]
+fn workspace_repair_action_defaults_to_publish_for_legacy_events() {
+    assert_eq!(
+        agent_workspace_post_repair_action_from_events(&[]),
+        AgentWorkspacePostRepairAction::Publish
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let events = vec![AgentConversationWorkspacePublicationEvent::new(
+        conversation_id.clone(),
+        "repair_requested",
+        "started",
+        "legacy repair request",
+        Some("agent_fixable".to_string()),
+    )];
+
+    assert_eq!(
+        agent_workspace_post_repair_action_from_events(&events),
+        AgentWorkspacePostRepairAction::Publish
+    );
+}
+
+#[test]
+fn workspace_repair_action_uses_latest_requested_action() {
+    let conversation_id = ChatConversationId::new();
+    let events = vec![
+        AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "repair_requested",
+            "started",
+            "publish repair request",
+            Some("agent_fixable:publish".to_string()),
+        ),
+        AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "failed",
+            "failed",
+            "later base update failure",
+            Some("agent_fixable".to_string()),
+        ),
+        AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "repair_requested",
+            "started",
+            "base update repair request",
+            Some("agent_fixable:update_only".to_string()),
+        ),
+    ];
+
+    assert_eq!(
+        agent_workspace_post_repair_action_from_events(&events),
+        AgentWorkspacePostRepairAction::UpdateOnly
+    );
+}
+
 // ── AgentRunStatusResponse model field tests ──────────────────────────────────
 
 #[test]
@@ -912,6 +970,7 @@ mod ipc_contract {
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
         UpsertCustomAgentModelInput,
     };
+    use ralphx_lib::commands::unified_chat_commands::archive_agent_conversation_inner;
     use ralphx_lib::commands::unified_chat_commands::{
         get_agent_conversation_messages_page_for_app_state, get_agent_conversation_summary,
         get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
@@ -937,7 +996,6 @@ mod ipc_contract {
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
     };
-    use ralphx_lib::commands::unified_chat_commands::archive_agent_conversation_inner;
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
@@ -1489,15 +1547,11 @@ mod ipc_contract {
         .expect("read bridge wake-up should prepare");
         assert!(wakeup.is_none());
 
-        let page = get_agent_conversation_messages_page_for_app_state(
-            &state,
-            conversation_id,
-            1,
-            0,
-        )
-        .await
-        .expect("message page command should succeed")
-        .expect("conversation should exist");
+        let page =
+            get_agent_conversation_messages_page_for_app_state(&state, conversation_id, 1, 0)
+                .await
+                .expect("message page command should succeed")
+                .expect("conversation should exist");
 
         assert_eq!(page.conversation.id, conversation_id.as_str());
         assert!(page.messages.is_empty());
@@ -2116,14 +2170,13 @@ mod ipc_contract {
     #[tokio::test]
     async fn archive_conversation_skips_close_when_pr_already_closed() {
         let github = Arc::new(super::common::MockGithubService::new());
-        let (_temp, state, conv_id, github) =
-            super::setup_ipc_workspace_state(
-                "archive-already-closed",
-                true,
-                Some(99),
-                github.clone(),
-            )
-            .await;
+        let (_temp, state, conv_id, github) = super::setup_ipc_workspace_state(
+            "archive-already-closed",
+            true,
+            Some(99),
+            github.clone(),
+        )
+        .await;
 
         let _ = state
             .agent_conversation_workspace_repo
@@ -2212,11 +2265,7 @@ mod ipc_contract {
         let state = AppState::new_test();
         let conv_id = ChatConversationId::from_string("no-workspace-conv".to_string());
         let project = Project::new("NoWS".to_string(), "/tmp/nows".to_string());
-        state
-            .project_repo
-            .create(project.clone())
-            .await
-            .unwrap();
+        state.project_repo.create(project.clone()).await.unwrap();
         let mut conversation = ChatConversation::new_project(project.id.clone());
         conversation.id = conv_id;
         state

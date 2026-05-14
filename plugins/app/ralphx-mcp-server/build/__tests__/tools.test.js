@@ -8,8 +8,8 @@ import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-me
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
-import { callCompleteAgentWorkspaceRepairTool, callSubmitAgentWorkspacePrDescriptionTool, } from '../agent-workspace-tools.js';
-import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
+import { callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, } from '../agent-workspace-tools.js';
+import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_WORKER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
 }
@@ -1010,6 +1010,39 @@ describe('agent workspace repair tool', () => {
         ]));
     });
 });
+describe('agent workspace publish tools', () => {
+    const allTools = getAllTools();
+    const publishTools = [
+        'get_agent_workspace_publish_status',
+        'check_agent_workspace_publish_readiness',
+        'update_agent_workspace_from_base',
+        'publish_agent_workspace',
+    ];
+    it.each(publishTools)('%s should exist in ALL_TOOLS', (toolName) => {
+        expect(allTools.find((t) => t.name === toolName)).toBeDefined();
+    });
+    it.each(publishTools)('%s should require a conversation id', (toolName) => {
+        const tool = allTools.find((t) => t.name === toolName);
+        expect(tool?.inputSchema.type).toBe('object');
+        expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
+        expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['conversation_id']));
+    });
+    it('exposes publish tools to the general worker only through canonical metadata', () => {
+        setAgentType(GENERAL_WORKER);
+        const toolNames = getFilteredTools().map((tool) => tool.name);
+        expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(GENERAL_WORKER)));
+        for (const toolName of publishTools) {
+            expect(toolNames).toContain(toolName);
+        }
+    });
+    it('keeps publish tools off unrelated agent surfaces', () => {
+        setAgentType(ORCHESTRATOR_IDEATION);
+        const toolNames = getFilteredTools().map((tool) => tool.name);
+        for (const toolName of publishTools) {
+            expect(toolNames).not.toContain(toolName);
+        }
+    });
+});
 describe('agent workspace PR description tool', () => {
     const allTools = getAllTools();
     const tool = allTools.find((t) => t.name === 'submit_agent_workspace_pr_description');
@@ -1034,6 +1067,43 @@ describe('agent workspace PR description tool', () => {
             title: 'Generated title',
             body_markdown: '## Summary\n\nGenerated body',
         });
+    });
+});
+describe('agent workspace publish tool transport', () => {
+    it('routes publish status reads to the agent workspace endpoint', async () => {
+        const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+        await expect(callGetAgentWorkspacePublishStatusTool(callTauriGet, {
+            conversation_id: 'conversation-1',
+        })).resolves.toEqual({ success: true });
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-1/publish-status');
+    });
+    it('routes publish readiness checks to the agent workspace endpoint', async () => {
+        const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+        await expect(callCheckAgentWorkspacePublishReadinessTool(callTauriGet, {
+            conversation_id: 'conversation-1',
+        })).resolves.toEqual({ success: true });
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-1/publish-readiness');
+    });
+    it('routes base updates to the agent workspace endpoint', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callUpdateAgentWorkspaceFromBaseTool(callTauri, {
+            conversation_id: 'conversation-1',
+            base_ref_kind: 'local_branch',
+            base_ref: 'feature/base',
+            base_display_name: 'feature/base',
+        })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/update-from-base', {
+            base_ref_kind: 'local_branch',
+            base_ref: 'feature/base',
+            base_display_name: 'feature/base',
+        });
+    });
+    it('routes publish requests to the agent workspace endpoint', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callPublishAgentWorkspaceTool(callTauri, {
+            conversation_id: 'conversation-1',
+        })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/publish', {});
     });
 });
 describe('agent workspace repair tool transport', () => {

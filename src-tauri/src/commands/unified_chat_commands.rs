@@ -22,7 +22,7 @@ use std::{
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tauri::{Emitter, Runtime, State};
+use tauri::{Emitter, Manager, Runtime, State};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
@@ -76,9 +76,20 @@ use crate::domain::entities::{
     ChatTimelineItem, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSessionId,
     PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
 };
-use crate::domain::services::{AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey};
+use crate::domain::services::{
+    AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+};
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
+
+const AGENT_WORKSPACE_REPAIR_REQUESTED_STEP: &str = "repair_requested";
+const AGENT_WORKSPACE_REPAIR_DEFERRED_STEP: &str = "repair_deferred";
+const AGENT_WORKSPACE_REPAIR_SENT_STEP: &str = "repair_sent";
+const AGENT_WORKSPACE_REPAIR_ACTION_PREFIX: &str = "agent_fixable:";
+const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
+const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
+pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
+    "Agent workspace publish is already in progress";
 
 // ============================================================================
 // Request/Response types
@@ -807,6 +818,22 @@ fn agent_workspace_freshness_locks() -> &'static DashMap<String, Arc<tokio::sync
     LOCKS.get_or_init(DashMap::new)
 }
 
+fn agent_workspace_publish_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn try_acquire_agent_workspace_publish_guard(
+    conversation_id: &ChatConversationId,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    let lock = agent_workspace_publish_locks()
+        .entry(conversation_id.as_str())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    lock.try_lock_owned()
+        .map_err(|_| AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE.to_string())
+}
+
 fn agent_workspace_freshness_cache_ttl() -> Duration {
     Duration::from_millis(git_runtime_config().workspace_freshness_cache_ttl_ms)
 }
@@ -932,6 +959,88 @@ pub struct UpdateAgentConversationWorkspaceFromBaseResponse {
     pub base_commit: String,
     pub base_status: String,
     pub effective_base_display_name: Option<String>,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentWorkspacePostRepairAction {
+    Publish,
+    UpdateOnly,
+}
+
+impl AgentWorkspacePostRepairAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Publish => AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH,
+            Self::UpdateOnly => AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY,
+        }
+    }
+
+    fn classification(self) -> String {
+        format!("{AGENT_WORKSPACE_REPAIR_ACTION_PREFIX}{}", self.as_str())
+    }
+
+    fn failure_title(self) -> &'static str {
+        match self {
+            Self::Publish => "Commit & Publish failed for this agent workspace.",
+            Self::UpdateOnly => "Update from base failed for this agent workspace.",
+        }
+    }
+
+    fn repair_instruction(self) -> &'static str {
+        match self {
+            Self::Publish => "Please fix the workspace so publishing can be retried.",
+            Self::UpdateOnly => "Please fix the workspace so the base update can be completed.",
+        }
+    }
+
+    fn repair_requested_summary(self) -> &'static str {
+        match self {
+            Self::Publish => "Workspace agent repair requested before publishing can continue",
+            Self::UpdateOnly => {
+                "Workspace agent repair requested before the base update can complete"
+            }
+        }
+    }
+
+    fn repair_sent_summary(self) -> &'static str {
+        match self {
+            Self::Publish => "Sent publish failure to workspace agent",
+            Self::UpdateOnly => "Sent base update failure to workspace agent",
+        }
+    }
+
+    fn deferred_repair_sent_summary(self) -> &'static str {
+        match self {
+            Self::Publish => "Sent publish failure to workspace agent after active turn completed",
+            Self::UpdateOnly => {
+                "Sent base update failure to workspace agent after active turn completed"
+            }
+        }
+    }
+
+    fn from_classification(value: Option<&str>) -> Option<Self> {
+        let action = value?.strip_prefix(AGENT_WORKSPACE_REPAIR_ACTION_PREFIX)?;
+        match action {
+            AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH => Some(Self::Publish),
+            AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY => Some(Self::UpdateOnly),
+            _ => None,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn agent_workspace_post_repair_action_from_events(
+    events: &[AgentConversationWorkspacePublicationEvent],
+) -> AgentWorkspacePostRepairAction {
+    events
+        .iter()
+        .rev()
+        .find(|event| event.step == AGENT_WORKSPACE_REPAIR_REQUESTED_STEP)
+        .and_then(|event| {
+            AgentWorkspacePostRepairAction::from_classification(event.classification.as_deref())
+        })
+        .unwrap_or(AgentWorkspacePostRepairAction::Publish)
 }
 
 /// Durable publish operation event for an agent conversation workspace.
@@ -2929,14 +3038,25 @@ pub async fn get_agent_conversation_workspace_freshness(
     state: State<'_, AppState>,
 ) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let freshness_scope = AgentWorkspaceFreshnessScope::parse(freshness_scope.as_deref())?;
-    let started = Instant::now();
-    let result = get_agent_conversation_workspace_freshness_cached(
+    get_agent_conversation_workspace_freshness_for_app_state(
         &conversation_id,
-        freshness_scope,
+        freshness_scope.as_deref(),
         state.inner(),
     )
-    .await;
+    .await
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_freshness_for_app_state(
+    conversation_id: &ChatConversationId,
+    freshness_scope: Option<&str>,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceFreshnessResponse, String> {
+    let freshness_scope = AgentWorkspaceFreshnessScope::parse(freshness_scope)?;
+    let started = Instant::now();
+    let result =
+        get_agent_conversation_workspace_freshness_cached(conversation_id, freshness_scope, state)
+            .await;
     match &result {
         Ok((response, cache_status)) => tracing::info!(
             target: "ralphx_lib::commands::agent_workspace_freshness",
@@ -3408,7 +3528,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         )
         .await
         {
-            mark_agent_workspace_publish_failure_with_target(
+            mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
                 &message,
@@ -3436,7 +3556,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         )
         .await
         {
-            mark_agent_workspace_publish_failure_with_target(
+            mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
                 &message,
@@ -3457,7 +3577,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                 .block_reason
                 .clone()
                 .unwrap_or_else(|| "Agent workspace base is blocked".to_string());
-            mark_agent_workspace_publish_failure_with_target(
+            mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
                 &message,
@@ -3477,7 +3597,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         )
         .await
         {
-            mark_agent_workspace_publish_failure_with_target(
+            mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
                 &message,
@@ -3528,7 +3648,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         } => (true, target_ref, base_commit),
         PublishBranchFreshnessOutcome::NeedsAgent { message, .. }
         | PublishBranchFreshnessOutcome::OperationalError { message } => {
-            mark_agent_workspace_publish_failure_with_target(
+            mark_agent_workspace_update_failure_with_target(
                 state,
                 &workspace,
                 &message,
@@ -3550,7 +3670,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                     .plan_branch_repo
                     .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
                     .await;
-                mark_agent_workspace_publish_failure_with_target(
+                mark_agent_workspace_update_failure_with_target(
                     state,
                     &workspace,
                     &message,
@@ -3573,7 +3693,7 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
                     .plan_branch_repo
                     .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
                     .await;
-                mark_agent_workspace_publish_failure_with_target(
+                mark_agent_workspace_update_failure_with_target(
                     state,
                     &workspace,
                     &message,
@@ -3947,6 +4067,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     conversation_id: ChatConversationId,
     route_fixable_failures_to_agent: bool,
 ) -> Result<PublishAgentConversationWorkspaceResponse, String> {
+    let _publish_guard = try_acquire_agent_workspace_publish_guard(&conversation_id)?;
     let _freshness_invalidation = AgentWorkspaceFreshnessInvalidationGuard::new(&conversation_id);
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, false);
@@ -4586,14 +4707,28 @@ pub fn build_agent_workspace_publish_repair_message_for_target(
     workspace: &AgentConversationWorkspace,
     target: &AgentConversationWorkspaceRepairTarget,
 ) -> String {
+    build_agent_workspace_repair_message_for_target(
+        error,
+        workspace,
+        target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+}
+
+fn build_agent_workspace_repair_message_for_target(
+    error: &str,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
+) -> String {
     let base = target
         .base_display_name
         .as_deref()
         .unwrap_or(target.base_ref.as_str());
     [
-        "Commit & Publish failed for this agent workspace.".to_string(),
+        post_repair_action.failure_title().to_string(),
         String::new(),
-        "Please fix the workspace so publishing can be retried.".to_string(),
+        post_repair_action.repair_instruction().to_string(),
         "After the repair is committed, call complete_agent_workspace_repair with the conversation ID, repair commit SHA, resolved base ref, resolved base commit, and summary."
             .to_string(),
         String::new(),
@@ -4676,11 +4811,38 @@ pub async fn send_agent_workspace_publish_repair_message_for_target<S>(
 where
     S: ChatService + ?Sized,
 {
+    send_agent_workspace_repair_message_for_target(
+        service,
+        workspace,
+        error,
+        runtime_overrides,
+        target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+    .await
+}
+
+async fn send_agent_workspace_repair_message_for_target<S>(
+    service: &S,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
+    target: &AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
+) -> Result<SendResult, ChatServiceError>
+where
+    S: ChatService + ?Sized,
+{
     service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
-            &build_agent_workspace_publish_repair_message_for_target(error, workspace, target),
+            &build_agent_workspace_repair_message_for_target(
+                error,
+                workspace,
+                target,
+                post_repair_action,
+            ),
             SendMessageOptions {
                 conversation_id_override: Some(workspace.conversation_id),
                 agent_name_override: Some(AGENT_WORKSPACE_REPAIR.to_string()),
@@ -4742,6 +4904,29 @@ pub async fn mark_agent_workspace_publish_failure_with_target<S>(
     .await;
 }
 
+async fn mark_agent_workspace_update_failure_with_target<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    pr_status_override: Option<&str>,
+    repair_service: &S,
+    target: &AgentConversationWorkspaceRepairTarget,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action(
+        state,
+        workspace,
+        error,
+        pr_status_override,
+        repair_service,
+        true,
+        target,
+        AgentWorkspacePostRepairAction::UpdateOnly,
+    )
+    .await;
+}
+
 async fn mark_agent_workspace_publish_failure_with_routing<S>(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -4750,6 +4935,31 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
     repair_service: &S,
     route_fixable_failures_to_agent: bool,
     target: &AgentConversationWorkspaceRepairTarget,
+) where
+    S: ChatService + ?Sized,
+{
+    mark_agent_workspace_failure_with_routing_and_action(
+        state,
+        workspace,
+        error,
+        pr_status_override,
+        repair_service,
+        route_fixable_failures_to_agent,
+        target,
+        AgentWorkspacePostRepairAction::Publish,
+    )
+    .await;
+}
+
+async fn mark_agent_workspace_failure_with_routing_and_action<S>(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    error: &str,
+    pr_status_override: Option<&str>,
+    repair_service: &S,
+    route_fixable_failures_to_agent: bool,
+    target: &AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
 ) where
     S: ChatService + ?Sized,
 {
@@ -4785,14 +4995,38 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
         return;
     }
 
+    let _ = append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        AGENT_WORKSPACE_REPAIR_REQUESTED_STEP,
+        "started",
+        post_repair_action.repair_requested_summary(),
+        Some(post_repair_action.classification()),
+    )
+    .await;
+
     let runtime_overrides =
         resolve_agent_workspace_repair_runtime_overrides(state, workspace).await;
-    match send_agent_workspace_publish_repair_message_for_target(
+    if should_defer_agent_workspace_repair_message(state, workspace).await {
+        spawn_deferred_agent_workspace_repair_message(
+            state,
+            workspace.clone(),
+            error.to_string(),
+            runtime_overrides,
+            target.clone(),
+            post_repair_action,
+        )
+        .await;
+        return;
+    }
+
+    match send_agent_workspace_repair_message_for_target(
         repair_service,
         workspace,
         error,
         runtime_overrides,
         target,
+        post_repair_action,
     )
     .await
     {
@@ -4800,9 +5034,9 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
             let _ = append_agent_workspace_publication_event(
                 state,
                 &workspace.conversation_id,
-                "repair_sent",
+                AGENT_WORKSPACE_REPAIR_SENT_STEP,
                 "succeeded",
-                "Sent publish failure to workspace agent",
+                post_repair_action.repair_sent_summary(),
                 Some("agent_fixable".to_string()),
             )
             .await;
@@ -4816,7 +5050,7 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
             let _ = append_agent_workspace_publication_event(
                 state,
                 &workspace.conversation_id,
-                "repair_sent",
+                AGENT_WORKSPACE_REPAIR_SENT_STEP,
                 "failed",
                 &format!("Failed to send publish failure to workspace agent: {repair_error}"),
                 Some("operational".to_string()),
@@ -4824,6 +5058,156 @@ async fn mark_agent_workspace_publish_failure_with_routing<S>(
             .await;
         }
     }
+}
+
+async fn should_defer_agent_workspace_repair_message(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    should_defer_agent_workspace_repair_message_for_registry(
+        state.app_handle.is_some(),
+        &state.running_agent_registry,
+        workspace,
+    )
+    .await
+}
+
+async fn should_defer_agent_workspace_repair_message_for_registry(
+    app_handle_available: bool,
+    running_agent_registry: &Arc<dyn RunningAgentRegistry>,
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    if !app_handle_available {
+        return false;
+    }
+
+    let key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        workspace.conversation_id.as_str(),
+    );
+    running_agent_registry.is_running(&key).await
+}
+
+async fn spawn_deferred_agent_workspace_repair_message(
+    state: &AppState,
+    workspace: AgentConversationWorkspace,
+    error: String,
+    runtime_overrides: AgentWorkspaceRepairRuntimeOverrides,
+    target: AgentConversationWorkspaceRepairTarget,
+    post_repair_action: AgentWorkspacePostRepairAction,
+) {
+    let Some(app_handle) = state.app_handle.clone() else {
+        return;
+    };
+
+    let _ = append_agent_workspace_publication_event(
+        state,
+        &workspace.conversation_id,
+        AGENT_WORKSPACE_REPAIR_DEFERRED_STEP,
+        "started",
+        "Waiting for the active workspace agent turn to finish before sending repair",
+        Some("agent_fixable".to_string()),
+    )
+    .await;
+
+    tauri::async_runtime::spawn(async move {
+        let conversation_id = workspace.conversation_id;
+        let key = RunningAgentKey::new(
+            ChatContextType::Project.to_string(),
+            conversation_id.as_str(),
+        );
+        let wait_started = Instant::now();
+        loop {
+            let Some(state) = app_handle.try_state::<AppState>() else {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    "Deferred agent workspace repair could not access AppState"
+                );
+                return;
+            };
+            if !state.running_agent_registry.is_running(&key).await {
+                break;
+            }
+            if wait_started.elapsed() >= Duration::from_secs(300) {
+                let _ = append_agent_workspace_publication_event(
+                    state.inner(),
+                    &conversation_id,
+                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                    "failed",
+                    "Timed out waiting for active workspace agent turn before sending repair",
+                    Some("operational".to_string()),
+                )
+                .await;
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    "Timed out waiting to send deferred agent workspace repair"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        let Some(state) = app_handle.try_state::<AppState>() else {
+            tracing::warn!(
+                conversation_id = conversation_id.as_str(),
+                "Deferred agent workspace repair could not access AppState after wait"
+            );
+            return;
+        };
+        let execution_state = app_handle
+            .try_state::<Arc<ExecutionState>>()
+            .map(|state| state.inner().clone());
+        let mut repair_service = match execution_state {
+            Some(execution_state) => state.build_chat_service_with_execution_state(execution_state),
+            None => state.build_chat_service(),
+        };
+        if let Some(team_service) = app_handle
+            .try_state::<Arc<crate::application::TeamService>>()
+            .map(|state| state.inner().clone())
+        {
+            repair_service = repair_service.with_team_service(team_service);
+        }
+
+        match send_agent_workspace_repair_message_for_target(
+            &repair_service,
+            &workspace,
+            &error,
+            runtime_overrides,
+            &target,
+            post_repair_action,
+        )
+        .await
+        {
+            Ok(_) => {
+                let _ = append_agent_workspace_publication_event(
+                    state.inner(),
+                    &conversation_id,
+                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                    "succeeded",
+                    post_repair_action.deferred_repair_sent_summary(),
+                    Some("agent_fixable".to_string()),
+                )
+                .await;
+            }
+            Err(repair_error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    error = %repair_error,
+                    "Failed to send deferred agent workspace publish repair message"
+                );
+                let _ = append_agent_workspace_publication_event(
+                    state.inner(),
+                    &conversation_id,
+                    AGENT_WORKSPACE_REPAIR_SENT_STEP,
+                    "failed",
+                    &format!("Failed to send deferred publish failure to workspace agent: {repair_error}"),
+                    Some("operational".to_string()),
+                )
+                .await;
+            }
+        }
+    });
 }
 
 async fn append_agent_workspace_publication_event(
@@ -5491,8 +5875,9 @@ mod tests {
         retarget_existing_workspace_pr_base_if_needed,
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
-        send_agent_workspace_publish_repair_message_for_target, store_agent_workspace_freshness,
-        switch_agent_conversation_mode_for_state,
+        send_agent_workspace_publish_repair_message_for_target,
+        should_defer_agent_workspace_repair_message_for_registry, store_agent_workspace_freshness,
+        switch_agent_conversation_mode_for_state, try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
@@ -5502,6 +5887,7 @@ mod tests {
         AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
         AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
         DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
+        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -5522,13 +5908,16 @@ mod tests {
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
-        ArtifactId, ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
-        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+        ArtifactId, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
+        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
         IdeationAnalysisBaseRefKind, IdeationSessionId, MessageRole, PlanBranch, PlanBranchId,
         PlanBranchStatus, Project, ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
-    use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus as GithubPrStatus};
+    use crate::domain::services::{
+        GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrStatus as GithubPrStatus,
+        RunningAgentKey, RunningAgentRegistry,
+    };
     use crate::error::AppError;
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
@@ -5845,6 +6234,57 @@ mod tests {
         assert_eq!(
             options[0].working_directory_override.as_deref(),
             Some(Path::new("/tmp/project-repo"))
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_message_defers_only_when_app_handle_available_and_workspace_agent_running() {
+        let workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1"),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "agent-branch".to_string(),
+            "/tmp/agent-worktree".to_string(),
+        );
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new(
+                ChatContextType::Project.to_string(),
+                workspace.conversation_id.as_str(),
+            ))
+            .await;
+        let registry_trait: Arc<dyn RunningAgentRegistry> = registry.clone();
+
+        assert!(
+            should_defer_agent_workspace_repair_message_for_registry(
+                true,
+                &registry_trait,
+                &workspace
+            )
+            .await
+        );
+        assert!(
+            !should_defer_agent_workspace_repair_message_for_registry(
+                false,
+                &registry_trait,
+                &workspace
+            )
+            .await
+        );
+
+        let idle_registry: Arc<dyn RunningAgentRegistry> =
+            Arc::new(MemoryRunningAgentRegistry::new());
+        assert!(
+            !should_defer_agent_workspace_repair_message_for_registry(
+                true,
+                &idle_registry,
+                &workspace
+            )
+            .await
         );
     }
 
@@ -7362,6 +7802,32 @@ mod tests {
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
         assert_eq!(stored.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_rejects_concurrent_publish_attempt() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "concurrent-publish",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let _guard = try_acquire_agent_workspace_publish_guard(&conversation_id)
+            .expect("test should acquire publish guard");
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("concurrent publish should be rejected");
+
+        assert_eq!(error, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE);
     }
 
     #[tokio::test]
