@@ -871,14 +871,33 @@ pub async fn complete_agent_workspace_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path as StdPath;
+    use std::process::Command;
     use std::sync::Arc;
 
+    use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind,
-        ProjectId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType,
+        ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
+
+    fn git(repo: impl AsRef<StdPath>, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should spawn");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
 
     fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
         let tracker = TeamStateTracker::new();
@@ -931,6 +950,144 @@ mod tests {
             base_block_reason: (base_status == "blocked")
                 .then_some("Workspace base is blocked".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn readiness_handler_reports_publishable_workspace_with_uncommitted_changes() {
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut project = Project::new(
+            "Readiness Workspace".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("workspace path");
+        let branch_name = "ralphx/test/readiness-workspace";
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                workspace_path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(workspace_path.join("implementation.txt"), "uncommitted\n")
+            .expect("write workspace change");
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(AgentConversationWorkspace::new(
+                conversation_id.clone(),
+                project.id.clone(),
+                AgentConversationWorkspaceMode::Edit,
+                IdeationAnalysisBaseRefKind::ProjectDefault,
+                "main".to_string(),
+                Some("Project default (main)".to_string()),
+                Some(base_sha),
+                branch_name.to_string(),
+                workspace_path.to_string_lossy().to_string(),
+            ))
+            .await
+            .expect("seed workspace");
+        let state = test_http_state(app_state);
+
+        let Json(response) = check_agent_workspace_publish_readiness(
+            State(state),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect("readiness should load");
+
+        assert!(response.success);
+        assert!(response.can_publish);
+        assert!(response.blockers.is_empty());
+        assert!(!response.needs_base_update);
+        assert!(response.recommended_actions.is_empty());
+        assert!(response.freshness.has_uncommitted_changes);
+    }
+
+    #[tokio::test]
+    async fn update_from_base_rejects_invalid_base_kind_before_loading_workspace() {
+        let state = test_http_state(Arc::new(AppState::new_test()));
+
+        let (status, Json(body)) = update_agent_workspace_from_base(
+            State(state),
+            Path(ChatConversationId::new().to_string()),
+            Json(UpdateAgentWorkspaceFromBaseRequest {
+                base_ref_kind: Some("not-a-kind".to_string()),
+                base_ref: Some("main".to_string()),
+                base_display_name: Some("main".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown ideation analysis base ref kind"));
+    }
+
+    #[tokio::test]
+    async fn needs_repair_action_response_preserves_error_payload() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.publication_pr_number = Some(42);
+        workspace.publication_pr_url = Some("https://github.com/mock/project/pull/42".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let Json(response) = action_response_for_needs_repair(
+            app_state.as_ref(),
+            &conversation_id,
+            "merge conflict".to_string(),
+        )
+        .await
+        .expect("needs-agent response should be returned");
+
+        assert!(response.success);
+        assert_eq!(response.status, "needs_agent_repair");
+        assert_eq!(response.message, "merge conflict");
+        assert!(response.repair_queued);
+        assert!(response.freshness.is_none());
+        assert_eq!(response.pr_number, None);
+        assert_eq!(response.pr_url, None);
     }
 
     #[tokio::test]

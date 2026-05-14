@@ -5859,8 +5859,9 @@ pub async fn update_agent_conversation_title(
 mod tests {
     use super::{
         agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
-        apply_base_resolution_to_publish_target,
-        build_agent_workspace_publish_repair_message_for_target, cached_agent_workspace_freshness,
+        agent_workspace_post_repair_action_from_events, apply_base_resolution_to_publish_target,
+        build_agent_workspace_publish_repair_message_for_target,
+        build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
@@ -5885,9 +5886,9 @@ mod tests {
         AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
         AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
         AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
-        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
-        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
+        AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
+        SwitchAgentConversationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -5907,9 +5908,10 @@ mod tests {
     };
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
-        ArtifactId, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
-        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ArtifactId,
+        ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
+        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
         IdeationAnalysisBaseRefKind, IdeationSessionId, MessageRole, PlanBranch, PlanBranchId,
         PlanBranchStatus, Project, ProjectId,
     };
@@ -6196,6 +6198,106 @@ mod tests {
         assert!(message.contains("Base ref: feature/agent-screen"));
         assert!(!message.contains("agent-shell-branch"));
         assert!(!message.contains("Project default (main)"));
+    }
+
+    #[test]
+    fn update_only_repair_action_metadata_is_preserved() {
+        let workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1"),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "agent-branch".to_string(),
+            "/tmp/agent-worktree".to_string(),
+        );
+        let target = AgentConversationWorkspaceRepairTarget {
+            branch_name: "agent-branch".to_string(),
+            base_ref: "main".to_string(),
+            base_display_name: Some("Project default (main)".to_string()),
+            worktree_path: Some(PathBuf::from("/tmp/agent-worktree")),
+        };
+
+        assert_eq!(
+            AgentWorkspacePostRepairAction::Publish.classification(),
+            "agent_fixable:publish"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::UpdateOnly.classification(),
+            "agent_fixable:update_only"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::Publish.repair_requested_summary(),
+            "Workspace agent repair requested before publishing can continue"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::UpdateOnly.repair_requested_summary(),
+            "Workspace agent repair requested before the base update can complete"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::Publish.repair_sent_summary(),
+            "Sent publish failure to workspace agent"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::UpdateOnly.repair_sent_summary(),
+            "Sent base update failure to workspace agent"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::Publish.deferred_repair_sent_summary(),
+            "Sent publish failure to workspace agent after active turn completed"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::UpdateOnly.deferred_repair_sent_summary(),
+            "Sent base update failure to workspace agent after active turn completed"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::from_classification(Some("agent_fixable:publish")),
+            Some(AgentWorkspacePostRepairAction::Publish)
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::from_classification(Some("agent_fixable:update_only")),
+            Some(AgentWorkspacePostRepairAction::UpdateOnly)
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::from_classification(Some("agent_fixable:unknown")),
+            None
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::from_classification(None),
+            None
+        );
+
+        let message = build_agent_workspace_repair_message_for_target(
+            "merge conflict",
+            &workspace,
+            &target,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        );
+        assert!(message.contains("Update from base failed for this agent workspace."));
+        assert!(message.contains("Please fix the workspace so the base update can be completed."));
+
+        let events = vec![
+            AgentConversationWorkspacePublicationEvent::new(
+                workspace.conversation_id,
+                "repair_requested",
+                "started",
+                "publish repair",
+                Some("agent_fixable:publish".to_string()),
+            ),
+            AgentConversationWorkspacePublicationEvent::new(
+                workspace.conversation_id,
+                "repair_requested",
+                "started",
+                "update repair",
+                Some("agent_fixable:update_only".to_string()),
+            ),
+        ];
+        assert_eq!(
+            agent_workspace_post_repair_action_from_events(&events),
+            AgentWorkspacePostRepairAction::UpdateOnly
+        );
     }
 
     #[tokio::test]
