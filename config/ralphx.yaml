@@ -155,6 +155,8 @@ git:
   workspace_review_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS
   # agent_workspace_pr_description.rs — short backend TTL for precomputed publish PR descriptions
   workspace_pr_description_cache_ttl_ms: 300000 # Env: RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS
+  # agent_workspace_external_pr_reconciliation.rs — TTL for external PR lookup attempts on unlinked agent workspaces
+  agent_workspace_pr_reconciliation_cache_ttl_ms: 30000 # Env: RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS
   # orphan_worktree_cleanup.rs — retry window for unchanged dirty/unsafe orphan agent-worktree cleanup markers
   orphan_worktree_cleanup_marker_retry_secs: 86400 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS
   # merge_coordination.rs — settle time after SIGTERM before worktree deletion

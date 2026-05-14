@@ -516,6 +516,11 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         handleChildTerminationReverseLink(eventContextId);
         if (context_type === "project") {
           invalidateAgentWorkspacePublishQueries(conversation_id);
+          void chatApi
+            .reconcileAgentConversationWorkspacePublication(conversation_id)
+            .catch((error) => {
+              logger.debug?.("Failed to schedule workspace publication reconciliation", error);
+            });
         }
 
         // NOTE: Queue processing is now handled by the BACKEND
@@ -644,6 +649,9 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         const conversationId = workspaceChangedConversationId(payload);
         if (conversationId) {
           invalidateAgentWorkspacePublishQueries(conversationId);
+          queryClient.invalidateQueries({
+            queryKey: ["agents", "sidebar-conversations"],
+          });
         }
       })
     );

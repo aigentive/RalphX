@@ -6,6 +6,7 @@ pub mod agent_lane_resolution;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub mod agent_workspace_pr_description;
+pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
@@ -154,6 +155,8 @@ pub use webhook_service::WebhookService;
 
 #[cfg(test)]
 mod agent_conversation_workspace_base_tests;
+#[cfg(test)]
+mod agent_workspace_external_pr_reconciliation_tests;
 #[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]

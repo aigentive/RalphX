@@ -89,8 +89,7 @@ async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     workspace.publication_pr_status = Some("closed".to_string());
     repo.create_or_update(workspace).await.unwrap();
 
-    let old_timestamp =
-        chrono::Utc::now() - chrono::Duration::hours(25);
+    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(25);
     repo.mark_local_cleanup_status(&conversation_id, "unsafe", old_timestamp)
         .await
         .unwrap();
@@ -101,7 +100,11 @@ async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
         ))
         .await
         .unwrap();
-    assert_eq!(candidates.len(), 1, "unsafe with expired TTL should be retryable");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "unsafe with expired TTL should be retryable"
+    );
 
     let recent_timestamp = chrono::Utc::now();
     repo.mark_local_cleanup_status(&conversation_id, "unsafe", recent_timestamp)
@@ -114,7 +117,10 @@ async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
         ))
         .await
         .unwrap();
-    assert!(candidates.is_empty(), "unsafe with fresh TTL should not be retryable");
+    assert!(
+        candidates.is_empty(),
+        "unsafe with fresh TTL should not be retryable"
+    );
 
     let _ = db;
 }
@@ -127,8 +133,7 @@ async fn terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
     workspace.publication_pr_status = Some("merged".to_string());
     repo.create_or_update(workspace).await.unwrap();
 
-    let old_timestamp =
-        chrono::Utc::now() - chrono::Duration::hours(25);
+    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(25);
     repo.mark_local_cleanup_status(&conversation_id, "target_ref_missing", old_timestamp)
         .await
         .unwrap();
@@ -139,7 +144,11 @@ async fn terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
         ))
         .await
         .unwrap();
-    assert_eq!(candidates.len(), 1, "target_ref_missing with expired TTL should be retryable");
+    assert_eq!(
+        candidates.len(),
+        1,
+        "target_ref_missing with expired TTL should be retryable"
+    );
 
     let _ = db;
 }
@@ -175,9 +184,7 @@ async fn list_worktree_paths_by_project_id_empty_for_unknown_project() {
         .unwrap();
 
     let paths = repo
-        .list_worktree_paths_by_project_id(&ProjectId::from_string(
-            "no-such-project".to_string(),
-        ))
+        .list_worktree_paths_by_project_id(&ProjectId::from_string("no-such-project".to_string()))
         .await
         .unwrap();
     assert!(paths.is_empty());
@@ -312,6 +319,46 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     assert_eq!(workspaces.len(), 1);
     assert_eq!(workspaces[0].conversation_id, published.conversation_id);
     assert_eq!(workspaces[0].publication_pr_number, Some(72));
+}
+
+#[tokio::test]
+async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_edit_workspaces() {
+    let (db, repo, conversation_id) = setup_repo();
+    let candidate = make_workspace(conversation_id);
+    repo.create_or_update(candidate.clone()).await.unwrap();
+
+    let linked_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &linked_id);
+    let mut linked = make_workspace(linked_id);
+    linked.publication_pr_number = Some(72);
+    linked.publication_pr_status = Some("open".to_string());
+    repo.create_or_update(linked).await.unwrap();
+
+    let needs_agent_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+    seed_conversation(&db, &needs_agent_id);
+    let mut needs_agent = make_workspace(needs_agent_id);
+    needs_agent.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(needs_agent).await.unwrap();
+
+    let ideation_id = ChatConversationId::from_string("44444444-4444-4444-4444-444444444444");
+    seed_conversation(&db, &ideation_id);
+    let mut ideation = make_workspace(ideation_id);
+    ideation.mode = AgentConversationWorkspaceMode::Ideation;
+    repo.create_or_update(ideation).await.unwrap();
+
+    let workspaces = repo
+        .list_active_direct_external_pr_reconciliation_candidates(10)
+        .await
+        .unwrap();
+
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+
+    let limited = repo
+        .list_active_direct_external_pr_reconciliation_candidates(0)
+        .await
+        .unwrap();
+    assert!(limited.is_empty());
 }
 
 #[tokio::test]

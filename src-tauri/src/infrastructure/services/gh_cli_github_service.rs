@@ -19,8 +19,8 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState,
+    PrReviewCommentFeedback, PrReviewFeedback, PrStatus, PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::git_auth::{
@@ -630,6 +630,30 @@ impl GithubServiceTrait for GhCliGithubService {
         let json_str = stdout.join("\n");
         parse_pr_list_output(&json_str)
     }
+
+    async fn find_latest_pr_by_head_branch(
+        &self,
+        working_dir: &Path,
+        head: &str,
+    ) -> AppResult<Option<PrBranchMatch>> {
+        // gh pr list --head <head> --state all --limit 20 --json number,url,state,isDraft,headRefName,updatedAt
+        let args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--head".to_string(),
+            head.to_string(),
+            "--state".to_string(),
+            "all".to_string(),
+            "--limit".to_string(),
+            "20".to_string(),
+            "--json".to_string(),
+            "number,url,state,isDraft,headRefName,updatedAt".to_string(),
+        ];
+        let stdout = self.runner.run_gh(working_dir, &args).await?;
+
+        let json_str = stdout.join("\n");
+        parse_pr_branch_match_output(&json_str, head)
+    }
 }
 
 // ── Output parsers ────────────────────────────────────────────────────────────
@@ -713,6 +737,75 @@ pub(crate) fn parse_pr_list_output(json_str: &str) -> AppResult<Option<(i64, Str
         .to_string();
 
     Ok(Some((number, url)))
+}
+
+pub(crate) fn parse_pr_branch_match_output(
+    json_str: &str,
+    expected_head: &str,
+) -> AppResult<Option<PrBranchMatch>> {
+    let arr: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr list branch JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let items = arr.as_array().ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh pr list branch lookup: expected JSON array, got: {json_str}"
+        ))
+    })?;
+
+    let mut matches = items
+        .iter()
+        .filter(|item| {
+            item.get("headRefName")
+                .and_then(Value::as_str)
+                .is_none_or(|head| head == expected_head)
+        })
+        .map(parse_pr_branch_match_item)
+        .collect::<AppResult<Vec<_>>>()?;
+
+    matches.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.number.cmp(&left.number))
+    });
+
+    Ok(matches.into_iter().next())
+}
+
+fn parse_pr_branch_match_item(item: &Value) -> AppResult<PrBranchMatch> {
+    let number = item["number"].as_i64().ok_or_else(|| {
+        AppError::Infrastructure("gh pr list branch lookup: missing 'number' field".to_string())
+    })?;
+    let url = item["url"]
+        .as_str()
+        .ok_or_else(|| {
+            AppError::Infrastructure("gh pr list branch lookup: missing 'url' field".to_string())
+        })?
+        .to_string();
+    let head_ref_name = item
+        .get("headRefName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let status = parse_pr_status_value(item)?;
+
+    Ok(PrBranchMatch {
+        number,
+        url,
+        status,
+        is_draft: item
+            .get("isDraft")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        head_ref_name,
+        updated_at: item
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 pub(crate) fn parse_pr_status_output(json_str: &str) -> AppResult<PrStatus> {

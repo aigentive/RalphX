@@ -21,9 +21,10 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, Project, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::GithubServiceTrait;
@@ -34,10 +35,7 @@ use crate::infrastructure::memory::{
 use crate::tests::mock_github_service::MockGithubService;
 
 fn make_registry_no_github() -> PrPollerRegistry {
-    PrPollerRegistry::new(
-        None,
-        Arc::new(MemoryPlanBranchRepository::new()),
-    )
+    PrPollerRegistry::new(None, Arc::new(MemoryPlanBranchRepository::new()))
 }
 
 fn run_git(repo: &std::path::Path, args: &[&str]) {
@@ -634,5 +632,4 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
     }
-
 }

@@ -97,6 +97,23 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_direct_external_pr_reconciliation_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let mut workspaces = self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_direct_external_pr_reconciliation_candidate(workspace))
+            .cloned()
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        workspaces.truncate(limit);
+        Ok(workspaces)
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
@@ -215,6 +232,23 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && matches!(
             workspace.publication_push_status.as_deref(),
             None | Some("pushed")
+        )
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
+}
+
+fn is_active_direct_external_pr_reconciliation_candidate(
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_none()
+        && !matches!(
+            workspace.publication_push_status.as_deref(),
+            Some("needs_agent" | "pending" | "failed" | "description_failed")
         )
         && !matches!(
             workspace.publication_pr_status.as_deref(),

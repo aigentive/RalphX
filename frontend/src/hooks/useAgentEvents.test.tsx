@@ -80,6 +80,7 @@ vi.mock("@/api/chat", async () => {
     chatApi: {
       ...actual.chatApi,
       isAgentRunning: vi.fn(),
+      reconcileAgentConversationWorkspacePublication: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
@@ -814,6 +815,9 @@ describe("useAgentEvents", () => {
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "conversation-workspace-publication-events", "conv-1"],
       });
+      expect(chatApi.reconcileAgentConversationWorkspacePublication).toHaveBeenCalledWith(
+        "conv-1"
+      );
     });
 
     it("invalidates workspace publish queries from workspace-changed payloads", () => {
@@ -839,6 +843,9 @@ describe("useAgentEvents", () => {
 
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "conversation-workspace", "conv-snake"],
+      });
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ["agents", "sidebar-conversations"],
       });
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: ["agents", "conversation-workspace-freshness", "conv-snake"],

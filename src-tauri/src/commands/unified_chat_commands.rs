@@ -38,6 +38,10 @@ use crate::application::agent_workspace_bridge::{
     wake_agent_workspace_for_bridge_events,
     wake_agent_workspace_for_bridge_events_with_service_factory,
 };
+use crate::application::agent_workspace_external_pr_reconciliation::{
+    external_pr_reconciliation_skip_reason, schedule_agent_workspace_external_pr_reconciliation,
+    AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationTrigger,
+};
 use crate::application::agent_workspace_pr_description::{
     draft_agent_workspace_pr_description, get_or_draft_agent_workspace_pr_description,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
@@ -501,6 +505,32 @@ pub(crate) async fn agent_workspace_response_for_state(
     }
 
     Ok(response)
+}
+
+fn schedule_external_pr_reconciliation_for_workspace(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) {
+    if external_pr_reconciliation_skip_reason(workspace).is_some() {
+        return;
+    }
+    let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
+        return;
+    };
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    schedule_agent_workspace_external_pr_reconciliation(
+        AgentWorkspaceExternalPrReconciliationDeps {
+            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            project_repo: Arc::clone(&state.project_repo),
+            github,
+            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+            chat_service: Some(chat_service),
+            app_handle: state.app_handle.clone(),
+        },
+        workspace.conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::WorkspaceLoad,
+        false,
+    );
 }
 
 /// Response from start_agent_conversation command.
@@ -2801,11 +2831,54 @@ pub async fn get_agent_conversation_workspace(
         .map_err(|e| e.to_string())?;
 
     match workspace {
-        Some(workspace) => Ok(Some(
-            agent_workspace_response_for_state(state.inner(), workspace).await?,
-        )),
+        Some(workspace) => {
+            schedule_external_pr_reconciliation_for_workspace(state.inner(), &workspace);
+            Ok(Some(
+                agent_workspace_response_for_state(state.inner(), workspace).await?,
+            ))
+        }
         None => Ok(None),
     }
+}
+
+/// Schedule a background publication reconciliation for a project-backed agent conversation.
+#[tauri::command]
+pub async fn reconcile_agent_conversation_workspace_publication(
+    conversation_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+
+    if external_pr_reconciliation_skip_reason(&workspace).is_some() {
+        return Ok(());
+    }
+    let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
+        return Ok(());
+    };
+
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    schedule_agent_workspace_external_pr_reconciliation(
+        AgentWorkspaceExternalPrReconciliationDeps {
+            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            project_repo: Arc::clone(&state.project_repo),
+            github,
+            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+            chat_service: Some(chat_service),
+            app_handle: state.app_handle.clone(),
+        },
+        workspace.conversation_id.clone(),
+        AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+        true,
+    );
+    Ok(())
 }
 
 /// List workspace metadata for project-backed agent conversations.

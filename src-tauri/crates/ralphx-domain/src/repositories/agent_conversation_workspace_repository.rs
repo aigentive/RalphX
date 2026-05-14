@@ -54,6 +54,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
+    async fn list_active_direct_external_pr_reconciliation_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
@@ -110,9 +118,6 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         project_id: &ProjectId,
     ) -> AppResult<std::collections::HashSet<String>> {
         let workspaces = self.get_by_project_id(project_id).await?;
-        Ok(workspaces
-            .into_iter()
-            .map(|w| w.worktree_path)
-            .collect())
+        Ok(workspaces.into_iter().map(|w| w.worktree_path).collect())
     }
 }

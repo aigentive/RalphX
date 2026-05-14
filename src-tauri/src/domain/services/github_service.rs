@@ -55,6 +55,28 @@ pub struct PrSyncState {
     pub base_ref_oid: Option<String>,
 }
 
+/// Pull request found by an exact head-branch lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrBranchMatch {
+    pub number: i64,
+    pub url: String,
+    pub status: PrStatus,
+    pub is_draft: bool,
+    pub head_ref_name: String,
+    pub updated_at: Option<String>,
+}
+
+impl PrBranchMatch {
+    pub fn publication_status(&self) -> &'static str {
+        match self.status {
+            PrStatus::Open if self.is_draft => "draft",
+            PrStatus::Open => "open",
+            PrStatus::Closed => "closed",
+            PrStatus::Merged { .. } => "merged",
+        }
+    }
+}
+
 /// Inline review comment attached to a GitHub pull request review.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrReviewCommentFeedback {
@@ -141,4 +163,13 @@ pub trait GithubServiceTrait: Send + Sync {
         working_dir: &Path,
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
+
+    /// Find the latest PR for a head branch across all GitHub states.
+    async fn find_latest_pr_by_head_branch(
+        &self,
+        _working_dir: &Path,
+        _head: &str,
+    ) -> AppResult<Option<PrBranchMatch>> {
+        Ok(None)
+    }
 }

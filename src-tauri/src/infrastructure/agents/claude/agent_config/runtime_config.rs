@@ -438,6 +438,9 @@ pub struct GitRuntimeConfig {
     pub workspace_review_cache_ttl_ms: u64,
     /// Short TTL for precomputed agent workspace PR descriptions, in milliseconds.
     pub workspace_pr_description_cache_ttl_ms: u64,
+    /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
+    #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
+    pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
     /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
     pub orphan_worktree_cleanup_marker_retry_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
@@ -467,6 +470,7 @@ impl Default for GitRuntimeConfig {
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
+            agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
@@ -476,6 +480,10 @@ impl Default for GitRuntimeConfig {
             step_0b_kill_timeout_secs: 5,
         }
     }
+}
+
+fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
+    30_000
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -797,6 +805,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_pr_description_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
+        "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS"
     );
     env_u64!(
         cfg.git.orphan_worktree_cleanup_marker_retry_secs,

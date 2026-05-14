@@ -449,6 +449,26 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         elapsed_ms = phase_started_at.elapsed().as_millis(),
         "Startup phase completed: agent workspace PR poller recovery"
     );
+    if let Some(github_service) = github_service.as_ref().map(Arc::clone) {
+        tracing::info!("Scheduling agent workspace external PR startup reconciliation...");
+        let deps =
+            crate::application::agent_workspace_external_pr_reconciliation::AgentWorkspaceExternalPrReconciliationDeps {
+                workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
+                project_repo: Arc::clone(&project_repo),
+                github: github_service,
+                pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
+                chat_service: Some(Arc::clone(&recovery_chat_service)),
+                app_handle: Some(app_handle.clone()),
+            };
+        let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+        tauri::async_runtime::spawn(async move {
+            crate::application::agent_workspace_external_pr_reconciliation::reconcile_recent_agent_workspace_external_prs_on_startup(
+                deps,
+                blocked_git_project_ids,
+            )
+            .await;
+        });
+    }
 
     let runner = Arc::new(
         StartupJobRunner::new(
