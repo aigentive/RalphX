@@ -168,7 +168,10 @@ export function AgentsPublishInlineDiffs({
   const totalDeletions = currentFiles.reduce((sum, f) => sum + (f.deletions ?? 0), 0);
 
   return (
-    <div data-testid="agents-publish-inline-diffs" className="flex flex-col">
+    <div
+      data-testid="agents-publish-inline-diffs"
+      className="flex min-h-0 flex-1 flex-col"
+    >
       {/* Sticky bar — always renders synchronously */}
       <div
         data-testid="inline-diffs-sticky-bar"
@@ -343,10 +346,11 @@ export function AgentsPublishInlineDiffs({
           </p>
         </div>
       ) : (
-        <div className="flex flex-col gap-2 p-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
           {currentFiles.map((fileChange) => (
             <div
               key={fileChange.path}
+              className="flex flex-col last:min-h-0 last:flex-1"
               ref={(el: HTMLDivElement | null) => {
                 if (el) {
                   cardRefs.current.set(fileChange.path, el);

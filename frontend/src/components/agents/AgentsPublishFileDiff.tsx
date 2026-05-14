@@ -67,7 +67,7 @@ export function AgentsPublishFileDiff({
 
   return (
     <div
-      className="overflow-hidden rounded-md border"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border"
       data-testid={`publish-file-diff-${file.path}`}
       style={{
         backgroundColor: "var(--bg-surface)",
@@ -110,18 +110,41 @@ export function AgentsPublishFileDiff({
           {statusLetter(file.status)}
         </span>
 
-        {/* File path */}
+        {/* File path — clickable to toggle expand/collapse */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <span
-              className="flex-1 truncate font-mono text-[0.8125rem]"
+            <button
+              type="button"
+              data-testid="file-diff-path-toggle"
+              aria-label={isExpanded ? "Collapse file" : "Expand file"}
+              onClick={onToggle}
+              className="flex-1 min-w-0 truncate text-left font-mono text-[0.8125rem] outline-none rounded hover:underline focus-visible:[outline:1px_solid_var(--accent-border)] focus-visible:[outline-offset:2px]"
               style={{ color: "var(--text-primary)" }}
             >
               {file.path}
-            </span>
+            </button>
           </TooltipTrigger>
           <TooltipContent side="top">
             <p className="font-mono text-xs">{file.path}</p>
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Copy path — directly after the path */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              data-testid="file-diff-copy-path"
+              aria-label="Copy file path"
+              onClick={() => onCopyPath(file.path)}
+              className="flex items-center justify-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            <p>Copy path</p>
           </TooltipContent>
         </Tooltip>
 
@@ -142,25 +165,6 @@ export function AgentsPublishFileDiff({
             −{file.deletions}
           </span>
         )}
-
-        {/* Copy path */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              data-testid="file-diff-copy-path"
-              aria-label="Copy file path"
-              onClick={() => onCopyPath(file.path)}
-              className="flex items-center justify-center rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Copy className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>Copy path</p>
-          </TooltipContent>
-        </Tooltip>
 
         {/* Open fullscreen */}
         <Tooltip>
@@ -184,7 +188,10 @@ export function AgentsPublishFileDiff({
 
       {/* Body — only mounted when expanded */}
       {isExpanded && (
-        <div style={{ minHeight: "60px", maxHeight: "480px", overflowY: "auto" }}>
+        <div
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          style={{ minHeight: "60px" }}
+        >
           {diff === "loading" && (
             <div data-testid="file-diff-skeleton" className="space-y-1 p-3">
               <Skeleton className="h-4 w-3/4" />
