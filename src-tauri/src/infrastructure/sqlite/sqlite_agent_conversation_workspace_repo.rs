@@ -300,9 +300,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     "SELECT worktree_path FROM agent_conversation_workspaces
                      WHERE project_id = ?1",
                 )?;
-                let rows = stmt.query_map(rusqlite::params![project_id], |row| {
-                    row.get::<_, String>(0)
-                })?;
+                let rows =
+                    stmt.query_map(rusqlite::params![project_id], |row| row.get::<_, String>(0))?;
                 let mut paths = std::collections::HashSet::new();
                 for row in rows {
                     paths.insert(row?);
@@ -350,6 +349,36 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt.query_map([], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn list_active_direct_external_pr_reconciliation_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND mode = 'edit'
+                       AND linked_plan_branch_id IS NULL
+                       AND publication_pr_number IS NULL
+                       AND COALESCE(publication_push_status, 'pushed') NOT IN (
+                           'needs_agent', 'pending', 'failed', 'description_failed'
+                       )
+                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                     ORDER BY updated_at DESC
+                     LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![limit], row_to_workspace)?;
                 let mut workspaces = Vec::new();
                 for row in rows {
                     workspaces.push(row?);

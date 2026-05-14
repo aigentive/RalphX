@@ -963,6 +963,12 @@ export async function mockPublishAgentConversationWorkspace(
   };
 }
 
+export async function mockReconcileAgentConversationWorkspacePublication(
+  _conversationId: string
+): Promise<void> {
+  return undefined;
+}
+
 export async function mockPrecomputeAgentConversationWorkspacePrDescription(
   conversationId: string
 ): Promise<PrecomputeAgentConversationWorkspacePrDescriptionResult> {
@@ -1058,6 +1064,8 @@ export const mockChatApi = {
     mockListAgentConversationWorkspacePublicationEvents,
   precomputeAgentConversationWorkspacePrDescription:
     mockPrecomputeAgentConversationWorkspacePrDescription,
+  reconcileAgentConversationWorkspacePublication:
+    mockReconcileAgentConversationWorkspacePublication,
   publishAgentConversationWorkspace: mockPublishAgentConversationWorkspace,
   startAgentConversation: mockStartAgentConversation,
   switchAgentConversationMode: mockSwitchAgentConversationMode,

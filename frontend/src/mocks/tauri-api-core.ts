@@ -25,6 +25,7 @@ import {
   mockListConversations,
   mockListConversationsPage,
   mockPublishAgentConversationWorkspace,
+  mockReconcileAgentConversationWorkspacePublication,
   mockStartAgentConversation,
   mockSwitchAgentConversationMode,
 } from "@/api-mock/chat";
@@ -820,6 +821,10 @@ const commandHandlers: Record<
       classification: event.classification,
       created_at: event.createdAt,
     }));
+  },
+  reconcile_agent_conversation_workspace_publication: async (args) => {
+    await mockReconcileAgentConversationWorkspacePublication(args.conversationId as string);
+    return undefined;
   },
   publish_agent_conversation_workspace: async (args) => {
     const result = await mockPublishAgentConversationWorkspace(args.conversationId as string);

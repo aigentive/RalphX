@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
 use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
@@ -1047,13 +1048,14 @@ async fn mark_agent_workspace_pr_terminal(
         .await
 }
 
-async fn cleanup_terminal_agent_workspace_after_pr(
+pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     conversation_id: &ChatConversationId,
     project: &Project,
     github: Option<Arc<dyn GithubServiceTrait>>,
     delete_branch_if_merged: bool,
 ) {
+    let cleanup_started = Instant::now();
     let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
         Ok(Some(workspace)) => workspace,
         Ok(None) => return,
@@ -1063,29 +1065,40 @@ async fn cleanup_terminal_agent_workspace_after_pr(
         }
     };
 
-    if delete_branch_if_merged {
-        if let Some(github) = github {
-            if let Err(error) = github
-                .fetch_remote(Path::new(&project.working_directory), &workspace.base_ref)
-                .await
-            {
-                tracing::warn!(conversation_id = conversation_id.as_str(), base_ref = workspace.base_ref.as_str(), error = %error, "Agent workspace PR cleanup: failed to fetch base before local branch cleanup");
+    let cleanup_result = git_cmd::with_git_command_lane(GitCommandLane::Background, async {
+        if delete_branch_if_merged {
+            if let Some(github) = github.as_ref() {
+                if let Err(error) = github
+                    .fetch_remote(Path::new(&project.working_directory), &workspace.base_ref)
+                    .await
+                {
+                    tracing::warn!(conversation_id = conversation_id.as_str(), base_ref = workspace.base_ref.as_str(), error = %error, "Agent workspace PR cleanup: failed to fetch base before local branch cleanup");
+                }
             }
         }
-    }
 
-    match crate::application::git_artifact_cleanup::cleanup_terminal_agent_workspace_local_artifacts(
-        project,
-        &workspace,
-        delete_branch_if_merged,
-    )
-    .await
-    {
+        crate::application::git_artifact_cleanup::cleanup_terminal_agent_workspace_local_artifacts(
+            project,
+            &workspace,
+            delete_branch_if_merged,
+        )
+        .await
+    })
+    .await;
+
+    match cleanup_result {
         Ok(report) => {
-            tracing::info!(conversation_id = conversation_id.as_str(), worktree_removed = report.worktree_removed, branch_deleted = report.branch_deleted, skipped_reason = report.skipped_reason.as_deref(), "Agent workspace PR cleanup: local artifact cleanup completed");
+            tracing::info!(
+                conversation_id = conversation_id.as_str(),
+                worktree_removed = report.worktree_removed,
+                branch_deleted = report.branch_deleted,
+                skipped_reason = report.skipped_reason.as_deref(),
+                elapsed_ms = cleanup_started.elapsed().as_millis() as u64,
+                "Agent workspace PR cleanup: local artifact cleanup completed"
+            );
         }
         Err(error) => {
-            tracing::warn!(conversation_id = conversation_id.as_str(), error = %error, "Agent workspace PR cleanup: local artifact cleanup failed (non-fatal)");
+            tracing::warn!(conversation_id = conversation_id.as_str(), elapsed_ms = cleanup_started.elapsed().as_millis() as u64, error = %error, "Agent workspace PR cleanup: local artifact cleanup failed (non-fatal)");
         }
     }
 }

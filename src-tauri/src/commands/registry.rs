@@ -274,6 +274,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::list_agent_conversation_workspaces_by_project,
             commands::unified_chat_commands::list_agent_conversation_workspace_publication_events,
             commands::unified_chat_commands::get_agent_conversation_workspace_freshness,
+            commands::unified_chat_commands::reconcile_agent_conversation_workspace_publication,
             commands::unified_chat_commands::update_agent_conversation_workspace_from_base,
             commands::unified_chat_commands::publish_agent_conversation_workspace,
             commands::unified_chat_commands::precompute_agent_conversation_workspace_pr_description,

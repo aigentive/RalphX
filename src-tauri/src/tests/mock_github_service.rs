@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrReviewFeedback, PrStatus, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -30,6 +30,7 @@ pub struct MockGithubState {
     pub delete_remote_branch_result: Option<AppResult<()>>,
     pub fetch_remote_result: Option<AppResult<()>>,
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
+    pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
 
     // --- Call tracking ---
     pub create_draft_pr_calls: u32,
@@ -46,6 +47,7 @@ pub struct MockGithubState {
     pub delete_remote_branch_calls: u32,
     pub fetch_remote_calls: u32,
     pub find_pr_by_head_branch_calls: u32,
+    pub find_latest_pr_by_head_branch_calls: u32,
 
     // --- Last arguments recorded ---
     pub last_create_draft_pr_args: Option<(String, String, String, String)>,
@@ -64,6 +66,7 @@ pub struct MockGithubState {
     pub all_deleted_remote_branch_names: Vec<String>,
     pub last_fetch_remote_branch_name: Option<String>,
     pub last_find_pr_by_head_branch_name: Option<String>,
+    pub last_find_latest_pr_by_head_branch_name: Option<String>,
 }
 
 /// Mock implementation of GithubServiceTrait for unit tests.
@@ -129,6 +132,12 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn set_find_pr_by_head_branch(&self, result: AppResult<Option<(i64, String)>>) {
         self.state().find_pr_by_head_branch_result = Some(result);
+    }
+
+    /// Shorthand: configure all-state head branch lookup to return the given result.
+    #[allow(dead_code)]
+    pub fn set_find_latest_pr_by_head_branch(&self, result: AppResult<Option<PrBranchMatch>>) {
+        self.state().find_latest_pr_by_head_branch_result = Some(result);
     }
 }
 
@@ -297,5 +306,18 @@ impl GithubServiceTrait for MockGithubService {
         s.find_pr_by_head_branch_calls += 1;
         s.last_find_pr_by_head_branch_name = Some(head.to_string());
         s.find_pr_by_head_branch_result.take().unwrap_or(Ok(None))
+    }
+
+    async fn find_latest_pr_by_head_branch(
+        &self,
+        _working_dir: &Path,
+        head: &str,
+    ) -> AppResult<Option<PrBranchMatch>> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.find_latest_pr_by_head_branch_calls += 1;
+        s.last_find_latest_pr_by_head_branch_name = Some(head.to_string());
+        s.find_latest_pr_by_head_branch_result
+            .take()
+            .unwrap_or(Ok(None))
     }
 }

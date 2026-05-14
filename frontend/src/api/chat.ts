@@ -1452,6 +1452,7 @@ export const chatApi = {
   listAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents,
   getAgentConversationWorkspaceFreshness,
+  reconcileAgentConversationWorkspacePublication,
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
@@ -1990,6 +1991,16 @@ export async function getAgentConversationWorkspaceFreshness(
     AgentConversationWorkspaceFreshnessResponseSchema
   );
   return transformAgentConversationWorkspaceFreshness(raw);
+}
+
+export async function reconcileAgentConversationWorkspacePublication(
+  conversationId: string
+): Promise<void> {
+  await typedInvoke(
+    "reconcile_agent_conversation_workspace_publication",
+    { conversationId },
+    z.void()
+  );
 }
 
 export async function updateAgentConversationWorkspaceFromBase(

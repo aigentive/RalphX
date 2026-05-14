@@ -207,6 +207,7 @@ pub use unified_chat_commands::{
     list_agent_conversation_workspace_publication_events,
     list_agent_conversation_workspaces_by_project, list_agent_conversations_page,
     precompute_agent_conversation_workspace_pr_description,
+    reconcile_agent_conversation_workspace_publication,
     publish_agent_conversation_workspace, queue_agent_message, restore_agent_conversation,
     send_agent_message, start_agent_conversation, stop_agent, switch_agent_conversation_mode,
     update_agent_conversation_title, update_agent_conversation_workspace_from_base,

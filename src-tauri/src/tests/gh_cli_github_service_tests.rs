@@ -620,6 +620,59 @@ mod mock_roundtrip {
     }
 
     #[tokio::test]
+    async fn find_latest_pr_by_head_branch_uses_all_state_lookup() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            r#"[{"number":42,"url":"https://github.com/owner/repo/pull/42","state":"MERGED","isDraft":false,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-11T22:00:00Z"}]"#
+                .to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let found = service
+            .find_latest_pr_by_head_branch(Path::new("/tmp"), "ralphx/demo/agent-1234")
+            .await
+            .unwrap()
+            .expect("matching PR should be parsed");
+
+        assert_eq!(found.number, 42);
+        assert_eq!(found.publication_status(), "merged");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--head",
+                "ralphx/demo/agent-1234",
+                "--state",
+                "all",
+                "--limit",
+                "20",
+                "--json",
+                "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[test]
+    fn parse_branch_match_prefers_latest_exact_head() {
+        let parsed = crate::infrastructure::services::gh_cli_github_service::parse_pr_branch_match_output(
+            r#"[
+                {"number":40,"url":"https://github.com/owner/repo/pull/40","state":"OPEN","isDraft":true,"headRefName":"other","updatedAt":"2026-05-12T00:00:00Z"},
+                {"number":41,"url":"https://github.com/owner/repo/pull/41","state":"CLOSED","isDraft":false,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-11T00:00:00Z"},
+                {"number":42,"url":"https://github.com/owner/repo/pull/42","state":"OPEN","isDraft":true,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-12T00:00:00Z"}
+            ]"#,
+            "ralphx/demo/agent-1234",
+        )
+        .unwrap()
+        .expect("matching PR should be parsed");
+
+        assert_eq!(parsed.number, 42);
+        assert_eq!(parsed.publication_status(), "draft");
+    }
+
+    #[tokio::test]
     async fn check_pr_review_feedback_uses_review_decision_and_review_api() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
             Ok(vec![r#"{"reviewDecision":"CHANGES_REQUESTED"}"#.to_string()]),
