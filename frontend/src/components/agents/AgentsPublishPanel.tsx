@@ -142,11 +142,18 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
+  // Workspace-only flags computed early so reviewQuery can decide whether the
+  // inline diff view will be visible. Hidden states (terminal PR, published PR
+  // current) skip the eager fetch and keep the dialog-driven flow.
+  const earlyTerminalStatus = getAgentWorkspaceTerminalPublicationStatus(workspace);
+  const earlyHasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const inlineDiffsCandidate =
+    !earlyTerminalStatus && !earlyHasPublishedPr && workspace?.mode === "edit";
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
-    // No reviewOpen gate — inline diffs need this data regardless of dialog state
-    enabled: canHydratePublishFacts && !!conversationId,
+    enabled:
+      canHydratePublishFacts && !!conversationId && (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -294,7 +301,7 @@ export function AgentPublishPanel({
   );
   const publicationEvents = publicationEventsQuery.data ?? [];
   const isChangesLoading =
-    Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading);
+    Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
@@ -782,7 +789,7 @@ export function AgentPublishPanel({
         </section>
 
         {/* Inline diff view — below the action row, all files expanded by default */}
-        {!terminalPublicationStatus && !baseBlocked && (
+        {inlineDiffsCandidate && !baseBlocked && (
           <section
             className="overflow-hidden rounded-lg border"
             data-testid="agents-publish-inline-diffs-section"
@@ -795,7 +802,7 @@ export function AgentPublishPanel({
               conversationId={conversationId ?? ""}
               review={reviewQuery.data ?? null}
               commits={commits}
-              isLoading={isChangesLoading}
+              isLoading={Boolean(conversationId) && reviewQuery.isLoading}
               onOpenInDialog={() => setReviewOpen(true)}
             />
           </section>
