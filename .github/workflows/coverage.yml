@@ -343,6 +343,7 @@ jobs:
             --test harness_provider_commands \
             --test release_notes_commands \
             --test unified_chat_commands \
+            --test agent_workspace_repair_auto_publish \
             --test task_step_commands \
             --remap-path-prefix \
             ipc_contract \

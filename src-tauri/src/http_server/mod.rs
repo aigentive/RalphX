@@ -307,6 +307,22 @@ pub async fn start_http_server(
             post(complete_agent_workspace_repair),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/publish-status",
+            get(get_agent_workspace_publish_status),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/publish-readiness",
+            get(check_agent_workspace_publish_readiness),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/update-from-base",
+            post(update_agent_workspace_from_base),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/publish",
+            post(publish_agent_workspace),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-description",
             post(submit_agent_workspace_pr_description),
         )

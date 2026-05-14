@@ -7,18 +7,26 @@ use axum::{
 };
 
 use super::*;
+use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
 };
-use crate::application::GitService;
+use crate::application::{AppState, GitService};
 use crate::commands::unified_chat_commands::{
+    agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
+    get_agent_conversation_workspace_freshness_for_app_state,
     publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
+    update_agent_conversation_workspace_from_base_for_app_state,
+    AgentConversationWorkspaceFreshnessResponse,
+    AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
+    AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
+    IdeationAnalysisBaseRefKind,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -51,6 +59,51 @@ pub struct SubmitAgentWorkspacePrDescriptionRequest {
 #[derive(Debug, serde::Serialize)]
 pub struct SubmitAgentWorkspacePrDescriptionResponse {
     pub success: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateAgentWorkspaceFromBaseRequest {
+    pub base_ref_kind: Option<String>,
+    pub base_ref: Option<String>,
+    pub base_display_name: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePublishStatusResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
+    pub publish_in_progress: bool,
+    pub needs_agent_repair: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePublishReadinessResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub freshness: AgentConversationWorkspaceFreshnessResponse,
+    pub can_publish: bool,
+    pub blockers: Vec<String>,
+    pub needs_base_update: bool,
+    pub recommended_actions: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePublishActionResponse {
+    pub success: bool,
+    pub status: String,
+    pub message: String,
+    pub repair_queued: bool,
+    pub workspace: Option<AgentConversationWorkspaceResponse>,
+    pub freshness: Option<AgentConversationWorkspaceFreshnessResponse>,
+    pub updated: Option<bool>,
+    pub target_ref: Option<String>,
+    pub base_commit: Option<String>,
+    pub commit_sha: Option<String>,
+    pub pushed: Option<bool>,
+    pub created_pr: Option<bool>,
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
 }
 
 /// POST /api/agent-workspaces/{conversation_id}/pr-description
@@ -86,6 +139,328 @@ pub async fn submit_agent_workspace_pr_description(
 
     Ok(Json(SubmitAgentWorkspacePrDescriptionResponse {
         success: true,
+    }))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/publish-status
+pub async fn get_agent_workspace_publish_status(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<AgentWorkspacePublishStatusResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace =
+        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let events =
+        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
+    Ok(Json(AgentWorkspacePublishStatusResponse {
+        success: true,
+        publish_in_progress: is_publish_in_progress(workspace.publication_push_status.as_deref()),
+        needs_agent_repair: workspace.publication_push_status.as_deref() == Some("needs_agent"),
+        workspace,
+        events,
+    }))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/publish-readiness
+pub async fn check_agent_workspace_publish_readiness(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<AgentWorkspacePublishReadinessResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace =
+        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let freshness = get_agent_conversation_workspace_freshness_for_app_state(
+        &conversation_id,
+        Some("full"),
+        state.app_state.as_ref(),
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
+    let blockers = publish_readiness_blockers(&freshness);
+    let recommended_actions = publish_readiness_recommended_actions(&freshness);
+    Ok(Json(AgentWorkspacePublishReadinessResponse {
+        success: true,
+        can_publish: blockers.is_empty(),
+        workspace,
+        freshness,
+        blockers,
+        needs_base_update: recommended_actions
+            .iter()
+            .any(|action| action == "update_from_base"),
+        recommended_actions,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/update-from-base
+pub async fn update_agent_workspace_from_base(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<UpdateAgentWorkspaceFromBaseRequest>,
+) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let selection = AgentConversationWorkspaceBaseSelection {
+        kind: parse_update_base_kind(req.base_ref_kind.as_deref())
+            .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?,
+        base_ref: req.base_ref,
+        display_name: req.base_display_name,
+    };
+    match update_agent_conversation_workspace_from_base_for_app_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        Some(state.team_service.clone()),
+        conversation_id,
+        selection,
+    )
+    .await
+    {
+        Ok(result) => Ok(Json(AgentWorkspacePublishActionResponse {
+            success: true,
+            status: if result.updated {
+                "updated"
+            } else {
+                "base_current"
+            }
+            .to_string(),
+            message: if result.updated {
+                "Workspace branch updated from base".to_string()
+            } else {
+                "Workspace branch is current with base".to_string()
+            },
+            repair_queued: false,
+            freshness: None,
+            updated: Some(result.updated),
+            target_ref: Some(result.target_ref),
+            base_commit: Some(result.base_commit),
+            workspace: Some(result.workspace),
+            commit_sha: None,
+            pushed: None,
+            created_pr: None,
+            pr_number: None,
+            pr_url: None,
+        })),
+        Err(error) => {
+            action_response_for_needs_repair(state.app_state.as_ref(), &conversation_id, error)
+                .await
+        }
+    }
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/publish
+pub async fn publish_agent_workspace(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace =
+        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    if let Some(response) = publish_action_response_for_existing_workspace_state(workspace) {
+        return Ok(Json(response));
+    }
+
+    match publish_agent_conversation_workspace_for_app_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        Some(state.team_service.clone()),
+        conversation_id,
+        true,
+    )
+    .await
+    {
+        Ok(result) => Ok(Json(AgentWorkspacePublishActionResponse {
+            success: true,
+            status: "published".to_string(),
+            message: "Draft pull request is ready".to_string(),
+            repair_queued: false,
+            workspace: Some(result.workspace),
+            freshness: None,
+            updated: None,
+            target_ref: None,
+            base_commit: None,
+            commit_sha: result.commit_sha,
+            pushed: Some(result.pushed),
+            created_pr: Some(result.created_pr),
+            pr_number: result.pr_number,
+            pr_url: result.pr_url,
+        })),
+        Err(error) if error == AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE => {
+            let workspace =
+                load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+            Ok(Json(publish_in_progress_response(workspace)))
+        }
+        Err(error) => {
+            action_response_for_needs_repair(state.app_state.as_ref(), &conversation_id, error)
+                .await
+        }
+    }
+}
+
+async fn load_agent_workspace_response(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<AgentConversationWorkspaceResponse, JsonError> {
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
+    agent_workspace_response_for_state(state, workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))
+}
+
+async fn load_agent_workspace_publication_events(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<Vec<AgentConversationWorkspacePublicationEventResponse>, JsonError> {
+    state
+        .agent_conversation_workspace_repo
+        .list_publication_events(conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))
+        .map(|events| {
+            events
+                .into_iter()
+                .map(AgentConversationWorkspacePublicationEventResponse::from)
+                .collect()
+        })
+}
+
+fn parse_update_base_kind(
+    value: Option<&str>,
+) -> Result<Option<IdeationAnalysisBaseRefKind>, String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<IdeationAnalysisBaseRefKind>)
+        .transpose()
+}
+
+fn is_publish_in_progress(push_status: Option<&str>) -> bool {
+    matches!(
+        push_status,
+        Some("checking" | "committing" | "refreshing" | "describing" | "pushing")
+    )
+}
+
+fn publish_in_progress_response(
+    workspace: AgentConversationWorkspaceResponse,
+) -> AgentWorkspacePublishActionResponse {
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
+    AgentWorkspacePublishActionResponse {
+        success: true,
+        status: "publish_in_progress".to_string(),
+        message: "Publish is already in progress for this agent workspace".to_string(),
+        repair_queued: false,
+        workspace: Some(workspace),
+        freshness: None,
+        updated: None,
+        target_ref: None,
+        base_commit: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }
+}
+
+fn needs_agent_repair_response(
+    workspace: AgentConversationWorkspaceResponse,
+) -> AgentWorkspacePublishActionResponse {
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
+    AgentWorkspacePublishActionResponse {
+        success: true,
+        status: "needs_agent_repair".to_string(),
+        message: "Workspace needs agent repair before publishing can continue".to_string(),
+        repair_queued: true,
+        workspace: Some(workspace),
+        freshness: None,
+        updated: None,
+        target_ref: None,
+        base_commit: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }
+}
+
+fn publish_action_response_for_existing_workspace_state(
+    workspace: AgentConversationWorkspaceResponse,
+) -> Option<AgentWorkspacePublishActionResponse> {
+    match workspace.publication_push_status.as_deref() {
+        status if is_publish_in_progress(status) => Some(publish_in_progress_response(workspace)),
+        Some("needs_agent") => Some(needs_agent_repair_response(workspace)),
+        _ => None,
+    }
+}
+
+fn publish_readiness_blockers(
+    freshness: &AgentConversationWorkspaceFreshnessResponse,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if freshness.base_status == "blocked" {
+        blockers.push(
+            freshness
+                .base_block_reason
+                .clone()
+                .unwrap_or_else(|| "Workspace base is blocked".to_string()),
+        );
+    }
+    if !freshness.has_uncommitted_changes
+        && freshness.unpublished_commit_count.unwrap_or_default() == 0
+    {
+        blockers.push("No committed or uncommitted workspace changes to publish".to_string());
+    }
+    blockers
+}
+
+fn publish_readiness_recommended_actions(
+    freshness: &AgentConversationWorkspaceFreshnessResponse,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    if freshness.base_status != "blocked" && freshness.is_base_ahead {
+        actions.push("update_from_base".to_string());
+    }
+    actions
+}
+
+async fn action_response_for_needs_repair(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    error: String,
+) -> Result<Json<AgentWorkspacePublishActionResponse>, JsonError> {
+    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    if workspace.publication_push_status.as_deref() != Some("needs_agent") {
+        return Err(json_error(StatusCode::CONFLICT, error, None));
+    }
+
+    let freshness = get_agent_conversation_workspace_freshness_for_app_state(
+        conversation_id,
+        Some("local"),
+        state,
+    )
+    .await
+    .ok();
+    Ok(Json(AgentWorkspacePublishActionResponse {
+        success: true,
+        status: "needs_agent_repair".to_string(),
+        message: error,
+        repair_queued: true,
+        workspace: Some(workspace),
+        freshness,
+        updated: None,
+        target_ref: None,
+        base_commit: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number: None,
+        pr_url: None,
     }))
 }
 
@@ -195,6 +570,13 @@ pub async fn complete_agent_workspace_repair(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let publication_events = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
 
     let (
         message,
@@ -388,6 +770,16 @@ pub async fn complete_agent_workspace_repair(
                 pr_url,
             )
         }
+    } else if post_repair_action == AgentWorkspacePostRepairAction::UpdateOnly {
+        (
+            "Agent workspace repair verified".to_string(),
+            "refreshed".to_string(),
+            freshness.target_base_commit.clone(),
+            Some("skipped".to_string()),
+            None,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.clone(),
+        )
     } else {
         let auto_publish = publish_agent_conversation_workspace_for_app_state(
             state.app_state.as_ref(),
@@ -479,14 +871,33 @@ pub async fn complete_agent_workspace_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path as StdPath;
+    use std::process::Command;
     use std::sync::Arc;
 
+    use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind,
-        ProjectId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType,
+        ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
+
+    fn git(repo: impl AsRef<StdPath>, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should spawn");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
 
     fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
         let tracker = TeamStateTracker::new();
@@ -512,6 +923,284 @@ mod tests {
             "feature/pr-description".to_string(),
             "/tmp/pr-description-worktree".to_string(),
         )
+    }
+
+    fn test_freshness(
+        is_base_ahead: bool,
+        has_uncommitted_changes: bool,
+        unpublished_commit_count: Option<u32>,
+        base_status: &str,
+    ) -> AgentConversationWorkspaceFreshnessResponse {
+        AgentConversationWorkspaceFreshnessResponse {
+            conversation_id: ChatConversationId::new().as_str(),
+            freshness_scope: "full".to_string(),
+            base_ref: "main".to_string(),
+            base_display_name: Some("main".to_string()),
+            target_ref: "origin/main".to_string(),
+            captured_base_commit: Some("0".repeat(40)),
+            target_base_commit: "1".repeat(40),
+            is_base_ahead,
+            has_uncommitted_changes,
+            unpublished_commit_count,
+            remote_refreshed: true,
+            worktree_status_checked: true,
+            base_status: base_status.to_string(),
+            effective_base_ref: Some("main".to_string()),
+            effective_base_display_name: Some("main".to_string()),
+            base_block_reason: (base_status == "blocked")
+                .then_some("Workspace base is blocked".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_handler_reports_publishable_workspace_with_uncommitted_changes() {
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut project = Project::new(
+            "Readiness Workspace".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("workspace path");
+        let branch_name = "ralphx/test/readiness-workspace";
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                workspace_path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(workspace_path.join("implementation.txt"), "uncommitted\n")
+            .expect("write workspace change");
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(AgentConversationWorkspace::new(
+                conversation_id.clone(),
+                project.id.clone(),
+                AgentConversationWorkspaceMode::Edit,
+                IdeationAnalysisBaseRefKind::ProjectDefault,
+                "main".to_string(),
+                Some("Project default (main)".to_string()),
+                Some(base_sha),
+                branch_name.to_string(),
+                workspace_path.to_string_lossy().to_string(),
+            ))
+            .await
+            .expect("seed workspace");
+        let state = test_http_state(app_state);
+
+        let Json(response) = check_agent_workspace_publish_readiness(
+            State(state),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect("readiness should load");
+
+        assert!(response.success);
+        assert!(response.can_publish);
+        assert!(response.blockers.is_empty());
+        assert!(!response.needs_base_update);
+        assert!(response.recommended_actions.is_empty());
+        assert!(response.freshness.has_uncommitted_changes);
+    }
+
+    #[tokio::test]
+    async fn update_from_base_rejects_invalid_base_kind_before_loading_workspace() {
+        let state = test_http_state(Arc::new(AppState::new_test()));
+
+        let (status, Json(body)) = update_agent_workspace_from_base(
+            State(state),
+            Path(ChatConversationId::new().to_string()),
+            Json(UpdateAgentWorkspaceFromBaseRequest {
+                base_ref_kind: Some("not-a-kind".to_string()),
+                base_ref: Some("main".to_string()),
+                base_display_name: Some("main".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown ideation analysis base ref kind"));
+    }
+
+    #[tokio::test]
+    async fn needs_repair_action_response_preserves_error_payload() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.publication_pr_number = Some(42);
+        workspace.publication_pr_url = Some("https://github.com/mock/project/pull/42".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let Json(response) = action_response_for_needs_repair(
+            app_state.as_ref(),
+            &conversation_id,
+            "merge conflict".to_string(),
+        )
+        .await
+        .expect("needs-agent response should be returned");
+
+        assert!(response.success);
+        assert_eq!(response.status, "needs_agent_repair");
+        assert_eq!(response.message, "merge conflict");
+        assert!(response.repair_queued);
+        assert!(response.freshness.is_none());
+        assert_eq!(response.pr_number, None);
+        assert_eq!(response.pr_url, None);
+    }
+
+    #[tokio::test]
+    async fn get_publish_status_reports_in_progress_and_events() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("checking".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        app_state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "checking",
+                "started",
+                "Checking workspace changes",
+                None,
+            ))
+            .await
+            .unwrap();
+        let state = test_http_state(app_state);
+
+        let Json(response) =
+            get_agent_workspace_publish_status(State(state), Path(conversation_id.to_string()))
+                .await
+                .unwrap();
+
+        assert!(response.success);
+        assert!(response.publish_in_progress);
+        assert!(!response.needs_agent_repair);
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("checking")
+        );
+        assert_eq!(response.events.len(), 1);
+        assert_eq!(response.events[0].step, "checking");
+    }
+
+    #[tokio::test]
+    async fn publish_agent_workspace_returns_in_progress_for_active_publish_state() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("pushing".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let state = test_http_state(app_state);
+
+        let Json(response) =
+            publish_agent_workspace(State(state), Path(conversation_id.to_string()))
+                .await
+                .unwrap();
+
+        assert!(response.success);
+        assert_eq!(response.status, "publish_in_progress");
+        assert!(!response.repair_queued);
+    }
+
+    #[tokio::test]
+    async fn publish_agent_workspace_returns_repair_state_without_republishing() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let state = test_http_state(app_state);
+
+        let Json(response) =
+            publish_agent_workspace(State(state), Path(conversation_id.to_string()))
+                .await
+                .unwrap();
+
+        assert!(response.success);
+        assert_eq!(response.status, "needs_agent_repair");
+        assert!(response.repair_queued);
+    }
+
+    #[test]
+    fn readiness_treats_base_ahead_as_recommended_action_not_blocker() {
+        let freshness = test_freshness(true, true, Some(1), "valid");
+
+        assert!(publish_readiness_blockers(&freshness).is_empty());
+        assert_eq!(
+            publish_readiness_recommended_actions(&freshness),
+            vec!["update_from_base".to_string()]
+        );
+    }
+
+    #[test]
+    fn readiness_blocks_missing_changes_and_blocked_base() {
+        let no_changes = test_freshness(false, false, Some(0), "valid");
+        assert_eq!(
+            publish_readiness_blockers(&no_changes),
+            vec!["No committed or uncommitted workspace changes to publish".to_string()]
+        );
+
+        let blocked = test_freshness(true, true, Some(1), "blocked");
+        assert_eq!(
+            publish_readiness_blockers(&blocked),
+            vec!["Workspace base is blocked".to_string()]
+        );
+        assert!(publish_readiness_recommended_actions(&blocked).is_empty());
     }
 
     #[tokio::test]

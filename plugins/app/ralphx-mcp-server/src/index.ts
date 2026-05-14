@@ -50,8 +50,8 @@ import {
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import {
-  callCompleteAgentWorkspaceRepairTool,
-  callSubmitAgentWorkspacePrDescriptionTool,
+  callAgentWorkspaceTool,
+  isAgentWorkspaceToolName,
 } from "./agent-workspace-tools.js";
 
 /**
@@ -646,12 +646,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         commit_sha: string;
       };
       result = await callTauri(`git/tasks/${task_id}/complete-merge`, { commit_sha });
-    } else if (name === "complete_agent_workspace_repair") {
-      // POST /api/agent-workspaces/:conversation_id/complete-repair
-      result = await callCompleteAgentWorkspaceRepairTool(callTauri, args);
-    } else if (name === "submit_agent_workspace_pr_description") {
-      // POST /api/agent-workspaces/:conversation_id/pr-description
-      result = await callSubmitAgentWorkspacePrDescriptionTool(callTauri, args);
+    /* c8 ignore next 2 -- index.ts is a side-effectful MCP server; pure dispatch is covered in agent-workspace-tools tests. */
+    } else if (isAgentWorkspaceToolName(name)) {
+      result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args);
     } else if (name === "report_conflict") {
       // POST /api/git/tasks/:task_id/report-conflict
       const { task_id, conflict_files, reason } = args as {
