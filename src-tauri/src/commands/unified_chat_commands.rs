@@ -1019,6 +1019,17 @@ impl AgentWorkspacePostRepairAction {
         }
     }
 
+    fn repair_send_failed_summary(self, repair_error: &str) -> String {
+        match self {
+            Self::Publish => {
+                format!("Failed to send publish failure to workspace agent: {repair_error}")
+            }
+            Self::UpdateOnly => {
+                format!("Failed to send base update failure to workspace agent: {repair_error}")
+            }
+        }
+    }
+
     fn from_classification(value: Option<&str>) -> Option<Self> {
         let action = value?.strip_prefix(AGENT_WORKSPACE_REPAIR_ACTION_PREFIX)?;
         match action {
@@ -5047,12 +5058,14 @@ async fn mark_agent_workspace_failure_with_routing_and_action<S>(
                 error = %repair_error,
                 "Failed to send agent workspace publish repair message"
             );
+            let repair_summary =
+                post_repair_action.repair_send_failed_summary(&repair_error.to_string());
             let _ = append_agent_workspace_publication_event(
                 state,
                 &workspace.conversation_id,
                 AGENT_WORKSPACE_REPAIR_SENT_STEP,
                 "failed",
-                &format!("Failed to send publish failure to workspace agent: {repair_error}"),
+                &repair_summary,
                 Some("operational".to_string()),
             )
             .await;
@@ -5196,12 +5209,14 @@ async fn spawn_deferred_agent_workspace_repair_message(
                     error = %repair_error,
                     "Failed to send deferred agent workspace publish repair message"
                 );
+                let repair_summary =
+                    post_repair_action.repair_send_failed_summary(&repair_error.to_string());
                 let _ = append_agent_workspace_publication_event(
                     state.inner(),
                     &conversation_id,
                     AGENT_WORKSPACE_REPAIR_SENT_STEP,
                     "failed",
-                    &format!("Failed to send deferred publish failure to workspace agent: {repair_error}"),
+                    &repair_summary,
                     Some("operational".to_string()),
                 )
                 .await;
@@ -5865,7 +5880,8 @@ mod tests {
         existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
-        invalidate_agent_workspace_freshness_cache, merge_delegated_snapshot_into_result,
+        invalidate_agent_workspace_freshness_cache,
+        mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
         normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
         normalized_effort_for_supported, parse_wrapped_mcp_result_object,
         persist_workspace_base_resolution_if_retargeted,
@@ -5877,7 +5893,8 @@ mod tests {
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
         send_agent_workspace_publish_repair_message_for_target,
-        should_defer_agent_workspace_repair_message_for_registry, store_agent_workspace_freshness,
+        should_defer_agent_workspace_repair_message_for_registry,
+        spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state, try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
@@ -6253,6 +6270,14 @@ mod tests {
             "Sent base update failure to workspace agent after active turn completed"
         );
         assert_eq!(
+            AgentWorkspacePostRepairAction::Publish.repair_send_failed_summary("unavailable"),
+            "Failed to send publish failure to workspace agent: unavailable"
+        );
+        assert_eq!(
+            AgentWorkspacePostRepairAction::UpdateOnly.repair_send_failed_summary("unavailable"),
+            "Failed to send base update failure to workspace agent: unavailable"
+        );
+        assert_eq!(
             AgentWorkspacePostRepairAction::from_classification(Some("agent_fixable:publish")),
             Some(AgentWorkspacePostRepairAction::Publish)
         );
@@ -6388,6 +6413,125 @@ mod tests {
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn fixable_publish_failure_routes_repair_and_records_events() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let service = MockChatService::new();
+
+        mark_agent_workspace_failure_with_routing_and_action(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            None,
+            &service,
+            true,
+            &target,
+            AgentWorkspacePostRepairAction::Publish,
+        )
+        .await;
+
+        let messages = service.get_sent_messages().await;
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("Commit & Publish failed for this agent workspace."));
+        assert!(messages[0].contains("Workspace branch: ralphx/test/agent-command"));
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "needs_agent"
+                && event.status == "failed"
+                && event.classification.as_deref() == Some("agent_fixable")
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "repair_requested"
+                && event.status == "started"
+                && event.classification.as_deref() == Some("agent_fixable:publish")
+                && event.summary.contains("publishing can continue")
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "repair_sent"
+                && event.status == "succeeded"
+                && event.summary == "Sent publish failure to workspace agent"
+        }));
+    }
+
+    #[tokio::test]
+    async fn fixable_update_failure_records_repair_send_failure() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+        let service = MockChatService::new();
+        service.set_available(false).await;
+
+        mark_agent_workspace_failure_with_routing_and_action(
+            &state,
+            &workspace,
+            "merge conflict while updating from base",
+            None,
+            &service,
+            true,
+            &target,
+            AgentWorkspacePostRepairAction::UpdateOnly,
+        )
+        .await;
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "repair_requested"
+                && event.classification.as_deref() == Some("agent_fixable:update_only")
+                && event.summary.contains("base update can complete")
+        }));
+        assert!(events.iter().any(|event| {
+            event.step == "repair_sent"
+                && event.status == "failed"
+                && event.summary.contains("Failed to send base update failure")
+                && event.classification.as_deref() == Some("operational")
+        }));
+    }
+
+    #[tokio::test]
+    async fn deferred_repair_spawn_without_app_handle_noops() {
+        let state = AppState::new_test();
+        let workspace = command_test_workspace();
+        let target = AgentConversationWorkspaceRepairTarget::from_workspace(&workspace);
+
+        spawn_deferred_agent_workspace_repair_message(
+            &state,
+            workspace.clone(),
+            "merge conflict while updating from base".to_string(),
+            AgentWorkspaceRepairRuntimeOverrides::default(),
+            target,
+            AgentWorkspacePostRepairAction::Publish,
+        )
+        .await;
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.is_empty());
     }
 
     fn retargeted_base_resolution() -> BaseResolutionResult {

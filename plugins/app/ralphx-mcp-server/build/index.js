@@ -24,7 +24,7 @@ import { handleRequestTeamPlan } from "./team-plan-handler.js";
 import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
-import { callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, } from "./agent-workspace-tools.js";
+import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -539,30 +539,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // POST /api/git/tasks/:task_id/complete-merge
             const { task_id, commit_sha } = args;
             result = await callTauri(`git/tasks/${task_id}/complete-merge`, { commit_sha });
+            /* c8 ignore next 2 -- index.ts is a side-effectful MCP server; pure dispatch is covered in agent-workspace-tools tests. */
         }
-        else if (name === "get_agent_workspace_publish_status") {
-            // GET /api/agent-workspaces/:conversation_id/publish-status
-            result = await callGetAgentWorkspacePublishStatusTool(callTauriGet, args);
-        }
-        else if (name === "check_agent_workspace_publish_readiness") {
-            // GET /api/agent-workspaces/:conversation_id/publish-readiness
-            result = await callCheckAgentWorkspacePublishReadinessTool(callTauriGet, args);
-        }
-        else if (name === "update_agent_workspace_from_base") {
-            // POST /api/agent-workspaces/:conversation_id/update-from-base
-            result = await callUpdateAgentWorkspaceFromBaseTool(callTauri, args);
-        }
-        else if (name === "publish_agent_workspace") {
-            // POST /api/agent-workspaces/:conversation_id/publish
-            result = await callPublishAgentWorkspaceTool(callTauri, args);
-        }
-        else if (name === "complete_agent_workspace_repair") {
-            // POST /api/agent-workspaces/:conversation_id/complete-repair
-            result = await callCompleteAgentWorkspaceRepairTool(callTauri, args);
-        }
-        else if (name === "submit_agent_workspace_pr_description") {
-            // POST /api/agent-workspaces/:conversation_id/pr-description
-            result = await callSubmitAgentWorkspacePrDescriptionTool(callTauri, args);
+        else if (isAgentWorkspaceToolName(name)) {
+            result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args);
         }
         else if (name === "report_conflict") {
             // POST /api/git/tasks/:task_id/report-conflict

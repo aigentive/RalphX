@@ -8,7 +8,7 @@ import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-me
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
-import { callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, } from '../agent-workspace-tools.js';
+import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
 import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_WORKER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
@@ -1104,6 +1104,80 @@ describe('agent workspace publish tool transport', () => {
             conversation_id: 'conversation-1',
         })).resolves.toEqual({ success: true });
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/publish', {});
+    });
+    it.each([
+        [
+            'get_agent_workspace_publish_status',
+            'get',
+            'agent-workspaces/conversation-1/publish-status',
+            undefined,
+        ],
+        [
+            'check_agent_workspace_publish_readiness',
+            'get',
+            'agent-workspaces/conversation-1/publish-readiness',
+            undefined,
+        ],
+        [
+            'update_agent_workspace_from_base',
+            'post',
+            'agent-workspaces/conversation-1/update-from-base',
+            {
+                base_ref_kind: 'local_branch',
+                base_ref: 'feature/base',
+                base_display_name: 'feature/base',
+            },
+        ],
+        ['publish_agent_workspace', 'post', 'agent-workspaces/conversation-1/publish', {}],
+        [
+            'complete_agent_workspace_repair',
+            'post',
+            'agent-workspaces/conversation-1/complete-repair',
+            {
+                repair_commit_sha: 'a'.repeat(40),
+                resolved_base_ref: 'main',
+                resolved_base_commit: 'b'.repeat(40),
+                summary: 'Resolved conflicts',
+            },
+        ],
+        [
+            'submit_agent_workspace_pr_description',
+            'post',
+            'agent-workspaces/conversation-1/pr-description',
+            {
+                title: 'Generated title',
+                body_markdown: '## Summary\n\nGenerated body',
+            },
+        ],
+    ])('routes %s through the centralized agent workspace dispatcher', async (toolName, method, expectedPath, expectedBody) => {
+        const callTauri = vi.fn().mockResolvedValue({ ok: 'post' });
+        const callTauriGet = vi.fn().mockResolvedValue({ ok: 'get' });
+        const args = {
+            conversation_id: 'conversation-1',
+            base_ref_kind: 'local_branch',
+            base_ref: 'feature/base',
+            base_display_name: 'feature/base',
+            repair_commit_sha: 'a'.repeat(40),
+            resolved_base_ref: 'main',
+            resolved_base_commit: 'b'.repeat(40),
+            summary: 'Resolved conflicts',
+            title: 'Generated title',
+            body_markdown: '## Summary\n\nGenerated body',
+        };
+        await expect(callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args)).resolves.toEqual({ ok: method });
+        expect(isAgentWorkspaceToolName(toolName)).toBe(true);
+        if (method === 'get') {
+            expect(callTauriGet).toHaveBeenCalledWith(expectedPath);
+            expect(callTauri).not.toHaveBeenCalled();
+        }
+        else {
+            expect(callTauri).toHaveBeenCalledWith(expectedPath, expectedBody);
+            expect(callTauriGet).not.toHaveBeenCalled();
+        }
+    });
+    it('rejects unknown agent workspace dispatch names', async () => {
+        await expect(callAgentWorkspaceTool('unknown_agent_workspace_tool', vi.fn(), vi.fn(), {})).rejects.toThrow('Unsupported agent workspace tool');
+        expect(isAgentWorkspaceToolName('unknown_agent_workspace_tool')).toBe(false);
     });
 });
 describe('agent workspace repair tool transport', () => {

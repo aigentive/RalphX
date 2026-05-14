@@ -151,6 +151,38 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   },
 ];
 
+const AGENT_WORKSPACE_TOOL_NAMES = new Set(
+  AGENT_WORKSPACE_TOOLS.map((tool) => tool.name)
+);
+
+export function isAgentWorkspaceToolName(name: string): boolean {
+  return AGENT_WORKSPACE_TOOL_NAMES.has(name);
+}
+
+export async function callAgentWorkspaceTool(
+  name: string,
+  callTauri: TauriPost,
+  callTauriGet: TauriGet,
+  args: unknown
+): Promise<unknown> {
+  switch (name) {
+    case "get_agent_workspace_publish_status":
+      return callGetAgentWorkspacePublishStatusTool(callTauriGet, args);
+    case "check_agent_workspace_publish_readiness":
+      return callCheckAgentWorkspacePublishReadinessTool(callTauriGet, args);
+    case "update_agent_workspace_from_base":
+      return callUpdateAgentWorkspaceFromBaseTool(callTauri, args);
+    case "publish_agent_workspace":
+      return callPublishAgentWorkspaceTool(callTauri, args);
+    case "complete_agent_workspace_repair":
+      return callCompleteAgentWorkspaceRepairTool(callTauri, args);
+    case "submit_agent_workspace_pr_description":
+      return callSubmitAgentWorkspacePrDescriptionTool(callTauri, args);
+    default:
+      throw new Error(`Unsupported agent workspace tool: ${name}`);
+  }
+}
+
 export async function callGetAgentWorkspacePublishStatusTool(
   callTauriGet: TauriGet,
   args: unknown
