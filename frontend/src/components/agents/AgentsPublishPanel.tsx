@@ -1,11 +1,11 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  Code,
   FileText,
   GitPullRequestArrow,
   GitBranch,
   Loader2,
+  Maximize2,
   MoreVertical,
   XCircle,
 } from "lucide-react";
@@ -32,6 +32,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -54,6 +55,7 @@ import {
   PublishWorkspaceDialog,
   type PublishWorkspaceDialogPhase,
 } from "./AgentsPublishWorkspaceDialog";
+import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   getAgentWorkspaceTerminalPublicationLabel,
@@ -140,10 +142,18 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
+  // Workspace-only flags computed early so reviewQuery can decide whether the
+  // inline diff view will be visible. Hidden states (terminal PR, published PR
+  // current) skip the eager fetch and keep the dialog-driven flow.
+  const earlyTerminalStatus = getAgentWorkspaceTerminalPublicationStatus(workspace);
+  const earlyHasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const inlineDiffsCandidate =
+    !earlyTerminalStatus && !earlyHasPublishedPr && workspace?.mode === "edit";
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
-    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
+    enabled:
+      canHydratePublishFacts && !!conversationId && (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -489,194 +499,53 @@ export function AgentPublishPanel({
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
 
   return (
-    <div className="min-h-full p-4" data-testid="agents-publish-pane">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+    <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
+      <div className="@container flex w-full min-h-0 flex-1 flex-col gap-4">
         <section
-          className="rounded-lg border p-4"
+          className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
+          data-testid="agents-publish-actionbar"
           style={{
-            background: "var(--bg-surface)",
+            backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-subtle)",
           }}
         >
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-[var(--text-primary)]">
-                Review Changes
-              </div>
-              <div className="mt-1 text-xs text-[var(--text-muted)]">
-                {isPipelineOwnedWorkspace
-                  ? "Review this ideation workspace's execution branch and pull request."
-                  : "Review this agent workspace before publishing its draft PR."}
-              </div>
-            </div>
-            <span
-              className="rounded-full border px-2.5 py-1 text-xs capitalize"
-              data-testid="agents-publish-status-pill"
-              style={{
-                borderColor: "var(--overlay-weak)",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {terminalPublicationLabel ??
-                (isBranchUpdateNeeded
-                  ? "Behind base"
-                  : workspace.publicationPushStatus ??
-                    workspace.status)}
-            </span>
-          </div>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <PublishFact icon={GitBranch} label="Branch" value={branch} />
-            <PublishFact
-              icon={FileText}
-              label="Base"
-              value={base}
-              description={freshness?.baseBlockReason ?? null}
-            />
-            <PublishFact
-              icon={GitPullRequestArrow}
-              label="Pull Request"
-              value={prLabel}
-              description={prUrlLabel}
-              descriptionAction={
-                workspace.publicationPrUrl
-                  ? {
-                      label: `Open ${prUrlLabel}`,
-                      testId: "agents-open-pr-url",
-                      onClick: async () => {
-                        await openUrl(workspace.publicationPrUrl!);
-                      },
-                    }
-                  : undefined
-              }
-              action={
-                workspace.publicationPrUrl
-                  ? {
-                      label: "Open pull request",
-                      testId: "agents-open-pr",
-                      onClick: async () => {
-                        await openUrl(workspace.publicationPrUrl!);
-                      },
-                    }
-                  : undefined
-              }
-            />
-            <PublishFact
-              icon={CheckCircle2}
-              label="Mode"
-              value={
-                workspace.mode === "edit"
-                  ? "Edit agent"
-                  : isPipelineOwnedWorkspace
-                    ? "Ideation plan"
-                    : workspace.mode
-              }
-            />
-          </div>
-          {shouldShowPublishPipeline && (
-            <PublishPipelineSteps
-              status={pipelineStatus}
-              isPublishing={effectivePublishing}
-            />
-          )}
-        </section>
-
-        <GitAuthRepairPanel
-          projectId={workspace.projectId}
-          surface="publish"
-          requiresGhAuth
-        />
-
-        <section
-          className="rounded-lg border p-4"
-          style={{
-            background: "var(--bg-surface)",
-            borderColor: "var(--border-subtle)",
-          }}
-        >
-          {isBranchUpdateNeeded && (
-            <div
-              className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
-              style={{
-                background: "var(--bg-subtle)",
-                borderColor: "var(--border-subtle)",
-                color: "var(--text-secondary)",
-              }}
-              data-testid="agents-base-stale"
-            >
-              <AlertTriangle
-                aria-hidden="true"
-                className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                data-testid="agents-base-stale-icon"
-                style={{ color: "var(--status-warning)" }}
-              />
-              <span>
-                Base branch {freshness?.baseRef ?? baseActionLabel} has new commits.
-              </span>
-            </div>
-          )}
-          {baseRetargeted && (
-            <div
-              className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
-              style={{
-                background: "var(--bg-subtle)",
-                borderColor: "var(--border-subtle)",
-                color: "var(--text-secondary)",
-              }}
-              data-testid="agents-base-retargeted"
-            >
-              <GitBranch
-                aria-hidden="true"
-                className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                style={{ color: "var(--accent-primary)" }}
-              />
-              <span>Base branch retargeted to {base}.</span>
-            </div>
-          )}
-          {baseBlocked && (
-            <div
-              className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
-              style={{
-                background: "var(--bg-subtle)",
-                borderColor: "var(--status-warning-border)",
-                color: "var(--text-secondary)",
-              }}
-              data-testid="agents-base-blocked"
-            >
-              <AlertTriangle
-                aria-hidden="true"
-                className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                style={{ color: "var(--status-warning)" }}
-              />
-              <span>
-                {freshness?.baseBlockReason ??
-                  "This workspace base branch cannot be resolved safely."}
-              </span>
-            </div>
-          )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-[var(--text-primary)]">
-                {terminalPublicationLabel
-                  ? `Pull Request ${terminalPublicationLabel}`
-                  : "Commit & Publish"}
-              </div>
-              <div className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">
+              {terminalPublicationLabel && (
+                <div className="text-sm font-semibold text-[var(--text-primary)]">
+                  Pull Request {terminalPublicationLabel}
+                </div>
+              )}
+              <div
+                className={`text-xs leading-relaxed text-[var(--text-muted)]${
+                  terminalPublicationLabel ? " mt-1" : ""
+                }`}
+              >
                 {publishSummary}
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-9 gap-2 px-3 text-xs"
-                onClick={() => setReviewOpen(true)}
-                disabled={baseBlocked}
-                data-testid="agents-review-changes"
-              >
-                <Code className="h-3.5 w-3.5" />
-                Review Changes
-              </Button>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      onClick={() => setReviewOpen(true)}
+                      disabled={baseBlocked}
+                      data-testid="agents-review-changes"
+                      aria-label="Open changes in full diff dialog"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    <p>Open in full dialog</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               {isBranchUpdateNeeded ? (
                 <Button
                   type="button"
@@ -766,7 +635,184 @@ export function AgentPublishPanel({
               )}
             </div>
           </div>
+          {isBranchUpdateNeeded && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-stale"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                data-testid="agents-base-stale-icon"
+                style={{ color: "var(--status-warning)" }}
+              />
+              <span>
+                Base branch {freshness?.baseRef ?? baseActionLabel} has new commits.
+              </span>
+            </div>
+          )}
+          {baseRetargeted && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-retargeted"
+            >
+              <GitBranch
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+              />
+              <span>Base branch retargeted to {base}.</span>
+            </div>
+          )}
+          {baseBlocked && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--status-warning-border)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-blocked"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--status-warning)" }}
+              />
+              <span>
+                {freshness?.baseBlockReason ??
+                  "This workspace base branch cannot be resolved safely."}
+              </span>
+            </div>
+          )}
         </section>
+        <section
+          className="rounded-lg border p-4"
+          style={{
+            background: "var(--bg-surface)",
+            borderColor: "var(--border-subtle)",
+          }}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-[var(--text-primary)]">
+                Review Changes
+              </div>
+              <div className="mt-1 text-xs text-[var(--text-muted)]">
+                {isPipelineOwnedWorkspace
+                  ? "Review this ideation workspace's execution branch and pull request."
+                  : "Review this agent workspace before publishing its draft PR."}
+              </div>
+            </div>
+            <span
+              className="rounded-full border px-2.5 py-1 text-xs capitalize"
+              data-testid="agents-publish-status-pill"
+              style={{
+                borderColor: "var(--overlay-weak)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {terminalPublicationLabel ??
+                (isBranchUpdateNeeded
+                  ? "Behind base"
+                  : workspace.publicationPushStatus ??
+                    workspace.status)}
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-3 @md:grid-cols-2">
+            <PublishFact icon={GitBranch} label="Branch" value={branch} />
+            <PublishFact
+              icon={FileText}
+              label="Base"
+              value={base}
+              description={freshness?.baseBlockReason ?? null}
+            />
+            <PublishFact
+              icon={GitPullRequestArrow}
+              label="Pull Request"
+              value={prLabel}
+              description={prUrlLabel}
+              descriptionAction={
+                workspace.publicationPrUrl
+                  ? {
+                      label: `Open ${prUrlLabel}`,
+                      testId: "agents-open-pr-url",
+                      onClick: async () => {
+                        await openUrl(workspace.publicationPrUrl!);
+                      },
+                    }
+                  : undefined
+              }
+              action={
+                workspace.publicationPrUrl
+                  ? {
+                      label: "Open pull request",
+                      testId: "agents-open-pr",
+                      onClick: async () => {
+                        await openUrl(workspace.publicationPrUrl!);
+                      },
+                    }
+                  : undefined
+              }
+            />
+            <PublishFact
+              icon={CheckCircle2}
+              label="Mode"
+              value={
+                workspace.mode === "edit"
+                  ? "Edit agent"
+                  : isPipelineOwnedWorkspace
+                    ? "Ideation plan"
+                    : workspace.mode
+              }
+            />
+          </div>
+          {shouldShowPublishPipeline && (
+            <PublishPipelineSteps
+              status={pipelineStatus}
+              isPublishing={effectivePublishing}
+            />
+          )}
+        </section>
+
+        <GitAuthRepairPanel
+          projectId={workspace.projectId}
+          surface="publish"
+          requiresGhAuth
+        />
+
+
+        {/* Inline diff view — below the action row, all files expanded by default */}
+        {inlineDiffsCandidate && !baseBlocked && (
+          <section
+            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border"
+            data-testid="agents-publish-inline-diffs-section"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+            }}
+          >
+            <AgentsPublishInlineDiffs
+              conversationId={conversationId ?? ""}
+              review={reviewQuery.data ?? null}
+              commits={commits}
+              isLoading={Boolean(conversationId) && reviewQuery.isLoading}
+              onOpenInDialog={() => setReviewOpen(true)}
+            />
+          </section>
+        )}
+
         <PublishEventLog
           events={publicationEvents}
           isLoading={isPublicationEventsLoading}
