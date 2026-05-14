@@ -1,11 +1,11 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  Code,
   FileText,
   GitPullRequestArrow,
   GitBranch,
   Loader2,
+  Maximize2,
   MoreVertical,
   XCircle,
 } from "lucide-react";
@@ -32,6 +32,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -54,6 +55,7 @@ import {
   PublishWorkspaceDialog,
   type PublishWorkspaceDialogPhase,
 } from "./AgentsPublishWorkspaceDialog";
+import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
   getAgentWorkspaceTerminalPublicationLabel,
@@ -143,7 +145,8 @@ export function AgentPublishPanel({
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
-    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
+    // No reviewOpen gate — inline diffs need this data regardless of dialog state
+    enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -291,7 +294,7 @@ export function AgentPublishPanel({
   );
   const publicationEvents = publicationEventsQuery.data ?? [];
   const isChangesLoading =
-    Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
+    Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
@@ -666,17 +669,27 @@ export function AgentPublishPanel({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-9 gap-2 px-3 text-xs"
-                onClick={() => setReviewOpen(true)}
-                disabled={baseBlocked}
-                data-testid="agents-review-changes"
-              >
-                <Code className="h-3.5 w-3.5" />
-                Review Changes
-              </Button>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      onClick={() => setReviewOpen(true)}
+                      disabled={baseBlocked}
+                      data-testid="agents-review-changes"
+                      aria-label="Open changes in full diff dialog"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    <p>Open in full dialog</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               {isBranchUpdateNeeded ? (
                 <Button
                   type="button"
@@ -767,6 +780,27 @@ export function AgentPublishPanel({
             </div>
           </div>
         </section>
+
+        {/* Inline diff view — below the action row, all files expanded by default */}
+        {!terminalPublicationStatus && !baseBlocked && (
+          <section
+            className="overflow-hidden rounded-lg border"
+            data-testid="agents-publish-inline-diffs-section"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+            }}
+          >
+            <AgentsPublishInlineDiffs
+              conversationId={conversationId ?? ""}
+              review={reviewQuery.data ?? null}
+              commits={commits}
+              isLoading={isChangesLoading}
+              onOpenInDialog={() => setReviewOpen(true)}
+            />
+          </section>
+        )}
+
         <PublishEventLog
           events={publicationEvents}
           isLoading={isPublicationEventsLoading}
