@@ -224,22 +224,52 @@ mod tests {
         let dir = ensure_mcp_proxy_trace_dir();
 
         assert!(dir.starts_with(app_log_dir()));
-        assert_eq!(dir.file_name().and_then(|value| value.to_str()), Some("mcp-proxy"));
+        assert_eq!(
+            dir.file_name().and_then(|value| value.to_str()),
+            Some("mcp-proxy")
+        );
         assert!(dir.is_dir());
     }
 
     #[test]
     fn memory_archive_paths_hash_runtime_components() {
-        let path = memory_archive_rule_snapshot_file(
+        let project_dir = memory_archive_project_dir("../project/with\\separators");
+        let project_relative_dir =
+            memory_archive_project_relative_dir("../project/with\\separators");
+        let memory_path = memory_archive_memory_snapshot_file(
+            "../project/with\\separators",
+            "../memory/unsafe.md",
+        );
+        let memory_relative_path = memory_archive_memory_snapshot_relative_file(
+            "../project/with\\separators",
+            "../memory/unsafe.md",
+        );
+        let rule_path = memory_archive_rule_snapshot_file(
             "../project/with\\separators",
             "../rules/unsafe.md",
             "20260516_120000",
         );
-        let rendered = path.to_string_lossy();
+        let project_path =
+            memory_archive_project_snapshot_file("../project/with\\separators", "../bad");
+        let project_relative_path =
+            memory_archive_project_snapshot_relative_file("../project/with\\separators", "../bad");
 
-        assert!(path.starts_with(memory_archive_dir()));
-        assert!(!rendered.contains("../project"));
-        assert!(!rendered.contains("../rules"));
-        assert!(rendered.ends_with("20260516_120000.md"));
+        for path in [&project_dir, &memory_path, &rule_path, &project_path] {
+            let rendered = path.to_string_lossy();
+            assert!(path.starts_with(memory_archive_dir()));
+            assert!(!rendered.contains("../project"));
+            assert!(!rendered.contains("../memory"));
+            assert!(!rendered.contains("../rules"));
+            assert!(!rendered.contains("../bad"));
+        }
+
+        assert_eq!(project_dir, memory_archive_dir().join(project_relative_dir));
+        assert_eq!(memory_path, memory_archive_dir().join(memory_relative_path));
+        assert_eq!(
+            project_path,
+            memory_archive_dir().join(project_relative_path)
+        );
+        assert!(rule_path.ends_with("20260516_120000.md"));
+        assert!(project_path.ends_with("unknown-timestamp.md"));
     }
 }
