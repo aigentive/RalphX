@@ -11,8 +11,9 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// A file that was changed by the agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +26,10 @@ pub struct FileChange {
     pub additions: u32,
     /// Number of lines deleted
     pub deletions: u32,
+    /// Whether the file is considered auto-generated (source maps, lockfiles,
+    /// minified bundles, build outputs). Set by `DiffService::compute_generated_flags`.
+    #[serde(default)]
+    pub is_generated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -853,6 +858,108 @@ impl DiffService {
             None
         }
     }
+
+    /// Determine whether each path in `paths` is auto-generated, using a single
+    /// batched `git check-attr --stdin linguist-generated` call followed by a
+    /// hardcoded heuristic for paths with no `.gitattributes` opinion.
+    ///
+    /// Returns a map from path → `is_generated`. Every path in `paths` is
+    /// guaranteed to have an entry in the returned map.
+    ///
+    /// # Errors
+    /// Always returns `Ok` — if the git call fails the function logs a warning
+    /// and falls back to the heuristic for all paths.
+    pub fn compute_generated_flags(
+        &self,
+        workspace_path: &Path,
+        paths: &[&str],
+    ) -> AppResult<HashMap<String, bool>> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let attr_map = self.run_git_check_attr_map(workspace_path, paths);
+
+        match attr_map {
+            Ok(ref map) => {
+                let mut flags = HashMap::with_capacity(paths.len());
+                for &path in paths {
+                    let value = map.get(path).map(String::as_str).unwrap_or("unspecified");
+                    let is_gen = match value {
+                        "unspecified" => is_generated_by_heuristic(path),
+                        // Explicit opt-out via `.gitattributes`
+                        "unset" | "false" => false,
+                        // "set", "true", or any other value → generated
+                        _ => true,
+                    };
+                    flags.insert(path.to_string(), is_gen);
+                }
+                Ok(flags)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "git check-attr failed, falling back to heuristic: {e}"
+                );
+                let flags = paths
+                    .iter()
+                    .map(|&p| (p.to_string(), is_generated_by_heuristic(p)))
+                    .collect();
+                Ok(flags)
+            }
+        }
+    }
+
+    /// Run `git check-attr --stdin linguist-generated` and return a map of
+    /// `path → attribute value` for each path.  Paths with no matching rule
+    /// appear with value `"unspecified"`.
+    fn run_git_check_attr_map(
+        &self,
+        workspace_path: &Path,
+        paths: &[&str],
+    ) -> AppResult<HashMap<String, String>> {
+        let mut child = Command::new(resolve_git_cli_path())
+            .args(["check-attr", "--stdin", "linguist-generated"])
+            .current_dir(workspace_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                AppError::GitOperation(format!("Failed to spawn git check-attr: {e}"))
+            })?;
+
+        // Write all paths to stdin (drop closes the pipe, signalling EOF to git)
+        if let Some(mut stdin) = child.stdin.take() {
+            for path in paths {
+                // Paths from git diff --name-status are controlled git output, safe to forward
+                writeln!(stdin, "{path}").ok();
+            }
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            AppError::GitOperation(format!("Failed to wait for git check-attr: {e}"))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::GitOperation(format!(
+                "git check-attr failed: {stderr}"
+            )));
+        }
+
+        // Output format: "<path>: linguist-generated: <value>\n"
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut map = HashMap::with_capacity(paths.len());
+        const ATTR_INFIX: &str = ": linguist-generated: ";
+        for line in stdout.lines() {
+            if let Some(attr_pos) = line.find(ATTR_INFIX) {
+                let path = line[..attr_pos].to_string();
+                let value = line[attr_pos + ATTR_INFIX.len()..].to_string();
+                map.insert(path, value);
+            }
+        }
+        Ok(map)
+    }
 }
 
 fn run_git_text(project_path: &str, args: &[&str]) -> AppResult<String> {
@@ -872,6 +979,34 @@ fn run_git_text(project_path: &str, args: &[&str]) -> AppResult<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// =========================================================================
+// Generated-file heuristic
+// =========================================================================
+
+lazy_static::lazy_static! {
+    /// Patterns that identify auto-generated files when `.gitattributes` has no opinion.
+    static ref GENERATED_PATTERNS: Vec<regex::Regex> = vec![
+        // Source maps
+        regex::Regex::new(r"\.map$").unwrap(),
+        // Minified JS / CSS
+        regex::Regex::new(r"\.min\.(js|css)$").unwrap(),
+        // Common lockfiles
+        regex::Regex::new(
+            r"(?:^|/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|Gemfile\.lock|composer\.lock|poetry\.lock|uv\.lock)$"
+        ).unwrap(),
+        // Jest / Vitest snapshots
+        regex::Regex::new(r"\.snap$").unwrap(),
+        // Build / dist output directories
+        regex::Regex::new(r"^(?:dist|build|out|target)/").unwrap(),
+    ];
+}
+
+/// Return `true` when a file path matches one of the hardcoded generated-file
+/// heuristics (used when `.gitattributes` does not specify `linguist-generated`).
+fn is_generated_by_heuristic(path: &str) -> bool {
+    GENERATED_PATTERNS.iter().any(|re| re.is_match(path))
 }
 
 fn run_git_numstat_lossy(project_path: &str, args: &[&str]) -> HashMap<String, (u32, u32)> {
@@ -924,6 +1059,7 @@ fn file_changes_from_name_status(
             status,
             additions,
             deletions,
+            is_generated: false,
         });
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
