@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -45,6 +45,7 @@ const makeFileChange = (overrides: Partial<FileChange> = {}): FileChange => ({
   status: "modified",
   additions: 12,
   deletions: 3,
+  isGenerated: false,
   ...overrides,
 });
 
@@ -74,6 +75,7 @@ describe("AgentsPublishFileDiff", () => {
   const onCopyPath = vi.fn();
   const onOpenFullscreen = vi.fn();
   const onRetry = vi.fn();
+  const onShowAnyway = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -90,6 +92,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -106,6 +111,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -122,6 +130,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -138,6 +149,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -154,6 +168,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -170,6 +187,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -187,6 +207,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -204,6 +227,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -223,6 +249,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -241,6 +270,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -260,6 +292,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -276,6 +311,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -294,6 +332,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -310,6 +351,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -328,6 +372,9 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -347,6 +394,9 @@ describe("AgentsPublishFileDiff", () => {
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
             onRetry={onRetry}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -365,6 +415,9 @@ describe("AgentsPublishFileDiff", () => {
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
             onRetry={onRetry}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
@@ -382,10 +435,217 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
           />,
         ),
       );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+    });
+  });
+
+  describe("lazy hydration — shouldHydrate prop", () => {
+    it("shows pre-hydration placeholder when shouldHydrate=false and expanded", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange()}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={false}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("file-diff-pre-hydration")).toBeInTheDocument();
+      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+    });
+
+    it("does NOT show pre-hydration placeholder when collapsed", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange()}
+            diff={makeDiff()}
+            isExpanded={false}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={false}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.queryByTestId("file-diff-pre-hydration")).toBeNull();
+    });
+
+    it("mounts SimpleDiffView when shouldHydrate=true and expanded with diff data", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange()}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument();
+      expect(screen.queryByTestId("file-diff-pre-hydration")).toBeNull();
+    });
+
+    it("still renders header synchronously when shouldHydrate=false", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ path: "src/Heavy.tsx" })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={false}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByText("src/Heavy.tsx")).toBeInTheDocument();
+    });
+  });
+
+  describe("generated-file placeholder", () => {
+    it("shows generated placeholder when isGenerated=true and not overridden", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ isGenerated: true, additions: 100, deletions: 50 })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("file-diff-generated-placeholder")).toBeInTheDocument();
+      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+    });
+
+    it("shows +N and -M counts in generated placeholder", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ isGenerated: true, additions: 100, deletions: 50 })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      const placeholder = screen.getByTestId("file-diff-generated-placeholder");
+      expect(within(placeholder).getByText("+100")).toBeInTheDocument();
+      expect(within(placeholder).getByText("−50")).toBeInTheDocument();
+    });
+
+    it("clicking 'Show anyway' calls onShowAnyway", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ isGenerated: true })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("file-diff-show-anyway"));
+      expect(onShowAnyway).toHaveBeenCalledOnce();
+    });
+
+    it("mounts SimpleDiffView when isGenerated=true and isShowAnywayOverridden=true", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ isGenerated: true })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={true}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument();
+      expect(screen.queryByTestId("file-diff-generated-placeholder")).toBeNull();
+    });
+
+    it("does NOT show generated placeholder when collapsed (even if isGenerated=true)", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ isGenerated: true })}
+            diff={makeDiff()}
+            isExpanded={false}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      expect(screen.queryByTestId("file-diff-generated-placeholder")).toBeNull();
+    });
+
+    it("generated placeholder has accessible name on Show anyway button", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ isGenerated: true })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+      const btn = screen.getByTestId("file-diff-show-anyway");
+      expect(btn).toHaveAttribute("aria-label");
+      expect(btn.getAttribute("aria-label")).not.toBe("");
     });
   });
 });

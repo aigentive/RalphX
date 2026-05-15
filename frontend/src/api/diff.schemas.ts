@@ -9,6 +9,7 @@ export const FileChangeSchema = z.object({
   status: FileChangeStatusSchema,
   additions: z.number(),
   deletions: z.number(),
+  is_generated: z.boolean().default(false),
 });
 
 // ── Hunk-based diff schemas ────────────────────────────────────────────────

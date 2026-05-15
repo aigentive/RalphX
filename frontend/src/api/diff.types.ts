@@ -7,6 +7,7 @@ export interface FileChange {
   status: FileChangeStatus;
   additions: number;
   deletions: number;
+  isGenerated: boolean;
 }
 
 // ── Hunk-based diff types ─────────────────────────────────────────────────
