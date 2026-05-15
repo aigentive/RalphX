@@ -760,3 +760,129 @@ fn get_file_content_range_rejects_cumulative_base_and_head() {
         .unwrap_err();
     assert!(err_head.to_string().contains("CumulativeHead") || err_head.to_string().contains("resolved"));
 }
+
+#[test]
+fn get_file_content_range_rejects_from_zero() {
+    // from must be >= 1 (1-indexed)
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 0, 5)
+        .unwrap_err();
+    assert!(err.to_string().contains("from") || err.to_string().contains("1-indexed"));
+}
+
+#[test]
+fn get_file_content_range_reads_head_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // base.txt committed as "base\n" — HEAD has 1 line
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(&repo_str, &DiffSide::Old, "base.txt", &DiffRefKind::Head, 1, 1)
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].line_num, 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_reads_staged_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Stage a new version of base.txt
+    fs::write(repo.join("base.txt"), "base\nstaged\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    // Staged ref reads from the index — should see "staged" line
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(&repo_str, &DiffSide::New, "base.txt", &DiffRefKind::Staged, 1, 2)
+        .unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].content, "base");
+    assert_eq!(lines[1].content, "staged");
+}
+
+#[test]
+fn get_file_content_range_reads_unstaged_old_side_from_index() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Stage a modification so index differs from HEAD
+    fs::write(repo.join("base.txt"), "base\nindex_line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    // Then make a further disk change (unstaged)
+    fs::write(repo.join("base.txt"), "base\nindex_line\ndisk_line\n").unwrap();
+    // Side::Old for Unstaged reads from the index — should see 2 lines
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Unstaged,
+            1,
+            2,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1].content, "index_line");
+}
+
+#[test]
+fn get_file_content_range_reads_commit_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Capture the initial commit SHA (base.txt = "base\n")
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
+
+    // Make an additional commit so HEAD is now different
+    fs::write(repo.join("base.txt"), "base\nafter\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["commit", "-m", "second"]);
+
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Commit { sha },
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_returns_only_requested_window() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Write a 5-line file and commit it
+    fs::write(repo.join("multi.txt"), "a\nb\nc\nd\ne\n").unwrap();
+    git_cmd(&repo, &["add", "multi.txt"]);
+    git_cmd(&repo, &["commit", "-m", "5 lines"]);
+
+    let svc = DiffService::new();
+    // Request lines 2–4 of the committed file
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "multi.txt",
+            &DiffRefKind::Head,
+            2,
+            4,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].line_num, 2);
+    assert_eq!(lines[0].content, "b");
+    assert_eq!(lines[2].line_num, 4);
+    assert_eq!(lines[2].content, "d");
+}
