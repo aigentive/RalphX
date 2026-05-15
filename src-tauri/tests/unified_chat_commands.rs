@@ -19,7 +19,8 @@ use ralphx_lib::commands::unified_chat_commands::{
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
     AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse,
-    SendAgentMessageResponse,
+    SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
@@ -27,8 +28,9 @@ use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, ChatContextType,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, ProjectId,
+    ChatConversation, ChatConversationId, ExecutionPlan, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, PlanBranch,
+    PlanBranchStatus, Project, ProjectId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -161,6 +163,312 @@ fn test_agent_workspace() -> AgentConversationWorkspace {
         "ralphx/ralphx/agent-1234".to_string(),
         "/tmp/agent-1234".to_string(),
     )
+}
+
+async fn seed_mode_switch_workspace(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    project_id: ProjectId,
+    mode: AgentConversationWorkspaceMode,
+) {
+    let mut project = Project::new("Mode Switch Project".to_string(), "/tmp/project".to_string());
+    project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project persisted");
+
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id;
+    conversation.set_agent_mode(Some(mode));
+    state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation persisted");
+
+    let workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project_id,
+        mode,
+        IdeationAnalysisBaseRefKind::CurrentBranch,
+        "feature/mode-switch".to_string(),
+        Some("Current branch (feature/mode-switch)".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/agent-mode-switch".to_string(),
+        "/tmp/ralphx-agent-mode-switch".to_string(),
+    );
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace persisted");
+}
+
+#[tokio::test]
+async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace_mode() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-unlinked-mode-switch".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("22222222-2222-4222-8222-222222222222");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Ideation,
+    )
+    .await;
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "chat".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+        },
+        &state,
+    )
+    .await
+    .expect("unlinked ideation mode can switch to chat");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+    let response_workspace = response.workspace.expect("workspace should remain");
+    assert_eq!(response_workspace.mode, "chat");
+    assert!(!response_workspace.mode_switch_locked);
+
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace load succeeds")
+        .expect("workspace exists");
+    assert_eq!(stored.mode, AgentConversationWorkspaceMode::Chat);
+    assert!(stored.linked_ideation_session_id.is_none());
+    assert!(stored.linked_plan_branch_id.is_none());
+}
+
+#[tokio::test]
+async fn active_linked_ideation_session_blocks_mode_switch() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-active-ideation-link".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("33333333-3333-4333-8333-333333333333");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+    )
+    .await;
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project_id))
+        .await
+        .expect("ideation session persisted");
+    state
+        .agent_conversation_workspace_repo
+        .update_links(&conversation_id, Some(&session.id), None)
+        .await
+        .expect("workspace linked to session");
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("active linked ideation should lock mode switch");
+
+    assert!(error.contains("Ideation session is still active"));
+}
+
+#[tokio::test]
+async fn abandoned_pipeline_link_can_switch_to_edit_and_detaches_links() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-abandoned-pipeline-link".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("44444444-4444-4444-8444-444444444444");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+    )
+    .await;
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project_id.clone()))
+        .await
+        .expect("ideation session persisted");
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-abandoned"),
+        session.id.clone(),
+        project_id,
+        "plan-abandoned".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.status = PlanBranchStatus::Abandoned;
+    let plan_branch = state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("plan branch persisted");
+    state
+        .agent_conversation_workspace_repo
+        .update_links(&conversation_id, Some(&session.id), Some(&plan_branch.id))
+        .await
+        .expect("workspace linked to abandoned pipeline");
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+        },
+        &state,
+    )
+    .await
+    .expect("abandoned pipeline should not lock mode switch");
+
+    let response_workspace = response.workspace.expect("workspace should remain");
+    assert_eq!(response_workspace.mode, "edit");
+    assert!(response_workspace.linked_ideation_session_id.is_none());
+    assert!(response_workspace.linked_plan_branch_id.is_none());
+    assert!(!response_workspace.mode_switch_locked);
+
+    let stored = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace load succeeds")
+        .expect("workspace exists");
+    assert_eq!(stored.mode, AgentConversationWorkspaceMode::Edit);
+    assert!(stored.linked_ideation_session_id.is_none());
+    assert!(stored.linked_plan_branch_id.is_none());
+}
+
+#[tokio::test]
+async fn superseded_execution_plan_link_can_switch_to_edit_and_detaches_links() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-superseded-pipeline-link".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("66666666-6666-4666-8666-666666666666");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+    )
+    .await;
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project_id.clone()))
+        .await
+        .expect("ideation session persisted");
+    let mut execution_plan = ExecutionPlan::new(session.id.clone());
+    execution_plan.status = ExecutionPlanStatus::Superseded;
+    let execution_plan = state
+        .execution_plan_repo
+        .create(execution_plan)
+        .await
+        .expect("execution plan persisted");
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-superseded"),
+        session.id.clone(),
+        project_id,
+        "plan-superseded".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.execution_plan_id = Some(execution_plan.id);
+    let plan_branch = state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("plan branch persisted");
+    state
+        .agent_conversation_workspace_repo
+        .update_links(&conversation_id, Some(&session.id), Some(&plan_branch.id))
+        .await
+        .expect("workspace linked to superseded pipeline");
+
+    let response = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+        },
+        &state,
+    )
+    .await
+    .expect("superseded execution plan should not lock mode switch");
+
+    let response_workspace = response.workspace.expect("workspace should remain");
+    assert_eq!(response_workspace.mode, "edit");
+    assert!(response_workspace.linked_ideation_session_id.is_none());
+    assert!(response_workspace.linked_plan_branch_id.is_none());
+    assert!(!response_workspace.mode_switch_locked);
+}
+
+#[tokio::test]
+async fn active_pipeline_link_blocks_mode_switch() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-active-pipeline-link".to_string());
+    let conversation_id =
+        ChatConversationId::from_string("55555555-5555-4555-8555-555555555555");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+    )
+    .await;
+    let session = state
+        .ideation_session_repo
+        .create(IdeationSession::new(project_id.clone()))
+        .await
+        .expect("ideation session persisted");
+    let plan_branch = state
+        .plan_branch_repo
+        .create(PlanBranch::new(
+            ArtifactId::from_string("artifact-active"),
+            session.id.clone(),
+            project_id,
+            "plan-active".to_string(),
+            "main".to_string(),
+        ))
+        .await
+        .expect("plan branch persisted");
+    state
+        .agent_conversation_workspace_repo
+        .update_links(&conversation_id, Some(&session.id), Some(&plan_branch.id))
+        .await
+        .expect("workspace linked to active pipeline");
+
+    let error = switch_agent_conversation_mode_for_state(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+        },
+        &state,
+    )
+    .await
+    .expect_err("active pipeline should lock mode switch");
+
+    assert!(error.contains("Plan execution is still active"));
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {

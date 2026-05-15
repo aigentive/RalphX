@@ -114,6 +114,7 @@ interface EffortFieldConfig {
 interface ModeFieldConfig {
   value: string;
   onValueChange: (value: string) => void;
+  onOpen?: () => void | Promise<unknown>;
   options: ComposerOption[];
   disabled?: boolean;
   testId?: string;
@@ -516,7 +517,15 @@ export function AgentComposerSurface({
             {mode && (
               <ComposerModeChip
                 mode={mode}
-                onClick={() => setActionMenuOpen((prev) => !prev)}
+                onClick={() =>
+                  setActionMenuOpen((prev) => {
+                    const nextOpen = !prev;
+                    if (nextOpen) {
+                      void mode.onOpen?.();
+                    }
+                    return nextOpen;
+                  })
+                }
               />
             )}
 
@@ -603,9 +612,18 @@ function ComposerActionMenu({
 }) {
   const hasPersistentActions = enableAttachments || Boolean(project.endAction) || Boolean(mode);
   const setOpen = onOpenChange;
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) {
+        void mode?.onOpen?.();
+      }
+      setOpen(nextOpen);
+    },
+    [mode, setOpen],
+  );
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -830,17 +848,21 @@ function ComposerModeMenuSection({
       <div className="space-y-1">
         {mode.options.map((option) => {
           const isSelected = option.id === mode.value;
+          const optionDisabled = mode.disabled || option.disabled;
           return (
             <button
               key={option.id}
               type="button"
-              disabled={mode.disabled}
+              disabled={optionDisabled}
               data-testid={mode.testId ? `${mode.testId}-${option.id}` : undefined}
               className={cn(
-                "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors disabled:opacity-50",
+                "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                 isSelected ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--bg-hover)]"
               )}
               onClick={() => {
+                if (optionDisabled) {
+                  return;
+                }
                 mode.onValueChange(option.id);
                 onDone();
               }}
@@ -855,6 +877,11 @@ function ComposerModeMenuSection({
                 {option.description && (
                   <span className="mt-0.5 block text-[0.6875rem] leading-snug text-[var(--text-muted)]">
                     {option.description}
+                  </span>
+                )}
+                {option.disabledReason && (
+                  <span className="mt-1 block text-[0.6875rem] leading-snug text-[var(--text-muted)]">
+                    {option.disabledReason}
                   </span>
                 )}
               </span>

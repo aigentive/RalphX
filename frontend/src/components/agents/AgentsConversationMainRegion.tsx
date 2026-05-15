@@ -25,6 +25,7 @@ interface AgentsConversationMainRegionProps {
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
+  onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
@@ -67,6 +68,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   modelRegistry,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
+  onActiveConversationModeMenuOpen,
   onActiveEffortChange,
   onActiveModelChange,
   onAgentUserMessageSent,
@@ -106,6 +108,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
+        onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
         onActiveEffortChange={onActiveEffortChange}
         onActiveModelChange={onActiveModelChange}
         onAgentUserMessageSent={onAgentUserMessageSent}

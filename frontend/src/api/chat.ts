@@ -1518,6 +1518,8 @@ export interface AgentConversationWorkspace {
   worktreePath: string;
   linkedIdeationSessionId: string | null;
   linkedPlanBranchId: string | null;
+  modeSwitchLocked?: boolean;
+  modeSwitchLockReason?: string | null;
   publicationPrNumber: number | null;
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
@@ -1635,6 +1637,8 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   worktree_path: z.string(),
   linked_ideation_session_id: z.string().nullable(),
   linked_plan_branch_id: z.string().nullable(),
+  mode_switch_locked: z.boolean().optional().default(false),
+  mode_switch_lock_reason: z.string().nullable().optional().default(null),
   publication_pr_number: z.number().nullable(),
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
@@ -1792,6 +1796,8 @@ function transformAgentConversationWorkspace(
     worktreePath: raw.worktree_path,
     linkedIdeationSessionId: raw.linked_ideation_session_id,
     linkedPlanBranchId: raw.linked_plan_branch_id,
+    modeSwitchLocked: raw.mode_switch_locked,
+    modeSwitchLockReason: raw.mode_switch_lock_reason,
     publicationPrNumber: raw.publication_pr_number,
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
