@@ -132,4 +132,29 @@ describe("agentOptions", () => {
       effort: "max",
     });
   });
+
+  it("uses provider effort capabilities for typed custom models", () => {
+    const providerEfforts = ["high", "max"];
+
+    expect(
+      agentEffortOptionsForModel("claude", "custom-claude-model", undefined, providerEfforts).map(
+        (option) => option.id,
+      ),
+    ).toEqual(["high", "max"]);
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "custom-claude-model",
+          effort: "retired-effort",
+        },
+        undefined,
+        providerEfforts,
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "custom-claude-model",
+      effort: "high",
+    });
+  });
 });

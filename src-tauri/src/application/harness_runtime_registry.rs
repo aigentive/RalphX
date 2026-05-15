@@ -1038,12 +1038,52 @@ pub(crate) async fn run_startup_harness_integration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use tempfile::TempDir;
 
     fn plugin_override_lock() -> &'static std::sync::Mutex<()> {
         use std::sync::{Mutex, OnceLock};
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_fake_executable(path: &Path, body: &str) {
+        std::fs::write(path, body).expect("write fake executable");
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark fake executable");
     }
 
     fn make_runtime_plugin_layout() -> (TempDir, PathBuf, PathBuf) {
@@ -1333,6 +1373,161 @@ mod tests {
             .lock()
             .unwrap()
             .clear();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_harness_probe_reports_cli_supported_efforts() {
+        let _plugin_lock = plugin_override_lock().lock().expect("lock harness caches");
+        let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Claude);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_fake_executable(
+            &bin_dir.join("claude"),
+            r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.142 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+        let _home = EnvGuard::set_os("HOME", temp.path());
+        let _zdotdir = EnvGuard::set_os("ZDOTDIR", temp.path());
+        let _nvm = EnvGuard::unset("NVM_BIN");
+        let _volta = EnvGuard::unset("VOLTA_HOME");
+
+        let probe = probe_claude_harness();
+
+        assert!(probe.available);
+        assert!(probe.probe_succeeded);
+        assert_eq!(
+            probe.supported_efforts,
+            Some(vec![
+                "low".to_string(),
+                "medium".to_string(),
+                "high".to_string(),
+                "xhigh".to_string(),
+                "max".to_string(),
+            ])
+        );
+
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Claude);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_harness_probe_keeps_binary_available_when_capability_probe_fails() {
+        let _plugin_lock = plugin_override_lock().lock().expect("lock harness caches");
+        let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Claude);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_fake_executable(
+            &bin_dir.join("claude"),
+            r#"#!/bin/sh
+echo "probe failed" >&2
+exit 42
+"#,
+        );
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+        let _home = EnvGuard::set_os("HOME", temp.path());
+        let _zdotdir = EnvGuard::set_os("ZDOTDIR", temp.path());
+        let _nvm = EnvGuard::unset("NVM_BIN");
+        let _volta = EnvGuard::unset("VOLTA_HOME");
+
+        let probe = probe_claude_harness();
+
+        assert!(probe.binary_found);
+        assert!(probe.available);
+        assert!(!probe.probe_succeeded);
+        assert_eq!(probe.supported_efforts, None);
+        assert!(probe
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("probe failed"));
+
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Claude);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clearing_claude_runtime_caches_removes_cached_cli_capabilities() {
+        let _lock = plugin_override_lock().lock().expect("lock harness caches");
+        let _env_lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+            .lock()
+            .expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cli_path = temp.path().join("claude");
+        write_fake_executable(
+            &cli_path,
+            r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.142 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+esac
+"#,
+        );
+
+        assert_eq!(
+            crate::infrastructure::agents::claude::normalize_claude_effort_for_cli_path(
+                &cli_path, "xhigh",
+            ),
+            "xhigh"
+        );
+
+        write_fake_executable(
+            &cli_path,
+            r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.110 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, max)"
+    ;;
+esac
+"#,
+        );
+        assert_eq!(
+            crate::infrastructure::agents::claude::normalize_claude_effort_for_cli_path(
+                &cli_path, "xhigh",
+            ),
+            "xhigh"
+        );
+
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Claude);
+
+        assert_eq!(
+            crate::infrastructure::agents::claude::normalize_claude_effort_for_cli_path(
+                &cli_path, "xhigh",
+            ),
+            "high"
+        );
+
+        clear_harness_runtime_caches_for_harness(AgentHarnessKind::Claude);
     }
 
     #[test]
