@@ -220,6 +220,15 @@ mod tests {
     }
 
     #[test]
+    fn ensure_mcp_proxy_trace_dir_creates_app_owned_dir() {
+        let dir = ensure_mcp_proxy_trace_dir();
+
+        assert!(dir.starts_with(app_log_dir()));
+        assert_eq!(dir.file_name().and_then(|value| value.to_str()), Some("mcp-proxy"));
+        assert!(dir.is_dir());
+    }
+
+    #[test]
     fn memory_archive_paths_hash_runtime_components() {
         let path = memory_archive_rule_snapshot_file(
             "../project/with\\separators",
