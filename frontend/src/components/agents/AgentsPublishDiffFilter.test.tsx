@@ -76,6 +76,67 @@ describe("AgentsPublishDiffFilter", () => {
       );
       expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("abc1234");
     });
+
+    it("shows 'Staged (N files)' when mode is staged and stagedCount is provided", () => {
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="staged"
+            uncommittedCount={0}
+            stagedCount={4}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Staged");
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("4");
+    });
+
+    it("shows 'Staged' (no count) when mode is staged but stagedCount is undefined", () => {
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="staged"
+            uncommittedCount={0}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Staged");
+    });
+
+    it("shows 'Unstaged (N files)' when mode is unstaged and unstagedCount is provided", () => {
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="unstaged"
+            uncommittedCount={0}
+            unstagedCount={2}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("2");
+    });
+
+    it("shows 'All commits (N commits)' when mode is cumulative", () => {
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="cumulative"
+            uncommittedCount={0}
+            commits={[makeCommit(), makeCommit({ sha: "bbb222", shortSha: "bbb222" })]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("All commits");
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("2");
+    });
   });
 
   describe("popover content", () => {
@@ -126,6 +187,54 @@ describe("AgentsPublishDiffFilter", () => {
       await user.click(screen.getByTestId("diff-filter-trigger"));
       expect(screen.getByTestId("diff-filter-commits-section")).toBeInTheDocument();
     });
+
+    it("shows Unstaged radio option in popover", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            uncommittedCount={5}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      expect(screen.getByTestId("diff-filter-option-unstaged")).toBeInTheDocument();
+    });
+
+    it("shows Staged radio option in popover", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            uncommittedCount={5}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      expect(screen.getByTestId("diff-filter-option-staged")).toBeInTheDocument();
+    });
+
+    it("shows All commits radio option in popover", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            uncommittedCount={5}
+            commits={[makeCommit()]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      expect(screen.getByTestId("diff-filter-option-cumulative")).toBeInTheDocument();
+    });
   });
 
   describe("mode selection", () => {
@@ -164,6 +273,57 @@ describe("AgentsPublishDiffFilter", () => {
       await user.click(screen.getByTestId("diff-filter-commits-section-trigger"));
       await user.click(screen.getByTestId("diff-filter-commit-abc1234def5678"));
       expect(onModeChange).toHaveBeenCalledWith("abc1234def5678");
+    });
+
+    it("calls onModeChange('staged') when Staged radio is clicked", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            uncommittedCount={5}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      await user.click(screen.getByTestId("diff-filter-option-staged"));
+      expect(onModeChange).toHaveBeenCalledWith("staged");
+    });
+
+    it("calls onModeChange('unstaged') when Unstaged radio is clicked", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            uncommittedCount={5}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      await user.click(screen.getByTestId("diff-filter-option-unstaged"));
+      expect(onModeChange).toHaveBeenCalledWith("unstaged");
+    });
+
+    it("calls onModeChange('cumulative') when All commits radio is clicked", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            uncommittedCount={5}
+            commits={[makeCommit()]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      await user.click(screen.getByTestId("diff-filter-option-cumulative"));
+      expect(onModeChange).toHaveBeenCalledWith("cumulative");
     });
 
     it("filters commit list with filter input", async () => {

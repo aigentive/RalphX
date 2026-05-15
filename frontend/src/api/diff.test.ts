@@ -62,6 +62,96 @@ describe("diff api", () => {
     });
   });
 
+  describe("staged/unstaged/cumulative API wrappers", () => {
+    const rawFileChanges = [
+      { path: "src/lib.rs", status: "modified", additions: 4, deletions: 1 },
+    ];
+    const rawFileDiff = {
+      file_path: "src/lib.rs",
+      old_content: "old",
+      new_content: "new",
+      language: "rust",
+    };
+    const expectedFileChanges = [
+      { path: "src/lib.rs", status: "modified", additions: 4, deletions: 1 },
+    ];
+    const expectedFileDiff = {
+      filePath: "src/lib.rs",
+      oldContent: "old",
+      newContent: "new",
+      language: "rust",
+    };
+
+    it("calls get_agent_conversation_workspace_staged_file_changes", async () => {
+      mockInvoke.mockResolvedValue(rawFileChanges);
+      const result = await diffApi.getAgentConversationWorkspaceStagedFileChanges("conv-1");
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_staged_file_changes",
+        { conversationId: "conv-1" },
+      );
+      expect(result).toEqual(expectedFileChanges);
+    });
+
+    it("calls get_agent_conversation_workspace_unstaged_file_changes", async () => {
+      mockInvoke.mockResolvedValue(rawFileChanges);
+      const result = await diffApi.getAgentConversationWorkspaceUnstagedFileChanges("conv-1");
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_unstaged_file_changes",
+        { conversationId: "conv-1" },
+      );
+      expect(result).toEqual(expectedFileChanges);
+    });
+
+    it("calls get_agent_conversation_workspace_staged_file_diff", async () => {
+      mockInvoke.mockResolvedValue(rawFileDiff);
+      const result = await diffApi.getAgentConversationWorkspaceStagedFileDiff(
+        "conv-1",
+        "src/lib.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_staged_file_diff",
+        { conversationId: "conv-1", filePath: "src/lib.rs" },
+      );
+      expect(result).toEqual(expectedFileDiff);
+    });
+
+    it("calls get_agent_conversation_workspace_unstaged_file_diff", async () => {
+      mockInvoke.mockResolvedValue(rawFileDiff);
+      const result = await diffApi.getAgentConversationWorkspaceUnstagedFileDiff(
+        "conv-1",
+        "src/lib.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_unstaged_file_diff",
+        { conversationId: "conv-1", filePath: "src/lib.rs" },
+      );
+      expect(result).toEqual(expectedFileDiff);
+    });
+
+    it("calls get_agent_conversation_workspace_cumulative_file_changes", async () => {
+      mockInvoke.mockResolvedValue(rawFileChanges);
+      const result = await diffApi.getAgentConversationWorkspaceCumulativeFileChanges("conv-1");
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_cumulative_file_changes",
+        { conversationId: "conv-1" },
+      );
+      expect(result).toEqual(expectedFileChanges);
+    });
+
+    it("calls get_agent_conversation_workspace_cumulative_file_diff", async () => {
+      mockInvoke.mockResolvedValue(rawFileDiff);
+      const result = await diffApi.getAgentConversationWorkspaceCumulativeFileDiff(
+        "conv-1",
+        "src/lib.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_cumulative_file_diff",
+        { conversationId: "conv-1", filePath: "src/lib.rs" },
+      );
+      expect(result).toEqual(expectedFileDiff);
+    });
+  });
+
   it("transforms agent workspace review fields without invoking Tauri", () => {
     const review = transformAgentWorkspaceReview({
       changes: [
