@@ -2053,7 +2053,7 @@ elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
   printf '%s' "$6" > "$capture"
   exit 0
 else
-  printf 'unexpected args: %s\n' "$*" >&2
+  printf 'unexpected args\n' >&2
   exit 64
 fi
 "#,
@@ -2076,11 +2076,11 @@ fi
             std::fs::read_to_string(captured_add_json_path).expect("read captured add-json");
         assert!(
             captured_add_json.contains("--trace-dir"),
-            "registered MCP config should include trace-dir arg: {captured_add_json}"
+            "registered MCP config should include trace-dir arg"
         );
         assert!(
             captured_add_json.contains("mcp-proxy"),
-            "registered MCP config should point traces at MCP proxy log root: {captured_add_json}"
+            "registered MCP config should point traces at MCP proxy log root"
         );
     }
 
