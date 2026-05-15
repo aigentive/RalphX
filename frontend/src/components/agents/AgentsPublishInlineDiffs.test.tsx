@@ -44,6 +44,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onOpenFullscreen,
     refKind,
     conversationId,
+    shouldHydrate,
+    isShowAnywayOverridden,
+    onShowAnyway,
   }: {
     file: { path: string };
     diff: unknown;
@@ -54,6 +57,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onRetry?: () => void;
     refKind?: { kind: string };
     conversationId?: string;
+    shouldHydrate: boolean;
+    isShowAnywayOverridden: boolean;
+    onShowAnyway: () => void;
   }) => (
     <div
       data-testid={`mock-file-diff-${file.path.replace(/\//g, "-")}`}
@@ -61,9 +67,17 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-diff-status={typeof diff === "string" ? diff : diff ? "loaded" : "undefined"}
       data-ref-kind={refKind?.kind}
       data-conversation-id={conversationId}
+      data-should-hydrate={String(shouldHydrate)}
+      data-show-anyway-overridden={String(isShowAnywayOverridden)}
     >
       <button onClick={() => onCopyPath(file.path)}>copy</button>
       <button onClick={() => onOpenFullscreen(file.path)}>fullscreen</button>
+      <button
+        data-testid={`show-anyway-${file.path.replace(/\//g, "-")}`}
+        onClick={onShowAnyway}
+      >
+        Show anyway
+      </button>
       {file.path}
     </div>
   ),
@@ -103,6 +117,55 @@ vi.mock("@/api/diff", () => ({
   },
 }));
 
+// ── IntersectionObserver shim for jsdom ──────────────────────────────────────
+// Captures callbacks so tests can simulate intersection events.
+// Installed at module level so the guard `typeof IntersectionObserver === "undefined"`
+// in AgentsPublishInlineDiffs doesn't skip the effect.
+const ioCallbacks: IntersectionObserverCallback[] = [];
+const ioObservedElements: Element[] = [];
+
+class IOStub implements IntersectionObserver {
+  readonly root: Element | null = null;
+  readonly rootMargin = "200px";
+  readonly thresholds: ReadonlyArray<number> = [];
+  observe = vi.fn((el: Element) => {
+    ioObservedElements.push(el);
+  });
+  unobserve = vi.fn();
+  disconnect = vi.fn(() => {
+    ioObservedElements.splice(0);
+  });
+  takeRecords = vi.fn(() => [] as IntersectionObserverEntry[]);
+  constructor(cb: IntersectionObserverCallback) {
+    ioCallbacks.push(cb);
+  }
+}
+
+(globalThis as unknown as { IntersectionObserver: typeof IntersectionObserver }).IntersectionObserver =
+  IOStub as unknown as typeof IntersectionObserver;
+
+/** Fire an intersection event for the element at `elementIdx` in `ioObservedElements`. */
+function fireIntersection(elementIdx: number, isIntersecting: boolean) {
+  const cb = ioCallbacks[ioCallbacks.length - 1];
+  if (!cb) throw new Error("No IntersectionObserver callback registered");
+  const target = ioObservedElements[elementIdx];
+  if (!target) throw new Error(`No observed element at index ${elementIdx}`);
+  cb(
+    [
+      {
+        isIntersecting,
+        target,
+        boundingClientRect: {} as DOMRectReadOnly,
+        intersectionRatio: isIntersecting ? 1 : 0,
+        intersectionRect: {} as DOMRectReadOnly,
+        rootBounds: null,
+        time: 0,
+      } as IntersectionObserverEntry,
+    ],
+    {} as IntersectionObserver,
+  );
+}
+
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import type { FileChange } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
@@ -128,6 +191,7 @@ const makeFileChange = (path: string, overrides: Partial<FileChange> = {}): File
   status: "modified",
   additions: 5,
   deletions: 2,
+  isGenerated: false,
   ...overrides,
 });
 
@@ -149,6 +213,9 @@ const makeCommit = (sha: string): DiffViewerCommit => ({
 describe("AgentsPublishInlineDiffs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset IO state between tests to avoid cross-test pollution
+    ioCallbacks.splice(0);
+    ioObservedElements.splice(0);
     const makeHunkDiff = (filePath: string) => ({
       filePath,
       language: "typescript",
@@ -933,6 +1000,185 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("jump-to-file-popover")).toBeInTheDocument();
       await user.click(screen.getByTestId("jump-to-file-item-src/Foo.tsx"));
       expect(screen.queryByTestId("jump-to-file-popover")).toBeNull();
+    });
+  });
+
+  describe("lazy hydration — IntersectionObserver", () => {
+    it("initially passes shouldHydrate=false for all files", () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      const card = screen.getByTestId("mock-file-diff-src-Foo.tsx");
+      expect(card).toHaveAttribute("data-should-hydrate", "false");
+    });
+
+    it("sets shouldHydrate=true when IntersectionObserver fires for a file", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      // IO effect has run and observed the wrapper element
+      fireIntersection(0, true);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        );
+      });
+    });
+
+    it("does NOT set shouldHydrate=true when isIntersecting=false", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      fireIntersection(0, false);
+
+      // Wait a tick — state should NOT change
+      await new Promise((r) => setTimeout(r, 10));
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-should-hydrate",
+        "false",
+      );
+    });
+
+    it("resets shouldHydrate to false when mode changes", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      // First fire intersection so file is hydrated
+      fireIntersection(0, true);
+      await waitFor(() => {
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        );
+      });
+
+      // Switch mode → hydratedPaths should reset
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+
+      // The uncommitted file card is no longer in DOM (mode changed to staged)
+      // but the reset itself can be verified: if we switch back, shouldHydrate is false again
+      await user.click(screen.getByRole("button", { name: "Uncommitted" }));
+      await waitFor(() => {
+        // The card is re-rendered after mode switch; hydratedPaths was cleared
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "false",
+        );
+      });
+    });
+  });
+
+  describe("show-anyway — generated files", () => {
+    it("initially passes isShowAnywayOverridden=false", () => {
+      const changes = [makeFileChange("src/Foo.tsx", { isGenerated: true })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-show-anyway-overridden",
+        "false",
+      );
+    });
+
+    it("sets isShowAnywayOverridden=true after clicking Show anyway", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx", { isGenerated: true })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("show-anyway-src-Foo.tsx"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-show-anyway-overridden",
+          "true",
+        );
+      });
+    });
+
+    it("show-anyway override is per-file and does not affect other files", async () => {
+      const user = userEvent.setup();
+      const changes = [
+        makeFileChange("src/Foo.tsx", { isGenerated: true }),
+        makeFileChange("src/Bar.tsx", { isGenerated: true }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("show-anyway-src-Foo.tsx"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-show-anyway-overridden",
+          "true",
+        );
+      });
+      // Bar should still be false
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-show-anyway-overridden",
+        "false",
+      );
     });
   });
 });

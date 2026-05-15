@@ -34,6 +34,7 @@ export function transformFileChange(raw: RawFileChange): FileChange {
     status: raw.status,
     additions: raw.additions,
     deletions: raw.deletions,
+    isGenerated: raw.is_generated ?? false,
   };
 }
 

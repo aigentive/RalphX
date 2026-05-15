@@ -34,7 +34,7 @@ const rawFileDiff = {
 };
 
 const expectedFileChanges = [
-  { path: "src/lib.rs", status: "modified", additions: 4, deletions: 1 },
+  { path: "src/lib.rs", status: "modified", additions: 4, deletions: 1, isGenerated: false },
 ];
 
 const expectedFileDiff = {
@@ -102,6 +102,7 @@ describe("diff api", () => {
           status: "modified",
           additions: 4,
           deletions: 1,
+          isGenerated: false,
         },
       ],
       commits: [
@@ -289,11 +290,38 @@ describe("diff api", () => {
           status: "added",
           additions: 2,
           deletions: 0,
+          isGenerated: false,
         },
       ],
       commits: [],
       baseRef: "base-sha",
       headRef: "feature/publish",
+    });
+  });
+
+  describe("isGenerated round-trip", () => {
+    it("maps is_generated=true to isGenerated=true", async () => {
+      mockInvoke.mockResolvedValue([
+        { path: "package-lock.json", status: "modified", additions: 10, deletions: 5, is_generated: true },
+      ]);
+      const result = await diffApi.getAgentConversationWorkspaceStagedFileChanges("conv-1");
+      expect(result[0]).toMatchObject({ path: "package-lock.json", isGenerated: true });
+    });
+
+    it("maps missing is_generated (server omits field) to isGenerated=false via Zod default", async () => {
+      mockInvoke.mockResolvedValue([
+        { path: "src/main.ts", status: "modified", additions: 2, deletions: 1 },
+      ]);
+      const result = await diffApi.getAgentConversationWorkspaceStagedFileChanges("conv-1");
+      expect(result[0]).toMatchObject({ path: "src/main.ts", isGenerated: false });
+    });
+
+    it("maps is_generated=false to isGenerated=false", async () => {
+      mockInvoke.mockResolvedValue([
+        { path: "src/Foo.tsx", status: "added", additions: 20, deletions: 0, is_generated: false },
+      ]);
+      const result = await diffApi.getAgentConversationWorkspaceStagedFileChanges("conv-1");
+      expect(result[0]).toMatchObject({ path: "src/Foo.tsx", isGenerated: false });
     });
   });
 });

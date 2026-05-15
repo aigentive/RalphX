@@ -34,6 +34,12 @@ export interface AgentsPublishFileDiffProps {
   conversationId?: string | undefined;
   /** Which diff reference to use for range fetches. */
   refKind?: DiffRefKind | undefined;
+  /** Whether this file is in the viewport (±200px) — controls body hydration. */
+  shouldHydrate: boolean;
+  /** Whether the user has clicked "Show anyway" for a generated file. */
+  isShowAnywayOverridden: boolean;
+  /** Called when the user clicks "Show anyway" on a generated-file placeholder. */
+  onShowAnyway: () => void;
 }
 
 function statusLetter(status: FileChange["status"]): string {
@@ -68,8 +74,12 @@ export function AgentsPublishFileDiff({
   onRetry,
   conversationId,
   refKind,
+  shouldHydrate,
+  isShowAnywayOverridden,
+  onShowAnyway,
 }: AgentsPublishFileDiffProps) {
   const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
+  const showGeneratedPlaceholder = file.isGenerated && !isShowAnywayOverridden;
 
   return (
     <div
@@ -198,57 +208,94 @@ export function AgentsPublishFileDiff({
           className="flex min-h-0 flex-1 flex-col overflow-y-auto"
           style={{ minHeight: "60px" }}
         >
-          {diff === "loading" && (
-            <div data-testid="file-diff-skeleton" className="space-y-1 p-3">
-              <Skeleton className="h-4 w-3/4" />
-              <Skeleton className="h-4 w-full" />
-              <Skeleton className="h-4 w-2/3" />
-            </div>
-          )}
-
-          {diff === "error" && (
+          {showGeneratedPlaceholder ? (
+            /* Generated-file placeholder — shown until user clicks "Show anyway" */
             <div
-              data-testid="file-diff-error"
-              className="flex flex-col items-center gap-2 py-6 text-xs"
+              data-testid="file-diff-generated-placeholder"
+              className="flex items-center gap-2 px-3 py-4 text-xs"
               style={{ color: "var(--text-muted)" }}
             >
-              <p>Could not load diff for this file.</p>
-              {onRetry !== undefined && (
-                <button
-                  type="button"
-                  data-testid="file-diff-retry"
-                  aria-label="Retry loading diff"
-                  onClick={onRetry}
-                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-[var(--bg-hover)]"
-                  style={{ color: "var(--text-secondary)" }}
-                >
-                  <RefreshCw className="h-3 w-3" aria-hidden="true" />
-                  Retry
-                </button>
+              <span>Generated file</span>
+              {file.additions > 0 && (
+                <span className="font-mono" style={{ color: "var(--status-success)" }}>
+                  +{file.additions}
+                </span>
               )}
+              {file.deletions > 0 && (
+                <span className="font-mono" style={{ color: "var(--status-error)" }}>
+                  −{file.deletions}
+                </span>
+              )}
+              <button
+                type="button"
+                data-testid="file-diff-show-anyway"
+                aria-label="Show generated file diff"
+                onClick={onShowAnyway}
+                className="rounded px-2 py-0.5 text-xs transition-colors hover:bg-[var(--bg-hover)]"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                Show anyway
+              </button>
             </div>
-          )}
+          ) : !shouldHydrate ? (
+            /* Pre-hydration placeholder — card is off-screen, defer body mount */
+            <div data-testid="file-diff-pre-hydration" style={{ minHeight: "60px" }} />
+          ) : (
+            /* Hydrated body — render loading / error / diff / empty states */
+            <>
+              {diff === "loading" && (
+                <div data-testid="file-diff-skeleton" className="space-y-1 p-3">
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-2/3" />
+                </div>
+              )}
 
-          {diffData !== undefined && (
-            <SimpleDiffView
-              hunks={diffData.hunks}
-              oldTotalLines={diffData.oldTotalLines}
-              newTotalLines={diffData.newTotalLines}
-              isBinary={diffData.isBinary}
-              language={diffData.language}
-              conversationId={conversationId}
-              filePath={file.path}
-              refKind={refKind}
-            />
-          )}
+              {diff === "error" && (
+                <div
+                  data-testid="file-diff-error"
+                  className="flex flex-col items-center gap-2 py-6 text-xs"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  <p>Could not load diff for this file.</p>
+                  {onRetry !== undefined && (
+                    <button
+                      type="button"
+                      data-testid="file-diff-retry"
+                      aria-label="Retry loading diff"
+                      onClick={onRetry}
+                      className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-[var(--bg-hover)]"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                      Retry
+                    </button>
+                  )}
+                </div>
+              )}
 
-          {diff === undefined && (
-            <div
-              className="flex items-center justify-center py-6 text-xs"
-              style={{ color: "var(--text-muted)" }}
-            >
-              No diff available
-            </div>
+              {diffData !== undefined && (
+                <SimpleDiffView
+                  hunks={diffData.hunks}
+                  oldTotalLines={diffData.oldTotalLines}
+                  newTotalLines={diffData.newTotalLines}
+                  isBinary={diffData.isBinary}
+                  language={diffData.language}
+                  conversationId={conversationId}
+                  filePath={file.path}
+                  refKind={refKind}
+                />
+              )}
+
+              {diff === undefined && (
+                <div
+                  className="flex items-center justify-center py-6 text-xs"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  No diff available
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

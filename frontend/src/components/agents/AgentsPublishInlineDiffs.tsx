@@ -17,7 +17,7 @@
  * WKWebView CSS: explicit background-color / border-color with shallow-chain tokens.
  */
 
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { ArrowDownToLine, ChevronDown, ChevronUp } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -55,6 +55,11 @@ export function AgentsPublishInlineDiffs({
   const [jumpSearch, setJumpSearch] = useState("");
   // Refs for scrolling to file cards on jump
   const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
+  // Lazy hydration — tracks which file paths have entered the viewport (±200px).
+  // Paths are added on first intersection and never removed (avoids teardown thrash).
+  const [hydratedPaths, setHydratedPaths] = useState<Set<string>>(new Set());
+  // Show-anyway overrides — paths where the user has dismissed the generated-file placeholder.
+  const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
 
   const isStagedMode = mode === "staged";
   const isUnstagedMode = mode === "unstaged";
@@ -121,6 +126,48 @@ export function AgentsPublishInlineDiffs({
     cumulativeFilesQuery.data,
     review,
   ]);
+
+  // ── Mode change → reset hydrated set (new mode = new file list) ─────────
+  useEffect(() => {
+    setHydratedPaths(new Set());
+  }, [mode]);
+
+  // ── IntersectionObserver — lazy hydration ─────────────────────────────
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    if (currentFiles.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setHydratedPaths((prev) => {
+          let changed = false;
+          const next = new Set(prev);
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              const path = (entry.target as HTMLElement).dataset["filePath"];
+              if (path !== undefined && !prev.has(path)) {
+                next.add(path);
+                changed = true;
+              }
+            }
+          }
+          return changed ? next : prev;
+        });
+      },
+      { rootMargin: "200px" },
+    );
+
+    for (const f of currentFiles) {
+      const el = cardRefs.current.get(f.path);
+      if (el) {
+        observer.observe(el);
+      }
+    }
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [currentFiles]);
 
   // Only fetch diffs for expanded files — collapsed cards pay no query cost.
   const expandedFiles = useMemo(
@@ -453,6 +500,7 @@ export function AgentsPublishInlineDiffs({
             <div
               key={fileChange.path}
               className="flex flex-col last:min-h-0 last:flex-1"
+              data-file-path={fileChange.path}
               ref={(el: HTMLDivElement | null) => {
                 if (el) {
                   cardRefs.current.set(fileChange.path, el);
@@ -472,6 +520,11 @@ export function AgentsPublishInlineDiffs({
                 onOpenFullscreen={(path) => onOpenInDialog?.(path)}
                 conversationId={conversationId}
                 refKind={refKind}
+                shouldHydrate={hydratedPaths.has(fileChange.path)}
+                isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
+                onShowAnyway={() => {
+                  setUserShowAnywayPaths((prev) => new Set([...prev, fileChange.path]));
+                }}
               />
             </div>
           ))}

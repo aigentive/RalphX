@@ -566,7 +566,7 @@ async fn get_agent_workspace_review_for_context(
     let changes_fut = async move {
         tokio::task::spawn_blocking(move || {
             let diff_service = DiffService::new();
-            if let Some(target) = changes_target {
+            let mut changes = if let Some(target) = changes_target {
                 diff_service.get_file_changes_between_refs(
                     &changes_path,
                     &changes_base_ref,
@@ -574,7 +574,18 @@ async fn get_agent_workspace_review_for_context(
                 )
             } else {
                 diff_service.get_worktree_file_changes_from_ref(&changes_path, &changes_base_ref)
+            }?;
+            let flags = {
+                let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+                diff_service
+                    .compute_generated_flags(Path::new(&changes_path), &path_strs)?
+            };
+            for change in &mut changes {
+                if let Some(&is_gen) = flags.get(&change.path) {
+                    change.is_generated = is_gen;
+                }
             }
+            Ok(changes)
         })
         .await
         .map_err(|error| {
@@ -752,11 +763,20 @@ pub async fn get_agent_conversation_workspace_commit_file_changes(
         .await?;
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
-        let changes = if diff_service.is_merge_commit(&working_path, &commit_sha) {
+        let mut changes = if diff_service.is_merge_commit(&working_path, &commit_sha) {
             diff_service.get_file_changes_between_refs(&working_path, &ctx.base_ref, &commit_sha)
         } else {
             diff_service.get_commit_file_changes(&commit_sha, &working_path)
         }?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
         Ok((changes, cache_status))
     }
     .await;
@@ -927,11 +947,24 @@ pub async fn get_agent_conversation_workspace_staged_file_changes_for_state(
 ) -> AppResult<Vec<FileChange>> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
     let working_path = ctx.working_path.to_string_lossy().to_string();
-    tokio::task::spawn_blocking(move || DiffService::new().get_staged_file_changes(&working_path))
-        .await
-        .map_err(|e| {
-            AppError::Infrastructure(format!("staged file changes task failed: {e}"))
-        })?
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_staged_file_changes(&working_path)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Infrastructure(format!("staged file changes task failed: {e}"))
+    })?
 }
 
 #[doc(hidden)]
@@ -941,11 +974,24 @@ pub async fn get_agent_conversation_workspace_unstaged_file_changes_for_state(
 ) -> AppResult<Vec<FileChange>> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
     let working_path = ctx.working_path.to_string_lossy().to_string();
-    tokio::task::spawn_blocking(move || DiffService::new().get_unstaged_file_changes(&working_path))
-        .await
-        .map_err(|e| {
-            AppError::Infrastructure(format!("unstaged file changes task failed: {e}"))
-        })?
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_unstaged_file_changes(&working_path)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Infrastructure(format!("unstaged file changes task failed: {e}"))
+    })?
 }
 
 #[doc(hidden)]
@@ -988,7 +1034,19 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
     let base_ref = ctx.base_ref.clone();
     let head_ref = ctx.diff_target.clone().unwrap_or_else(|| "HEAD".to_string());
     tokio::task::spawn_blocking(move || {
-        DiffService::new().get_file_changes_between_refs(&working_path, &base_ref, &head_ref)
+        let diff_service = DiffService::new();
+        let mut changes =
+            diff_service.get_file_changes_between_refs(&working_path, &base_ref, &head_ref)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
     })
     .await
     .map_err(|e| {
@@ -1562,6 +1620,7 @@ mod tests {
                     status: FileChangeStatus::Modified,
                     additions: 3,
                     deletions: 1,
+                    is_generated: false,
                 }],
                 commits: vec![CommitInfoResponse {
                     sha: sha.to_string(),
