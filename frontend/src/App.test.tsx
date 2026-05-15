@@ -522,6 +522,17 @@ describe("App", () => {
     expect(screen.queryByTestId("project-selector-mock")).not.toBeInTheDocument();
   });
 
+  it.each(["kanban", "graph", "ideation"] as const)(
+    "shows the project selector in the %s topbar",
+    (view) => {
+      useUiStore.getState().setCurrentView(view);
+
+      render(<App />);
+
+      expect(screen.getByTestId("project-selector-mock")).toBeInTheDocument();
+    }
+  );
+
   it("shows the selected agent conversation in the Agents breadcrumb", () => {
     const queryClient = getQueryClient();
     const getMessagesPage = vi.spyOn(chatApi, "getConversationMessagesPage");
@@ -1192,6 +1203,7 @@ describe("App", () => {
 
       // v27 topbar controls stay mounted even when the project-scoped rail collapses.
       expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();
+      expect(screen.queryByTestId("project-selector-mock")).not.toBeInTheDocument();
 
       // Settings button still rendered (only thing left in Navigation)
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();

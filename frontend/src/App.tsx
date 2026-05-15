@@ -833,6 +833,10 @@ function AppContent() {
             pendingReviewCount={pendingReviewCount}
             reviewsPanelOpen={reviewsPanelOpen}
             onToggleReviewsPanel={toggleReviewsPanel}
+            onNewProject={handleOpenProjectWizard}
+            showProjectSelector={
+              !hasNoProjects && !showWelcomeOverlay && !providerSetupRequired
+            }
           />
 
           {/* Spacer for fixed header */}
