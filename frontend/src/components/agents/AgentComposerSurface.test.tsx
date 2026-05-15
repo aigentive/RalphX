@@ -1,9 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { AgentComposerSurface } from "./AgentComposerSurface";
 
-function renderComposer() {
+type ComposerProps = Parameters<typeof AgentComposerSurface>[0];
+
+function renderComposer(overrides: Partial<ComposerProps> = {}) {
   return render(
     <AgentComposerSurface
       project={{
@@ -34,6 +36,7 @@ function renderComposer() {
       }}
       onSend={vi.fn()}
       actionTestId="agent-composer-submit"
+      {...overrides}
     />
   );
 }
@@ -47,5 +50,49 @@ describe("AgentComposerSurface", () => {
     );
     expect(screen.getByTestId("agent-composer-runtime-pill")).not.toHaveClass("flex-1");
     expect(screen.getByTestId("agent-composer-submit")).toHaveClass("ml-auto");
+  });
+
+  it("refreshes mode state when the mode menu opens", () => {
+    const onOpen = vi.fn();
+    renderComposer({
+      mode: {
+        value: "ideation",
+        onOpen,
+        onValueChange: vi.fn(),
+        options: [{ id: "ideation", label: "Ideation" }],
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-mode-chip"));
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows disabled mode option reasons without firing the change handler", () => {
+    const onValueChange = vi.fn();
+    renderComposer({
+      mode: {
+        value: "ideation",
+        onValueChange,
+        options: [
+          { id: "ideation", label: "Ideation" },
+          {
+            id: "chat",
+            label: "Chat",
+            disabled: true,
+            disabledReason: "Plan execution is still active",
+          },
+        ],
+        testId: "agent-mode",
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-mode-chip"));
+    const chatOption = screen.getByTestId("agent-mode-chat");
+    fireEvent.click(chatOption);
+
+    expect(chatOption).toBeDisabled();
+    expect(screen.getByText("Plan execution is still active")).toBeInTheDocument();
+    expect(onValueChange).not.toHaveBeenCalled();
   });
 });

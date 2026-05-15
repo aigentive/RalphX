@@ -517,7 +517,15 @@ export function AgentComposerSurface({
             {mode && (
               <ComposerModeChip
                 mode={mode}
-                onClick={() => setActionMenuOpen((prev) => !prev)}
+                onClick={() =>
+                  setActionMenuOpen((prev) => {
+                    const nextOpen = !prev;
+                    if (nextOpen) {
+                      void mode.onOpen?.();
+                    }
+                    return nextOpen;
+                  })
+                }
               />
             )}
 

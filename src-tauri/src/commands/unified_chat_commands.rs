@@ -5977,6 +5977,7 @@ mod tests {
     use super::{
         agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
         agent_workspace_post_repair_action_from_events, apply_base_resolution_to_publish_target,
+        agent_workspace_response_for_state,
         build_agent_workspace_publish_repair_message_for_target,
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
@@ -6030,9 +6031,9 @@ mod tests {
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ArtifactId,
         ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
-        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
-        IdeationAnalysisBaseRefKind, IdeationSessionId, MessageRole, PlanBranch, PlanBranchId,
-        PlanBranchStatus, Project, ProjectId,
+        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
+        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
+        MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::{
@@ -8395,6 +8396,206 @@ mod tests {
             Some("claude-session-456".to_string())
         );
         assert_eq!(response.provider_harness, Some("claude".to_string()));
+    }
+
+    fn mode_lock_test_workspace(
+        conversation_id: ChatConversationId,
+        project_id: ProjectId,
+    ) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            conversation_id,
+            project_id,
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "feature/mode-lock".to_string(),
+            Some("Current branch (feature/mode-lock)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/mode-lock".to_string(),
+            "/tmp/ralphx-mode-lock".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn workspace_response_projects_active_ideation_mode_lock() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-active-mode-lock".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("77777777-7777-4777-8777-777777777777");
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .expect("ideation session persisted");
+        let mut workspace = mode_lock_test_workspace(conversation_id, project_id);
+        workspace.linked_ideation_session_id = Some(session.id);
+
+        let response = agent_workspace_response_for_state(&state, workspace)
+            .await
+            .expect("workspace response resolves mode lock");
+
+        assert!(response.mode_switch_locked);
+        assert_eq!(
+            response.mode_switch_lock_reason.as_deref(),
+            Some("Ideation session is still active")
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_response_projects_superseded_execution_plan_as_unlocked() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-superseded-mode-lock".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("88888888-8888-4888-8888-888888888888");
+        let session = state
+            .ideation_session_repo
+            .create(IdeationSession::new(project_id.clone()))
+            .await
+            .expect("ideation session persisted");
+        let mut execution_plan = ExecutionPlan::new(session.id.clone());
+        execution_plan.status = ExecutionPlanStatus::Superseded;
+        let execution_plan = state
+            .execution_plan_repo
+            .create(execution_plan)
+            .await
+            .expect("execution plan persisted");
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-superseded-lock"),
+            session.id.clone(),
+            project_id.clone(),
+            "plan-superseded-lock".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.execution_plan_id = Some(execution_plan.id);
+        let plan_branch = state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch persisted");
+        let mut workspace = mode_lock_test_workspace(conversation_id, project_id);
+        workspace.linked_ideation_session_id = Some(session.id);
+        workspace.linked_plan_branch_id = Some(plan_branch.id);
+
+        let response = agent_workspace_response_for_state(&state, workspace)
+            .await
+            .expect("workspace response resolves mode lock");
+
+        assert!(!response.mode_switch_locked);
+        assert!(response.mode_switch_lock_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn workspace_response_treats_missing_mode_owner_links_as_unlocked() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-missing-mode-lock".to_string());
+        let plan_conversation_id =
+            ChatConversationId::from_string("99999999-9999-4999-8999-999999999999");
+        let mut plan_workspace =
+            mode_lock_test_workspace(plan_conversation_id, project_id.clone());
+        plan_workspace.linked_plan_branch_id =
+            Some(PlanBranchId::from_string("missing-plan-branch".to_string()));
+
+        let plan_response = agent_workspace_response_for_state(&state, plan_workspace)
+            .await
+            .expect("missing plan branch resolves as unlocked");
+        assert!(!plan_response.mode_switch_locked);
+        assert!(plan_response.mode_switch_lock_reason.is_none());
+
+        let session_conversation_id =
+            ChatConversationId::from_string("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let mut session_workspace =
+            mode_lock_test_workspace(session_conversation_id, project_id);
+        session_workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
+            "missing-ideation-session".to_string(),
+        ));
+
+        let session_response = agent_workspace_response_for_state(&state, session_workspace)
+            .await
+            .expect("missing ideation session resolves as unlocked");
+        assert!(!session_response.mode_switch_locked);
+        assert!(session_response.mode_switch_lock_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn switching_to_chat_without_existing_workspace_keeps_workspace_absent() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-chat-no-workspace".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id;
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "chat".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await
+        .expect("chat mode switch succeeds without workspace");
+
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+        assert!(response.workspace.is_none());
+    }
+
+    #[tokio::test]
+    async fn switching_to_edit_without_existing_workspace_creates_workspace() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        let project_id = ProjectId::from_string("project-edit-new-workspace".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        let mut project = Project::new(
+            "Mode Switch Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project persisted");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id;
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await
+        .expect("edit mode switch creates workspace");
+
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+        assert_eq!(
+            response.workspace.as_ref().map(|workspace| workspace.mode.as_str()),
+            Some("edit")
+        );
     }
 
     #[tokio::test]
