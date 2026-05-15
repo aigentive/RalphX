@@ -400,7 +400,7 @@ export function DiffPanel({
           newTotalLines={diffData.newTotalLines}
           isBinary={diffData.isBinary}
           language={diffData.language}
-          {...(conversationId !== undefined && filePath !== null && refKind !== undefined && {
+          {...(conversationId !== undefined && refKind !== undefined && {
             conversationId,
             filePath,
             refKind,
