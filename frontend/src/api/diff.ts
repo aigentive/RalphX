@@ -208,4 +208,67 @@ export const diffApi = {
       FileDiffSchema,
       transformFileDiff
     ),
+
+  getAgentConversationWorkspaceStagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_staged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceUnstagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_unstaged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceStagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_staged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceUnstagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_unstaged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceCumulativeFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_cumulative_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceCumulativeFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_cumulative_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
 } as const;

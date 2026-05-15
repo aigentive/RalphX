@@ -868,6 +868,107 @@ pub async fn complete_agent_workspace_repair(
     }))
 }
 
+// =========================================================================
+// Extension A — Staged / Unstaged diff HTTP handlers
+// =========================================================================
+
+/// GET /api/agent-workspaces/{conversation_id}/staged-changes
+pub async fn get_agent_workspace_staged_file_changes(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<Vec<crate::application::FileChange>>, JsonError> {
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_staged_file_changes_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/unstaged-changes
+pub async fn get_agent_workspace_unstaged_file_changes(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<Vec<crate::application::FileChange>>, JsonError> {
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_unstaged_file_changes_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/staged-changes/{*file_path}
+pub async fn get_agent_workspace_staged_file_diff(
+    State(state): State<HttpServerState>,
+    Path((conversation_id, file_path)): Path<(String, String)>,
+) -> Result<Json<crate::application::FileDiff>, JsonError> {
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_staged_file_diff_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        file_path,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/unstaged-changes/{*file_path}
+pub async fn get_agent_workspace_unstaged_file_diff(
+    State(state): State<HttpServerState>,
+    Path((conversation_id, file_path)): Path<(String, String)>,
+) -> Result<Json<crate::application::FileDiff>, JsonError> {
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_unstaged_file_diff_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        file_path,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+}
+
+// =========================================================================
+// Extension B — Cumulative diff HTTP handlers
+// =========================================================================
+
+/// GET /api/agent-workspaces/{conversation_id}/cumulative-changes
+pub async fn get_agent_workspace_cumulative_file_changes(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<Vec<crate::application::FileChange>>, JsonError> {
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_changes_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/cumulative-changes/{*file_path}
+pub async fn get_agent_workspace_cumulative_file_diff(
+    State(state): State<HttpServerState>,
+    Path((conversation_id, file_path)): Path<(String, String)>,
+) -> Result<Json<crate::application::FileDiff>, JsonError> {
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_cumulative_file_diff_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        file_path,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,5 +1373,192 @@ mod tests {
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "Agent workspace not found");
+    }
+
+    // =========================================================================
+    // Extension A/B — Diff HTTP handler tests
+    // =========================================================================
+
+    async fn create_diff_workspace(
+    ) -> (
+        tempfile::TempDir,
+        Arc<AppState>,
+        ChatConversationId,
+        std::path::PathBuf,
+    ) {
+        use crate::application::agent_conversation_workspace::{
+            prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+        };
+        use crate::domain::entities::{
+            AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
+        };
+
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo");
+        git(repo.as_path(), &["init", "-b", "main"]);
+        git(repo.as_path(), &["config", "user.email", "test@example.com"]);
+        git(repo.as_path(), &["config", "user.name", "Test"]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        git(repo.as_path(), &["add", "."]);
+        git(repo.as_path(), &["commit", "-m", "Initial"]);
+
+        let mut project =
+            Project::new("Diff Test".to_string(), repo.display().to_string());
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory =
+            Some(tmp.path().join("worktrees").display().to_string());
+
+        let conversation_id = ChatConversationId::new();
+        let workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace prepared");
+
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+
+        let app_state = Arc::new(AppState::new_test());
+        app_state.project_repo.create(project).await.expect("seed project");
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+
+        (tmp, app_state, conversation_id, worktree_path)
+    }
+
+    #[tokio::test]
+    async fn get_staged_changes_handler_returns_staged_files() {
+        let (_tmp, app_state, conversation_id, worktree_path) =
+            create_diff_workspace().await;
+
+        std::fs::write(worktree_path.join("staged.txt"), "staged\n").unwrap();
+        git(worktree_path.as_path(), &["add", "staged.txt"]);
+
+        let state = test_http_state(app_state);
+        let Json(changes) = get_agent_workspace_staged_file_changes(
+            State(state),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect("staged changes should load");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "staged.txt");
+    }
+
+    #[tokio::test]
+    async fn get_unstaged_changes_handler_returns_unstaged_files() {
+        let (_tmp, app_state, conversation_id, worktree_path) =
+            create_diff_workspace().await;
+
+        // Modify committed file without staging
+        std::fs::write(worktree_path.join("base.txt"), "base\nmodified\n").unwrap();
+
+        let state = test_http_state(app_state);
+        let Json(changes) = get_agent_workspace_unstaged_file_changes(
+            State(state),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect("unstaged changes should load");
+
+        assert!(changes.iter().any(|c| c.path == "base.txt"));
+    }
+
+    #[tokio::test]
+    async fn get_staged_diff_handler_returns_head_vs_index_content() {
+        let (_tmp, app_state, conversation_id, worktree_path) =
+            create_diff_workspace().await;
+
+        std::fs::write(worktree_path.join("base.txt"), "base\nnew\n").unwrap();
+        git(worktree_path.as_path(), &["add", "base.txt"]);
+        // Further unstaged change — should NOT appear
+        std::fs::write(worktree_path.join("base.txt"), "base\nnew\nextra\n").unwrap();
+
+        let state = test_http_state(app_state);
+        let Json(diff) = get_agent_workspace_staged_file_diff(
+            State(state),
+            Path((conversation_id.to_string(), "base.txt".to_string())),
+        )
+        .await
+        .expect("staged diff should load");
+
+        assert_eq!(diff.old_content, "base\n");
+        assert_eq!(diff.new_content, "base\nnew\n");
+    }
+
+    #[tokio::test]
+    async fn get_cumulative_changes_handler_shows_all_committed_changes() {
+        let (_tmp, app_state, conversation_id, worktree_path) =
+            create_diff_workspace().await;
+
+        // Commit a change in the worktree
+        std::fs::write(worktree_path.join("committed.txt"), "committed\n").unwrap();
+        git(worktree_path.as_path(), &["add", "committed.txt"]);
+        git(worktree_path.as_path(), &["commit", "-m", "Add committed file"]);
+
+        let state = test_http_state(app_state);
+        let Json(changes) = get_agent_workspace_cumulative_file_changes(
+            State(state),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect("cumulative changes should load");
+
+        assert!(changes.iter().any(|c| c.path == "committed.txt"));
+    }
+
+    #[tokio::test]
+    async fn get_cumulative_diff_handler_shows_base_to_head_file_content() {
+        let (_tmp, app_state, conversation_id, worktree_path) =
+            create_diff_workspace().await;
+
+        // Commit a new file in the worktree
+        std::fs::write(worktree_path.join("new.rs"), "pub fn hello() {}\n").unwrap();
+        git(worktree_path.as_path(), &["add", "new.rs"]);
+        git(worktree_path.as_path(), &["commit", "-m", "Add new.rs"]);
+
+        let state = test_http_state(app_state);
+        let Json(diff) = get_agent_workspace_cumulative_file_diff(
+            State(state),
+            Path((conversation_id.to_string(), "new.rs".to_string())),
+        )
+        .await
+        .expect("cumulative diff should load");
+
+        assert_eq!(diff.file_path, "new.rs");
+        assert!(diff.new_content.contains("hello"));
+        assert_eq!(diff.old_content, "");
+    }
+
+    #[tokio::test]
+    async fn staged_and_cumulative_handlers_return_404_for_unknown_workspace() {
+        let state = test_http_state(Arc::new(AppState::new_test()));
+
+        let (status, _) = get_agent_workspace_staged_file_changes(
+            State(state.clone()),
+            Path(ChatConversationId::new().to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+
+        let (status, _) = get_agent_workspace_cumulative_file_changes(
+            State(state),
+            Path(ChatConversationId::new().to_string()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

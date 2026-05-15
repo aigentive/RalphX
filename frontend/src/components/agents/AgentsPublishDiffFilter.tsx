@@ -4,10 +4,15 @@
  * Popover-based diff mode selector for the inline diff view.
  * Trigger: shows current mode label ("Uncommitted (N files)" / "abc1234 – message").
  * Content:
+ *   VIEW section:
  *   - Radio "Uncommitted (N files)"
+ *   - Radio "Unstaged"  (lazy count — shown when selected)
+ *   - Radio "Staged"    (lazy count — shown when selected)
+ *   - Radio "All commits (N commits)"
  *   - Collapsible "SPECIFIC COMMIT" section: filter input + commit radio list.
  *
- * v1: "All commits" mode is intentionally omitted — no cumulative base..HEAD diff API exists.
+ * Staged/Unstaged counts are optional props; parent passes them once the mode is active
+ * and the query resolves. Until then the trigger shows "Staged" / "Unstaged" without count.
  *
  * Modeled on AgentsSidebar.tsx filter popover pattern.
  * WKWebView CSS: longhand background-color / border-color with literal or shallow-chain tokens.
@@ -25,11 +30,15 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 
-export type DiffFilterMode = "uncommitted" | string; // string = commit SHA
+export type DiffFilterMode = "uncommitted" | "staged" | "unstaged" | "cumulative" | string; // string also covers commit SHAs
 
 export interface AgentsPublishDiffFilterProps {
   mode: DiffFilterMode;
   uncommittedCount: number;
+  /** Staged file count — provided lazily by parent when staged mode is active. */
+  stagedCount?: number;
+  /** Unstaged file count — provided lazily by parent when unstaged mode is active. */
+  unstagedCount?: number;
   commits: DiffViewerCommit[];
   onModeChange: (mode: DiffFilterMode) => void;
 }
@@ -85,9 +94,25 @@ function getTriggerLabel(
   mode: DiffFilterMode,
   uncommittedCount: number,
   commits: DiffViewerCommit[],
+  stagedCount?: number,
+  unstagedCount?: number,
 ): string {
   if (mode === "uncommitted") {
     return `Uncommitted (${uncommittedCount} ${uncommittedCount === 1 ? "file" : "files"})`;
+  }
+  if (mode === "staged") {
+    return stagedCount !== undefined
+      ? `Staged (${stagedCount} ${stagedCount === 1 ? "file" : "files"})`
+      : "Staged";
+  }
+  if (mode === "unstaged") {
+    return unstagedCount !== undefined
+      ? `Unstaged (${unstagedCount} ${unstagedCount === 1 ? "file" : "files"})`
+      : "Unstaged";
+  }
+  if (mode === "cumulative") {
+    const n = commits.length;
+    return `All commits (${n} ${n === 1 ? "commit" : "commits"})`;
   }
   const commit = commits.find((c) => c.sha === mode);
   if (commit) {
@@ -103,12 +128,17 @@ function getTriggerLabel(
 export function AgentsPublishDiffFilter({
   mode,
   uncommittedCount,
+  stagedCount,
+  unstagedCount,
   commits,
   onModeChange,
 }: AgentsPublishDiffFilterProps) {
   const [open, setOpen] = useState(false);
   const [commitSearch, setCommitSearch] = useState("");
-  const [commitsOpen, setCommitsOpen] = useState(mode !== "uncommitted");
+  // Expand the specific-commit section when starting in a commit SHA mode.
+  const isNamedMode =
+    mode === "uncommitted" || mode === "staged" || mode === "unstaged" || mode === "cumulative";
+  const [commitsOpen, setCommitsOpen] = useState(!isNamedMode);
 
   const filteredCommits = useMemo(() => {
     if (!commitSearch.trim()) return commits;
@@ -126,7 +156,7 @@ export function AgentsPublishDiffFilter({
     setOpen(false);
   };
 
-  const triggerLabel = getTriggerLabel(mode, uncommittedCount, commits);
+  const triggerLabel = getTriggerLabel(mode, uncommittedCount, commits, stagedCount, unstagedCount);
 
   return (
     <Popover open={open} onOpenChange={setOpen} modal={false}>
@@ -173,6 +203,27 @@ export function AgentsPublishDiffFilter({
               testId="diff-filter-option-uncommitted"
             >
               Uncommitted ({uncommittedCount} {uncommittedCount === 1 ? "file" : "files"})
+            </FilterRadioRow>
+            <FilterRadioRow
+              selected={mode === "unstaged"}
+              onClick={() => handleSelect("unstaged")}
+              testId="diff-filter-option-unstaged"
+            >
+              Unstaged
+            </FilterRadioRow>
+            <FilterRadioRow
+              selected={mode === "staged"}
+              onClick={() => handleSelect("staged")}
+              testId="diff-filter-option-staged"
+            >
+              Staged
+            </FilterRadioRow>
+            <FilterRadioRow
+              selected={mode === "cumulative"}
+              onClick={() => handleSelect("cumulative")}
+              testId="diff-filter-option-cumulative"
+            >
+              All commits ({commits.length} {commits.length === 1 ? "commit" : "commits"})
             </FilterRadioRow>
           </div>
 

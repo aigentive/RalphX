@@ -320,3 +320,162 @@ fn test_is_git_238_or_newer() {
     let _result = DiffService::is_git_238_or_newer();
     // Should not panic
 }
+
+// =========================================================================
+// Staged / Unstaged Change Tests (Extension A)
+// =========================================================================
+
+/// Helper: run git commands in a repo and assert success.
+fn git_cmd(repo_path: &PathBuf, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Creates a git repo with a committed base file and returns (temp_dir, repo_path).
+fn create_staged_unstaged_repo() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let repo = temp_dir.path().to_path_buf();
+    git_cmd(&repo, &["init", "-b", "main"]);
+    git_cmd(&repo, &["config", "user.email", "test@example.com"]);
+    git_cmd(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("base.txt"), "base\n").unwrap();
+    git_cmd(&repo, &["add", "."]);
+    git_cmd(&repo, &["commit", "-m", "Initial"]);
+    (temp_dir, repo)
+}
+
+#[test]
+fn staged_file_changes_returns_only_staged_files() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a new file
+    fs::write(repo.join("staged.txt"), "staged content\n").unwrap();
+    git_cmd(&repo, &["add", "staged.txt"]);
+
+    // Also write an unstaged file (NOT added to index)
+    fs::write(repo.join("unstaged.txt"), "unstaged content\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_staged_file_changes(&repo_str).unwrap();
+
+    assert_eq!(changes.len(), 1, "Only staged file should be listed");
+    assert_eq!(changes[0].path, "staged.txt");
+    assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    assert_eq!(changes[0].additions, 1);
+}
+
+#[test]
+fn unstaged_file_changes_returns_only_unstaged_files() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a file but don't include it in working-tree view
+    fs::write(repo.join("staged_only.txt"), "staged\n").unwrap();
+    git_cmd(&repo, &["add", "staged_only.txt"]);
+
+    // Modify the committed file WITHOUT staging
+    fs::write(repo.join("base.txt"), "base\nmodified\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+
+    // Only base.txt (unstaged modification) should appear
+    assert!(
+        changes.iter().any(|c| c.path == "base.txt"),
+        "Unstaged modification should be listed"
+    );
+    assert!(
+        !changes.iter().any(|c| c.path == "staged_only.txt"),
+        "Staged-only file should not appear in unstaged changes"
+    );
+}
+
+#[test]
+fn staged_file_diff_shows_head_vs_index_content() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a modification to base.txt
+    fs::write(repo.join("base.txt"), "base\nadded line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+
+    // Write a further unstaged change (should NOT appear in staged diff)
+    fs::write(repo.join("base.txt"), "base\nadded line\nfurther unstaged\n").unwrap();
+
+    let svc = DiffService::new();
+    let diff = svc.get_staged_file_diff("base.txt", &repo_str).unwrap();
+
+    assert_eq!(diff.file_path, "base.txt");
+    assert_eq!(diff.old_content, "base\n", "Old content should be the HEAD version");
+    assert_eq!(
+        diff.new_content, "base\nadded line\n",
+        "New content should be the staged (index) version, not the unstaged disk content"
+    );
+    assert_eq!(diff.language, "plaintext");
+}
+
+#[test]
+fn unstaged_file_diff_shows_index_vs_disk_content() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a modification to base.txt first
+    fs::write(repo.join("base.txt"), "base\nstaged line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+
+    // Then make a further disk change (unstaged)
+    fs::write(repo.join("base.txt"), "base\nstaged line\ndisk change\n").unwrap();
+
+    let svc = DiffService::new();
+    let diff = svc.get_unstaged_file_diff("base.txt", &repo_str).unwrap();
+
+    assert_eq!(diff.file_path, "base.txt");
+    assert_eq!(
+        diff.old_content, "base\nstaged line\n",
+        "Old content should be the staged (index) version"
+    );
+    assert_eq!(
+        diff.new_content, "base\nstaged line\ndisk change\n",
+        "New content should be the current disk version"
+    );
+}
+
+#[test]
+fn staged_file_changes_empty_when_nothing_staged() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Only unstaged change
+    fs::write(repo.join("base.txt"), "base\nmore\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_staged_file_changes(&repo_str).unwrap();
+    assert!(changes.is_empty(), "No staged changes, result should be empty");
+}
+
+#[test]
+fn unstaged_file_changes_empty_when_working_tree_clean() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a file (no unstaged changes on committed files)
+    fs::write(repo.join("new.txt"), "new\n").unwrap();
+    git_cmd(&repo, &["add", "new.txt"]);
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+    assert!(
+        changes.is_empty(),
+        "No unstaged changes on tracked files, result should be empty"
+    );
+}

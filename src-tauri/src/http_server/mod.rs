@@ -326,6 +326,31 @@ pub async fn start_http_server(
             "/api/agent-workspaces/:conversation_id/pr-description",
             post(submit_agent_workspace_pr_description),
         )
+        // Agent workspace diff endpoints (Extension A — staged/unstaged; Extension B — cumulative)
+        .route(
+            "/api/agent-workspaces/:conversation_id/staged-changes",
+            get(get_agent_workspace_staged_file_changes),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/unstaged-changes",
+            get(get_agent_workspace_unstaged_file_changes),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/staged-changes/*file_path",
+            get(get_agent_workspace_staged_file_diff),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/unstaged-changes/*file_path",
+            get(get_agent_workspace_unstaged_file_diff),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/cumulative-changes",
+            get(get_agent_workspace_cumulative_file_changes),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/cumulative-changes/*file_path",
+            get(get_agent_workspace_cumulative_file_diff),
+        )
         .route("/api/git/tasks/:id/report-conflict", post(report_conflict))
         .route(
             "/api/git/tasks/:id/report-incomplete",
