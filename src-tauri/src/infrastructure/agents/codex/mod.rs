@@ -158,6 +158,10 @@ pub fn build_codex_mcp_overrides(
         short_name.to_string(),
         "--tauri-api-url".to_string(),
         crate::utils::backend_endpoint::backend_http_base_url(),
+        "--trace-dir".to_string(),
+        crate::utils::runtime_log_paths::mcp_proxy_trace_dir()
+            .to_string_lossy()
+            .into_owned(),
     ];
 
     if let Some(runtime_context) = runtime_context {

@@ -234,6 +234,31 @@ describe("safeTrace — file logging", () => {
             process.chdir(originalCwd);
         }
     });
+    it("uses a safe app-owned trace dir override", () => {
+        const traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-mcp-trace-root-"));
+        const traceDir = path.join(traceRoot, "logs", "mcp-proxy");
+        const targetProject = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-target-project-"));
+        process.env.RALPHX_MCP_TRACE_DIR = traceDir;
+        process.env.RALPHX_WORKING_DIRECTORY = targetProject;
+        const logPath = getTraceLogPath();
+        expect(logPath.startsWith(traceDir + path.sep)).toBe(true);
+        expect(fs.existsSync(traceDir)).toBe(true);
+        expect(fs.existsSync(path.join(targetProject, ".artifacts"))).toBe(false);
+    });
+    it("falls back without throwing when configured trace dir cannot be created", () => {
+        const blockedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-blocked-trace-root-"));
+        const traceDir = path.join(blockedRoot, "logs", "mcp-proxy");
+        process.env.RALPHX_MCP_TRACE_DIR = traceDir;
+        fs.chmodSync(blockedRoot, 0o555);
+        try {
+            expect(() => safeTrace("server.start")).not.toThrow();
+            const logPath = getTraceLogPath();
+            expect(logPath.startsWith(traceDir + path.sep)).toBe(false);
+        }
+        finally {
+            fs.chmodSync(blockedRoot, 0o755);
+        }
+    });
     it("writes only minimal allowlisted trace metadata under the safe trace root", () => {
         process.env.RALPHX_AGENT_TYPE = "ralphx-ideation";
         process.env.RALPHX_CONTEXT_TYPE = "ideation";

@@ -7,6 +7,7 @@ const RUNTIME_ARG_ENV_MAPPINGS = [
     { key: "contextId", argName: "context-id", envName: "RALPHX_CONTEXT_ID" },
     { key: "leadSessionId", argName: "lead-session-id", envName: "RALPHX_LEAD_SESSION_ID" },
     { key: "tauriApiUrl", argName: "tauri-api-url", envName: "TAURI_API_URL" },
+    { key: "traceDir", argName: "trace-dir", envName: "RALPHX_MCP_TRACE_DIR" },
 ];
 export function parseCliOptionFromArgs(args, optionName) {
     const inlinePrefix = `--${optionName}=`;

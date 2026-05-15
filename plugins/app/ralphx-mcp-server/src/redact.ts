@@ -10,10 +10,12 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TRACE_SUBDIR = "mcp-proxy";
+const TRACE_DISABLED = "(disabled)";
 
 interface RedactPattern {
   regex: RegExp;
@@ -88,6 +90,7 @@ export function safeError(...args: unknown[]): void {
 }
 
 let traceLogPath: string | null = null;
+let traceLogDisabled = false;
 const SAFE_TRACE_EVENTS = new Set([
   "backend.error",
   "backend.request",
@@ -107,24 +110,98 @@ function buildTraceFilename(): string {
   return `${timestamp}-${process.pid}.jsonl`;
 }
 
-function resolveTraceDir(): string {
+function hasUnsafePathCharacters(value: string): boolean {
+  return /[\0\r\n]/.test(value);
+}
+
+function isPathInsideOrEqual(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveConfiguredTraceDir(): string | null {
+  const rawTraceDir = process.env.RALPHX_MCP_TRACE_DIR;
+  if (!rawTraceDir || hasUnsafePathCharacters(rawTraceDir) || !path.isAbsolute(rawTraceDir)) {
+    return null;
+  }
+
+  const traceDir = path.resolve(rawTraceDir);
+  const workingDirectory = process.env.RALPHX_WORKING_DIRECTORY;
+  if (
+    workingDirectory &&
+    !hasUnsafePathCharacters(workingDirectory) &&
+    path.isAbsolute(workingDirectory)
+  ) {
+    const projectRoot = path.resolve(workingDirectory);
+    if (isPathInsideOrEqual(projectRoot, traceDir)) {
+      safeError(
+        "[RalphX MCP] Ignoring trace dir inside target working directory:",
+        traceDir
+      );
+      return null;
+    }
+  }
+
+  return traceDir;
+}
+
+function resolveModuleTraceDir(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(moduleDir, "../../../../.artifacts/logs", TRACE_SUBDIR);
+}
+
+function resolveFallbackTraceDir(): string {
+  return path.join(os.tmpdir(), "ralphx-mcp-proxy-traces");
+}
+
+function buildTraceLogPathInDir(traceDir: string): string | null {
+  try {
+    fs.mkdirSync(traceDir, { recursive: true });
+    return path.join(traceDir, buildTraceFilename());
+  } catch (error) {
+    safeError("[RalphX MCP] Failed to initialize MCP trace dir:", error);
+    return null;
+  }
+}
+
+function resolveTraceLogPath(): string | null {
+  const candidateDirs = [
+    resolveConfiguredTraceDir(),
+    resolveModuleTraceDir(),
+    resolveFallbackTraceDir(),
+  ].filter((dir): dir is string => Boolean(dir));
+
+  for (const traceDir of candidateDirs) {
+    const candidate = buildTraceLogPathInDir(traceDir);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  safeError("[RalphX MCP] MCP trace logging disabled: no writable trace dir");
+  return null;
 }
 
 export function getTraceLogPath(): string {
   if (traceLogPath) {
     return traceLogPath;
   }
+  if (traceLogDisabled) {
+    return TRACE_DISABLED;
+  }
 
-  const traceDir = resolveTraceDir();
-  fs.mkdirSync(traceDir, { recursive: true });
-  traceLogPath = path.join(traceDir, buildTraceFilename());
+  const resolvedPath = resolveTraceLogPath();
+  if (!resolvedPath) {
+    traceLogDisabled = true;
+    return TRACE_DISABLED;
+  }
+  traceLogPath = resolvedPath;
   return traceLogPath;
 }
 
 export function resetTraceLogPathForTests(): void {
   traceLogPath = null;
+  traceLogDisabled = false;
 }
 
 type TraceRecord = {
@@ -138,6 +215,11 @@ function normalizeTraceEvent(event: string): string {
 }
 
 export function safeTrace(event: string, _payload?: unknown): void {
+  const logPath = getTraceLogPath();
+  if (logPath === TRACE_DISABLED) {
+    return;
+  }
+
   const record: TraceRecord = {
     ts: new Date().toISOString(),
     pid: process.pid,
@@ -145,8 +227,10 @@ export function safeTrace(event: string, _payload?: unknown): void {
   }
 
   try {
-    fs.appendFileSync(getTraceLogPath(), `${JSON.stringify(record)}\n`, "utf8");
+    fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
   } catch (error) {
     safeError("[RalphX MCP] Failed to append MCP trace log:", error);
+    traceLogPath = null;
+    traceLogDisabled = true;
   }
 }
