@@ -16,6 +16,7 @@ export interface AgentProviderAvailabilityOption {
   label: string;
   disabled?: boolean;
   disabledReason?: string;
+  supportedEfforts?: readonly string[] | null;
 }
 
 export function buildAgentProviderAvailabilityOptions({
@@ -35,9 +36,19 @@ export function buildAgentProviderAvailabilityOptions({
 
     return {
       ...option,
+      ...(provider?.supportedEfforts !== undefined
+        ? { supportedEfforts: provider.supportedEfforts }
+        : {}),
       ...(disabledReason ? { disabled: true, disabledReason } : {}),
     };
   });
+}
+
+export function supportedEffortsForProvider(
+  providerOptions: readonly AgentProviderAvailabilityOption[],
+  provider: AgentProvider,
+): readonly string[] | null {
+  return providerOptions.find((option) => option.id === provider)?.supportedEfforts ?? null;
 }
 
 export function findSelectableAgentProvider(
@@ -63,7 +74,11 @@ export function normalizeRuntimeForSelectableProvider({
   defaultProvider?: AgentProvider | null;
   modelRegistry?: AgentModelRegistry;
 }): AgentRuntimeSelection | null {
-  const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
+  const normalizedRuntime = normalizeRuntimeSelection(
+    runtime,
+    modelRegistry,
+    supportedEffortsForProvider(providerOptions, runtime.provider),
+  );
   const selectedProvider = findSelectableAgentProvider(
     providerOptions,
     normalizedRuntime.provider,
@@ -84,6 +99,7 @@ export function normalizeRuntimeForSelectableProvider({
       modelId: defaultModelForProvider(fallbackProvider, modelRegistry),
     },
     modelRegistry,
+    supportedEffortsForProvider(providerOptions, fallbackProvider),
   );
 }
 

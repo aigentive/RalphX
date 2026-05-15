@@ -77,19 +77,27 @@ export function useAgentsActiveComposerControls({
   );
 
   const handleActiveModelChange = useCallback(
-    (modelId: string) => {
+    (modelId: string, providerSupportedEfforts?: readonly string[] | null) => {
       if (!selectedConversationId || !activeProjectId) {
         return;
       }
-      setRuntimeForConversation(selectedConversationId, activeProjectId, {
-        provider: normalizedActiveRuntime.provider,
-        modelId,
-        effort: defaultEffortForModel(
-          normalizedActiveRuntime.provider,
-          modelId,
-          modelRegistry
-        ),
-      });
+      setRuntimeForConversation(
+        selectedConversationId,
+        activeProjectId,
+        normalizeRuntimeSelection(
+          {
+            provider: normalizedActiveRuntime.provider,
+            modelId,
+            effort: defaultEffortForModel(
+              normalizedActiveRuntime.provider,
+              modelId,
+              modelRegistry
+            ),
+          },
+          modelRegistry,
+          providerSupportedEfforts
+        )
+      );
     },
     [
       activeProjectId,
@@ -101,7 +109,7 @@ export function useAgentsActiveComposerControls({
   );
 
   const handleActiveEffortChange = useCallback(
-    (effort: string) => {
+    (effort: string, providerSupportedEfforts?: readonly string[] | null) => {
       if (!selectedConversationId || !activeProjectId) {
         return;
       }
@@ -115,6 +123,7 @@ export function useAgentsActiveComposerControls({
             effort: effort as AgentEffort,
           },
           modelRegistry,
+          providerSupportedEfforts
         ),
       );
     },

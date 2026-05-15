@@ -81,6 +81,7 @@ const mockAgentProviderSettings = {
       status: "ready",
       error: null,
       missingCoreExecFeatures: [],
+      supportedEfforts: null,
       updatedAt: "2026-05-08T00:00:00Z",
     },
     {
@@ -100,6 +101,7 @@ const mockAgentProviderSettings = {
       status: "ready",
       error: null,
       missingCoreExecFeatures: [],
+      supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
       updatedAt: "2026-05-08T00:00:00Z",
     },
   ],

@@ -2,6 +2,7 @@
 // Uses the claude CLI for agent interactions
 
 mod agent_config;
+pub mod cli_capabilities;
 pub mod agent_names;
 mod claude_code_client;
 pub mod effort_resolver;
@@ -36,6 +37,11 @@ pub use claude_code_client::ClaudeCodeClient;
 pub use claude_code_client::{
     StreamEvent as ClientStreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig,
     TeammateSpawnResult,
+};
+pub use cli_capabilities::{
+    clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
+    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
+    probe_claude_cli_cached, ClaudeCliCapabilities,
 };
 
 // Re-export stream processor types for use by services
@@ -611,7 +617,16 @@ fn build_base_cli_command_inner_with_runtime_context(
             &effort_resolved
         }
     };
-    cmd.args(["--effort", effort]);
+    let normalized_effort = normalize_claude_effort_for_cli_path(cli_path, effort);
+    if normalized_effort != effort {
+        tracing::warn!(
+            requested_effort = effort,
+            effective_effort = %normalized_effort,
+            cli_path = %cli_path.display(),
+            "Normalized Claude CLI effort for installed CLI capability"
+        );
+    }
+    cmd.args(["--effort", normalized_effort.as_str()]);
 
     // Model for this agent — use explicit override when provided, otherwise resolve from agent config.
     let model_resolved;

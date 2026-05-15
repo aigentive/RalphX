@@ -5,6 +5,7 @@ import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
 import {
   buildAgentProviderAvailabilityOptions,
   getProviderAvailabilityMessage,
+  supportedEffortsForProvider,
 } from "./agentProviderAvailability";
 
 function provider(
@@ -76,5 +77,24 @@ describe("agent provider availability", () => {
         isReady: true,
       })
     ).toBe("Enable a provider with a validated CLI in Settings.");
+  });
+
+  it("preserves provider-supported effort capabilities", () => {
+    const providerOptions = buildAgentProviderAvailabilityOptions({
+      providers: [
+        provider({
+          provider: "claude",
+          supportedEfforts: ["low", "medium", "high", "max"],
+        }),
+      ],
+      isReady: true,
+    });
+
+    expect(supportedEffortsForProvider(providerOptions, "claude")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "max",
+    ]);
   });
 });

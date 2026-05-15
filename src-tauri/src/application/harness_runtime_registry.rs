@@ -5,8 +5,9 @@ use std::{collections::HashMap, time::Instant};
 use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{standard_harness_registry, AgentHarnessKind, DEFAULT_AGENT_HARNESS};
 use crate::infrastructure::agents::claude::{
-    agent_harness_defaults_config, execution_defaults_config, external_mcp_config, find_claude_cli,
-    node_utils, reconciliation_config, register_mcp_server, resolve_plugin_dir, scheduler_config,
+    agent_harness_defaults_config, clear_claude_cli_capability_cache, execution_defaults_config,
+    external_mcp_config, find_claude_cli, node_utils, probe_claude_cli_cached,
+    reconciliation_config, register_mcp_server, resolve_plugin_dir, scheduler_config,
     ui_feature_flags_config, validate_external_mcp_config, verification_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
     SpecialistEntry, UiFeatureFlagsConfig, VerificationConfig,
@@ -28,6 +29,7 @@ pub(crate) struct HarnessRuntimeProbe {
     pub probe_succeeded: bool,
     pub available: bool,
     pub missing_core_exec_features: Vec<String>,
+    pub supported_efforts: Option<Vec<String>>,
     pub error: Option<String>,
 }
 
@@ -96,18 +98,46 @@ pub(crate) struct HarnessRuntimeAdapter {
 }
 
 fn probe_claude_harness() -> HarnessRuntimeProbe {
-    let binary_path = find_claude_cli().map(|path| path.to_string_lossy().into_owned());
-    let binary_found = binary_path.is_some();
-    HarnessRuntimeProbe {
-        binary_path,
-        binary_found,
-        probe_succeeded: binary_found,
-        available: binary_found,
-        missing_core_exec_features: Vec::new(),
-        error: if binary_found {
-            None
-        } else {
-            Some("Claude CLI not found".to_string())
+    match find_claude_cli() {
+        Some(cli_path) => {
+            let binary_path = Some(cli_path.to_string_lossy().into_owned());
+            match probe_claude_cli_cached(&cli_path) {
+                Ok(capabilities) => {
+                    tracing::info!(
+                        cli_path = %cli_path.display(),
+                        version = ?capabilities.version,
+                        supported_efforts = ?capabilities.supported_effort_labels(),
+                        "Claude CLI capability probe completed"
+                    );
+                    HarnessRuntimeProbe {
+                        binary_path,
+                        binary_found: true,
+                        probe_succeeded: true,
+                        available: true,
+                        missing_core_exec_features: Vec::new(),
+                        supported_efforts: Some(capabilities.supported_effort_labels()),
+                        error: None,
+                    }
+                }
+                Err(error) => HarnessRuntimeProbe {
+                    binary_path,
+                    binary_found: true,
+                    probe_succeeded: false,
+                    available: true,
+                    missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
+                    error: Some(error),
+                },
+            }
+        }
+        None => HarnessRuntimeProbe {
+            binary_path: None,
+            binary_found: false,
+            probe_succeeded: false,
+            available: false,
+            missing_core_exec_features: Vec::new(),
+            supported_efforts: None,
+            error: Some("Claude CLI not found".to_string()),
         },
     }
 }
@@ -137,6 +167,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 probe_succeeded: true,
                 available,
                 missing_core_exec_features,
+                supported_efforts: None,
                 error,
             }
         }
@@ -147,6 +178,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 probe_succeeded: false,
                 available: false,
                 missing_core_exec_features: Vec::new(),
+                supported_efforts: None,
                 error: Some(error),
             },
             None => HarnessRuntimeProbe {
@@ -155,6 +187,7 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 probe_succeeded: false,
                 available: false,
                 missing_core_exec_features: Vec::new(),
+                supported_efforts: None,
                 error: Some(error),
             },
         },
@@ -361,6 +394,7 @@ fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
             probe_succeeded: false,
             available: false,
             missing_core_exec_features: Vec::new(),
+            supported_efforts: None,
             error: Some(format!("No harness probe registered for {}", harness)),
         })
 }
@@ -420,6 +454,7 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
                 probe_succeeded: false,
                 available: false,
                 missing_core_exec_features: Vec::new(),
+                supported_efforts: None,
                 error: Some("Harness runtime probe panicked".to_string()),
             }
         }
@@ -501,12 +536,17 @@ fn clear_harness_runtime_caches_for_harness(harness: AgentHarnessKind) {
             .unwrap()
             .retain(|(cached_harness, _), _| *cached_harness != harness);
     }
-    if harness == AgentHarnessKind::Codex {
-        if let Some(cache) = RESOLVED_CODEX_CLI_CACHE.get() {
-            *cache.lock().unwrap() = None;
+    match harness {
+        AgentHarnessKind::Claude => {
+            clear_claude_cli_capability_cache();
         }
-        if let Some(cache) = CODEX_CLI_CAPABILITY_CACHE.get() {
-            cache.lock().unwrap().clear();
+        AgentHarnessKind::Codex => {
+            if let Some(cache) = RESOLVED_CODEX_CLI_CACHE.get() {
+                *cache.lock().unwrap() = None;
+            }
+            if let Some(cache) = CODEX_CLI_CAPABILITY_CACHE.get() {
+                cache.lock().unwrap().clear();
+            }
         }
     }
 }
@@ -904,6 +944,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     probe_succeeded: true,
                     available,
                     missing_core_exec_features,
+                    supported_efforts: None,
                     error,
                 },
                 Some(capabilities),
@@ -917,6 +958,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
                     error: Some(error),
                 },
                 None => HarnessRuntimeProbe {
@@ -925,6 +967,7 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
                     error: Some(error),
                 },
             };
@@ -1078,6 +1121,14 @@ mod tests {
 
     #[test]
     fn resolve_default_chat_service_bootstrap_uses_default_harness() {
+        let _lock = plugin_override_lock().lock().expect("lock harness caches");
+        if let Some(cache) = HARNESS_RUNTIME_PROBE_CACHE.get() {
+            cache.lock().unwrap().clear();
+        }
+        if let Some(cache) = CHAT_HARNESS_CLI_CACHE.get() {
+            cache.lock().unwrap().clear();
+        }
+
         assert_eq!(
             resolve_default_chat_service_bootstrap(),
             resolve_chat_service_bootstrap(DEFAULT_AGENT_HARNESS)
@@ -1203,6 +1254,7 @@ mod tests {
                     probe_succeeded: true,
                     available: true,
                     missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
                     error: None,
                 },
             );
@@ -1259,6 +1311,7 @@ mod tests {
             probe_succeeded: true,
             available: true,
             missing_core_exec_features: Vec::new(),
+            supported_efforts: None,
             error: None,
         };
         let probe_in_flight = Arc::new(HarnessRuntimeProbeInFlight::new());
@@ -1298,6 +1351,7 @@ mod tests {
                     probe_succeeded: true,
                     available: true,
                     missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
                     error: None,
                 },
             );
