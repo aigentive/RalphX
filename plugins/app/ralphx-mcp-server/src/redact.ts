@@ -10,7 +10,6 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,48 +109,14 @@ function buildTraceFilename(): string {
   return `${timestamp}-${process.pid}.jsonl`;
 }
 
-function hasUnsafePathCharacters(value: string): boolean {
-  return /[\0\r\n]/.test(value);
-}
-
-function isPathInsideOrEqual(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function resolveConfiguredTraceDir(): string | null {
-  const rawTraceDir = process.env.RALPHX_MCP_TRACE_DIR;
-  if (!rawTraceDir || hasUnsafePathCharacters(rawTraceDir) || !path.isAbsolute(rawTraceDir)) {
-    return null;
-  }
-
-  const traceDir = path.resolve(rawTraceDir);
-  const workingDirectory = process.env.RALPHX_WORKING_DIRECTORY;
-  if (
-    workingDirectory &&
-    !hasUnsafePathCharacters(workingDirectory) &&
-    path.isAbsolute(workingDirectory)
-  ) {
-    const projectRoot = path.resolve(workingDirectory);
-    if (isPathInsideOrEqual(projectRoot, traceDir)) {
-      safeError(
-        "[RalphX MCP] Ignoring trace dir inside target working directory:",
-        traceDir
-      );
-      return null;
-    }
-  }
-
-  return traceDir;
-}
-
 function resolveModuleTraceDir(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(moduleDir, "../../../../.artifacts/logs", TRACE_SUBDIR);
 }
 
 function resolveFallbackTraceDir(): string {
-  return path.join(os.tmpdir(), "ralphx-mcp-proxy-traces");
+  const fallbackRoot = process.platform === "win32" ? "C:\\Windows\\Temp" : "/tmp";
+  return path.join(fallbackRoot, "ralphx-mcp-proxy-traces");
 }
 
 function buildTraceLogPathInDir(traceDir: string): string | null {
@@ -166,7 +131,6 @@ function buildTraceLogPathInDir(traceDir: string): string | null {
 
 function resolveTraceLogPath(): string | null {
   const candidateDirs = [
-    resolveConfiguredTraceDir(),
     resolveModuleTraceDir(),
     resolveFallbackTraceDir(),
   ].filter((dir): dir is string => Boolean(dir));

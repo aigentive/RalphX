@@ -9,7 +9,6 @@
  * MUST match before the generic sk- catch-all to prevent double-redaction.
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const TRACE_SUBDIR = "mcp-proxy";
@@ -99,37 +98,13 @@ function buildTraceFilename() {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     return `${timestamp}-${process.pid}.jsonl`;
 }
-function hasUnsafePathCharacters(value) {
-    return /[\0\r\n]/.test(value);
-}
-function isPathInsideOrEqual(parent, child) {
-    const relative = path.relative(parent, child);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-function resolveConfiguredTraceDir() {
-    const rawTraceDir = process.env.RALPHX_MCP_TRACE_DIR;
-    if (!rawTraceDir || hasUnsafePathCharacters(rawTraceDir) || !path.isAbsolute(rawTraceDir)) {
-        return null;
-    }
-    const traceDir = path.resolve(rawTraceDir);
-    const workingDirectory = process.env.RALPHX_WORKING_DIRECTORY;
-    if (workingDirectory &&
-        !hasUnsafePathCharacters(workingDirectory) &&
-        path.isAbsolute(workingDirectory)) {
-        const projectRoot = path.resolve(workingDirectory);
-        if (isPathInsideOrEqual(projectRoot, traceDir)) {
-            safeError("[RalphX MCP] Ignoring trace dir inside target working directory:", traceDir);
-            return null;
-        }
-    }
-    return traceDir;
-}
 function resolveModuleTraceDir() {
     const moduleDir = path.dirname(fileURLToPath(import.meta.url));
     return path.resolve(moduleDir, "../../../../.artifacts/logs", TRACE_SUBDIR);
 }
 function resolveFallbackTraceDir() {
-    return path.join(os.tmpdir(), "ralphx-mcp-proxy-traces");
+    const fallbackRoot = process.platform === "win32" ? "C:\\Windows\\Temp" : "/tmp";
+    return path.join(fallbackRoot, "ralphx-mcp-proxy-traces");
 }
 function buildTraceLogPathInDir(traceDir) {
     try {
@@ -143,7 +118,6 @@ function buildTraceLogPathInDir(traceDir) {
 }
 function resolveTraceLogPath() {
     const candidateDirs = [
-        resolveConfiguredTraceDir(),
         resolveModuleTraceDir(),
         resolveFallbackTraceDir(),
     ].filter((dir) => Boolean(dir));

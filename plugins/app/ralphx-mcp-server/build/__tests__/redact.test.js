@@ -234,18 +234,18 @@ describe("safeTrace — file logging", () => {
             process.chdir(originalCwd);
         }
     });
-    it("uses a safe app-owned trace dir override", () => {
+    it("does not use a configured trace dir as a filesystem root", () => {
         const traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-mcp-trace-root-"));
         const traceDir = path.join(traceRoot, "logs", "mcp-proxy");
         const targetProject = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-target-project-"));
         process.env.RALPHX_MCP_TRACE_DIR = traceDir;
         process.env.RALPHX_WORKING_DIRECTORY = targetProject;
         const logPath = getTraceLogPath();
-        expect(logPath.startsWith(traceDir + path.sep)).toBe(true);
-        expect(fs.existsSync(traceDir)).toBe(true);
+        expect(logPath.startsWith(traceDir + path.sep)).toBe(false);
+        expect(fs.existsSync(traceDir)).toBe(false);
         expect(fs.existsSync(path.join(targetProject, ".artifacts"))).toBe(false);
     });
-    it("falls back without throwing when configured trace dir cannot be created", () => {
+    it("continues without throwing when configured trace dir cannot be created", () => {
         const blockedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-blocked-trace-root-"));
         const traceDir = path.join(blockedRoot, "logs", "mcp-proxy");
         process.env.RALPHX_MCP_TRACE_DIR = traceDir;
