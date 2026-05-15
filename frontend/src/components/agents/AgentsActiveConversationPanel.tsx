@@ -66,6 +66,8 @@ interface AgentComposerOption {
   id: string;
   label: string;
   description?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }
 
 interface AgentsActiveConversationPanelProps {
@@ -83,6 +85,7 @@ interface AgentsActiveConversationPanelProps {
   hasAutoOpenArtifacts: boolean;
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
+  onActiveConversationModeMenuOpen: () => void;
   onActiveEffortChange: (effort: string) => void;
   onActiveModelChange: (modelId: string) => void;
   onAgentUserMessageSent: (event: {
@@ -120,6 +123,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   hasAutoOpenArtifacts,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
+  onActiveConversationModeMenuOpen,
   onActiveEffortChange,
   onActiveModelChange,
   onAgentUserMessageSent,
@@ -260,6 +264,27 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       normalizedActiveRuntime.provider,
     ]
   );
+  const modeOptions = useMemo(() => {
+    if (!activeConversationModeLocked) {
+      return AGENT_CONVERSATION_MODE_OPTIONS;
+    }
+    const lockReason =
+      activeWorkspace?.modeSwitchLockReason ??
+      "Active ideation or execution state owns this workspace.";
+    return AGENT_CONVERSATION_MODE_OPTIONS.map((option) =>
+      option.id === activeConversationMode || option.id === "ideation"
+        ? option
+        : {
+            ...option,
+            disabled: true,
+            disabledReason: lockReason,
+          },
+    );
+  }, [
+    activeConversationMode,
+    activeConversationModeLocked,
+    activeWorkspace?.modeSwitchLockReason,
+  ]);
 
   return (
     <div
@@ -342,16 +367,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     ? {
                         mode: {
                           value: activeConversationMode,
+                          onOpen: onActiveConversationModeMenuOpen,
                           onValueChange: (value: string) =>
                             onActiveConversationModeChange(
                               value as AgentConversationWorkspaceMode,
                             ),
-                          options: AGENT_CONVERSATION_MODE_OPTIONS,
+                          options: modeOptions,
                           // Workspace conversation owns mode; child chats
                           // inherit and display it read-only.
                           disabled:
                             isFocusedChildChat ||
-                            activeConversationModeLocked ||
                             composerProps.agentStatus !== "idle" ||
                             switchingConversationModeId === selectedConversationId,
                         },

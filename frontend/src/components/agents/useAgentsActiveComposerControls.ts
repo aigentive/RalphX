@@ -19,10 +19,10 @@ import {
   defaultEffortForModel,
   normalizeRuntimeSelection,
 } from "./agentOptions";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 interface UseAgentsActiveComposerControlsArgs {
   activeConversation: AgentConversation | null;
-  activeConversationModeLocked: boolean;
   activeProjectId: string | null;
   activeWorkspace: AgentConversationWorkspace | null;
   defaultProjectId: string | null;
@@ -43,7 +43,6 @@ interface UseAgentsActiveComposerControlsArgs {
 
 export function useAgentsActiveComposerControls({
   activeConversation,
-  activeConversationModeLocked,
   activeProjectId,
   activeWorkspace,
   defaultProjectId,
@@ -135,8 +134,7 @@ export function useAgentsActiveComposerControls({
         !selectedConversationId ||
         !activeProjectId ||
         !activeConversation ||
-        activeConversation.contextType !== "project" ||
-        activeConversationModeLocked
+        activeConversation.contextType !== "project"
       ) {
         return;
       }
@@ -167,7 +165,6 @@ export function useAgentsActiveComposerControls({
     },
     [
       activeConversation,
-      activeConversationModeLocked,
       activeProjectId,
       activeWorkspace,
       invalidateProjectConversations,
@@ -176,10 +173,21 @@ export function useAgentsActiveComposerControls({
     ]
   );
 
+  const handleActiveConversationModeMenuOpen = useCallback(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+    void queryClient.refetchQueries({
+      queryKey: agentWorkspaceKeys.workspace(selectedConversationId),
+      exact: true,
+    });
+  }, [queryClient, selectedConversationId]);
+
   return {
     activeProjectOptions,
     defaultRuntime,
     handleActiveConversationModeChange,
+    handleActiveConversationModeMenuOpen,
     handleActiveEffortChange,
     handleActiveModelChange,
     switchingConversationModeId,

@@ -73,8 +73,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
-    ChatTimelineItem, DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::services::{
     AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -189,6 +189,8 @@ pub struct AgentConversationWorkspaceResponse {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    pub mode_switch_locked: bool,
+    pub mode_switch_lock_reason: Option<String>,
 }
 
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
@@ -216,6 +218,8 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             status: workspace.status.to_string(),
             created_at: workspace.created_at.to_rfc3339(),
             updated_at: workspace.updated_at.to_rfc3339(),
+            mode_switch_locked: false,
+            mode_switch_lock_reason: None,
         }
     }
 }
@@ -235,6 +239,85 @@ fn project_plan_branch_publication_into_workspace_response(
             .map(|status| status.to_db_string().to_ascii_lowercase())
     };
     response.publication_push_status = Some(plan_branch.pr_push_status.to_db_string().to_string());
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentConversationWorkspaceModeLock {
+    locked: bool,
+    reason: Option<String>,
+}
+
+impl AgentConversationWorkspaceModeLock {
+    fn unlocked() -> Self {
+        Self {
+            locked: false,
+            reason: None,
+        }
+    }
+
+    fn locked(reason: impl Into<String>) -> Self {
+        Self {
+            locked: true,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+async fn resolve_agent_conversation_workspace_mode_lock(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<AgentConversationWorkspaceModeLock, String> {
+    if let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() {
+        let Some(plan_branch) = state
+            .plan_branch_repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(AgentConversationWorkspaceModeLock::unlocked());
+        };
+
+        if plan_branch.status != PlanBranchStatus::Active {
+            return Ok(AgentConversationWorkspaceModeLock::unlocked());
+        }
+
+        if let Some(execution_plan_id) = plan_branch.execution_plan_id.as_ref() {
+            let execution_plan = state
+                .execution_plan_repo
+                .get_by_id(execution_plan_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if execution_plan
+                .as_ref()
+                .is_some_and(|plan| plan.status != ExecutionPlanStatus::Active)
+            {
+                return Ok(AgentConversationWorkspaceModeLock::unlocked());
+            }
+        }
+
+        return Ok(AgentConversationWorkspaceModeLock::locked(
+            "Plan execution is still active",
+        ));
+    }
+
+    if let Some(session_id) = workspace.linked_ideation_session_id.as_ref() {
+        let Some(session) = state
+            .ideation_session_repo
+            .get_by_id(session_id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(AgentConversationWorkspaceModeLock::unlocked());
+        };
+
+        if session.is_active() && session.archived_at.is_none() && session.converted_at.is_none() {
+            return Ok(AgentConversationWorkspaceModeLock::locked(
+                "Ideation session is still active",
+            ));
+        }
+    }
+
+    Ok(AgentConversationWorkspaceModeLock::unlocked())
 }
 
 fn plan_branch_base_ref(plan_branch: &PlanBranch, project: &Project) -> String {
@@ -501,8 +584,11 @@ pub(crate) async fn agent_workspace_response_for_state(
         .await
         .map_err(|e| e.to_string())?;
 
+    let mode_lock = resolve_agent_conversation_workspace_mode_lock(state, &workspace).await?;
     let linked_plan_branch_id = workspace.linked_plan_branch_id.clone();
     let mut response = AgentConversationWorkspaceResponse::from(workspace);
+    response.mode_switch_locked = mode_lock.locked;
+    response.mode_switch_lock_reason = mode_lock.reason;
 
     if let Some(plan_branch_id) = linked_plan_branch_id {
         if let Some(plan_branch) = state
@@ -1881,23 +1967,15 @@ fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
 }
 
 fn validate_agent_conversation_mode_transition(
-    current_mode: AgentConversationWorkspaceMode,
+    _current_mode: AgentConversationWorkspaceMode,
     target_mode: AgentConversationWorkspaceMode,
-    workspace_has_state_owner: bool,
+    workspace_mode_lock: &AgentConversationWorkspaceModeLock,
 ) -> Result<(), String> {
-    if current_mode == AgentConversationWorkspaceMode::Ideation
-        && target_mode != AgentConversationWorkspaceMode::Ideation
-    {
-        return Err(
-            "Ideation mode conversations cannot be switched to another mode yet".to_string(),
-        );
-    }
-
-    if workspace_has_state_owner && target_mode != AgentConversationWorkspaceMode::Ideation {
-        return Err(
-            "This workspace is owned by ideation or execution state and cannot leave Ideation Mode"
-                .to_string(),
-        );
+    if workspace_mode_lock.locked && target_mode != AgentConversationWorkspaceMode::Ideation {
+        return Err(workspace_mode_lock.reason.clone().unwrap_or_else(|| {
+            "This workspace is owned by active ideation or execution state and cannot leave Ideation Mode"
+                .to_string()
+        }));
     }
 
     Ok(())
@@ -1951,19 +2029,31 @@ mod agent_mode_workspace_tests {
                 AgentConversationWorkspaceMode::Ideation,
                 AgentConversationWorkspaceMode::Ideation,
             ),
+            (
+                AgentConversationWorkspaceMode::Ideation,
+                AgentConversationWorkspaceMode::Chat,
+            ),
+            (
+                AgentConversationWorkspaceMode::Ideation,
+                AgentConversationWorkspaceMode::Edit,
+            ),
         ];
 
         for (current_mode, target_mode) in valid_transitions {
             assert!(
-                validate_agent_conversation_mode_transition(current_mode, target_mode, false)
-                    .is_ok(),
+                validate_agent_conversation_mode_transition(
+                    current_mode,
+                    target_mode,
+                    &AgentConversationWorkspaceModeLock::unlocked()
+                )
+                .is_ok(),
                 "{current_mode} -> {target_mode} should be allowed"
             );
         }
     }
 
     #[test]
-    fn active_ideation_conversations_cannot_leave_ideation_mode() {
+    fn active_state_owned_conversations_cannot_leave_ideation_mode() {
         for target_mode in [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
@@ -1971,16 +2061,16 @@ mod agent_mode_workspace_tests {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Ideation,
                 target_mode,
-                false,
+                &AgentConversationWorkspaceModeLock::locked("Plan execution is still active"),
             )
-            .expect_err("ideation conversations should not leave ideation mode");
+            .expect_err("state-owned conversations should not leave ideation mode");
 
-            assert!(error.contains("Ideation mode conversations cannot be switched"));
+            assert!(error.contains("Plan execution is still active"));
         }
     }
 
     #[test]
-    fn state_owned_workspaces_can_only_target_ideation_mode() {
+    fn state_owned_workspaces_can_target_ideation_mode() {
         for target_mode in [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
@@ -1988,17 +2078,17 @@ mod agent_mode_workspace_tests {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Chat,
                 target_mode,
-                true,
+                &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
             )
             .expect_err("state-owned workspaces should not leave ideation ownership");
 
-            assert!(error.contains("owned by ideation or execution state"));
+            assert!(error.contains("Ideation session is still active"));
         }
 
         assert!(validate_agent_conversation_mode_transition(
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Ideation,
-            true,
+            &AgentConversationWorkspaceModeLock::locked("Ideation session is still active"),
         )
         .is_ok());
     }
@@ -2398,7 +2488,8 @@ pub async fn switch_agent_conversation_mode(
     switch_agent_conversation_mode_for_state(input, state.inner()).await
 }
 
-async fn switch_agent_conversation_mode_for_state(
+#[doc(hidden)]
+pub async fn switch_agent_conversation_mode_for_state(
     input: SwitchAgentConversationModeInput,
     state: &AppState,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
@@ -2433,35 +2524,44 @@ async fn switch_agent_conversation_mode_for_state(
         .agent_mode
         .or_else(|| existing_workspace.as_ref().map(|workspace| workspace.mode))
         .unwrap_or(AgentConversationWorkspaceMode::Chat);
+    let workspace_mode_lock = match existing_workspace.as_ref() {
+        Some(workspace) => resolve_agent_conversation_workspace_mode_lock(state, workspace).await?,
+        None => AgentConversationWorkspaceModeLock::unlocked(),
+    };
 
     validate_agent_conversation_mode_transition(
         current_mode,
         target_mode,
-        existing_workspace
-            .as_ref()
-            .map(|workspace| {
-                workspace.linked_ideation_session_id.is_some()
-                    || workspace.linked_plan_branch_id.is_some()
-            })
-            .unwrap_or(false),
+        &workspace_mode_lock,
     )?;
 
-    let workspace = if agent_mode_requires_workspace(target_mode) {
-        Some(match existing_workspace {
-            Some(mut workspace) => {
-                if workspace.mode != target_mode {
-                    workspace.mode = target_mode;
-                    workspace.updated_at = chrono::Utc::now();
+    let workspace = match existing_workspace {
+        Some(mut workspace) => {
+            let should_detach_inactive_owner =
+                target_mode != AgentConversationWorkspaceMode::Ideation
+                    && !workspace_mode_lock.locked
+                    && (workspace.linked_ideation_session_id.is_some()
+                        || workspace.linked_plan_branch_id.is_some());
+            if workspace.mode != target_mode || should_detach_inactive_owner {
+                workspace.mode = target_mode;
+                if should_detach_inactive_owner {
+                    workspace.linked_ideation_session_id = None;
+                    workspace.linked_plan_branch_id = None;
+                }
+                workspace.updated_at = chrono::Utc::now();
+                Some(
                     state
                         .agent_conversation_workspace_repo
                         .create_or_update(workspace)
                         .await
-                        .map_err(|error| error.to_string())?
-                } else {
-                    workspace
-                }
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                Some(workspace)
             }
-            None => {
+        }
+        None => {
+            if agent_mode_requires_workspace(target_mode) {
                 let project_id = ProjectId::from_string(conversation.context_id.clone());
                 let project = state
                     .project_repo
@@ -2487,15 +2587,17 @@ async fn switch_agent_conversation_mode_for_state(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
-                state
-                    .agent_conversation_workspace_repo
-                    .create_or_update(workspace)
-                    .await
-                    .map_err(|error| error.to_string())?
+                Some(
+                    state
+                        .agent_conversation_workspace_repo
+                        .create_or_update(workspace)
+                        .await
+                        .map_err(|error| error.to_string())?,
+                )
+            } else {
+                None
             }
-        })
-    } else {
-        existing_workspace
+        }
     };
 
     state
@@ -6107,6 +6209,8 @@ mod tests {
             status: "active".to_string(),
             created_at: "2026-04-28T12:00:00+00:00".to_string(),
             updated_at: "2026-04-28T12:00:00+00:00".to_string(),
+            mode_switch_locked: false,
+            mode_switch_lock_reason: None,
         };
         let mut plan_branch = PlanBranch::new(
             ArtifactId::from_string("artifact-1"),
@@ -6159,6 +6263,8 @@ mod tests {
             status: "missing".to_string(),
             created_at: "2026-04-28T12:00:00+00:00".to_string(),
             updated_at: "2026-04-28T12:00:00+00:00".to_string(),
+            mode_switch_locked: true,
+            mode_switch_lock_reason: Some("Plan execution is still active".to_string()),
         };
         let mut plan_branch = PlanBranch::new(
             ArtifactId::from_string("artifact-1"),

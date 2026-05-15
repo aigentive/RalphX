@@ -99,8 +99,7 @@ export function useAgentsWorkspaceModel({
         : isPublishShortcutCurrent
           ? "Published"
           : "Commit & Publish";
-  const activeConversationModeLocked =
-    activeConversationMode === "ideation" || isWorkspaceModeLocked(activeWorkspace);
+  const activeConversationModeLocked = isWorkspaceModeLocked(activeWorkspace);
   const terminalUnavailableReason = getAgentTerminalUnavailableReason(
     activeConversation,
     activeWorkspace,
