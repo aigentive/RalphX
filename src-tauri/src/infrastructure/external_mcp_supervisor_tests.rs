@@ -4,7 +4,9 @@ mod tests {
 
     use crate::infrastructure::agents::claude::ExternalMcpConfig;
     use crate::infrastructure::external_mcp_supervisor::{
-        is_test_environment_for_test, stderr_indicates_address_in_use, ExternalMcpHandle,
+        command_matches_external_mcp_process_for_port, external_mcp_pid_file_name,
+        external_mcp_pid_file_path, is_test_environment_for_test, stderr_indicates_address_in_use,
+        ExternalMcpHandle,
     };
 
     // ── Helper ────────────────────────────────────────────────────────────
@@ -75,7 +77,7 @@ mod tests {
     #[test]
     fn test_pid_file_write_and_remove() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pid_path = dir.path().join("external_mcp.pid");
+        let pid_path = external_mcp_pid_file_path(dir.path(), 3848);
 
         // Write
         let pid: u32 = 99999;
@@ -104,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_orphan_removes_stale_pid_file() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pid_path = dir.path().join("external_mcp.pid");
+        let pid_path = external_mcp_pid_file_path(dir.path(), 3848);
 
         // Write a PID that almost certainly doesn't exist
         let nonexistent_pid: i32 = 2_000_000;
@@ -141,6 +143,54 @@ mod tests {
         assert!(
             !stderr_indicates_address_in_use(&lines_other),
             "Should NOT detect EADDRINUSE for unrelated errors"
+        );
+    }
+
+    #[test]
+    fn test_external_mcp_pid_file_is_scoped_by_port() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(external_mcp_pid_file_name(3848), "external_mcp_3848.pid");
+        assert_eq!(external_mcp_pid_file_name(3858), "external_mcp_3858.pid");
+        assert_eq!(
+            external_mcp_pid_file_path(dir.path(), 3848),
+            dir.path().join("external_mcp_3848.pid")
+        );
+        assert_ne!(
+            external_mcp_pid_file_path(dir.path(), 3848),
+            external_mcp_pid_file_path(dir.path(), 3858)
+        );
+        assert_ne!(
+            external_mcp_pid_file_path(dir.path(), 3858),
+            dir.path().join("external_mcp.pid")
+        );
+    }
+
+    #[test]
+    fn test_external_mcp_command_match_requires_expected_port() {
+        let prod_command = "EXTERNAL_MCP_PORT=3848 node /Applications/RalphX.app/Contents/Resources/plugins/app/ralphx-external-mcp/build/index.js";
+        let dev_command = "EXTERNAL_MCP_PORT=3858 node /tmp/ralphx/src-tauri/target/debug/plugins/app/ralphx-external-mcp/build/index.js";
+        let no_port_command = "node /tmp/ralphx/plugins/app/ralphx-external-mcp/build/index.js";
+
+        assert!(command_matches_external_mcp_process_for_port(
+            prod_command,
+            3848
+        ));
+        assert!(command_matches_external_mcp_process_for_port(
+            dev_command,
+            3858
+        ));
+        assert!(
+            !command_matches_external_mcp_process_for_port(prod_command, 3858),
+            "dev cleanup must not match prod external MCP process"
+        );
+        assert!(
+            !command_matches_external_mcp_process_for_port(dev_command, 3848),
+            "prod cleanup must not match dev external MCP process"
+        );
+        assert!(
+            !command_matches_external_mcp_process_for_port(no_port_command, 3858),
+            "command-only matching must not infer port ownership"
         );
     }
 
