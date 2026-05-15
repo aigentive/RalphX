@@ -872,7 +872,7 @@ fn workspace_repair_action_defaults_to_publish_for_legacy_events() {
 
     let conversation_id = ChatConversationId::new();
     let events = vec![AgentConversationWorkspacePublicationEvent::new(
-        conversation_id.clone(),
+        conversation_id,
         "repair_requested",
         "started",
         "legacy repair request",
@@ -890,21 +890,21 @@ fn workspace_repair_action_uses_latest_requested_action() {
     let conversation_id = ChatConversationId::new();
     let events = vec![
         AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
+            conversation_id,
             "repair_requested",
             "started",
             "publish repair request",
             Some("agent_fixable:publish".to_string()),
         ),
         AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
+            conversation_id,
             "failed",
             "failed",
             "later base update failure",
             Some("agent_fixable".to_string()),
         ),
         AgentConversationWorkspacePublicationEvent::new(
-            conversation_id.clone(),
+            conversation_id,
             "repair_requested",
             "started",
             "base update repair request",

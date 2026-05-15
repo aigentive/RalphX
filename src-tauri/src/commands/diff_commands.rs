@@ -914,6 +914,314 @@ pub async fn get_commit_file_diff(
     diff_service.get_commit_file_diff(&commit_sha, &file_path, &working_path_str)
 }
 
+// =========================================================================
+// Extension A — Staged / Unstaged workspace diffs
+// =========================================================================
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_staged_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || DiffService::new().get_staged_file_changes(&working_path))
+        .await
+        .map_err(|e| {
+            AppError::Infrastructure(format!("staged file changes task failed: {e}"))
+        })?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_unstaged_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || DiffService::new().get_unstaged_file_changes(&working_path))
+        .await
+        .map_err(|e| {
+            AppError::Infrastructure(format!("unstaged file changes task failed: {e}"))
+        })?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_staged_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_staged_file_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("staged file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_unstaged_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_unstaged_file_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("unstaged file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    let base_ref = ctx.base_ref.clone();
+    let head_ref = ctx.diff_target.clone().unwrap_or_else(|| "HEAD".to_string());
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_file_changes_between_refs(&working_path, &base_ref, &head_ref)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Infrastructure(format!("cumulative file changes task failed: {e}"))
+    })?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    let base_ref = ctx.base_ref.clone();
+    let head_ref = ctx.diff_target.clone().unwrap_or_else(|| "HEAD".to_string());
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_file_diff_between_refs(&file_path, &working_path, &base_ref, &head_ref)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))?
+}
+
+// =========================================================================
+// Extension B — Cumulative (base..HEAD) workspace diffs
+// =========================================================================
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_staged_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_staged_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "staged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded agent workspace staged file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "staged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace staged file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_unstaged_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_unstaged_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "unstaged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded agent workspace unstaged file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "unstaged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace unstaged file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_staged_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_staged_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "staged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            old_chars = diff.old_content.chars().count(),
+            new_chars = diff.new_content.chars().count(),
+            "Loaded agent workspace staged file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "staged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace staged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_unstaged_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_unstaged_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "unstaged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            old_chars = diff.old_content.chars().count(),
+            new_chars = diff.new_content.chars().count(),
+            "Loaded agent workspace unstaged file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "unstaged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace unstaged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_cumulative_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_cumulative_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "cumulative_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded agent workspace cumulative file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "cumulative_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace cumulative file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_cumulative_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_cumulative_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "cumulative_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            old_chars = diff.old_content.chars().count(),
+            new_chars = diff.new_content.chars().count(),
+            "Loaded agent workspace cumulative file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "cumulative_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace cumulative file diff"
+        ),
+    }
+    result
+}
+
 /// Detect merge conflicts for a task.
 ///
 /// Uses two strategies based on the current git state:
@@ -1442,5 +1750,232 @@ mod tests {
             .commits
             .iter()
             .any(|commit| commit.message == "Update readme on target branch"));
+    }
+
+    // =========================================================================
+    // Extension A — Staged / Unstaged command tests
+    // =========================================================================
+
+    async fn create_staged_unstaged_workspace_state(
+    ) -> (TempDir, AppState, ChatConversationId, PathBuf) {
+        use crate::application::agent_conversation_workspace::{
+            prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+        };
+        use crate::domain::entities::{
+            AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
+        };
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let repo = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        run_git(&repo, &["init", "-b", "main"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test User"]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "Initial commit"]);
+
+        let mut project = Project::new(
+            "Staged Unstaged Test".to_string(),
+            repo.display().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory =
+            Some(temp_dir.path().join("worktrees").display().to_string());
+
+        let conversation_id = test_conversation_id();
+        let workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        let state = AppState::new_test();
+        state.project_repo.create(project).await.expect("seed project");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+
+        (temp_dir, state, conversation_id, worktree_path)
+    }
+
+    #[tokio::test]
+    async fn staged_file_changes_command_returns_staged_files() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        // Stage a new file
+        std::fs::write(worktree_path.join("staged.txt"), "staged\n").unwrap();
+        run_git(&worktree_path, &["add", "staged.txt"]);
+
+        // Write an unstaged file (not added)
+        std::fs::write(worktree_path.join("unstaged.txt"), "unstaged\n").unwrap();
+
+        let changes = get_agent_conversation_workspace_staged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("staged changes should load");
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "staged.txt");
+        assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    }
+
+    #[tokio::test]
+    async fn unstaged_file_changes_command_returns_unstaged_files() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        // Modify committed file without staging
+        std::fs::write(worktree_path.join("base.txt"), "base\nmodified\n").unwrap();
+
+        // Stage a separate file (should not appear in unstaged)
+        std::fs::write(worktree_path.join("staged.txt"), "staged\n").unwrap();
+        run_git(&worktree_path, &["add", "staged.txt"]);
+
+        let changes = get_agent_conversation_workspace_unstaged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("unstaged changes should load");
+
+        assert!(
+            changes.iter().any(|c| c.path == "base.txt"),
+            "Modified base.txt should appear in unstaged changes"
+        );
+        assert!(
+            !changes.iter().any(|c| c.path == "staged.txt"),
+            "staged.txt should not appear in unstaged changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn staged_file_diff_command_returns_head_vs_index_content() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        // Stage a modification to base.txt
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged line\n").unwrap();
+        run_git(&worktree_path, &["add", "base.txt"]);
+
+        // Make a further unstaged change (should not appear in staged diff)
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged line\nfurther\n").unwrap();
+
+        let diff = get_agent_conversation_workspace_staged_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("staged file diff should load");
+
+        assert_eq!(diff.file_path, "base.txt");
+        assert_eq!(diff.old_content, "base\n");
+        assert_eq!(diff.new_content, "base\nstaged line\n");
+    }
+
+    #[tokio::test]
+    async fn unstaged_file_diff_command_returns_index_vs_disk_content() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        // Stage a modification
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged\n").unwrap();
+        run_git(&worktree_path, &["add", "base.txt"]);
+
+        // Further disk change (unstaged)
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged\ndisk\n").unwrap();
+
+        let diff = get_agent_conversation_workspace_unstaged_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("unstaged file diff should load");
+
+        assert_eq!(diff.file_path, "base.txt");
+        assert_eq!(diff.old_content, "base\nstaged\n");
+        assert_eq!(diff.new_content, "base\nstaged\ndisk\n");
+    }
+
+    // =========================================================================
+    // Extension B — Cumulative command tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn cumulative_file_changes_command_shows_all_commits_since_base() {
+        let (_temp_dir, state, conversation_id, _worktree_path, _) =
+            create_agent_workspace_command_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let changes = get_agent_conversation_workspace_cumulative_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("cumulative file changes should load");
+
+        assert!(
+            changes.iter().any(|c| c.path == "src/lib.rs"),
+            "Committed file should appear in cumulative changes"
+        );
+    }
+
+    #[tokio::test]
+    async fn cumulative_file_diff_command_shows_base_to_head_content() {
+        let (_temp_dir, state, conversation_id, _worktree_path, _) =
+            create_agent_workspace_command_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let diff = get_agent_conversation_workspace_cumulative_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+        )
+        .await
+        .expect("cumulative file diff should load");
+
+        assert_eq!(diff.file_path, "src/lib.rs");
+        assert!(
+            diff.new_content.contains("answer"),
+            "New content should contain the committed change"
+        );
+        assert_eq!(diff.old_content, "", "File did not exist in base, so old_content is empty");
     }
 }

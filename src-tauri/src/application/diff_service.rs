@@ -99,6 +99,90 @@ impl DiffService {
         Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
+    /// Get files staged in the index (git diff --cached).
+    /// Only shows changes between HEAD and the index — excludes unstaged working-tree edits.
+    pub fn get_staged_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {
+        let name_status =
+            run_git_text(project_path, &["diff", "--cached", "--name-status"])?;
+        let line_counts =
+            run_git_numstat_lossy(project_path, &["diff", "--cached", "--numstat"]);
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
+    }
+
+    /// Get files with unstaged working-tree changes (git diff — index vs disk).
+    /// Only shows changes that are not yet staged — excludes staged-only changes.
+    pub fn get_unstaged_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {
+        let name_status = run_git_text(project_path, &["diff", "--name-status"])?;
+        let line_counts = run_git_numstat_lossy(project_path, &["diff", "--numstat"]);
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
+    }
+
+    /// Get the diff for a specific file between HEAD and the staging area.
+    ///
+    /// `old_content` = committed HEAD version; `new_content` = staged (index) version.
+    pub fn get_staged_file_diff(
+        &self,
+        file_path: &str,
+        project_path: &str,
+    ) -> AppResult<FileDiff> {
+        let old_content = self
+            .get_file_content_at_ref(project_path, "HEAD", file_path)
+            .unwrap_or_default();
+        let new_content = self
+            .get_file_content_at_index(project_path, file_path)
+            .unwrap_or_default();
+        let language = get_language_from_path(file_path);
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            old_content,
+            new_content,
+            language,
+        })
+    }
+
+    /// Get the diff for a specific file between the staging area and the working tree.
+    ///
+    /// `old_content` = staged (index) version; `new_content` = current disk content.
+    pub fn get_unstaged_file_diff(
+        &self,
+        file_path: &str,
+        project_path: &str,
+    ) -> AppResult<FileDiff> {
+        let old_content = self
+            .get_file_content_at_index(project_path, file_path)
+            .unwrap_or_default();
+        let full_path = std::path::Path::new(project_path).join(file_path);
+        let new_content = std::fs::read_to_string(&full_path).unwrap_or_default();
+        let language = get_language_from_path(file_path);
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            old_content,
+            new_content,
+            language,
+        })
+    }
+
+    /// Read a file's content from the git index (staging area).
+    ///
+    /// Uses `git show :<file>` where the leading `:` refers to the index.
+    /// Returns `None` if the file is not staged (e.g. untracked or only on disk).
+    fn get_file_content_at_index(
+        &self,
+        project_path: &str,
+        file_path: &str,
+    ) -> Option<String> {
+        let output = Command::new(resolve_git_cli_path())
+            .args(["show", &format!(":{}", file_path)])
+            .current_dir(project_path)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
+        }
+    }
+
     /// Get the diff content for a specific file
     /// Shows old content from base_branch for accurate comparison
     pub fn get_file_diff(
