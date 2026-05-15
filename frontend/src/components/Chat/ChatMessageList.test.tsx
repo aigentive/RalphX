@@ -2084,6 +2084,61 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(41);
     });
 
+    it("preserves short text runs and tool separators inside long live streams", () => {
+      const blocks: StreamingContentBlock[] = [
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-start", name: "Read", arguments: { file_path: "/start.ts" } },
+        },
+        { type: "text", text: "Short pre-tool update 1" },
+        { type: "text", text: "Short pre-tool update 2" },
+        {
+          type: "tool_use",
+          toolCall: { id: "tc-middle", name: "Grep", arguments: { pattern: "streaming" } },
+        },
+        ...Array.from({ length: 45 }, (_, index): StreamingContentBlock => ({
+          type: "text",
+          text: `Long run update ${index + 1}`,
+        })),
+      ];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      expect(screen.getByText(/Short pre-tool update 1/)).toBeInTheDocument();
+      expect(screen.getByText(/Long run update 45/)).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(43);
+    });
+
+    it("drops empty compacted older text while keeping recent live text visible", () => {
+      const blocks: StreamingContentBlock[] = [
+        { type: "text", text: "   " },
+        ...Array.from({ length: 40 }, (_, index): StreamingContentBlock => ({
+          type: "text",
+          text: `Recent live update ${index + 1}`,
+        })),
+      ];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      expect(screen.getByText("Recent live update 1")).toBeInTheDocument();
+      expect(screen.getByText("Recent live update 40")).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(40);
+    });
+
     it("triggers re-renders when text crosses bucket boundaries", () => {
       // bucket 0: text < 150 chars
       const { rerender } = render(
