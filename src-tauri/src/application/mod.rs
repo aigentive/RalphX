@@ -105,7 +105,10 @@ pub use event_cleanup_service::EventCleanupService;
 pub use execution_settings_bootstrap::{
     load_or_seed_execution_settings_defaults, ExecutionSettingsBootstrapResult,
 };
-pub use diff_service::{ConflictDiff, DiffService, FileChange, FileChangeStatus, FileDiff};
+pub use diff_service::{
+    ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffRefKind, DiffService, DiffSide,
+    FileChange, FileChangeStatus, FileDiff, RangeLine,
+};
 pub use git_service::{
     checkout_free::CheckoutFreeMergeResult, CommitInfo, DiffStats, GitService, MergeAttemptResult,
     MergeResult, RebaseResult,
