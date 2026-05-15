@@ -48,7 +48,8 @@ use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageId, IdeationSessionId, InternalStatus, MessageRole, ProjectId, TaskId,
+    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
+    MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -1317,6 +1318,97 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_pre_spawn_failure(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        agent_run_id: &str,
+        agent_run_persisted: bool,
+        user_message_persisted: bool,
+        error: &ChatServiceError,
+        assistant_message_attribution: Option<ChatMessageAttribution>,
+    ) {
+        if !agent_run_persisted && !user_message_persisted {
+            return;
+        }
+
+        let redacted_error = crate::utils::secret_redactor::redact(&error.to_string());
+
+        if agent_run_persisted {
+            if let Err(error) = self
+                .agent_run_repo
+                .fail(&AgentRunId::from_string(agent_run_id.to_string()), &redacted_error)
+                .await
+            {
+                tracing::warn!(
+                    agent_run_id,
+                    error = %error,
+                    "Failed to mark pre-spawn agent run as failed"
+                );
+            }
+        }
+
+        let error_content = format!("{} {}]", AGENT_ERROR_PREFIX, redacted_error);
+        let mut assistant_msg = chat_service_context::create_assistant_message(
+            context_type,
+            context_id,
+            &error_content,
+            conversation_id,
+            &[],
+            &[],
+        );
+        if let Some(attribution) = assistant_message_attribution {
+            assistant_msg = assistant_msg.with_attribution(attribution);
+        }
+        let assistant_msg_id = assistant_msg.id.as_str().to_string();
+        let assistant_msg_created_at = assistant_msg.created_at.to_rfc3339();
+
+        match self.chat_message_repo.create(assistant_msg.clone()).await {
+            Ok(_) => {
+                chat_service_streaming::persist_message_text_timeline_item(
+                    &self.chat_timeline_repo,
+                    &assistant_msg,
+                )
+                .await;
+                self.emit_event(
+                    "agent:message_created",
+                    AgentMessageCreatedPayload {
+                        message_id: assistant_msg_id,
+                        conversation_id: conversation_id.as_str().to_string(),
+                        context_type: context_type.to_string(),
+                        context_id: context_id.to_string(),
+                        role: get_assistant_role(&context_type).to_string(),
+                        content: error_content.clone(),
+                        created_at: Some(assistant_msg_created_at),
+                        metadata: None,
+                    },
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    agent_run_id,
+                    error = %error,
+                    "Failed to persist pre-spawn assistant error message"
+                );
+            }
+        }
+
+        self.emit_event(
+            "agent:error",
+            AgentErrorPayload {
+                conversation_id: Some(conversation_id.as_str().to_string()),
+                context_type: context_type.to_string(),
+                context_id: context_id.to_string(),
+                agent_run_id: Some(agent_run_id.to_string()),
+                error: redacted_error.clone(),
+                stderr: Some(redacted_error),
+            },
+        );
+    }
+
     /// Resolve the project's working directory from a context.
     ///
     /// Returns `Err` for Merge contexts that resolve to the primary repo
@@ -2435,11 +2527,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         );
         let post_gate_started = Instant::now();
         let mut running_incremented = false;
+        let mut user_message_persisted = false;
+        let mut agent_run_persisted = false;
+        let mut pre_spawn_assistant_attribution: Option<ChatMessageAttribution> = None;
 
         // Cleanup macro: unregisters slot + decrements running count on failure.
         // Uses textual expansion so `.await` works inside the async fn body.
         macro_rules! cleanup_and_err {
             ($err:expr) => {{
+                let error: ChatServiceError = $err;
                 self.running_agent_registry
                     .unregister(&registry_key, &agent_run_id)
                     .await;
@@ -2451,7 +2547,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         }
                     }
                 }
-                return Err($err);
+                self.persist_pre_spawn_failure(
+                    context_type,
+                    context_id,
+                    conversation.id,
+                    &agent_run_id,
+                    agent_run_persisted,
+                    user_message_persisted,
+                    &error,
+                    pre_spawn_assistant_attribution.clone(),
+                )
+                .await;
+                return Err(error);
             }};
         }
 
@@ -2726,6 +2833,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             if let Err(e) = self.chat_message_repo.create(user_msg.clone()).await {
                 cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
             }
+            user_message_persisted = true;
             chat_service_streaming::persist_message_text_timeline_item(
                 &self.chat_timeline_repo,
                 &user_msg,
@@ -2865,11 +2973,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         );
 
         if context_type == ChatContextType::Ideation {
-            let lane_repo = self.agent_lane_settings_repo.as_ref().ok_or_else(|| {
-                ChatServiceError::SpawnFailed(
+            let Some(lane_repo) = self.agent_lane_settings_repo.as_ref() else {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(
                     "Unified ideation chat service requires agent lane settings repo".to_string(),
-                )
-            })?;
+                ));
+            };
             let lane_availability =
                 crate::application::resolve_primary_ideation_harness_availability(
                     lane_repo,
@@ -2923,13 +3031,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         );
         let provider_spawn_check_started = Instant::now();
         if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
-            crate::application::ensure_provider_spawn_enabled(
+            if let Err(error) = crate::application::ensure_provider_spawn_enabled(
                 provider_repo,
                 resolved_spawn_settings.effective_harness,
                 "send_agent_message",
             )
             .await
-            .map_err(ChatServiceError::SpawnFailed)?;
+            {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+            }
         }
         log_send_message_spawn_prep_phase(
             context_type,
@@ -2967,6 +3077,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 resolved_spawn_settings.effective_harness,
                 Some(&resolved_agent_name),
             );
+        let effective_model_id = resolved_spawn_settings.model.clone();
+        let effective_effort = chat_service_helpers::effective_effort_for_harness(
+            resolved_spawn_settings.effective_harness,
+            resolved_spawn_settings.claude_effort.as_deref(),
+            resolved_spawn_settings.logical_effort,
+        );
 
         let provider_origin_started = Instant::now();
         if conversation.upstream_provider != upstream_provider
@@ -2998,21 +3114,31 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         agent_run.upstream_provider = upstream_provider.clone();
         agent_run.provider_profile = provider_profile.clone();
         agent_run.logical_model = resolved_spawn_settings.configured_model.clone();
-        agent_run.effective_model_id = Some(resolved_spawn_settings.model.clone());
+        agent_run.effective_model_id = Some(effective_model_id.clone());
         agent_run.logical_effort = resolved_spawn_settings.configured_logical_effort;
-        agent_run.effective_effort = Some(chat_service_helpers::effective_effort_for_harness(
-            resolved_spawn_settings.effective_harness,
-            resolved_spawn_settings.claude_effort.as_deref(),
-            resolved_spawn_settings.logical_effort,
-        ));
+        agent_run.effective_effort = Some(effective_effort.clone());
         agent_run.approval_policy = resolved_spawn_settings.approval_policy.clone();
         agent_run.sandbox_mode = resolved_spawn_settings.sandbox_mode.clone();
+
+        let assistant_message_attribution = ChatMessageAttribution {
+            attribution_source: Some("native_runtime".to_string()),
+            provider_harness: Some(resolved_spawn_settings.effective_harness),
+            provider_session_id: stored_session_id.clone(),
+            upstream_provider: upstream_provider.clone(),
+            provider_profile: provider_profile.clone(),
+            logical_model: resolved_spawn_settings.configured_model.clone(),
+            effective_model_id: Some(effective_model_id.clone()),
+            logical_effort: resolved_spawn_settings.configured_logical_effort,
+            effective_effort: Some(effective_effort),
+        };
+        pre_spawn_assistant_attribution = Some(assistant_message_attribution.clone());
 
         // Persist agent run record after the effective harness/model metadata is populated.
         let agent_run_create_started = Instant::now();
         if let Err(e) = self.agent_run_repo.create(agent_run).await {
             cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
         }
+        agent_run_persisted = true;
         log_send_message_spawn_prep_phase(
             context_type,
             context_id,
@@ -3025,7 +3151,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             "chat_service.send_message agent_run created"
         );
 
-        let effective_model_id = resolved_spawn_settings.model.clone();
         let effective_model_label = Some(chat_service_helpers::effective_model_label_for_harness(
             resolved_spawn_settings.effective_harness,
             &effective_model_id,
@@ -3267,21 +3392,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
             team_mode: runtime_team_mode,
-            assistant_message_attribution: crate::domain::entities::ChatMessageAttribution {
-                attribution_source: Some("native_runtime".to_string()),
-                provider_harness: Some(resolved_spawn_settings.effective_harness),
-                provider_session_id: stored_session_id.clone(),
-                upstream_provider,
-                provider_profile,
-                logical_model: resolved_spawn_settings.configured_model.clone(),
-                effective_model_id: Some(effective_model_id.clone()),
-                logical_effort: resolved_spawn_settings.configured_logical_effort,
-                effective_effort: Some(chat_service_helpers::effective_effort_for_harness(
-                    resolved_spawn_settings.effective_harness,
-                    resolved_spawn_settings.claude_effort.as_deref(),
-                    resolved_spawn_settings.logical_effort,
-                )),
-            },
+            assistant_message_attribution,
             persist_conversation_provider_session_ref: !options
                 .preserve_conversation_provider_session_ref,
             cancellation_token,
@@ -4005,12 +4116,13 @@ mod stale_registry_gate_tests {
 
 #[cfg(test)]
 mod agent_workspace_send_tests {
-    use super::{ChatService, SendMessageOptions};
+    use super::{ChatService, SendMessageOptions, AGENT_ERROR_PREFIX};
     use crate::application::interactive_process_registry::InteractiveProcessKey;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ProjectId, TaskId,
+        AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
+        MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::RunningAgentKey;
     use std::sync::Arc;
@@ -4070,6 +4182,94 @@ mod agent_workspace_send_tests {
         assert_eq!(
             result.agent_run_id, "run-original-process",
             "Gate 1 sends must not invent a run id that terminal events cannot match"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_conversation_cli_launch_failure_persists_visible_error() {
+        let state = AppState::new_test();
+        let project_dir = tempfile::tempdir().expect("project dir should be created");
+        let project = Project::new(
+            "CLI Failure Project".to_string(),
+            project_dir.path().to_string_lossy().to_string(),
+        );
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let conversation = ChatConversation::new_project(project.id.clone());
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let missing_cli_path = project_dir.path().join("missing-claude-cli");
+        let service = state
+            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+            .with_cli_path(missing_cli_path.clone())
+            .with_working_directory(project_dir.path());
+
+        let error = service
+            .send_message(
+                ChatContextType::Project,
+                project.id.as_str(),
+                "start a project agent",
+                SendMessageOptions {
+                    conversation_id_override: Some(conversation_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("missing CLI should fail launch");
+
+        assert!(
+            error.to_string().contains("Claude CLI not found"),
+            "spawn failure should preserve the CLI error: {error}"
+        );
+
+        let messages = state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("messages should load");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == MessageRole::User
+                    && message.content == "start a project agent"),
+            "user turn should remain in the transcript"
+        );
+        let assistant_error = messages
+            .iter()
+            .find(|message| {
+                message.role == MessageRole::Orchestrator
+                    && message.content.contains(AGENT_ERROR_PREFIX)
+            })
+            .expect("launch failure should persist a visible assistant error");
+        assert!(
+            assistant_error.content.contains("Claude CLI not found"),
+            "assistant error should include the redacted CLI failure: {}",
+            assistant_error.content
+        );
+
+        let run = state
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation_id)
+            .await
+            .expect("run lookup should succeed")
+            .expect("agent run should be persisted before launch");
+        assert_eq!(run.status, AgentRunStatus::Failed);
+        assert!(
+            run.error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Claude CLI not found"),
+            "failed run should retain the CLI error: {:?}",
+            run.error_message
         );
     }
 
