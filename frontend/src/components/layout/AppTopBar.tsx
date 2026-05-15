@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
+import { ProjectSelector } from "@/components/projects/ProjectSelector";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { chatKeys } from "@/hooks/useChat";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,8 @@ interface AppTopBarProps {
   pendingReviewCount: number;
   reviewsPanelOpen: boolean;
   onToggleReviewsPanel: () => void;
+  onNewProject?: () => void;
+  showProjectSelector?: boolean;
 }
 
 const VIEW_LABELS: Partial<Record<ViewType, string>> = {
@@ -40,6 +43,8 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "lg", label: "110%" },
   { value: "xl", label: "125%" },
 ];
+
+const PROJECT_SELECTOR_VIEWS = new Set<ViewType>(["ideation", "graph", "kanban"]);
 
 function viewLabel(view: ViewType): string {
   return VIEW_LABELS[view] ?? "Workspace";
@@ -416,6 +421,8 @@ export function AppTopBar({
   pendingReviewCount,
   reviewsPanelOpen,
   onToggleReviewsPanel,
+  onNewProject,
+  showProjectSelector = false,
 }: AppTopBarProps) {
   const activeProject = useProjectStore(selectActiveProject);
   const selectedAgentConversationId = useAgentSessionStore((s) => s.selectedConversationId);
@@ -450,6 +457,8 @@ export function AppTopBar({
     pendingReviewCount > 0
       ? `Reviews · ${pendingReviewCount} pending`
       : "Reviews";
+  const shouldShowProjectSelector =
+    showProjectSelector && PROJECT_SELECTOR_VIEWS.has(currentView) && Boolean(onNewProject);
 
   return (
     <header
@@ -534,6 +543,14 @@ export function AppTopBar({
             ⌘K
           </kbd>
         </button>
+
+        {shouldShowProjectSelector && onNewProject && (
+          <ProjectSelector
+            onNewProject={onNewProject}
+            align="end"
+            className="max-w-[240px]"
+          />
+        )}
 
         <Tooltip>
           <TooltipTrigger asChild>
