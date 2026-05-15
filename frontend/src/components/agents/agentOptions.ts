@@ -45,9 +45,10 @@ export { defaultEffortForModel, defaultModelForProvider };
 
 export function normalizeRuntimeSelection(
   runtime: unknown,
-  registry?: AgentModelRegistry
+  registry?: AgentModelRegistry,
+  providerSupportedEfforts?: readonly unknown[] | null
 ): AgentRuntimeSelection {
-  return normalizeAgentRuntimeSelection(runtime, registry);
+  return normalizeAgentRuntimeSelection(runtime, registry, providerSupportedEfforts);
 }
 
 export function agentModelOptions(
@@ -66,15 +67,19 @@ export function agentModelOptions(
 export function agentEffortOptions(
   provider: AgentProvider,
   modelId: string,
-  registry?: AgentModelRegistry
+  registry?: AgentModelRegistry,
+  providerSupportedEfforts?: readonly unknown[] | null
 ): AgentEffortOption[] {
-  return agentEffortOptionsForModel(provider, modelId, registry).map(
-    ({ id, label, description }) => ({
-      id,
-      label,
-      description,
-    })
-  );
+  return agentEffortOptionsForModel(
+    provider,
+    modelId,
+    registry,
+    providerSupportedEfforts
+  ).map(({ id, label, description }) => ({
+    id,
+    label,
+    description,
+  }));
 }
 
 export { agentEffortOptionsForModel };

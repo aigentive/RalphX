@@ -266,7 +266,9 @@ async fn project_id_for_context(
             .map(|session| session.project_id.as_str().to_string()),
         ChatContextType::Delegation => state
             .delegated_session_repo
-            .get_by_id(&crate::domain::entities::DelegatedSessionId::from_string(context_id))
+            .get_by_id(&crate::domain::entities::DelegatedSessionId::from_string(
+                context_id,
+            ))
             .await
             .ok()
             .flatten()
@@ -330,6 +332,7 @@ fn missing_harness_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
         probe_succeeded: false,
         available: false,
         missing_core_exec_features: Vec::new(),
+        supported_efforts: None,
         error: Some(format!("No harness probe registered for {}", harness)),
     }
 }

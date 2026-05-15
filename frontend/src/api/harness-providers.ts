@@ -20,6 +20,7 @@ export const AgentProviderSettingsResponseSchema = z.object({
   status: z.string(),
   error: z.string().nullable().optional(),
   missingCoreExecFeatures: z.array(z.string()),
+  supportedEfforts: z.array(z.string().min(1)).nullable().optional(),
   updatedAt: z.string(),
 });
 

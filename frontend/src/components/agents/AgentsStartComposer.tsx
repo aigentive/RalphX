@@ -42,6 +42,7 @@ import {
   buildAgentProviderAvailabilityOptions,
   getProviderAvailabilityMessage,
   normalizeRuntimeForSelectableProvider,
+  supportedEffortsForProvider,
 } from "./agentProviderAvailability";
 import { useUiStore } from "@/stores/uiStore";
 
@@ -152,10 +153,6 @@ export function AgentsStartComposer({
     (s) => s.setLastBranchBaseSelectionForProject
   );
 
-  const normalizedRuntime = useMemo(
-    () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME, modelRegistry),
-    [defaultRuntime, modelRegistry]
-  );
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
   const providerOptions = useMemo(
@@ -165,6 +162,21 @@ export function AgentsStartComposer({
         isReady: providerSettingsReady,
       }),
     [configuredProviders, providerSettingsReady]
+  );
+  const normalizedRuntime = useMemo(() => {
+    const runtime = normalizeRuntimeSelection(
+      defaultRuntime ?? DEFAULT_AGENT_RUNTIME,
+      modelRegistry
+    );
+    return normalizeRuntimeSelection(
+      runtime,
+      modelRegistry,
+      supportedEffortsForProvider(providerOptions, runtime.provider)
+    );
+  }, [defaultRuntime, modelRegistry, providerOptions]);
+  const selectedProviderSupportedEfforts = useMemo(
+    () => supportedEffortsForProvider(providerOptions, provider),
+    [provider, providerOptions]
   );
   const selectableRuntime = useMemo(
     () =>
@@ -208,8 +220,14 @@ export function AgentsStartComposer({
     [modelRegistry, provider]
   );
   const effortOptions = useMemo(
-    () => agentEffortOptions(provider, modelId, modelRegistry),
-    [modelId, modelRegistry, provider]
+    () =>
+      agentEffortOptions(
+        provider,
+        modelId,
+        modelRegistry,
+        selectedProviderSupportedEfforts
+      ),
+    [modelId, modelRegistry, provider, selectedProviderSupportedEfforts]
   );
   const activeProject = useMemo(
     () => projects.find((project) => project.id === projectId) ?? null,
@@ -246,10 +264,14 @@ export function AgentsStartComposer({
       }
       onRuntimePreferenceChange?.(
         nextProjectId,
-        normalizeRuntimeSelection(runtime, modelRegistry)
+        normalizeRuntimeSelection(
+          runtime,
+          modelRegistry,
+          supportedEffortsForProvider(providerOptions, runtime.provider)
+        )
       );
     },
-    [modelRegistry, onRuntimePreferenceChange]
+    [modelRegistry, onRuntimePreferenceChange, providerOptions]
   );
 
   useEffect(() => {
@@ -296,7 +318,8 @@ export function AgentsStartComposer({
           provider: nextProvider,
           modelId: defaultModelForProvider(nextProvider, modelRegistry),
         },
-        modelRegistry
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, nextProvider)
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
@@ -314,14 +337,21 @@ export function AgentsStartComposer({
           modelId: nextModelId,
           effort: defaultEffortForModel(provider, nextModelId, modelRegistry),
         },
-        modelRegistry
+        modelRegistry,
+        selectedProviderSupportedEfforts
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [modelRegistry, persistRuntimePreference, projectId, provider]
+    [
+      modelRegistry,
+      persistRuntimePreference,
+      projectId,
+      provider,
+      selectedProviderSupportedEfforts,
+    ]
   );
 
   const handleEffortChange = useCallback(
@@ -332,14 +362,22 @@ export function AgentsStartComposer({
           modelId,
           effort: nextEffort,
         },
-        modelRegistry
+        modelRegistry,
+        selectedProviderSupportedEfforts
       );
       setProvider(nextRuntime.provider);
       setModelId(nextRuntime.modelId);
       setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [modelId, modelRegistry, persistRuntimePreference, projectId, provider]
+    [
+      modelId,
+      modelRegistry,
+      persistRuntimePreference,
+      projectId,
+      provider,
+      selectedProviderSupportedEfforts,
+    ]
   );
 
   const handleStartFromChange = useCallback(

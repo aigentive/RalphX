@@ -2884,6 +2884,35 @@ agents:
 }
 
 #[test]
+fn test_xhigh_effort_carried_through_to_claude_runtime_config() {
+    let yaml = r#"
+claude:
+  mcp_server_name: ralphx
+  permission_mode: default
+  dangerously_skip_permissions: false
+  permission_prompt_tool: permission_request
+  default_effort: xhigh
+agents:
+  - name: test-agent
+    effort: xhigh
+    tools:
+      extends: base_tools
+    mcp_tools: []
+    preapproved_cli_tools: []
+    system_prompt_file: plugins/app/agents/worker.md
+"#;
+    let parsed = parse_config(yaml).expect("config should parse");
+    let agent = parsed
+        .agents
+        .iter()
+        .find(|agent| agent.name == "test-agent")
+        .expect("test-agent should exist");
+
+    assert_eq!(parsed.claude.default_effort, "xhigh");
+    assert_eq!(agent.effort.as_deref(), Some("xhigh"));
+}
+
+#[test]
 fn test_fallback_loaded_config_has_default_effort() {
     // The fallback LoadedConfig (used when embedded config fails to parse) must include
     // default_effort: "medium". We verify the production loaded config has a valid effort value.

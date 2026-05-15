@@ -26,7 +26,8 @@ use crate::domain::agents::{
 use super::{
     append_claude_permission_args, apply_common_spawn_env, claude_runtime_config,
     create_mcp_config, ensure_claude_spawn_allowed, find_claude_cli, get_allowed_tools,
-    get_effective_settings, get_preapproved_tools, sanitize_claude_user_state,
+    get_effective_settings, get_preapproved_tools, normalize_claude_effort_for_cli_path,
+    sanitize_claude_user_state,
 };
 
 // ============================================================================
@@ -897,7 +898,16 @@ impl ClaudeCodeClient {
             .effort
             .clone()
             .unwrap_or_else(|| claude_runtime_config().default_effort.clone());
-        args.extend(["--effort".to_string(), effort]);
+        let normalized_effort = normalize_claude_effort_for_cli_path(&self.cli_path, &effort);
+        if normalized_effort != effort {
+            tracing::warn!(
+                requested_effort = %effort,
+                effective_effort = %normalized_effort,
+                cli_path = %self.cli_path.display(),
+                "Normalized Claude teammate effort for installed CLI capability"
+            );
+        }
+        args.extend(["--effort".to_string(), normalized_effort]);
 
         // CLI tools restriction
         if !config.tools.is_empty() {

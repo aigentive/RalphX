@@ -37,7 +37,7 @@ pub use runtime_config::{
     SupervisorRuntimeConfig, VerificationConfig,
 };
 
-const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "max"];
+const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 fn validate_effort(value: &str, agent_name: &str) -> bool {
     if VALID_EFFORT_LEVELS.contains(&value) {

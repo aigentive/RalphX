@@ -168,6 +168,41 @@ function normalizeSupportedEfforts(values: readonly unknown[]): AgentEffort[] {
   return [...new Set(efforts)].sort((a, b) => effortOrder(a) - effortOrder(b));
 }
 
+function intersectSupportedEfforts(
+  modelEfforts: readonly AgentEffort[],
+  providerEfforts?: readonly unknown[] | null
+): AgentEffort[] {
+  const providerSupportedEfforts =
+    providerEfforts != null ? normalizeSupportedEfforts(providerEfforts) : [];
+  if (providerSupportedEfforts.length === 0) {
+    return [...modelEfforts];
+  }
+  return modelEfforts.filter((effort) => providerSupportedEfforts.includes(effort));
+}
+
+function fallbackEffortFromSupported(
+  requestedEffort: unknown,
+  defaultEffort: AgentEffort,
+  supportedEfforts: readonly AgentEffort[]
+): AgentEffort {
+  if (isAgentEffort(requestedEffort) && supportedEfforts.includes(requestedEffort)) {
+    return requestedEffort;
+  }
+  if (supportedEfforts.includes(defaultEffort)) {
+    return defaultEffort;
+  }
+  if (isAgentEffort(requestedEffort)) {
+    const requestedRank = effortOrder(requestedEffort);
+    const closestSupportedEffort = [...supportedEfforts]
+      .reverse()
+      .find((effort) => effortOrder(effort) <= requestedRank);
+    if (closestSupportedEffort) {
+      return closestSupportedEffort;
+    }
+  }
+  return supportedEfforts[0] ?? defaultEffort;
+}
+
 function defaultModelEntryForProvider(
   provider: AgentProvider,
   registry: AgentModelRegistry = AGENT_MODEL_CATALOG
@@ -271,11 +306,20 @@ export function agentModelOptionsForProvider(
 export function agentEffortOptionsForModel(
   provider: AgentProvider,
   modelId: string,
-  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
+  providerSupportedEfforts?: readonly unknown[] | null
 ): AgentEffortCatalogEntry[] {
-  const supportedEfforts =
+  const providerEfforts =
+    providerSupportedEfforts != null
+      ? normalizeSupportedEfforts(providerSupportedEfforts)
+      : [];
+  const modelSupportedEfforts =
     findModelEntryForProvider(provider, modelId, registry)?.supportedEfforts ??
-    defaultEffortsForProvider(provider);
+    (providerEfforts.length > 0 ? providerEfforts : defaultEffortsForProvider(provider));
+  const supportedEfforts = intersectSupportedEfforts(
+    modelSupportedEfforts,
+    providerSupportedEfforts
+  );
   return AGENT_EFFORT_CATALOG.filter((effort) =>
     supportedEfforts.includes(effort.id)
   );
@@ -289,7 +333,8 @@ function defaultEffortsForProvider(provider: AgentProvider): readonly AgentEffor
 
 export function normalizeAgentRuntimeSelection(
   runtime: unknown,
-  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
+  providerSupportedEfforts?: readonly unknown[] | null
 ): AgentRuntimeSelection {
   const defaultEntry = defaultModelEntryForProvider("codex", registry);
   const defaultRuntime: AgentRuntimeSelection = {
@@ -312,9 +357,19 @@ export function normalizeAgentRuntimeSelection(
     typeof candidate.modelId === "string" ? candidate.modelId.trim() : "";
   const knownModel = findModelEntryForProvider(provider, requestedModelId, registry);
   if (!knownModel && requestedModelId) {
-    const effort = isAgentEffort(candidate.effort)
-      ? candidate.effort
-      : providerDefaultEffort(provider, registry);
+    const providerEfforts =
+      providerSupportedEfforts != null
+        ? normalizeSupportedEfforts(providerSupportedEfforts)
+        : [];
+    const supportedEfforts = intersectSupportedEfforts(
+      providerEfforts.length > 0 ? providerEfforts : defaultEffortsForProvider(provider),
+      providerSupportedEfforts
+    );
+    const effort = fallbackEffortFromSupported(
+      candidate.effort,
+      providerDefaultEffort(provider, registry),
+      supportedEfforts
+    );
     return {
       provider,
       modelId: requestedModelId,
@@ -323,11 +378,15 @@ export function normalizeAgentRuntimeSelection(
   }
 
   const model = knownModel ?? defaultModelEntryForProvider(provider, registry);
-  const effort =
-    isAgentEffort(candidate.effort) &&
-    model.supportedEfforts.includes(candidate.effort)
-      ? candidate.effort
-      : model.defaultEffort;
+  const supportedEfforts = intersectSupportedEfforts(
+    model.supportedEfforts,
+    providerSupportedEfforts
+  );
+  const effort = fallbackEffortFromSupported(
+    candidate.effort,
+    model.defaultEffort,
+    supportedEfforts
+  );
 
   return {
     provider,
