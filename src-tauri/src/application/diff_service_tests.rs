@@ -250,9 +250,19 @@ fn test_get_file_diff_for_worktree_uses_current_disk_content() {
         .unwrap();
 
     assert_eq!(diff.file_path, "README.md");
-    assert_eq!(diff.old_content, "# Test Repo\n");
-    assert_eq!(diff.new_content, "# Test Repo\n\nUncommitted\n");
     assert_eq!(diff.language, "markdown");
+    // Hunk-based: the uncommitted addition appears as a hunk addition line
+    assert!(
+        !diff.hunks.is_empty(),
+        "Diff should have at least one hunk for the uncommitted change"
+    );
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("Uncommitted")),
+        "Diff hunks should contain the uncommitted addition"
+    );
+    // old_total_lines = HEAD (1 line), new_total_lines = disk (3 lines)
+    assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
+    assert_eq!(diff.new_total_lines, 3, "Disk has 3 lines after edit");
 }
 
 #[tokio::test]
@@ -416,12 +426,19 @@ fn staged_file_diff_shows_head_vs_index_content() {
     let diff = svc.get_staged_file_diff("base.txt", &repo_str).unwrap();
 
     assert_eq!(diff.file_path, "base.txt");
-    assert_eq!(diff.old_content, "base\n", "Old content should be the HEAD version");
-    assert_eq!(
-        diff.new_content, "base\nadded line\n",
-        "New content should be the staged (index) version, not the unstaged disk content"
-    );
     assert_eq!(diff.language, "plaintext");
+    // Hunk-based: staged diff HEAD→index; "added line" appears as an addition
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("added line")),
+        "Staged diff hunks should contain the staged addition"
+    );
+    // The further unstaged change must NOT appear in the staged diff
+    assert!(
+        !diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("further unstaged")),
+        "Staged diff should not include disk-only change"
+    );
+    assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
+    assert_eq!(diff.new_total_lines, 2, "Index has 2 lines after staging");
 }
 
 #[test]
@@ -440,14 +457,13 @@ fn unstaged_file_diff_shows_index_vs_disk_content() {
     let diff = svc.get_unstaged_file_diff("base.txt", &repo_str).unwrap();
 
     assert_eq!(diff.file_path, "base.txt");
-    assert_eq!(
-        diff.old_content, "base\nstaged line\n",
-        "Old content should be the staged (index) version"
+    // Hunk-based: unstaged diff index→disk; "disk change" appears as an addition
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("disk change")),
+        "Unstaged diff hunks should contain the disk-only addition"
     );
-    assert_eq!(
-        diff.new_content, "base\nstaged line\ndisk change\n",
-        "New content should be the current disk version"
-    );
+    assert_eq!(diff.old_total_lines, 2, "Index has 2 lines");
+    assert_eq!(diff.new_total_lines, 3, "Disk has 3 lines");
 }
 
 #[test]
@@ -478,4 +494,395 @@ fn unstaged_file_changes_empty_when_working_tree_clean() {
         changes.is_empty(),
         "No unstaged changes on tracked files, result should be empty"
     );
+}
+
+// =============================================================================
+// parse_unified_diff unit tests
+// =============================================================================
+
+#[test]
+fn parse_unified_diff_empty_input_returns_no_hunks() {
+    let hunks = parse_unified_diff("");
+    assert!(hunks.is_empty());
+}
+
+#[test]
+fn parse_unified_diff_unchanged_file_returns_no_hunks() {
+    // git diff on unchanged file outputs nothing
+    let raw = "diff --git a/foo.rs b/foo.rs\n";
+    let hunks = parse_unified_diff(raw);
+    assert!(hunks.is_empty());
+}
+
+#[test]
+fn parse_unified_diff_single_hunk_mixed_lines() {
+    let raw = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
+ fn foo() {
+-    let x = 1;
++    let x = 2;
++    let y = 3;
+ }
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    let hunk = &hunks[0];
+    assert_eq!(hunk.old_start, 1);
+    assert_eq!(hunk.old_lines, 4);
+    assert_eq!(hunk.new_start, 1);
+    assert_eq!(hunk.new_lines, 5);
+
+    // Context: "fn foo() {"
+    assert_eq!(hunk.lines[0].kind, DiffLineKind::Context);
+    assert_eq!(hunk.lines[0].old_line_num, Some(1));
+    assert_eq!(hunk.lines[0].new_line_num, Some(1));
+
+    // Deletion: "    let x = 1;"
+    assert_eq!(hunk.lines[1].kind, DiffLineKind::Deletion);
+    assert_eq!(hunk.lines[1].content, "    let x = 1;");
+    assert_eq!(hunk.lines[1].old_line_num, Some(2));
+    assert_eq!(hunk.lines[1].new_line_num, None);
+
+    // Addition: "    let x = 2;"
+    assert_eq!(hunk.lines[2].kind, DiffLineKind::Addition);
+    assert_eq!(hunk.lines[2].content, "    let x = 2;");
+    assert_eq!(hunk.lines[2].old_line_num, None);
+    assert_eq!(hunk.lines[2].new_line_num, Some(2));
+
+    // Addition: "    let y = 3;"
+    assert_eq!(hunk.lines[3].kind, DiffLineKind::Addition);
+    assert_eq!(hunk.lines[3].new_line_num, Some(3));
+
+    // Context: "}"
+    assert_eq!(hunk.lines[4].kind, DiffLineKind::Context);
+    assert_eq!(hunk.lines[4].old_line_num, Some(3));
+    assert_eq!(hunk.lines[4].new_line_num, Some(4));
+}
+
+#[test]
+fn parse_unified_diff_multi_hunk() {
+    let raw = "\
+@@ -1,3 +1,3 @@
+ line1
+-old2
++new2
+ line3
+@@ -10,3 +10,3 @@
+ line10
+-old11
++new11
+ line12
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(hunks[0].old_start, 1);
+    assert_eq!(hunks[1].old_start, 10);
+    assert_eq!(hunks[1].lines[1].old_line_num, Some(11));
+    assert_eq!(hunks[1].lines[2].new_line_num, Some(11));
+}
+
+#[test]
+fn parse_unified_diff_new_file() {
+    // New file: @@ -0,0 +1,2 @@
+    let raw = "\
+diff --git a/new.rs b/new.rs
+new file mode 100644
+--- /dev/null
++++ b/new.rs
+@@ -0,0 +1,2 @@
++fn new() {}
++// end
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    assert_eq!(hunks[0].old_start, 0);
+    assert_eq!(hunks[0].old_lines, 0);
+    assert_eq!(hunks[0].new_start, 1);
+    let first = &hunks[0].lines[0];
+    assert_eq!(first.kind, DiffLineKind::Addition);
+    assert_eq!(first.old_line_num, None);
+    assert_eq!(first.new_line_num, Some(1));
+}
+
+#[test]
+fn parse_unified_diff_deleted_file() {
+    let raw = "\
+diff --git a/gone.rs b/gone.rs
+deleted file mode 100644
+--- a/gone.rs
++++ /dev/null
+@@ -1,2 +0,0 @@
+-fn old() {}
+-// end
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    assert_eq!(hunks[0].new_start, 0);
+    assert_eq!(hunks[0].new_lines, 0);
+    let first = &hunks[0].lines[0];
+    assert_eq!(first.kind, DiffLineKind::Deletion);
+    assert_eq!(first.new_line_num, None);
+    assert_eq!(first.old_line_num, Some(1));
+}
+
+#[test]
+fn parse_unified_diff_no_newline_marker_skipped() {
+    let raw = "\
+@@ -1,1 +1,1 @@
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    // Only Deletion and Addition — the backslash lines are skipped
+    assert_eq!(hunks[0].lines.len(), 2);
+    assert_eq!(hunks[0].lines[0].kind, DiffLineKind::Deletion);
+    assert_eq!(hunks[0].lines[1].kind, DiffLineKind::Addition);
+}
+
+#[test]
+fn parse_unified_diff_hunk_with_optional_trailing_text() {
+    // @@ -10,7 +10,7 @@ fn my_function() {
+    let raw = "@@ -10,7 +10,7 @@ fn my_function() {\n-old\n+new\n";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    assert!(hunks[0].header.contains("fn my_function()"));
+    assert_eq!(hunks[0].old_start, 10);
+}
+
+#[test]
+fn parse_unified_diff_binary_file_returns_empty() {
+    // Binary diff output — caller detects "Binary files" and skips parsing;
+    // parse_unified_diff itself receives empty string in that branch.
+    let raw = "Binary files a/img.png and b/img.png differ\n";
+    // Demonstrate: if someone calls it directly, no crash, returns empty
+    let hunks = parse_unified_diff(raw);
+    assert!(hunks.is_empty());
+}
+
+// =============================================================================
+// validate_diff_file_path unit tests
+// =============================================================================
+
+#[test]
+fn validate_diff_file_path_rejects_absolute() {
+    let err = validate_diff_file_path("/etc/passwd").unwrap_err();
+    assert!(err.to_string().contains("relative"));
+}
+
+#[test]
+fn validate_diff_file_path_rejects_parent_traversal() {
+    let err = validate_diff_file_path("../secret").unwrap_err();
+    assert!(err.to_string().contains("unsafe"));
+}
+
+#[test]
+fn validate_diff_file_path_rejects_embedded_traversal() {
+    let err = validate_diff_file_path("src/../../etc/passwd").unwrap_err();
+    assert!(err.to_string().contains("unsafe"));
+}
+
+#[test]
+fn validate_diff_file_path_accepts_normal_path() {
+    validate_diff_file_path("src/lib.rs").unwrap();
+    validate_diff_file_path("frontend/src/components/App.tsx").unwrap();
+}
+
+// =============================================================================
+// get_file_content_range unit tests
+// =============================================================================
+
+#[test]
+fn get_file_content_range_rejects_oversized_range() {
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 1, 5001)
+        .unwrap_err();
+    assert!(err.to_string().contains("too large") || err.to_string().contains("5000"));
+}
+
+#[test]
+fn get_file_content_range_rejects_from_greater_than_to() {
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 10, 5)
+        .unwrap_err();
+    assert!(err.to_string().contains("from") || err.to_string().contains("to"));
+}
+
+#[test]
+fn get_file_content_range_rejects_traversal_path() {
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "../etc/passwd", &DiffRefKind::Head, 1, 10)
+        .unwrap_err();
+    assert!(err.to_string().contains("unsafe") || err.to_string().contains("relative"));
+}
+
+#[test]
+fn get_file_content_range_reads_working_tree_lines() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // base.txt already exists with content "base\n" (1 line)
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::New,
+            "base.txt",
+            &DiffRefKind::Unstaged,
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].line_num, 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_rejects_cumulative_base_and_head() {
+    let svc = DiffService::new();
+    let err_base = svc
+        .get_file_content_range(".", &DiffSide::New, "x.rs", &DiffRefKind::CumulativeBase, 1, 5)
+        .unwrap_err();
+    assert!(err_base.to_string().contains("CumulativeBase") || err_base.to_string().contains("resolved"));
+
+    let err_head = svc
+        .get_file_content_range(".", &DiffSide::New, "x.rs", &DiffRefKind::CumulativeHead, 1, 5)
+        .unwrap_err();
+    assert!(err_head.to_string().contains("CumulativeHead") || err_head.to_string().contains("resolved"));
+}
+
+#[test]
+fn get_file_content_range_rejects_from_zero() {
+    // from must be >= 1 (1-indexed)
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 0, 5)
+        .unwrap_err();
+    assert!(err.to_string().contains("from") || err.to_string().contains("1-indexed"));
+}
+
+#[test]
+fn get_file_content_range_reads_head_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // base.txt committed as "base\n" — HEAD has 1 line
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(&repo_str, &DiffSide::Old, "base.txt", &DiffRefKind::Head, 1, 1)
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].line_num, 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_reads_staged_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Stage a new version of base.txt
+    fs::write(repo.join("base.txt"), "base\nstaged\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    // Staged ref reads from the index — should see "staged" line
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(&repo_str, &DiffSide::New, "base.txt", &DiffRefKind::Staged, 1, 2)
+        .unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].content, "base");
+    assert_eq!(lines[1].content, "staged");
+}
+
+#[test]
+fn get_file_content_range_reads_unstaged_old_side_from_index() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Stage a modification so index differs from HEAD
+    fs::write(repo.join("base.txt"), "base\nindex_line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    // Then make a further disk change (unstaged)
+    fs::write(repo.join("base.txt"), "base\nindex_line\ndisk_line\n").unwrap();
+    // Side::Old for Unstaged reads from the index — should see 2 lines
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Unstaged,
+            1,
+            2,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1].content, "index_line");
+}
+
+#[test]
+fn get_file_content_range_reads_commit_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Capture the initial commit SHA (base.txt = "base\n")
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
+
+    // Make an additional commit so HEAD is now different
+    fs::write(repo.join("base.txt"), "base\nafter\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["commit", "-m", "second"]);
+
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Commit { sha },
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_returns_only_requested_window() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Write a 5-line file and commit it
+    fs::write(repo.join("multi.txt"), "a\nb\nc\nd\ne\n").unwrap();
+    git_cmd(&repo, &["add", "multi.txt"]);
+    git_cmd(&repo, &["commit", "-m", "5 lines"]);
+
+    let svc = DiffService::new();
+    // Request lines 2–4 of the committed file
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "multi.txt",
+            &DiffRefKind::Head,
+            2,
+            4,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].line_num, 2);
+    assert_eq!(lines[0].content, "b");
+    assert_eq!(lines[2].line_num, 4);
+    assert_eq!(lines[2].content, "d");
 }

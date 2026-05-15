@@ -16,8 +16,18 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 // Mock SimpleDiffView (heavy body component)
 vi.mock("@/components/diff/SimpleDiffView", () => ({
-  SimpleDiffView: ({ oldContent, newContent }: { oldContent: string; newContent: string }) => (
-    <div data-testid="simple-diff-view" data-old={oldContent} data-new={newContent}>
+  SimpleDiffView: ({
+    hunks,
+    isBinary,
+  }: {
+    hunks: unknown[];
+    isBinary?: boolean;
+  }) => (
+    <div
+      data-testid="simple-diff-view"
+      data-hunk-count={hunks.length}
+      data-binary={String(isBinary ?? false)}
+    >
       SimpleDiffView
     </div>
   ),
@@ -40,9 +50,22 @@ const makeFileChange = (overrides: Partial<FileChange> = {}): FileChange => ({
 
 const makeDiff = (overrides: Partial<FileDiff> = {}): FileDiff => ({
   filePath: "src/components/Foo.tsx",
-  oldContent: "const old = 1;",
-  newContent: "const new = 2;",
   language: "typescript",
+  hunks: [
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      header: "@@ -1,1 +1,1 @@",
+      lines: [
+        { kind: "addition", content: "const new = 2;", oldLineNum: null, newLineNum: 1 },
+      ],
+    },
+  ],
+  oldTotalLines: 1,
+  newTotalLines: 1,
+  isBinary: false,
   ...overrides,
 });
 

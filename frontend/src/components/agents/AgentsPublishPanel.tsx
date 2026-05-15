@@ -858,9 +858,10 @@ export function AgentPublishPanel({
                       );
                   return {
                     filePath: diff.filePath,
-                    oldContent: diff.oldContent,
-                    newContent: diff.newContent,
-                    hunks: [],
+                    hunks: diff.hunks,
+                    oldTotalLines: diff.oldTotalLines,
+                    newTotalLines: diff.newTotalLines,
+                    isBinary: diff.isBinary,
                     language: diff.language,
                   };
                 }}
@@ -890,6 +891,10 @@ export function AgentPublishPanel({
                 changesLabel="Workspace Changes"
                 changesEmptyTitle="No workspace changes"
                 changesEmptySubtitle="There are no changed files to review for this agent branch."
+                {...(conversationId != null && {
+                  conversationId,
+                  changesRefKind: { kind: "head" as const },
+                })}
               />
             </Suspense>
           )}

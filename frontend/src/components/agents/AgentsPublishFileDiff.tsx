@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { FileChange, FileDiff } from "@/api/diff";
+import type { FileChange, FileDiff, DiffRefKind } from "@/api/diff";
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
 
@@ -30,6 +30,10 @@ export interface AgentsPublishFileDiffProps {
   onCopyPath: (path: string) => void;
   onOpenFullscreen: (path: string) => void;
   onRetry?: (() => void) | undefined;
+  /** Workspace conversation ID — enables lazy range fetch in SimpleDiffView. */
+  conversationId?: string | undefined;
+  /** Which diff reference to use for range fetches. */
+  refKind?: DiffRefKind | undefined;
 }
 
 function statusLetter(status: FileChange["status"]): string {
@@ -62,6 +66,8 @@ export function AgentsPublishFileDiff({
   onCopyPath,
   onOpenFullscreen,
   onRetry,
+  conversationId,
+  refKind,
 }: AgentsPublishFileDiffProps) {
   const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
 
@@ -225,9 +231,14 @@ export function AgentsPublishFileDiff({
 
           {diffData !== undefined && (
             <SimpleDiffView
-              oldContent={diffData.oldContent}
-              newContent={diffData.newContent}
+              hunks={diffData.hunks}
+              oldTotalLines={diffData.oldTotalLines}
+              newTotalLines={diffData.newTotalLines}
+              isBinary={diffData.isBinary}
               language={diffData.language}
+              conversationId={conversationId}
+              filePath={file.path}
+              refKind={refKind}
             />
           )}
 

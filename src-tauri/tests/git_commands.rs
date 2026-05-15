@@ -403,8 +403,12 @@ async fn test_regular_squash_merged_task_uses_recorded_commit_parent_when_base_i
     let diff = get_file_diff_for_state(&app_state, task.id.clone(), "task.txt".to_string())
         .await
         .expect("get file diff");
-    assert_eq!(diff.old_content, "");
-    assert_eq!(diff.new_content, "task work\n");
+    // New file — old side is empty, new side contains the added content
+    assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("task work")),
+        "hunk lines should contain added content"
+    );
 }
 
 #[tokio::test]
@@ -457,8 +461,12 @@ async fn test_branchless_plan_merge_diff_uses_merge_base_when_base_is_ahead() {
     let diff = get_file_diff_for_state(&app_state, task.id.clone(), "plan.txt".to_string())
         .await
         .expect("get file diff");
-    assert_eq!(diff.old_content, "");
-    assert_eq!(diff.new_content, "first\nsecond\n");
+    // New file — old side is empty, new side contains the added lines
+    assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        "hunk lines should contain added content"
+    );
 }
 
 #[tokio::test]
@@ -556,8 +564,12 @@ async fn test_diff_commands_use_plan_branch_merge_sha_for_merged_plan_merge_task
     let diff = get_file_diff_for_state(&app_state, task.id.clone(), "plan.txt".to_string())
         .await
         .expect("get file diff");
-    assert_eq!(diff.old_content, "");
-    assert_eq!(diff.new_content, "first\nsecond\n");
+    // New file — old side is empty, new side contains the added lines
+    assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        "hunk lines should contain added content"
+    );
 }
 
 #[tokio::test]
@@ -600,8 +612,12 @@ async fn test_diff_commands_use_parent_for_squash_merged_plan_merge_task() {
     let diff = get_file_diff_for_state(&app_state, task.id.clone(), "plan.txt".to_string())
         .await
         .expect("get file diff");
-    assert_eq!(diff.old_content, "");
-    assert_eq!(diff.new_content, "first\nsecond\n");
+    // New file — old side is empty, new side contains the added lines
+    assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        "hunk lines should contain added content"
+    );
 }
 
 #[tokio::test]
@@ -618,8 +634,12 @@ async fn test_diff_commands_use_plan_branch_for_branchless_plan_merge_task() {
     let diff = get_file_diff_for_state(&app_state, task.id.clone(), "plan.txt".to_string())
         .await
         .expect("get file diff");
-    assert_eq!(diff.old_content, "");
-    assert_eq!(diff.new_content, "first\nsecond\n");
+    // New file — old side is empty, new side contains the added lines
+    assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("first")),
+        "hunk lines should contain added content"
+    );
 }
 
 #[tokio::test]
@@ -663,8 +683,12 @@ async fn test_agent_workspace_review_drilldown_uses_review_payload_context() {
     .await
     .expect("commit file diff should load");
     assert_eq!(diff.file_path, "feature.txt");
-    assert_eq!(diff.old_content, "");
-    assert_eq!(diff.new_content, "hello\n");
+    // New file — old side is empty, new side contains the added content
+    assert_eq!(diff.old_total_lines, 0, "new file has no old lines");
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("hello")),
+        "hunk lines should contain added content"
+    );
 }
 
 /// Verify that the retry_merge metadata reset logic clears all loop-prevention

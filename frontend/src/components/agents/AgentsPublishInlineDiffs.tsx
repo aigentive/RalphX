@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { diffApi } from "@/api/diff";
-import type { AgentWorkspaceReview, FileChange } from "@/api/diff";
+import type { AgentWorkspaceReview, FileChange, DiffRefKind } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
@@ -62,6 +62,15 @@ export function AgentsPublishInlineDiffs({
   const isCommitMode =
     mode !== "uncommitted" && !isStagedMode && !isUnstagedMode && !isCumulativeMode;
   const commitSha = isCommitMode ? mode : undefined;
+
+  /** Map the current mode to the backend DiffRefKind for range fetches. */
+  const refKind = useMemo<DiffRefKind>(() => {
+    if (isStagedMode) return { kind: "staged" };
+    if (isUnstagedMode) return { kind: "unstaged" };
+    if (isCumulativeMode) return { kind: "cumulative_head" };
+    if (isCommitMode && commitSha !== undefined) return { kind: "commit", sha: commitSha };
+    return { kind: "head" }; // uncommitted = diff vs HEAD
+  }, [isStagedMode, isUnstagedMode, isCumulativeMode, isCommitMode, commitSha]);
 
   // ── Commit file list (only active in commit mode) ──────────────────────
   const commitFilesQuery = useQuery({
@@ -461,6 +470,8 @@ export function AgentsPublishInlineDiffs({
                   void navigator.clipboard?.writeText(path).catch(() => undefined);
                 }}
                 onOpenFullscreen={(path) => onOpenInDialog?.(path)}
+                conversationId={conversationId}
+                refKind={refKind}
               />
             </div>
           ))}

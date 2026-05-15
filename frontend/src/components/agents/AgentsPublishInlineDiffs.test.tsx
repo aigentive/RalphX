@@ -42,6 +42,8 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     isExpanded,
     onCopyPath,
     onOpenFullscreen,
+    refKind,
+    conversationId,
   }: {
     file: { path: string };
     diff: unknown;
@@ -50,11 +52,15 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onCopyPath: (p: string) => void;
     onOpenFullscreen: (p: string) => void;
     onRetry?: () => void;
+    refKind?: { kind: string };
+    conversationId?: string;
   }) => (
     <div
       data-testid={`mock-file-diff-${file.path.replace(/\//g, "-")}`}
       data-expanded={String(isExpanded)}
       data-diff-status={typeof diff === "string" ? diff : diff ? "loaded" : "undefined"}
+      data-ref-kind={refKind?.kind}
+      data-conversation-id={conversationId}
     >
       <button onClick={() => onCopyPath(file.path)}>copy</button>
       <button onClick={() => onOpenFullscreen(file.path)}>fullscreen</button>
@@ -143,40 +149,33 @@ const makeCommit = (sha: string): DiffViewerCommit => ({
 describe("AgentsPublishInlineDiffs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetUncommittedDiff.mockResolvedValue({
-      filePath: "src/Foo.tsx",
-      oldContent: "old",
-      newContent: "new",
+    const makeHunkDiff = (filePath: string) => ({
+      filePath,
       language: "typescript",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,1 +1,1 @@",
+          lines: [{ kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 }],
+        },
+      ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
     });
-    mockGetCommitDiff.mockResolvedValue({
-      filePath: "src/Foo.tsx",
-      oldContent: "old-commit",
-      newContent: "new-commit",
-      language: "typescript",
-    });
+
+    mockGetUncommittedDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
+    mockGetCommitDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
     mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
     mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
     mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
     mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/CumulativeFile.tsx")]);
-    mockGetStagedFileDiff.mockResolvedValue({
-      filePath: "src/StagedFile.tsx",
-      oldContent: "old-staged",
-      newContent: "new-staged",
-      language: "typescript",
-    });
-    mockGetUnstagedFileDiff.mockResolvedValue({
-      filePath: "src/UnstagedFile.tsx",
-      oldContent: "old-unstaged",
-      newContent: "new-unstaged",
-      language: "typescript",
-    });
-    mockGetCumulativeFileDiff.mockResolvedValue({
-      filePath: "src/CumulativeFile.tsx",
-      oldContent: "old-cumulative",
-      newContent: "new-cumulative",
-      language: "typescript",
-    });
+    mockGetStagedFileDiff.mockResolvedValue(makeHunkDiff("src/StagedFile.tsx"));
+    mockGetUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
+    mockGetCumulativeFileDiff.mockResolvedValue(makeHunkDiff("src/CumulativeFile.tsx"));
   });
 
   describe("rendering", () => {
@@ -591,6 +590,27 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() =>
         expect(mockGetStagedFileDiff).toHaveBeenCalledWith("conv-1", "src/StagedFile.tsx"),
       );
+    });
+
+    it("passes refKind { kind: 'staged' } to file diff cards in staged mode", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() => {
+        const card = screen.getByTestId("mock-file-diff-src-StagedFile.tsx");
+        expect(card).toHaveAttribute("data-ref-kind", "staged");
+        expect(card).toHaveAttribute("data-conversation-id", "conv-1");
+      });
     });
   });
 

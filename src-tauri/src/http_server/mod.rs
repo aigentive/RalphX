@@ -351,6 +351,10 @@ pub async fn start_http_server(
             "/api/agent-workspaces/:conversation_id/cumulative-changes/*file_path",
             get(get_agent_workspace_cumulative_file_diff),
         )
+        .route(
+            "/api/agent-workspaces/:conversation_id/file-content-range",
+            get(get_agent_workspace_file_content_range),
+        )
         .route("/api/git/tasks/:id/report-conflict", post(report_conflict))
         .route(
             "/api/git/tasks/:id/report-incomplete",

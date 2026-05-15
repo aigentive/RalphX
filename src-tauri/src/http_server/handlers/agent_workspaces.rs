@@ -969,6 +969,100 @@ pub async fn get_agent_workspace_cumulative_file_diff(
     .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
 }
 
+/// Query parameters for the file content range endpoint.
+#[derive(Debug, serde::Deserialize)]
+pub struct FileContentRangeQuery {
+    /// "old" or "new"
+    pub side: String,
+    /// Relative file path within the workspace
+    pub path: String,
+    /// "head" | "staged" | "unstaged" | "commit" | "cumulative_base" | "cumulative_head"
+    pub ref_kind: String,
+    /// Commit SHA — required when ref_kind == "commit"
+    pub sha: Option<String>,
+    /// First line to fetch (1-indexed, inclusive)
+    pub from: u32,
+    /// Last line to fetch (1-indexed, inclusive)
+    pub to: u32,
+}
+
+impl FileContentRangeQuery {
+    fn into_service_params(
+        self,
+    ) -> Result<
+        (
+            crate::application::DiffSide,
+            String,
+            crate::application::DiffRefKind,
+            u32,
+            u32,
+        ),
+        String,
+    > {
+        let side = match self.side.as_str() {
+            "old" => crate::application::DiffSide::Old,
+            "new" => crate::application::DiffSide::New,
+            other => return Err(format!("Invalid side '{other}': expected 'old' or 'new'")),
+        };
+        let ref_kind = match self.ref_kind.as_str() {
+            "head" => crate::application::DiffRefKind::Head,
+            "staged" => crate::application::DiffRefKind::Staged,
+            "unstaged" => crate::application::DiffRefKind::Unstaged,
+            "commit" => {
+                let sha = self.sha.ok_or_else(|| {
+                    "ref_kind 'commit' requires 'sha' query parameter".to_string()
+                })?;
+                crate::application::DiffRefKind::Commit { sha }
+            }
+            "cumulative_base" => crate::application::DiffRefKind::CumulativeBase,
+            "cumulative_head" => crate::application::DiffRefKind::CumulativeHead,
+            other => {
+                return Err(format!(
+                    "Invalid ref_kind '{other}': expected head|staged|unstaged|commit|cumulative_base|cumulative_head"
+                ))
+            }
+        };
+        Ok((side, self.path, ref_kind, self.from, self.to))
+    }
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/file-content-range
+///
+/// Fetch a line range from a specific version of a file in the workspace.
+///
+/// Query params: `side`, `path`, `ref_kind`, `sha` (required for commit), `from`, `to`.
+pub async fn get_agent_workspace_file_content_range(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<FileContentRangeQuery>,
+) -> Result<Json<Vec<crate::application::RangeLine>>, JsonError> {
+    let (side, file_path, ref_kind, from, to) =
+        params.into_service_params().map_err(|msg| {
+            json_error(axum::http::StatusCode::BAD_REQUEST, msg, None)
+        })?;
+    let conversation_id =
+        crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    crate::commands::diff_commands::get_agent_conversation_workspace_file_content_range_for_state(
+        state.app_state.as_ref(),
+        &conversation_id,
+        side,
+        file_path,
+        ref_kind,
+        from,
+        to,
+    )
+    .await
+    .map(Json)
+    .map_err(|e| {
+        let status = if e.to_string().to_lowercase().contains("validation") || e.to_string().to_lowercase().contains("unsafe") || e.to_string().to_lowercase().contains("relative") || e.to_string().to_lowercase().contains("too large") {
+            axum::http::StatusCode::BAD_REQUEST
+        } else {
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        };
+        json_error(status, e.to_string(), None)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1493,8 +1587,13 @@ mod tests {
         .await
         .expect("staged diff should load");
 
-        assert_eq!(diff.old_content, "base\n");
-        assert_eq!(diff.new_content, "base\nnew\n");
+        // Hunk-based: staged diff HEAD→index; "new" line appears as an addition
+        assert!(
+            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("new")),
+            "staged diff hunks should contain the staged addition"
+        );
+        assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
+        assert_eq!(diff.new_total_lines, 2, "index has 2 lines");
     }
 
     #[tokio::test]
@@ -1537,8 +1636,13 @@ mod tests {
         .expect("cumulative diff should load");
 
         assert_eq!(diff.file_path, "new.rs");
-        assert!(diff.new_content.contains("hello"));
-        assert_eq!(diff.old_content, "");
+        // Hunk-based: cumulative diff base→HEAD; "hello" fn appears as additions
+        assert!(
+            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("hello")),
+            "cumulative diff hunks should contain the committed function"
+        );
+        // File did not exist at base, so old_total_lines = 0
+        assert_eq!(diff.old_total_lines, 0, "File did not exist in base");
     }
 
     #[tokio::test]

@@ -35,17 +35,87 @@ pub enum FileChangeStatus {
     Deleted,
 }
 
-/// Diff data for a single file
+/// Diff data for a single file — hunk-based format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiff {
     /// File path
     pub file_path: String,
-    /// Content before changes (empty for new files)
-    pub old_content: String,
-    /// Content after changes (empty for deleted files)
-    pub new_content: String,
     /// Programming language for syntax highlighting
     pub language: String,
+    /// Parsed diff hunks
+    pub hunks: Vec<DiffHunk>,
+    /// Total line count of the old (before) version; 0 for new files
+    pub old_total_lines: u32,
+    /// Total line count of the new (after) version; 0 for deleted files
+    pub new_total_lines: u32,
+    /// True when git reports binary content and hunks are unavailable
+    pub is_binary: bool,
+}
+
+// =========================================================================
+// Hunk-based diff types
+// =========================================================================
+
+/// Classification of a single diff line
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    Context,
+    Addition,
+    Deletion,
+}
+
+/// A single line in a diff hunk with source-position metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+    /// 1-indexed line number in the old file (None for additions)
+    pub old_line_num: Option<u32>,
+    /// 1-indexed line number in the new file (None for deletions)
+    pub new_line_num: Option<u32>,
+}
+
+/// A contiguous changed region in a unified diff
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffHunk {
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    /// Raw `@@ ... @@` header line, including optional trailing function context
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+/// Which side of a diff to view (for range fetching)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffSide {
+    Old,
+    New,
+}
+
+/// Identifies a git ref in the context of an agent workspace diff
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffRefKind {
+    Head,
+    Staged,
+    Unstaged,
+    Commit { sha: String },
+    /// Workspace cumulative base ref — caller must resolve before passing to DiffService
+    CumulativeBase,
+    /// Workspace cumulative head ref — caller must resolve before passing to DiffService
+    CumulativeHead,
+}
+
+/// A single line returned by the range-fetch endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeLine {
+    /// 1-indexed line number
+    pub line_num: u32,
+    pub content: String,
 }
 
 /// 3-way diff data for a file with merge conflicts
@@ -119,46 +189,58 @@ impl DiffService {
 
     /// Get the diff for a specific file between HEAD and the staging area.
     ///
-    /// `old_content` = committed HEAD version; `new_content` = staged (index) version.
+    /// Old = committed HEAD version; New = staged (index) version.
     pub fn get_staged_file_diff(
         &self,
         file_path: &str,
         project_path: &str,
     ) -> AppResult<FileDiff> {
-        let old_content = self
-            .get_file_content_at_ref(project_path, "HEAD", file_path)
-            .unwrap_or_default();
-        let new_content = self
-            .get_file_content_at_index(project_path, file_path)
-            .unwrap_or_default();
-        let language = get_language_from_path(file_path);
+        let raw_diff =
+            run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
+                .unwrap_or_default();
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_ref(project_path, "HEAD", file_path);
+        let new_total_lines = self.count_lines_at_index(project_path, file_path);
         Ok(FileDiff {
             file_path: file_path.to_string(),
-            old_content,
-            new_content,
-            language,
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
         })
     }
 
     /// Get the diff for a specific file between the staging area and the working tree.
     ///
-    /// `old_content` = staged (index) version; `new_content` = current disk content.
+    /// Old = staged (index) version; New = current disk content.
     pub fn get_unstaged_file_diff(
         &self,
         file_path: &str,
         project_path: &str,
     ) -> AppResult<FileDiff> {
-        let old_content = self
-            .get_file_content_at_index(project_path, file_path)
-            .unwrap_or_default();
-        let full_path = std::path::Path::new(project_path).join(file_path);
-        let new_content = std::fs::read_to_string(&full_path).unwrap_or_default();
-        let language = get_language_from_path(file_path);
+        let raw_diff =
+            run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_index(project_path, file_path);
+        let new_total_lines = Self::count_lines_on_disk(project_path, file_path);
         Ok(FileDiff {
             file_path: file_path.to_string(),
-            old_content,
-            new_content,
-            language,
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
         })
     }
 
@@ -183,17 +265,32 @@ impl DiffService {
         }
     }
 
-    /// Get the diff content for a specific file
-    /// Shows old content from base_branch for accurate comparison
+    /// Get the diff content for a specific file: base_branch vs working tree
     pub fn get_file_diff(
         &self,
         file_path: &str,
         project_path: &str,
         base_branch: &str,
     ) -> AppResult<FileDiff> {
-        let full_path = std::path::Path::new(project_path).join(file_path);
-        let new_content = std::fs::read_to_string(&full_path).unwrap_or_default();
-        self.get_file_diff_between_refs_with_new(file_path, project_path, base_branch, &new_content)
+        let raw_diff =
+            run_git_text(project_path, &["diff", base_branch, "--", file_path])
+                .unwrap_or_default();
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_ref(project_path, base_branch, file_path);
+        let new_total_lines = Self::count_lines_on_disk(project_path, file_path);
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
+        })
     }
 
     /// Get files changed in a specific commit
@@ -248,7 +345,7 @@ impl DiffService {
         Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
-    /// Get diff for a file between two refs
+    /// Get diff for a file between two git refs
     pub fn get_file_diff_between_refs(
         &self,
         file_path: &str,
@@ -256,39 +353,24 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<FileDiff> {
-        let old_content = self
-            .get_file_content_at_ref(project_path, from_ref, file_path)
-            .unwrap_or_default();
-        let new_content = self
-            .get_file_content_at_ref(project_path, to_ref, file_path)
-            .unwrap_or_default();
-
-        let language = get_language_from_path(file_path);
+        let raw_diff =
+            run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
+                .unwrap_or_default();
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_ref(project_path, from_ref, file_path);
+        let new_total_lines = self.count_lines_at_ref(project_path, to_ref, file_path);
         Ok(FileDiff {
             file_path: file_path.to_string(),
-            old_content,
-            new_content,
-            language,
-        })
-    }
-
-    /// Same as get_file_diff_between_refs, but with new content already read from disk.
-    fn get_file_diff_between_refs_with_new(
-        &self,
-        file_path: &str,
-        project_path: &str,
-        from_ref: &str,
-        new_content: &str,
-    ) -> AppResult<FileDiff> {
-        let old_content = self
-            .get_file_content_at_ref(project_path, from_ref, file_path)
-            .unwrap_or_default();
-        let language = get_language_from_path(file_path);
-        Ok(FileDiff {
-            file_path: file_path.to_string(),
-            old_content,
-            new_content: new_content.to_string(),
-            language,
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
         })
     }
 
@@ -386,6 +468,145 @@ impl DiffService {
     ) -> AppResult<FileDiff> {
         let from_ref = self.get_merged_base_ref(project_path, base_branch, merge_commit_sha);
         self.get_file_diff_between_refs(file_path, project_path, &from_ref, merge_commit_sha)
+    }
+
+    // =========================================================================
+    // Line-count helpers (used for old_total_lines / new_total_lines)
+    // =========================================================================
+
+    fn count_lines_at_ref(&self, project_path: &str, git_ref: &str, file_path: &str) -> u32 {
+        self.get_file_content_at_ref(project_path, git_ref, file_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    }
+
+    fn count_lines_at_index(&self, project_path: &str, file_path: &str) -> u32 {
+        self.get_file_content_at_index(project_path, file_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    }
+
+    fn count_lines_on_disk(project_path: &str, file_path: &str) -> u32 {
+        let full_path = std::path::Path::new(project_path).join(file_path);
+        std::fs::read_to_string(&full_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    }
+
+    // =========================================================================
+    // Range fetch endpoint
+    // =========================================================================
+
+    /// Fetch a range of lines [from, to] (1-indexed, inclusive) from a specific
+    /// version of a file.  Maximum range size is 5 000 lines.
+    ///
+    /// `DiffRefKind::CumulativeBase` and `DiffRefKind::CumulativeHead` are NOT
+    /// handled here — the caller must resolve them to `DiffRefKind::Commit { sha }`
+    /// using workspace context before calling this method.
+    ///
+    /// # Errors
+    /// * `Validation` — range too large, `from > to`, or unsafe path components.
+    /// * `GitOperation` — file not found at the requested ref / index.
+    pub fn get_file_content_range(
+        &self,
+        workspace_path: &str,
+        side: &DiffSide,
+        path: &str,
+        ref_kind: &DiffRefKind,
+        from: u32,
+        to: u32,
+    ) -> AppResult<Vec<RangeLine>> {
+        const MAX_RANGE: u32 = 5_000;
+
+        if from < 1 {
+            return Err(AppError::Validation(
+                "'from' must be >= 1 (1-indexed)".to_string(),
+            ));
+        }
+        if to < from {
+            return Err(AppError::Validation(format!(
+                "'from' ({from}) must be <= 'to' ({to})"
+            )));
+        }
+        if to - from + 1 > MAX_RANGE {
+            return Err(AppError::Validation(format!(
+                "Range too large: {} lines requested (max {MAX_RANGE})",
+                to - from + 1
+            )));
+        }
+
+        // Validate path: must be relative with no unsafe components
+        validate_diff_file_path(path)?;
+
+        let content: String = match ref_kind {
+            DiffRefKind::Unstaged => {
+                if matches!(side, DiffSide::New) {
+                    // Working-tree file — use safe read helper (CodeQL path containment)
+                    let full_path =
+                        std::path::PathBuf::from(workspace_path).join(path);
+                    crate::utils::path_safety::checked_read_to_string(
+                        &full_path,
+                        "content range file",
+                    )?
+                } else {
+                    // Old side of unstaged diff = index
+                    self.get_file_content_at_index(workspace_path, path)
+                        .ok_or_else(|| {
+                            AppError::GitOperation(format!(
+                                "File '{path}' not found in the git index"
+                            ))
+                        })?
+                }
+            }
+            DiffRefKind::Staged => {
+                self.get_file_content_at_index(workspace_path, path)
+                    .ok_or_else(|| {
+                        AppError::GitOperation(format!(
+                            "File '{path}' not found in the git index"
+                        ))
+                    })?
+            }
+            DiffRefKind::Head => {
+                self.get_file_content_at_ref(workspace_path, "HEAD", path)
+                    .ok_or_else(|| {
+                        AppError::GitOperation(format!(
+                            "File '{path}' not found at HEAD"
+                        ))
+                    })?
+            }
+            DiffRefKind::Commit { sha } => {
+                self.get_file_content_at_ref(workspace_path, sha, path)
+                    .ok_or_else(|| {
+                        AppError::GitOperation(format!(
+                            "File '{path}' not found at commit {sha}"
+                        ))
+                    })?
+            }
+            DiffRefKind::CumulativeBase | DiffRefKind::CumulativeHead => {
+                return Err(AppError::Validation(
+                    "CumulativeBase/CumulativeHead must be resolved to Commit by the caller"
+                        .to_string(),
+                ));
+            }
+        };
+
+        let lines: Vec<RangeLine> = content
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                let line_num = (i + 1) as u32;
+                if line_num >= from && line_num <= to {
+                    Some(RangeLine {
+                        line_num,
+                        content: line.to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(lines)
     }
 
     // =========================================================================
@@ -753,6 +974,135 @@ fn get_language_from_path(path: &str) -> String {
         "sh" | "bash" | "zsh" => "bash".to_string(),
         _ => "plaintext".to_string(),
     }
+}
+
+// =========================================================================
+// Unified diff parser
+// =========================================================================
+
+/// Parse a unified diff (e.g. from `git diff`) into a list of hunks.
+///
+/// Handles:
+/// * Multi-hunk diffs with mixed additions / deletions / context lines.
+/// * New-file hunks (`@@ -0,0 +1,N @@`).
+/// * Deleted-file hunks.
+/// * `\ No newline at end of file` markers — silently skipped.
+/// * Binary-file output — caller detects `"Binary files"` and passes `vec![]`
+///   directly; this function returns `vec![]` for truly empty raw strings.
+pub fn parse_unified_diff(raw: &str) -> Vec<DiffHunk> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_hunk: Option<DiffHunk> = None;
+    let mut old_line: u32 = 0;
+    let mut new_line: u32 = 0;
+
+    for line in raw.lines() {
+        if line.starts_with("@@ ") {
+            if let Some(h) = current_hunk.take() {
+                hunks.push(h);
+            }
+            if let Some(hunk) = parse_hunk_header(line) {
+                old_line = hunk.old_start;
+                new_line = hunk.new_start;
+                current_hunk = Some(hunk);
+            }
+        } else if let Some(ref mut hunk) = current_hunk {
+            if let Some(content) = line.strip_prefix('+') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: content.to_string(),
+                    old_line_num: None,
+                    new_line_num: Some(new_line),
+                });
+                new_line += 1;
+            } else if let Some(content) = line.strip_prefix('-') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    content: content.to_string(),
+                    old_line_num: Some(old_line),
+                    new_line_num: None,
+                });
+                old_line += 1;
+            } else if let Some(content) = line.strip_prefix(' ') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: content.to_string(),
+                    old_line_num: Some(old_line),
+                    new_line_num: Some(new_line),
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+            // '\ No newline at end of file' — skip (don't emit, don't fail)
+            // Other preamble / header lines (diff --git, index, ---, +++) — skip
+        }
+    }
+
+    if let Some(h) = current_hunk.take() {
+        hunks.push(h);
+    }
+
+    hunks
+}
+
+/// Parse a single `@@ -A,B +C,D @@ optional text` hunk header line.
+fn parse_hunk_header(line: &str) -> Option<DiffHunk> {
+    // Strip leading "@@ "
+    let after_prefix = line.strip_prefix("@@ ")?;
+    // Find the closing " @@"
+    let close_pos = after_prefix.find(" @@")?;
+    let ranges = &after_prefix[..close_pos];
+
+    let mut parts = ranges.split(' ');
+    let old_range = parts.next()?.strip_prefix('-')?;
+    let new_range = parts.next()?.strip_prefix('+')?;
+
+    let (old_start, old_lines) = parse_range_pair(old_range)?;
+    let (new_start, new_lines) = parse_range_pair(new_range)?;
+
+    Some(DiffHunk {
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+        header: line.to_string(),
+        lines: Vec::new(),
+    })
+}
+
+/// Parse `"A,B"` → `(A, B)` or `"A"` → `(A, 1)`.
+fn parse_range_pair(s: &str) -> Option<(u32, u32)> {
+    if let Some(comma_pos) = s.find(',') {
+        let start: u32 = s[..comma_pos].parse().ok()?;
+        let count: u32 = s[comma_pos + 1..].parse().ok()?;
+        Some((start, count))
+    } else {
+        let start: u32 = s.parse().ok()?;
+        Some((start, 1))
+    }
+}
+
+/// Validate a file path received from external input (Tauri command / HTTP query).
+///
+/// Accepts only relative paths whose every component is a normal filename —
+/// no `..`, `.`, absolute roots, or Windows drive prefixes.
+fn validate_diff_file_path(path: &str) -> AppResult<()> {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return Err(AppError::Validation(format!(
+            "File path must be relative: {path}"
+        )));
+    }
+    for component in p.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(AppError::Validation(format!(
+                "File path contains unsafe components: {path}"
+            )));
+        }
+    }
+    if path.is_empty() {
+        return Err(AppError::Validation("File path must not be empty".to_string()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
