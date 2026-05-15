@@ -713,6 +713,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         "expected tauri-api-url CLI arg in overrides: {args_override}"
     );
     assert!(
+        args_override.contains("--trace-dir"),
+        "expected trace-dir CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("mcp-proxy"),
+        "expected app-owned MCP proxy trace dir in overrides: {args_override}"
+    );
+    assert!(
         args_override.contains("http://127.0.0.1:"),
         "expected loopback Tauri API URL value in overrides: {args_override}"
     );

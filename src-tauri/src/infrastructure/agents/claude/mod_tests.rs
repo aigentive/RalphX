@@ -309,6 +309,31 @@ fn test_create_mcp_config_injects_agent_type_alongside_allowed_tools() {
 }
 
 #[test]
+fn test_create_mcp_config_injects_app_owned_trace_dir() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
+        .expect("should create config file");
+    let args = get_json_args(&config_path);
+
+    let trace_dir_index = args
+        .iter()
+        .position(|arg| arg == "--trace-dir")
+        .expect("--trace-dir should be present in MCP args");
+    let trace_dir = args
+        .get(trace_dir_index + 1)
+        .expect("--trace-dir should have a value");
+
+    assert!(
+        trace_dir.contains("mcp-proxy"),
+        "trace dir should point at the MCP proxy log root: {trace_dir}"
+    );
+    assert!(
+        !trace_dir.starts_with(plugin_dir.to_string_lossy().as_ref()),
+        "trace dir must not be rooted under the generated plugin dir: {trace_dir}"
+    );
+}
+
+#[test]
 fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // Unknown agent has no config → mcp_tools absent → no --allowed-tools injected

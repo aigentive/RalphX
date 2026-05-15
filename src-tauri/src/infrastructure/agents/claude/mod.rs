@@ -974,6 +974,12 @@ pub(crate) fn build_mcp_config_with_runtime_context(
         }
         args_vec.push("--tauri-api-url".to_string());
         args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
+        args_vec.push("--trace-dir".to_string());
+        args_vec.push(
+            crate::utils::runtime_log_paths::mcp_proxy_trace_dir()
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         // Inject --allowed-tools from agent's mcp_tools config (Wave 3).
         // - Agent not in config (None) → skip arg entirely (MCP server resolves canonical metadata,
@@ -1721,7 +1727,11 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     let mcp_config = serde_json::json!({
         "type": "stdio",
         "command": "node",
-        "args": [mcp_server_path_str]
+        "args": [
+            mcp_server_path_str,
+            "--trace-dir",
+            crate::utils::runtime_log_paths::mcp_proxy_trace_dir().to_string_lossy()
+        ]
     });
 
     let config_json = serde_json::to_string(&mcp_config)
@@ -2030,19 +2040,25 @@ mod tests {
         std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
         let node_path = nvm_bin.join("node");
         let claude_path = nvm_bin.join("claude");
+        let captured_add_json_path = temp_dir.path().join("captured-add-json.txt");
         write_executable(
             &node_path,
-            r#"#!/bin/sh
+            &format!(
+                r#"#!/bin/sh
+capture='{}'
 shift
 if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
   exit 0
 elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
+  printf '%s' "$6" > "$capture"
   exit 0
 else
-  printf 'unexpected args: %s\n' "$*" >&2
+  printf 'unexpected args\n' >&2
   exit 64
 fi
 "#,
+                captured_add_json_path.to_string_lossy()
+            ),
         );
         write_executable(&claude_path, "#!/usr/bin/env node\n");
 
@@ -2055,6 +2071,17 @@ fi
         register_mcp_server(&claude_path, temp_dir.path())
             .await
             .expect("Claude MCP registration should run npm shim with resolved node");
+
+        let captured_add_json =
+            std::fs::read_to_string(captured_add_json_path).expect("read captured add-json");
+        assert!(
+            captured_add_json.contains("--trace-dir"),
+            "registered MCP config should include trace-dir arg"
+        );
+        assert!(
+            captured_add_json.contains("mcp-proxy"),
+            "registered MCP config should point traces at MCP proxy log root"
+        );
     }
 
     /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the
