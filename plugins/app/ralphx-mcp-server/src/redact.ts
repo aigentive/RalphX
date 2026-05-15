@@ -165,17 +165,12 @@ function resolveConfiguredTraceDir(): string | null {
   return resolveSafeTraceDir(configuredTraceDir);
 }
 
-function buildTraceLogPathInDir(traceDir: string): string | null {
+function buildTraceLogPathInExistingDir(traceDir: string): string | null {
   try {
     const safeTraceDir = resolveSafeTraceDir(traceDir);
     if (!safeTraceDir) {
       return null;
     }
-
-    // safeTraceDir is absolute, has the fixed mcp-proxy leaf, and was rejected
-    // if it resolves under the target project before this sink.
-    // codeql[js/path-injection]
-    fs.mkdirSync(safeTraceDir, { recursive: true });
 
     // safeTraceDir passed the same fixed-leaf and target-project containment checks
     // before the realpath lookup.
@@ -188,20 +183,42 @@ function buildTraceLogPathInDir(traceDir: string): string | null {
 
     return path.join(realTraceDir, buildTraceFilename());
   } catch (error) {
+    safeError("[RalphX MCP] Failed to use existing MCP trace dir:", error);
+    return null;
+  }
+}
+
+function buildTraceLogPathInOwnedDir(traceDir: string): string | null {
+  try {
+    const safeTraceDir = resolveSafeTraceDir(traceDir);
+    if (!safeTraceDir) {
+      return null;
+    }
+
+    // safeTraceDir is one of this module's fixed RalphX-owned fallback roots,
+    // not a configured runtime path from CLI/env.
+    // codeql[js/path-injection]
+    fs.mkdirSync(safeTraceDir, { recursive: true });
+
+    return buildTraceLogPathInExistingDir(safeTraceDir);
+  } catch (error) {
     safeError("[RalphX MCP] Failed to initialize MCP trace dir:", error);
     return null;
   }
 }
 
 function resolveTraceLogPath(): string | null {
-  const candidateDirs = [
-    resolveConfiguredTraceDir(),
-    resolveModuleTraceDir(),
-    resolveFallbackTraceDir(),
-  ].filter((dir): dir is string => Boolean(dir));
+  const configuredTraceDir = resolveConfiguredTraceDir();
+  if (configuredTraceDir) {
+    const configuredCandidate = buildTraceLogPathInExistingDir(configuredTraceDir);
+    if (configuredCandidate) {
+      return configuredCandidate;
+    }
+  }
 
+  const candidateDirs = [resolveModuleTraceDir(), resolveFallbackTraceDir()];
   for (const traceDir of candidateDirs) {
-    const candidate = buildTraceLogPathInDir(traceDir);
+    const candidate = buildTraceLogPathInOwnedDir(traceDir);
     if (candidate) {
       return candidate;
     }

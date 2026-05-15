@@ -991,7 +991,7 @@ pub(crate) fn build_mcp_config_with_runtime_context(
         args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
         args_vec.push("--trace-dir".to_string());
         args_vec.push(
-            crate::utils::runtime_log_paths::mcp_proxy_trace_dir()
+            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
                 .to_string_lossy()
                 .into_owned(),
         );
@@ -1745,7 +1745,7 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
         "args": [
             mcp_server_path_str,
             "--trace-dir",
-            crate::utils::runtime_log_paths::mcp_proxy_trace_dir().to_string_lossy()
+            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir().to_string_lossy()
         ]
     });
 

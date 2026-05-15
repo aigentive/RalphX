@@ -159,7 +159,7 @@ pub fn build_codex_mcp_overrides(
         "--tauri-api-url".to_string(),
         crate::utils::backend_endpoint::backend_http_base_url(),
         "--trace-dir".to_string(),
-        crate::utils::runtime_log_paths::mcp_proxy_trace_dir()
+        crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
             .to_string_lossy()
             .into_owned(),
     ];

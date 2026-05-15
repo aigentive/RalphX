@@ -36,6 +36,14 @@ pub fn mcp_proxy_trace_dir() -> PathBuf {
     app_log_dir().join("mcp-proxy")
 }
 
+pub fn ensure_mcp_proxy_trace_dir() -> PathBuf {
+    let dir = mcp_proxy_trace_dir();
+    // dir is RalphX-owned app runtime storage, never target-project input.
+    // codeql[rust/path-injection]
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 pub fn claude_debug_log_dir() -> PathBuf {
     app_log_dir().join("claude-debug")
 }
