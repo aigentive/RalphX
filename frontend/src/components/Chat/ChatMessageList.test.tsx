@@ -2064,6 +2064,26 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(screen.getByText(/Based on the results/)).toBeInTheDocument();
     });
 
+    it("compacts older live text blocks so long Codex streams do not render hundreds of bubbles", () => {
+      const blocks: StreamingContentBlock[] = Array.from({ length: 65 }, (_, index) => ({
+        type: "text",
+        text: `Codex live update ${index + 1}`,
+      }));
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      expect(screen.getByText(/Codex live update 1/)).toBeInTheDocument();
+      expect(screen.getByText(/Codex live update 65/)).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(41);
+    });
+
     it("triggers re-renders when text crosses bucket boundaries", () => {
       // bucket 0: text < 150 chars
       const { rerender } = render(
