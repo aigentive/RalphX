@@ -891,7 +891,10 @@ export function AgentPublishPanel({
                 changesLabel="Workspace Changes"
                 changesEmptyTitle="No workspace changes"
                 changesEmptySubtitle="There are no changed files to review for this agent branch."
-                {...(conversationId != null && { conversationId })}
+                {...(conversationId != null && {
+                  conversationId,
+                  changesRefKind: { kind: "head" as const },
+                })}
               />
             </Suspense>
           )}

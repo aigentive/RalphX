@@ -42,6 +42,8 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     isExpanded,
     onCopyPath,
     onOpenFullscreen,
+    refKind,
+    conversationId,
   }: {
     file: { path: string };
     diff: unknown;
@@ -50,11 +52,15 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onCopyPath: (p: string) => void;
     onOpenFullscreen: (p: string) => void;
     onRetry?: () => void;
+    refKind?: { kind: string };
+    conversationId?: string;
   }) => (
     <div
       data-testid={`mock-file-diff-${file.path.replace(/\//g, "-")}`}
       data-expanded={String(isExpanded)}
       data-diff-status={typeof diff === "string" ? diff : diff ? "loaded" : "undefined"}
+      data-ref-kind={refKind?.kind}
+      data-conversation-id={conversationId}
     >
       <button onClick={() => onCopyPath(file.path)}>copy</button>
       <button onClick={() => onOpenFullscreen(file.path)}>fullscreen</button>
@@ -584,6 +590,27 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() =>
         expect(mockGetStagedFileDiff).toHaveBeenCalledWith("conv-1", "src/StagedFile.tsx"),
       );
+    });
+
+    it("passes refKind { kind: 'staged' } to file diff cards in staged mode", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() => {
+        const card = screen.getByTestId("mock-file-diff-src-StagedFile.tsx");
+        expect(card).toHaveAttribute("data-ref-kind", "staged");
+        expect(card).toHaveAttribute("data-conversation-id", "conv-1");
+      });
     });
   });
 
