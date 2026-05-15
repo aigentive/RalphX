@@ -56,7 +56,11 @@ export function AgentsPublishInlineDiffs({
   // Refs for scrolling to file cards on jump
   const cardRefs = useRef<Map<string, HTMLElement | null>>(new Map());
 
-  const isCommitMode = mode !== "uncommitted";
+  const isStagedMode = mode === "staged";
+  const isUnstagedMode = mode === "unstaged";
+  const isCumulativeMode = mode === "cumulative";
+  const isCommitMode =
+    mode !== "uncommitted" && !isStagedMode && !isUnstagedMode && !isCumulativeMode;
   const commitSha = isCommitMode ? mode : undefined;
 
   // ── Commit file list (only active in commit mode) ──────────────────────
@@ -69,11 +73,45 @@ export function AgentsPublishInlineDiffs({
     enabled: isCommitMode && Boolean(commitSha),
   });
 
+  // ── Staged file list (only active in staged mode) ──────────────────────
+  const stagedFilesQuery = useQuery({
+    queryKey: ["staged-files", conversationId],
+    queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
+    enabled: isStagedMode,
+  });
+
+  // ── Unstaged file list (only active in unstaged mode) ─────────────────
+  const unstagedFilesQuery = useQuery({
+    queryKey: ["unstaged-files", conversationId],
+    queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
+    enabled: isUnstagedMode,
+  });
+
+  // ── Cumulative file list (only active in cumulative mode) ─────────────
+  const cumulativeFilesQuery = useQuery({
+    queryKey: ["cumulative-files", conversationId],
+    queryFn: () => diffApi.getAgentConversationWorkspaceCumulativeFileChanges(conversationId),
+    enabled: isCumulativeMode,
+  });
+
   // ── Current file list (mode-dependent) ────────────────────────────────
   const currentFiles = useMemo<FileChange[]>(() => {
     if (isCommitMode) return commitFilesQuery.data ?? [];
+    if (isStagedMode) return stagedFilesQuery.data ?? [];
+    if (isUnstagedMode) return unstagedFilesQuery.data ?? [];
+    if (isCumulativeMode) return cumulativeFilesQuery.data ?? [];
     return review?.changes ?? [];
-  }, [isCommitMode, commitFilesQuery.data, review]);
+  }, [
+    isCommitMode,
+    isStagedMode,
+    isUnstagedMode,
+    isCumulativeMode,
+    commitFilesQuery.data,
+    stagedFilesQuery.data,
+    unstagedFilesQuery.data,
+    cumulativeFilesQuery.data,
+    review,
+  ]);
 
   // Only fetch diffs for expanded files — collapsed cards pay no query cost.
   const expandedFiles = useMemo(
@@ -83,7 +121,10 @@ export function AgentsPublishInlineDiffs({
 
   // ── Uncommitted diffs ─────────────────────────────────────────────────
   const uncommittedDiffQueries = useQueries({
-    queries: (!isCommitMode ? expandedFiles : []).map((file) => ({
+    queries: (!isCommitMode && !isStagedMode && !isUnstagedMode && !isCumulativeMode
+      ? expandedFiles
+      : []
+    ).map((file) => ({
       queryKey: ["uncommitted-diff", conversationId, file.path],
       queryFn: () => diffApi.getAgentConversationWorkspaceFileDiff(conversationId, file.path),
     })),
@@ -104,10 +145,45 @@ export function AgentsPublishInlineDiffs({
     })),
   });
 
+  // ── Staged diffs ──────────────────────────────────────────────────────
+  const stagedDiffQueries = useQueries({
+    queries: (isStagedMode ? expandedFiles : []).map((file) => ({
+      queryKey: ["staged-diff", conversationId, file.path],
+      queryFn: () =>
+        diffApi.getAgentConversationWorkspaceStagedFileDiff(conversationId, file.path),
+    })),
+  });
+
+  // ── Unstaged diffs ────────────────────────────────────────────────────
+  const unstagedDiffQueries = useQueries({
+    queries: (isUnstagedMode ? expandedFiles : []).map((file) => ({
+      queryKey: ["unstaged-diff", conversationId, file.path],
+      queryFn: () =>
+        diffApi.getAgentConversationWorkspaceUnstagedFileDiff(conversationId, file.path),
+    })),
+  });
+
+  // ── Cumulative diffs ──────────────────────────────────────────────────
+  const cumulativeDiffQueries = useQueries({
+    queries: (isCumulativeMode ? expandedFiles : []).map((file) => ({
+      queryKey: ["cumulative-diff", conversationId, file.path],
+      queryFn: () =>
+        diffApi.getAgentConversationWorkspaceCumulativeFileDiff(conversationId, file.path),
+    })),
+  });
+
   // ── Map path → DiffState for card props ───────────────────────────────
   const diffByPath = useMemo(() => {
     const map = new Map<string, DiffState>();
-    const activeQueries = isCommitMode ? commitDiffQueries : uncommittedDiffQueries;
+    const activeQueries = isCommitMode
+      ? commitDiffQueries
+      : isStagedMode
+        ? stagedDiffQueries
+        : isUnstagedMode
+          ? unstagedDiffQueries
+          : isCumulativeMode
+            ? cumulativeDiffQueries
+            : uncommittedDiffQueries;
     expandedFiles.forEach((file, idx) => {
       const q = activeQueries[idx];
       if (!q) return;
@@ -120,7 +196,18 @@ export function AgentsPublishInlineDiffs({
       }
     });
     return map;
-  }, [isCommitMode, uncommittedDiffQueries, commitDiffQueries, expandedFiles]);
+  }, [
+    isCommitMode,
+    isStagedMode,
+    isUnstagedMode,
+    isCumulativeMode,
+    uncommittedDiffQueries,
+    commitDiffQueries,
+    stagedDiffQueries,
+    unstagedDiffQueries,
+    cumulativeDiffQueries,
+    expandedFiles,
+  ]);
 
   // ── Jump-to-file filtered list ────────────────────────────────────────
   const filteredJumpFiles = useMemo(() => {
@@ -184,6 +271,12 @@ export function AgentsPublishInlineDiffs({
         <AgentsPublishDiffFilter
           mode={mode}
           uncommittedCount={uncommittedCount}
+          {...(stagedFilesQuery.data !== undefined && {
+            stagedCount: stagedFilesQuery.data.length,
+          })}
+          {...(unstagedFilesQuery.data !== undefined && {
+            unstagedCount: unstagedFilesQuery.data.length,
+          })}
           commits={commits}
           onModeChange={handleModeChange}
         />

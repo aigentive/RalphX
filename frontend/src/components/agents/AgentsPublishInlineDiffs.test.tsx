@@ -21,11 +21,16 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     mode: string;
     onModeChange: (m: string) => void;
     uncommittedCount: number;
+    stagedCount?: number;
+    unstagedCount?: number;
     commits: unknown[];
   }) => (
     <div data-testid="mock-diff-filter" data-mode={mode} data-count={uncommittedCount}>
       <button onClick={() => onModeChange("uncommitted")}>Uncommitted</button>
       <button onClick={() => onModeChange("sha-abc")}>Commit sha-abc</button>
+      <button onClick={() => onModeChange("staged")}>Staged</button>
+      <button onClick={() => onModeChange("unstaged")}>Unstaged</button>
+      <button onClick={() => onModeChange("cumulative")}>All commits</button>
     </div>
   ),
 }));
@@ -62,6 +67,12 @@ vi.mock("./AgentsPublishFileDiff", () => ({
 const mockGetUncommittedDiff = vi.fn();
 const mockGetCommitDiff = vi.fn();
 const mockGetCommitFiles = vi.fn();
+const mockGetStagedFiles = vi.fn();
+const mockGetUnstagedFiles = vi.fn();
+const mockGetCumulativeFiles = vi.fn();
+const mockGetStagedFileDiff = vi.fn();
+const mockGetUnstagedFileDiff = vi.fn();
+const mockGetCumulativeFileDiff = vi.fn();
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -71,6 +82,18 @@ vi.mock("@/api/diff", () => ({
       mockGetCommitDiff(...args),
     getAgentConversationWorkspaceCommitFileChanges: (...args: unknown[]) =>
       mockGetCommitFiles(...args),
+    getAgentConversationWorkspaceStagedFileChanges: (...args: unknown[]) =>
+      mockGetStagedFiles(...args),
+    getAgentConversationWorkspaceUnstagedFileChanges: (...args: unknown[]) =>
+      mockGetUnstagedFiles(...args),
+    getAgentConversationWorkspaceCumulativeFileChanges: (...args: unknown[]) =>
+      mockGetCumulativeFiles(...args),
+    getAgentConversationWorkspaceStagedFileDiff: (...args: unknown[]) =>
+      mockGetStagedFileDiff(...args),
+    getAgentConversationWorkspaceUnstagedFileDiff: (...args: unknown[]) =>
+      mockGetUnstagedFileDiff(...args),
+    getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
+      mockGetCumulativeFileDiff(...args),
   },
 }));
 
@@ -133,6 +156,27 @@ describe("AgentsPublishInlineDiffs", () => {
       language: "typescript",
     });
     mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
+    mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
+    mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
+    mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/CumulativeFile.tsx")]);
+    mockGetStagedFileDiff.mockResolvedValue({
+      filePath: "src/StagedFile.tsx",
+      oldContent: "old-staged",
+      newContent: "new-staged",
+      language: "typescript",
+    });
+    mockGetUnstagedFileDiff.mockResolvedValue({
+      filePath: "src/UnstagedFile.tsx",
+      oldContent: "old-unstaged",
+      newContent: "new-unstaged",
+      language: "typescript",
+    });
+    mockGetCumulativeFileDiff.mockResolvedValue({
+      filePath: "src/CumulativeFile.tsx",
+      oldContent: "old-cumulative",
+      newContent: "new-cumulative",
+      language: "typescript",
+    });
   });
 
   describe("rendering", () => {
@@ -466,6 +510,272 @@ describe("AgentsPublishInlineDiffs", () => {
         expect(screen.getByTestId("inline-diffs-additions")).toHaveTextContent("+7"),
       );
       expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−3");
+    });
+  });
+
+  describe("mode=staged — diff fetching", () => {
+    it("fetches staged file changes when mode switches to staged", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() => expect(mockGetStagedFiles).toHaveBeenCalledWith("conv-1"));
+    });
+
+    it("renders staged file list (not uncommitted list) when mode is staged", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
+    });
+
+    it("shows +/− totals from staged file list in sticky bar", async () => {
+      const user = userEvent.setup();
+      mockGetStagedFiles.mockResolvedValue([
+        makeFileChange("src/StagedFile.tsx", { additions: 6, deletions: 4 }),
+      ]);
+      const changes = [makeFileChange("src/Foo.tsx", { additions: 99, deletions: 88 })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("inline-diffs-additions")).toHaveTextContent("+6"),
+      );
+      expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−4");
+    });
+
+    it("fetches staged diff for each expanded staged file", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() =>
+        expect(mockGetStagedFileDiff).toHaveBeenCalledWith("conv-1", "src/StagedFile.tsx"),
+      );
+    });
+  });
+
+  describe("mode=unstaged — diff fetching", () => {
+    it("fetches unstaged file changes when mode switches to unstaged", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Unstaged" }));
+      await waitFor(() => expect(mockGetUnstagedFiles).toHaveBeenCalledWith("conv-1"));
+    });
+
+    it("renders unstaged file list (not uncommitted list) when mode is unstaged", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Unstaged" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
+    });
+
+    it("shows +/− totals from unstaged file list in sticky bar", async () => {
+      const user = userEvent.setup();
+      mockGetUnstagedFiles.mockResolvedValue([
+        makeFileChange("src/UnstagedFile.tsx", { additions: 3, deletions: 1 }),
+      ]);
+      const changes = [makeFileChange("src/Foo.tsx", { additions: 99, deletions: 88 })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Unstaged" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("inline-diffs-additions")).toHaveTextContent("+3"),
+      );
+      expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−1");
+    });
+
+    it("fetches unstaged diff for each expanded unstaged file", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "Unstaged" }));
+      await waitFor(() =>
+        expect(mockGetUnstagedFileDiff).toHaveBeenCalledWith("conv-1", "src/UnstagedFile.tsx"),
+      );
+    });
+  });
+
+  describe("mode=cumulative — diff fetching", () => {
+    it("fetches cumulative file changes when mode switches to cumulative", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+      await waitFor(() => expect(mockGetCumulativeFiles).toHaveBeenCalledWith("conv-1"));
+    });
+
+    it("renders cumulative file list (not uncommitted list) when mode is cumulative", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CumulativeFile.tsx")).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
+    });
+
+    it("shows file count from cumulative file list in sticky bar", async () => {
+      const user = userEvent.setup();
+      mockGetCumulativeFiles.mockResolvedValue([
+        makeFileChange("src/CumulativeFile.tsx"),
+        makeFileChange("src/AnotherCumulative.tsx"),
+      ]);
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("2"),
+      );
+    });
+
+    it("shows +/− totals from cumulative file list in sticky bar", async () => {
+      const user = userEvent.setup();
+      mockGetCumulativeFiles.mockResolvedValue([
+        makeFileChange("src/CumulativeFile.tsx", { additions: 12, deletions: 5 }),
+      ]);
+      const changes = [makeFileChange("src/Foo.tsx", { additions: 99, deletions: 88 })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("inline-diffs-additions")).toHaveTextContent("+12"),
+      );
+      expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−5");
+    });
+
+    it("fetches cumulative diff for each expanded cumulative file", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+      await waitFor(() =>
+        expect(mockGetCumulativeFileDiff).toHaveBeenCalledWith("conv-1", "src/CumulativeFile.tsx"),
+      );
     });
   });
 
