@@ -67,6 +67,9 @@ export const AT_BOTTOM_THRESHOLD = 150;
  *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
 export const TEXT_LENGTH_BUCKET_SIZE = 150;
 
+/** Keep the live streaming row bounded while preserving recent Codex block boundaries. */
+export const STREAMING_TEXT_BLOCK_TAIL_LIMIT = 40;
+
 const INITIAL_TRANSCRIPT_PAINT_MAX_FRAMES = 240;
 const INITIAL_TRANSCRIPT_PAINT_MAX_MS = 2_500;
 
@@ -92,6 +95,64 @@ function ContentShell({
       {children}
     </div>
   );
+}
+
+function compactStreamingTextRun(
+  run: Extract<StreamingContentBlock, { type: "text" }>[]
+): StreamingContentBlock[] {
+  if (run.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
+    return run;
+  }
+
+  const compactedBlocks = run.slice(0, -STREAMING_TEXT_BLOCK_TAIL_LIMIT);
+  const recentBlocks = run.slice(-STREAMING_TEXT_BLOCK_TAIL_LIMIT);
+  const compactedText = compactedBlocks
+    .map((block) => block.text.trimEnd())
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+
+  if (compactedText.length === 0) {
+    return recentBlocks;
+  }
+
+  const firstBlock = compactedBlocks[0];
+  const compactedBlock: Extract<StreamingContentBlock, { type: "text" }> =
+    firstBlock?.seq != null
+      ? { type: "text", text: compactedText, seq: firstBlock.seq }
+      : { type: "text", text: compactedText };
+
+  return [compactedBlock, ...recentBlocks];
+}
+
+function compactStreamingTextBlocks(
+  contentBlocks: StreamingContentBlock[]
+): StreamingContentBlock[] {
+  if (contentBlocks.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
+    return contentBlocks;
+  }
+
+  const compacted: StreamingContentBlock[] = [];
+  let textRun: Extract<StreamingContentBlock, { type: "text" }>[] = [];
+
+  const flushTextRun = () => {
+    if (textRun.length === 0) {
+      return;
+    }
+    compacted.push(...compactStreamingTextRun(textRun));
+    textRun = [];
+  };
+
+  for (const block of contentBlocks) {
+    if (block.type === "text") {
+      textRun.push(block);
+      continue;
+    }
+    flushTextRun();
+    compacted.push(block);
+  }
+
+  flushTextRun();
+  return compacted;
 }
 
 function ScrollToBottomControl({
@@ -610,6 +671,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
       [streamingContentBlocks],
     );
+    const renderedStreamingContentBlocks = useMemo(
+      () => compactStreamingTextBlocks(normalizedStreamingContentBlocks),
+      [normalizedStreamingContentBlocks],
+    );
 
     // Footer content hash — drives the streaming auto-scroll useEffect below.
     // NOTE: Virtuoso's followOutput does NOT react to context/Footer changes,
@@ -644,7 +709,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     const hasRenderableStreamingBlocks = useMemo(
       () =>
-        normalizedStreamingContentBlocks.some((block) => {
+        renderedStreamingContentBlocks.some((block) => {
           if (block.type === "text") {
             return block.text.trim().length > 0;
           }
@@ -653,11 +718,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           }
           return true;
         }),
-      [normalizedStreamingContentBlocks, streamingTasks],
+      [renderedStreamingContentBlocks, streamingTasks],
     );
     const hasRenderableStreamingWidgets = useMemo(
       () =>
-        normalizedStreamingContentBlocks.some((block) => {
+        renderedStreamingContentBlocks.some((block) => {
           if (block.type === "text") {
             return false;
           }
@@ -666,7 +731,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           }
           return !shouldHideCompletedProjectOrchestrationToolCall(block.toolCall);
         }),
-      [normalizedStreamingContentBlocks, streamingTasks],
+      [renderedStreamingContentBlocks, streamingTasks],
     );
 
     const shouldShowActiveTypingIndicator = isSending || isAgentRunning;
@@ -678,7 +743,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const shouldShowStreamingAssistantIcon =
       hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
     const hasRenderableStreamingText =
-      normalizedStreamingContentBlocks.some(
+      renderedStreamingContentBlocks.some(
         (block) => block.type === "text" && block.text.trim().length > 0
       );
     const shouldRenderStreamingContentGroup =
@@ -1352,7 +1417,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               showAssistantIcon={shouldShowStreamingAssistantIcon}
               hideMeta
             >
-              {normalizedStreamingContentBlocks.map((block, idx) => {
+              {renderedStreamingContentBlocks.map((block, idx) => {
                 if (block.type === "text") {
                   // Skip empty/whitespace-only text blocks (e.g. pre-stream flush artifacts)
                   if (!block.text.trim()) return null;
@@ -1429,7 +1494,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       hasFooterStreamingContent,
       shouldRenderStreamingContentGroup,
       shouldShowStreamingAssistantIcon,
-      normalizedStreamingContentBlocks,
+      renderedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
       isSending,
