@@ -45,9 +45,27 @@ const mockFileChanges = [
 
 const mockFileDiff = {
   filePath: "src/components/LoginForm.tsx",
-  oldContent: "// Old content\nexport function Login() {\n  return null;\n}\n",
-  newContent: "// New content\nexport function Login() {\n  return <form />;\n}\n",
   language: "typescript",
+  hunks: [
+    {
+      oldStart: 1,
+      oldLines: 4,
+      newStart: 1,
+      newLines: 4,
+      header: "@@ -1,4 +1,4 @@",
+      lines: [
+        { kind: "deletion" as const, content: "// Old content", oldLineNum: 1, newLineNum: null },
+        { kind: "addition" as const, content: "// New content", oldLineNum: null, newLineNum: 1 },
+        { kind: "context" as const, content: "export function Login() {", oldLineNum: 2, newLineNum: 2 },
+        { kind: "deletion" as const, content: "  return null;", oldLineNum: 3, newLineNum: null },
+        { kind: "addition" as const, content: "  return <form />;", oldLineNum: null, newLineNum: 3 },
+        { kind: "context" as const, content: "}", oldLineNum: 4, newLineNum: 4 },
+      ],
+    },
+  ],
+  oldTotalLines: 4,
+  newTotalLines: 4,
+  isBinary: false,
 };
 
 const staleBaseCommits = [
@@ -216,9 +234,10 @@ describe("useGitDiff", () => {
       );
       expect(diffData).not.toBeNull();
       expect(diffData).toHaveProperty("filePath", "src/components/LoginForm.tsx");
-      expect(diffData).toHaveProperty("oldContent");
-      expect(diffData).toHaveProperty("newContent");
       expect(diffData).toHaveProperty("hunks");
+      expect(diffData).toHaveProperty("oldTotalLines");
+      expect(diffData).toHaveProperty("newTotalLines");
+      expect(diffData).toHaveProperty("isBinary");
       expect(diffData).toHaveProperty("language");
     });
 

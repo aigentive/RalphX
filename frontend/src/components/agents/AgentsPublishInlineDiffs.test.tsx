@@ -143,40 +143,33 @@ const makeCommit = (sha: string): DiffViewerCommit => ({
 describe("AgentsPublishInlineDiffs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetUncommittedDiff.mockResolvedValue({
-      filePath: "src/Foo.tsx",
-      oldContent: "old",
-      newContent: "new",
+    const makeHunkDiff = (filePath: string) => ({
+      filePath,
       language: "typescript",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,1 +1,1 @@",
+          lines: [{ kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 }],
+        },
+      ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
     });
-    mockGetCommitDiff.mockResolvedValue({
-      filePath: "src/Foo.tsx",
-      oldContent: "old-commit",
-      newContent: "new-commit",
-      language: "typescript",
-    });
+
+    mockGetUncommittedDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
+    mockGetCommitDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
     mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
     mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
     mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
     mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/CumulativeFile.tsx")]);
-    mockGetStagedFileDiff.mockResolvedValue({
-      filePath: "src/StagedFile.tsx",
-      oldContent: "old-staged",
-      newContent: "new-staged",
-      language: "typescript",
-    });
-    mockGetUnstagedFileDiff.mockResolvedValue({
-      filePath: "src/UnstagedFile.tsx",
-      oldContent: "old-unstaged",
-      newContent: "new-unstaged",
-      language: "typescript",
-    });
-    mockGetCumulativeFileDiff.mockResolvedValue({
-      filePath: "src/CumulativeFile.tsx",
-      oldContent: "old-cumulative",
-      newContent: "new-cumulative",
-      language: "typescript",
-    });
+    mockGetStagedFileDiff.mockResolvedValue(makeHunkDiff("src/StagedFile.tsx"));
+    mockGetUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
+    mockGetCumulativeFileDiff.mockResolvedValue(makeHunkDiff("src/CumulativeFile.tsx"));
   });
 
   describe("rendering", () => {

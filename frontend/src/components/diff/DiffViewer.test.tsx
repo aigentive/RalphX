@@ -41,9 +41,22 @@ const createCommit = (overrides: Partial<Commit> = {}): Commit => ({
 
 const createDiffData = (overrides: Partial<DiffData> = {}): DiffData => ({
   filePath: "src/components/Test.tsx",
-  oldContent: "const old = 'value';",
-  newContent: "const new = 'value';",
-  hunks: ["@@ -1,3 +1,3 @@"],
+  hunks: [
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      header: "@@ -1,3 +1,3 @@",
+      lines: [
+        { kind: "deletion", content: "const old = 'value';", oldLineNum: 1, newLineNum: null },
+        { kind: "addition", content: "const new = 'value';", oldLineNum: null, newLineNum: 1 },
+      ],
+    },
+  ],
+  oldTotalLines: 1,
+  newTotalLines: 1,
+  isBinary: false,
   ...overrides,
 });
 
@@ -661,6 +674,71 @@ describe("DiffViewer", () => {
       render(<DiffViewer {...defaultProps} />);
       expect(screen.getByTestId("tab-changes")).toHaveAttribute("data-state", "active");
       expect(screen.getByTestId("tab-history")).toHaveAttribute("data-state", "inactive");
+    });
+  });
+
+  describe("conversationId / refKind plumbing", () => {
+    // Diff with a trailing gap: hunk covers lines 1-2, file has 50 lines → 48 unchanged trailing
+    const diffWithGap = createDiffData({
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 2,
+          newStart: 1,
+          newLines: 2,
+          header: "@@ -1,2 +1,2 @@",
+          lines: [
+            { kind: "deletion", content: "old", oldLineNum: 1, newLineNum: null },
+            { kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 },
+            { kind: "context", content: "same", oldLineNum: 2, newLineNum: 2 },
+          ],
+        },
+      ],
+      newTotalLines: 50, // trailing gap = 50 - 1 - 2 + 1 = 48 lines
+    });
+
+    it("shows clickable 'Show N unchanged lines' button when conversationId is provided", async () => {
+      const onFetchDiff = vi.fn().mockResolvedValue(diffWithGap);
+      const changes = [createFileChange({ path: "src/test.ts" })];
+
+      render(
+        <DiffViewer
+          {...defaultProps}
+          changes={changes}
+          onFetchDiff={onFetchDiff}
+          conversationId="conv-123"
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("diff-content")).toBeInTheDocument();
+      });
+
+      // Gap should render as a clickable button (lazy fetch enabled)
+      expect(
+        screen.getByRole("button", { name: /Show 48 unchanged lines/i })
+      ).toBeInTheDocument();
+    });
+
+    it("shows static 'N unchanged lines' label when no conversationId", async () => {
+      const onFetchDiff = vi.fn().mockResolvedValue(diffWithGap);
+      const changes = [createFileChange({ path: "src/test.ts" })];
+
+      render(
+        <DiffViewer
+          {...defaultProps}
+          changes={changes}
+          onFetchDiff={onFetchDiff}
+          // no conversationId — falls back to static label
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("diff-content")).toBeInTheDocument();
+      });
+
+      // Gap renders as static text (no fetch possible)
+      expect(screen.getByText("48 unchanged lines")).toBeInTheDocument();
     });
   });
 });

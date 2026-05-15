@@ -331,9 +331,23 @@ describe("AgentsArtifactPane", () => {
     });
     getWorkspaceDiffMock.mockResolvedValue({
       filePath: "frontend/src/App.tsx",
-      oldContent: "old",
-      newContent: "new",
       language: "typescript",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,1 +1,1 @@",
+          lines: [
+            { kind: "deletion", content: "old", oldLineNum: 1, newLineNum: null },
+            { kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 },
+          ],
+        },
+      ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
     });
     getWorkspaceCommitsMock.mockResolvedValue([]);
     getWorkspaceCommitChangesMock.mockResolvedValue([
@@ -341,9 +355,23 @@ describe("AgentsArtifactPane", () => {
     ]);
     getWorkspaceCommitDiffMock.mockResolvedValue({
       filePath: "frontend/src/App.tsx",
-      oldContent: "old",
-      newContent: "new",
       language: "typescript",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,1 +1,1 @@",
+          lines: [
+            { kind: "deletion", content: "old", oldLineNum: 1, newLineNum: null },
+            { kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 },
+          ],
+        },
+      ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
     });
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({

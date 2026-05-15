@@ -14,7 +14,7 @@
  * Components: shadcn/ui (Tabs, Button, ScrollArea, Tooltip, Skeleton)
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   GitBranch,
   History,
@@ -22,6 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import type { DiffRefKind } from "@/api/diff";
 
 // Import types and utilities from separate file
 import {
@@ -66,6 +67,8 @@ export function DiffViewer({
   autoSelectFirstCommitFile = false,
   onTabChange,
   onCommitSelect,
+  conversationId,
+  changesRefKind,
 }: DiffViewerProps) {
   const [activeTab, setActiveTab] = useState<DiffViewTab>(defaultTab);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -73,6 +76,16 @@ export function DiffViewer({
   const [commitSelectedFile, setCommitSelectedFile] = useState<string | null>(null);
   const [diffData, setDiffData] = useState<DiffData | null>(null);
   const [isDiffLoading, setIsDiffLoading] = useState(false);
+
+  // Derive refKind for the active panel so SimpleDiffView can lazy-fetch context.
+  const changesTabRefKind = useMemo<DiffRefKind>(
+    () => changesRefKind ?? { kind: "head" },
+    [changesRefKind]
+  );
+  const historyTabRefKind = useMemo<DiffRefKind | undefined>(
+    () => (selectedCommit ? { kind: "commit", sha: selectedCommit.sha } : undefined),
+    [selectedCommit]
+  );
 
   // Handle tab change
   const handleTabChange = useCallback((value: string) => {
@@ -276,6 +289,7 @@ export function DiffViewer({
               isLoading={isDiffLoading}
               filePath={selectedFilePath}
               {...(onOpenInIDE !== undefined && { onOpenInIDE })}
+              {...(conversationId !== undefined && { conversationId, refKind: changesTabRefKind })}
             />
           </div>
         </TabsContent>
@@ -316,6 +330,10 @@ export function DiffViewer({
               isLoading={isDiffLoading}
               isLoadingFiles={isLoadingCommitFiles}
               {...(onOpenInIDE !== undefined && { onOpenInIDE })}
+              {...(conversationId !== undefined && historyTabRefKind !== undefined && {
+                conversationId,
+                refKind: historyTabRefKind,
+              })}
             />
           </div>
         </TabsContent>
