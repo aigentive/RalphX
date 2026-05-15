@@ -319,11 +319,8 @@ fn build_codex_exec_args_preserves_gpt55_xhigh_selection() {
 
 #[test]
 fn build_codex_exec_args_defaults_to_mcp_safe_approval_and_sandbox() {
-    let args = build_codex_exec_args(
-        &full_codex_capabilities(),
-        &CodexExecCliConfig::default(),
-    )
-    .expect("build codex exec args");
+    let args = build_codex_exec_args(&full_codex_capabilities(), &CodexExecCliConfig::default())
+        .expect("build codex exec args");
 
     assert!(args
         .windows(2)
@@ -777,6 +774,16 @@ fn configure_spawn_prepends_resolved_node_bin_to_path() {
         .expect("PATH env");
     let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
     assert_eq!(path_entries.first(), Some(&expected_node_bin));
+
+    let screenshot_dir = cmd
+        .as_std()
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == OsStr::new("RALPHX_AGENT_SCREENSHOT_DIR"))
+                .then(|| value.map(|v| v.to_os_string()))?
+        })
+        .expect("RALPHX_AGENT_SCREENSHOT_DIR env");
+    assert!(screenshot_dir.to_string_lossy().contains("screenshots"));
 }
 
 #[test]

@@ -715,6 +715,10 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
     );
+    cmd.env(
+        "RALPHX_AGENT_SCREENSHOT_DIR",
+        crate::utils::runtime_log_paths::agent_screenshot_dir(),
+    );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());

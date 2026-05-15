@@ -46,15 +46,11 @@ fn create_format_test_service() -> MemoryArchiveService {
     let archive_conn = open_memory_connection().unwrap();
     let entry_conn = open_memory_connection().unwrap();
 
-    MemoryArchiveService::new(
-        Arc::new(crate::infrastructure::sqlite::SqliteMemoryArchiveRepository::new(
-            archive_conn,
-        )),
-        Arc::new(crate::infrastructure::sqlite::SqliteMemoryEntryRepository::new(
-            entry_conn,
-        )),
+    MemoryArchiveService::new_with_archive_root(
+        Arc::new(crate::infrastructure::sqlite::SqliteMemoryArchiveRepository::new(archive_conn)),
+        Arc::new(crate::infrastructure::sqlite::SqliteMemoryEntryRepository::new(entry_conn)),
         Arc::new(MockProjectRepository),
-        PathBuf::from("/tmp"),
+        PathBuf::from("/ralphx-app-data/artifacts/memory-archive"),
     )
 }
 
@@ -212,5 +208,30 @@ fn test_format_rule_snapshot_sorting() {
         assert!(pos1 < pos2, "Entries should be sorted by ID");
     } else {
         assert!(pos2 < pos1, "Entries should be sorted by ID");
+    }
+}
+
+#[test]
+fn test_archive_snapshot_paths_use_app_owned_root_and_hashed_components() {
+    let service = create_format_test_service();
+    let project_id = ProjectId::from_string("../target-project".to_string());
+
+    let memory_path = service
+        .get_memory_snapshot_path(&project_id, "../memory/unsafe")
+        .unwrap();
+    let rule_path = service
+        .get_rule_snapshot_path(&project_id, "../rules/unsafe.md", "20260516_120000")
+        .unwrap();
+    let project_path = service
+        .get_project_snapshot_path(&project_id, "20260516_120000")
+        .unwrap();
+
+    for path in [&memory_path, &rule_path, &project_path] {
+        let rendered = path.to_string_lossy();
+        assert!(rendered.starts_with("/ralphx-app-data/artifacts/memory-archive"));
+        assert!(!rendered.contains("../target-project"));
+        assert!(!rendered.contains("../memory"));
+        assert!(!rendered.contains("../rules"));
+        assert!(!rendered.contains(".claude/memory-archive"));
     }
 }

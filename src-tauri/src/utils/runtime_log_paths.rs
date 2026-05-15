@@ -2,24 +2,33 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-/// RalphX-owned log directory for backend/runtime logs.
+/// RalphX-owned runtime data directory for generated logs and artifacts.
 ///
-/// Dev builds keep logs in the source checkout `.artifacts/logs`; release builds
-/// keep them under the platform application data directory. Target project
-/// worktrees must never be used as the fallback for RalphX runtime logs.
-pub fn app_log_dir() -> PathBuf {
+/// Dev builds keep runtime output in the source checkout `.artifacts`; release
+/// builds keep it under the platform application data directory. Target project
+/// worktrees must never be used as a fallback for RalphX runtime output.
+pub fn app_runtime_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
-            .join(".artifacts/logs")
+            .join(".artifacts")
     } else {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("com.ralphx.app")
-            .join("logs")
     }
+}
+
+/// RalphX-owned log directory for backend/runtime logs.
+pub fn app_log_dir() -> PathBuf {
+    app_runtime_dir().join("logs")
+}
+
+/// RalphX-owned directory for generated non-log artifacts.
+pub fn app_artifact_dir() -> PathBuf {
+    app_runtime_dir().join("artifacts")
 }
 
 /// RalphX-owned directory for MCP proxy JSONL trace files.
@@ -27,8 +36,81 @@ pub fn mcp_proxy_trace_dir() -> PathBuf {
     app_log_dir().join("mcp-proxy")
 }
 
+pub fn claude_debug_log_dir() -> PathBuf {
+    app_log_dir().join("claude-debug")
+}
+
+pub fn claude_debug_log_file() -> PathBuf {
+    claude_debug_log_dir().join(format!(
+        "ralphx-claude-debug-{}-{}.log",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ))
+}
+
 pub fn codex_prompt_debug_dir() -> PathBuf {
     app_log_dir().join("codex-prompts")
+}
+
+pub fn agent_screenshot_dir() -> PathBuf {
+    app_artifact_dir().join("screenshots")
+}
+
+pub fn memory_archive_dir() -> PathBuf {
+    app_artifact_dir().join("memory-archive")
+}
+
+pub fn memory_archive_project_dir(project_id: &str) -> PathBuf {
+    memory_archive_dir().join(memory_archive_project_relative_dir(project_id))
+}
+
+pub fn memory_archive_project_relative_dir(project_id: &str) -> PathBuf {
+    PathBuf::from(hashed_log_component("project", project_id))
+}
+
+pub fn memory_archive_memory_snapshot_file(project_id: &str, memory_id: &str) -> PathBuf {
+    memory_archive_dir().join(memory_archive_memory_snapshot_relative_file(
+        project_id, memory_id,
+    ))
+}
+
+pub fn memory_archive_memory_snapshot_relative_file(project_id: &str, memory_id: &str) -> PathBuf {
+    memory_archive_project_relative_dir(project_id)
+        .join("memories")
+        .join(format!("{}.md", hashed_log_component("memory", memory_id)))
+}
+
+pub fn memory_archive_rule_snapshot_file(
+    project_id: &str,
+    scope_key: &str,
+    timestamp: &str,
+) -> PathBuf {
+    memory_archive_dir().join(memory_archive_rule_snapshot_relative_file(
+        project_id, scope_key, timestamp,
+    ))
+}
+
+pub fn memory_archive_rule_snapshot_relative_file(
+    project_id: &str,
+    scope_key: &str,
+    timestamp: &str,
+) -> PathBuf {
+    memory_archive_project_relative_dir(project_id)
+        .join("rules")
+        .join(hashed_log_component("rule", scope_key))
+        .join(format!("{}.md", fixed_timestamp_component(timestamp)))
+}
+
+pub fn memory_archive_project_snapshot_file(project_id: &str, timestamp: &str) -> PathBuf {
+    memory_archive_dir().join(memory_archive_project_snapshot_relative_file(
+        project_id, timestamp,
+    ))
+}
+
+pub fn memory_archive_project_snapshot_relative_file(project_id: &str, timestamp: &str) -> PathBuf {
+    memory_archive_project_relative_dir(project_id)
+        .join("projects")
+        .join(format!("{}.md", fixed_timestamp_component(timestamp)))
 }
 
 pub fn merge_validation_log_dir(task_id: &str) -> PathBuf {
@@ -66,6 +148,17 @@ fn hashed_log_component(prefix: &str, value: &str) -> String {
         let _ = write!(&mut encoded, "{byte:02x}");
     }
     format!("{prefix}-{encoded}")
+}
+
+fn fixed_timestamp_component(timestamp: &str) -> &str {
+    if timestamp
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'_' || byte == b'T' || byte == b'Z')
+    {
+        timestamp
+    } else {
+        "unknown-timestamp"
+    }
 }
 
 #[cfg(test)]
@@ -116,5 +209,20 @@ mod tests {
         assert!(!filename.contains(".."));
         assert!(!filename.contains('/'));
         assert!(!filename.contains('\\'));
+    }
+
+    #[test]
+    fn memory_archive_paths_hash_runtime_components() {
+        let path = memory_archive_rule_snapshot_file(
+            "../project/with\\separators",
+            "../rules/unsafe.md",
+            "20260516_120000",
+        );
+        let rendered = path.to_string_lossy();
+
+        assert!(path.starts_with(memory_archive_dir()));
+        assert!(!rendered.contains("../project"));
+        assert!(!rendered.contains("../rules"));
+        assert!(rendered.ends_with("20260516_120000.md"));
     }
 }

@@ -83,7 +83,7 @@ After analyzing git diff, return:
         "agent-browser wait --load",
         "agent-browser snapshot -i -c",
         "agent-browser is visible [data-testid='actual-element']",
-        "agent-browser screenshot .artifacts/screenshots/qa1-result.png"
+        "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/qa1-result.png\""
       ],
       "expected": "Updated expected outcome"
     }
@@ -107,7 +107,7 @@ After executing tests, return:
       {
         "step_id": "QA1",
         "status": "passed",
-        "screenshot": ".artifacts/screenshots/qa1-result.png",
+        "screenshot": "$RALPHX_AGENT_SCREENSHOT_DIR/qa1-result.png",
         "actual": null,
         "expected": null,
         "error": null
@@ -115,7 +115,7 @@ After executing tests, return:
       {
         "step_id": "QA2",
         "status": "failed",
-        "screenshot": ".artifacts/screenshots/qa2-result.png",
+        "screenshot": "$RALPHX_AGENT_SCREENSHOT_DIR/qa2-result.png",
         "actual": "Element not found",
         "expected": "Button should be visible",
         "error": "Timeout waiting for [data-testid='button']"
@@ -140,7 +140,7 @@ agent-browser open http://localhost:1420
 agent-browser wait --load
 agent-browser snapshot -i -c
 agent-browser is visible [data-testid='target']
-agent-browser screenshot .artifacts/screenshots/visibility-test.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/visibility-test.png"
 agent-browser close
 ```
 
@@ -151,7 +151,7 @@ agent-browser wait --load
 agent-browser click [data-testid='button']
 agent-browser wait 500
 agent-browser is visible [data-testid='result']
-agent-browser screenshot .artifacts/screenshots/interaction-test.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/interaction-test.png"
 agent-browser close
 ```
 
@@ -162,7 +162,7 @@ agent-browser wait --load
 agent-browser snapshot -i -c
 agent-browser drag @e5 @e8
 agent-browser wait 500
-agent-browser screenshot .artifacts/screenshots/drag-drop-test.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/drag-drop-test.png"
 agent-browser close
 ```
 

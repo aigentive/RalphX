@@ -119,6 +119,33 @@ function resolveFallbackTraceDir(): string {
   return path.join(fallbackRoot, "ralphx-mcp-proxy-traces");
 }
 
+function isPathInside(childPath: string, parentPath: string): boolean {
+  const relative = path.relative(parentPath, childPath);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function resolveConfiguredTraceDir(): string | null {
+  const configuredTraceDir = process.env.RALPHX_MCP_TRACE_DIR;
+  if (!configuredTraceDir || !path.isAbsolute(configuredTraceDir)) {
+    return null;
+  }
+
+  const resolvedTraceDir = path.resolve(configuredTraceDir);
+  const workingDirectory = process.env.RALPHX_WORKING_DIRECTORY;
+  if (workingDirectory && path.isAbsolute(workingDirectory)) {
+    const resolvedWorkingDirectory = path.resolve(workingDirectory);
+    if (
+      resolvedTraceDir === resolvedWorkingDirectory ||
+      isPathInside(resolvedTraceDir, resolvedWorkingDirectory)
+    ) {
+      safeError("[RalphX MCP] Ignoring trace dir inside target working directory");
+      return null;
+    }
+  }
+
+  return resolvedTraceDir;
+}
+
 function buildTraceLogPathInDir(traceDir: string): string | null {
   try {
     fs.mkdirSync(traceDir, { recursive: true });
@@ -131,6 +158,7 @@ function buildTraceLogPathInDir(traceDir: string): string | null {
 
 function resolveTraceLogPath(): string | null {
   const candidateDirs = [
+    resolveConfiguredTraceDir(),
     resolveModuleTraceDir(),
     resolveFallbackTraceDir(),
   ].filter((dir): dir is string => Boolean(dir));

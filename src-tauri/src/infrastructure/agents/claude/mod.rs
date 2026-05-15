@@ -249,6 +249,10 @@ fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
         "TAURI_API_URL",
         crate::utils::backend_endpoint::backend_http_base_url(),
     );
+    cmd.env(
+        "RALPHX_AGENT_SCREENSHOT_DIR",
+        crate::utils::runtime_log_paths::agent_screenshot_dir(),
+    );
     crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
 }
 
@@ -588,11 +592,7 @@ fn build_base_cli_command_inner_with_runtime_context(
 
     // Capture Claude's internal debug log per spawn for post-mortem analysis.
     // This is critical when the process exits 0 with no stdout/stderr.
-    let debug_path = std::env::temp_dir().join(format!(
-        "ralphx-claude-debug-{}-{}.log",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
+    let debug_path = crate::utils::runtime_log_paths::claude_debug_log_file();
     if let Some(path_str) = debug_path.to_str() {
         cmd.args(["--debug-file", path_str]);
         tracing::debug!(path = %debug_path.display(), "Enabled Claude debug file");
@@ -2008,6 +2008,16 @@ mod tests {
 
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
+
+        let screenshot_dir = command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "RALPHX_AGENT_SCREENSHOT_DIR")
+                    .then(|| value.map(|path| path.to_string_lossy().into_owned()))?
+            })
+            .expect("RALPHX_AGENT_SCREENSHOT_DIR should be explicitly set");
+        assert!(screenshot_dir.contains("screenshots"));
     }
 
     #[test]
