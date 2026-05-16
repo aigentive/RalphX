@@ -1,11 +1,14 @@
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
     use std::sync::Arc;
 
     use crate::infrastructure::agents::claude::ExternalMcpConfig;
     use crate::infrastructure::external_mcp_supervisor::{
-        command_matches_external_mcp_process_for_port, external_mcp_pid_file_name,
-        external_mcp_pid_file_path, is_test_environment_for_test, stderr_indicates_address_in_use,
+        command_matches_external_mcp_process_for_port, command_mentions_external_mcp_runtime,
+        external_mcp_pid_file_name, external_mcp_pid_file_path,
+        external_mcp_process_matches_expected_port, is_external_mcp_process,
+        is_test_environment_for_test, process_listens_on_port, stderr_indicates_address_in_use,
         ExternalMcpHandle,
     };
 
@@ -171,6 +174,7 @@ mod tests {
         let prod_command = "EXTERNAL_MCP_PORT=3848 node /Applications/RalphX.app/Contents/Resources/plugins/app/ralphx-external-mcp/build/index.js";
         let dev_command = "EXTERNAL_MCP_PORT=3858 node /tmp/ralphx/src-tauri/target/debug/plugins/app/ralphx-external-mcp/build/index.js";
         let no_port_command = "node /tmp/ralphx/plugins/app/ralphx-external-mcp/build/index.js";
+        let ralphx_port_command = "RALPHX_EXTERNAL_MCP_PORT=3858 node /tmp/ralphx/plugins/app/ralphx-external-mcp/build/index.js";
 
         assert!(command_matches_external_mcp_process_for_port(
             prod_command,
@@ -191,6 +195,62 @@ mod tests {
         assert!(
             !command_matches_external_mcp_process_for_port(no_port_command, 3858),
             "command-only matching must not infer port ownership"
+        );
+        assert!(command_matches_external_mcp_process_for_port(
+            ralphx_port_command,
+            3858
+        ));
+        assert!(command_mentions_external_mcp_runtime(dev_command));
+        assert!(
+            !command_mentions_external_mcp_runtime("cargo test external_mcp_supervisor_tests"),
+            "test/module names must not be classified as the external MCP runtime"
+        );
+    }
+
+    #[test]
+    fn test_process_listens_on_port_detects_current_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let port = listener.local_addr().expect("listener addr").port();
+
+        assert!(
+            process_listens_on_port(std::process::id() as i32, port),
+            "lsof should detect a TCP listener owned by the current test process"
+        );
+        assert!(
+            !process_listens_on_port(0, port),
+            "invalid PIDs must never match a listener"
+        );
+    }
+
+    #[test]
+    fn test_external_mcp_process_port_match_accepts_listener_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let port = listener.local_addr().expect("listener addr").port();
+        let command_without_env = "node /tmp/ralphx/plugins/app/ralphx-external-mcp/build/index.js";
+
+        assert!(external_mcp_process_matches_expected_port(
+            command_without_env,
+            std::process::id() as i32,
+            port
+        ));
+        assert!(
+            !external_mcp_process_matches_expected_port(
+                "node /tmp/not-the-server.js",
+                std::process::id() as i32,
+                port
+            ),
+            "a listener alone is not enough without an external MCP command"
+        );
+    }
+
+    #[test]
+    fn test_is_external_mcp_process_rejects_non_external_current_process() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let port = listener.local_addr().expect("listener addr").port();
+
+        assert!(
+            !is_external_mcp_process(std::process::id() as i32, port),
+            "the current test process may listen on the port but is not the external MCP command"
         );
     }
 

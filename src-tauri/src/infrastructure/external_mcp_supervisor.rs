@@ -671,7 +671,7 @@ pub(crate) fn external_mcp_pid_file_path(app_data_dir: &Path, port: u16) -> Path
 }
 
 pub(crate) fn command_matches_external_mcp_process_for_port(command: &str, port: u16) -> bool {
-    let is_external_mcp = command.contains("external-mcp") || command.contains("external_mcp");
+    let is_external_mcp = command_mentions_external_mcp_runtime(command);
     if !is_external_mcp {
         return false;
     }
@@ -681,8 +681,23 @@ pub(crate) fn command_matches_external_mcp_process_for_port(command: &str, port:
     command.contains(&external_port) || command.contains(&ralphx_port)
 }
 
+pub(crate) fn command_mentions_external_mcp_runtime(command: &str) -> bool {
+    command.contains("ralphx-external-mcp") || command.contains("ralphx_external_mcp")
+}
+
+pub(crate) fn external_mcp_process_matches_expected_port(
+    command: &str,
+    pid: i32,
+    expected_port: u16,
+) -> bool {
+    let is_external_mcp = command_mentions_external_mcp_runtime(command);
+    is_external_mcp
+        && (command_matches_external_mcp_process_for_port(command, expected_port)
+            || process_listens_on_port(pid, expected_port))
+}
+
 /// Check whether a PID belongs to this supervisor's external-MCP Node process.
-fn is_external_mcp_process(pid: i32, expected_port: u16) -> bool {
+pub(crate) fn is_external_mcp_process(pid: i32, expected_port: u16) -> bool {
     if pid <= 0 {
         return false;
     }
@@ -694,15 +709,13 @@ fn is_external_mcp_process(pid: i32, expected_port: u16) -> bool {
 
     if let Ok(o) = output {
         let cmd = String::from_utf8_lossy(&o.stdout);
-        return (cmd.contains("external-mcp") || cmd.contains("external_mcp"))
-            && (command_matches_external_mcp_process_for_port(&cmd, expected_port)
-                || process_listens_on_port(pid, expected_port));
+        return external_mcp_process_matches_expected_port(&cmd, pid, expected_port);
     }
 
     false
 }
 
-fn process_listens_on_port(pid: i32, expected_port: u16) -> bool {
+pub(crate) fn process_listens_on_port(pid: i32, expected_port: u16) -> bool {
     if pid <= 0 {
         return false;
     }
