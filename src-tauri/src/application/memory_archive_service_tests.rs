@@ -1,12 +1,16 @@
 use super::*;
 use crate::domain::entities::Project;
+use crate::domain::entities::{ArchiveJobPayload, ArchiveJobType, MemoryArchiveJob};
 use crate::domain::entities::{MemoryBucket, MemoryEntry};
-use crate::domain::repositories::ProjectRepository;
+use crate::domain::repositories::{MemoryArchiveRepository, ProjectRepository};
 use crate::infrastructure::sqlite::connection::open_memory_connection;
+use crate::testing::SqliteTestDb;
 use async_trait::async_trait;
 
 // Mock project repository for testing
-struct MockProjectRepository;
+struct MockProjectRepository {
+    project: Option<Project>,
+}
 
 #[async_trait]
 impl ProjectRepository for MockProjectRepository {
@@ -14,8 +18,8 @@ impl ProjectRepository for MockProjectRepository {
         Ok(project)
     }
 
-    async fn get_by_id(&self, _id: &ProjectId) -> crate::error::AppResult<Option<Project>> {
-        Ok(None)
+    async fn get_by_id(&self, id: &ProjectId) -> crate::error::AppResult<Option<Project>> {
+        Ok(self.project.clone().filter(|project| &project.id == id))
     }
 
     async fn get_all(&self) -> crate::error::AppResult<Vec<Project>> {
@@ -49,7 +53,7 @@ fn create_format_test_service() -> MemoryArchiveService {
     MemoryArchiveService::new_with_archive_root(
         Arc::new(crate::infrastructure::sqlite::SqliteMemoryArchiveRepository::new(archive_conn)),
         Arc::new(crate::infrastructure::sqlite::SqliteMemoryEntryRepository::new(entry_conn)),
-        Arc::new(MockProjectRepository),
+        Arc::new(MockProjectRepository { project: None }),
         PathBuf::from("/ralphx-app-data/artifacts/memory-archive"),
     )
 }
@@ -234,4 +238,45 @@ fn test_archive_snapshot_paths_use_app_owned_root_and_hashed_components() {
         assert!(!rendered.contains("../rules"));
         assert!(!rendered.contains(".claude/memory-archive"));
     }
+}
+
+#[tokio::test]
+async fn process_next_job_checks_project_before_writing_snapshots() {
+    let db = SqliteTestDb::new("memory-archive-service-project-check");
+    let project_id = ProjectId::from_string("missing-project".to_string());
+    let mut project = Project::new("Missing Project".to_string(), "/tmp/missing".to_string());
+    project.id = project_id.clone();
+    db.insert_project(project);
+
+    let archive_repo = Arc::new(
+        crate::infrastructure::sqlite::SqliteMemoryArchiveRepository::from_shared(db.shared_conn()),
+    );
+    let archive_root = tempfile::tempdir().unwrap();
+
+    archive_repo
+        .create(MemoryArchiveJob::new(
+            project_id.clone(),
+            ArchiveJobType::MemorySnapshot,
+            ArchiveJobPayload::memory_snapshot("memory-1"),
+        ))
+        .await
+        .unwrap();
+
+    let service = MemoryArchiveService::new_with_archive_root(
+        archive_repo,
+        Arc::new(
+            crate::infrastructure::sqlite::SqliteMemoryEntryRepository::from_shared(
+                db.shared_conn(),
+            ),
+        ),
+        Arc::new(MockProjectRepository { project: None }),
+        archive_root.path().join("memory-archive"),
+    );
+
+    let error = service.process_next_job().await.unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("Project missing-project not found for archive job"));
+    assert!(!archive_root.path().join("memory-archive").exists());
 }
