@@ -367,6 +367,9 @@ macro_rules! register_tauri_commands {
             commands::diagnostic_commands::get_codex_cli_diagnostics,
             // UI feature flag commands
             commands::ui_commands::get_ui_feature_flags,
+            // Workspace open commands
+            commands::workspace_open_commands::list_workspace_open_targets,
+            commands::workspace_open_commands::open_agent_conversation_workspace,
             // External MCP config commands
             commands::external_mcp_commands::get_external_mcp_config,
             commands::external_mcp_commands::update_external_mcp_config,

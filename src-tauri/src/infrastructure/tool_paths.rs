@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
@@ -157,6 +158,75 @@ pub(crate) fn find_codex_cli_candidates() -> Vec<PathBuf> {
         &extra_candidates,
         &user_candidates,
     )
+}
+
+pub(crate) fn find_launchable_cli_path(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+) -> Option<PathBuf> {
+    let extra_candidates = javascript_tool_env_candidates(tool_name);
+    let user_candidates = home_local_tool_candidates(tool_name);
+
+    find_cli_path_with_candidate_groups(
+        tool_name,
+        fixed_candidates,
+        &extra_candidates,
+        &user_candidates,
+    )
+    .into_iter()
+    .next()
+}
+
+pub(crate) fn find_launchable_cli_path_without_shell(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+) -> Option<PathBuf> {
+    let extra_candidates = javascript_tool_env_candidates(tool_name);
+    let user_candidates = home_local_tool_candidates(tool_name);
+
+    find_cli_path_with_candidate_groups_and_shell(
+        tool_name,
+        fixed_candidates,
+        &extra_candidates,
+        &user_candidates,
+        |_| None,
+    )
+    .into_iter()
+    .next()
+}
+
+pub(crate) fn find_launchable_cli_paths_with_login_shell(
+    tool_names: &[&'static str],
+) -> HashMap<&'static str, PathBuf> {
+    if tool_names.is_empty() || tool_names.iter().any(|name| !is_safe_tool_name(name)) {
+        return HashMap::new();
+    }
+
+    let command = format!(
+        "for tool in {}; do path=$(command -v \"$tool\" 2>/dev/null) && printf '%s\\t%s\\n' \"$tool\" \"$path\"; done",
+        tool_names.join(" ")
+    );
+    let shell_started_at = Instant::now();
+    let output = Command::new("/bin/zsh")
+        .args(["-ilc", command.as_str()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let paths = match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8(output.stdout).unwrap_or_default();
+            launchable_cli_paths_from_shell_output(tool_names, &stdout)
+        }
+        _ => HashMap::new(),
+    };
+
+    tracing::info!(
+        requested = tool_names.len(),
+        resolved = paths.len(),
+        elapsed_ms = shell_started_at.elapsed().as_millis() as u64,
+        "CLI login-shell batch fallback resolution completed"
+    );
+    paths
 }
 
 pub(crate) fn prepend_resolved_node_bin_to_path(cmd: &mut std::process::Command) {
@@ -461,6 +531,27 @@ pub(crate) fn launchable_cli_path_from_shell_output(
     })
 }
 
+fn launchable_cli_paths_from_shell_output(
+    tool_names: &[&'static str],
+    output: &str,
+) -> HashMap<&'static str, PathBuf> {
+    let requested = tool_names.iter().copied().collect::<HashSet<_>>();
+    let mut paths = HashMap::new();
+    for line in output.lines() {
+        let Some((name, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(tool_name) = requested.get(name).copied() else {
+            continue;
+        };
+        let candidate = PathBuf::from(path.trim());
+        if is_launchable_tool_path(tool_name, &candidate) {
+            paths.entry(tool_name).or_insert(candidate);
+        }
+    }
+    paths
+}
+
 #[cfg(test)]
 fn safe_cli_path_from_shell_output(tool_name: &str, output: &str) -> Option<PathBuf> {
     output.lines().rev().find_map(|line| {
@@ -483,6 +574,13 @@ fn command_env_var(cmd: &std::process::Command, key: &str) -> Option<OsString> {
 
 fn matches_tool_path(tool_name: &str, path: &Path) -> bool {
     has_safe_absolute_shape(path) && path.file_name() == Some(OsStr::new(tool_name))
+}
+
+fn is_safe_tool_name(tool_name: &str) -> bool {
+    !tool_name.is_empty()
+        && tool_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn is_launchable_tool_path(tool_name: &str, path: &Path) -> bool {
@@ -544,7 +642,8 @@ mod tests {
     use super::{
         agent_subprocess_env_path_from_parts, find_claude_cli_path,
         find_cli_path_with_candidate_groups_for_test, find_codex_cli_candidates,
-        find_codex_cli_path, nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
+        find_codex_cli_path, is_safe_tool_name, launchable_cli_paths_from_shell_output,
+        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
         prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
         TEST_ENV_MUTEX,
     };
@@ -610,6 +709,35 @@ mod tests {
     fn shell_output_rejects_relative_or_mismatched_paths() {
         assert!(safe_cli_path_from_shell_output("claude", "../bin/claude").is_none());
         assert!(safe_cli_path_from_shell_output("claude", "/tmp/codex").is_none());
+    }
+
+    #[test]
+    fn shell_batch_output_accepts_only_requested_safe_launchable_tools() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cursor = temp_dir.path().join("cursor");
+        let code = temp_dir.path().join("code");
+        write_fake_tool(&cursor);
+        write_fake_tool(&code);
+        let output = format!(
+            "cursor\t{}\ncode\t{}\nother\t{}\n",
+            cursor.display(),
+            code.display(),
+            temp_dir.path().join("other").display()
+        );
+
+        let paths = launchable_cli_paths_from_shell_output(&["cursor", "code"], &output);
+
+        assert_eq!(paths.get("cursor"), Some(&cursor));
+        assert_eq!(paths.get("code"), Some(&code));
+        assert!(!paths.contains_key("other"));
+    }
+
+    #[test]
+    fn safe_tool_name_rejects_shell_metacharacters() {
+        assert!(is_safe_tool_name("code-insiders"));
+        assert!(is_safe_tool_name("explorer.exe"));
+        assert!(!is_safe_tool_name("code;rm"));
+        assert!(!is_safe_tool_name("bad tool"));
     }
 
     #[test]

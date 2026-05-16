@@ -19,6 +19,7 @@ import {
   restoreConversation,
   getAgentRunStatus,
   getAgentConversationWorkspaceFreshness,
+  openAgentConversationWorkspace,
   listAgentConversationWorkspacePublicationEvents,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
@@ -1097,6 +1098,19 @@ describe("chat api", () => {
       projectId: "project-1",
       branchName: "ralphx/demo/agent-conversation-1",
     });
+  });
+
+  it("opens an agent conversation workspace when Tauri returns null for Rust unit", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(
+      openAgentConversationWorkspace("conversation-1", "cursor")
+    ).resolves.toBeUndefined();
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "open_agent_conversation_workspace",
+      { conversationId: "conversation-1", targetId: "cursor" }
+    );
   });
 
   it("lists grouped agent sidebar conversations", async () => {
