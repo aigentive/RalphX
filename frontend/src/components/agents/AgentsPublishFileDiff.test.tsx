@@ -34,7 +34,7 @@ vi.mock("@/components/diff/SimpleDiffView", () => ({
 }));
 
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
-import type { FileChange, FileDiff } from "@/api/diff";
+import type { FileChange, FileDiff, PrDiffAnnotation } from "@/api/diff";
 
 function withProviders(node: React.ReactNode) {
   return <TooltipProvider delayDuration={0}>{node}</TooltipProvider>;
@@ -67,6 +67,27 @@ const makeDiff = (overrides: Partial<FileDiff> = {}): FileDiff => ({
   oldTotalLines: 1,
   newTotalLines: 1,
   isBinary: false,
+  ...overrides,
+});
+
+const makeAnnotation = (overrides: Partial<PrDiffAnnotation> = {}): PrDiffAnnotation => ({
+  id: "annotation-1",
+  source: "review_comment",
+  path: "src/components/Foo.tsx",
+  side: "right",
+  startLine: 1,
+  endLine: 1,
+  startColumn: null,
+  endColumn: null,
+  level: "comment",
+  status: null,
+  title: null,
+  message: "Please tighten this guard.",
+  author: "octocat",
+  checkName: null,
+  url: null,
+  isOutdated: false,
+  createdAt: null,
   ...overrides,
 });
 
@@ -194,6 +215,27 @@ describe("AgentsPublishFileDiff", () => {
         ),
       );
       expect(screen.getByTestId("file-status-badge")).toHaveTextContent("D");
+    });
+
+    it("renders annotation count immediately", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange()}
+            diff={undefined}
+            isExpanded={false}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            annotations={[makeAnnotation(), makeAnnotation({ id: "annotation-2" })]}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("file-diff-annotation-count")).toHaveTextContent("2");
     });
 
     it("copy-path button calls onCopyPath with file path", async () => {

@@ -24,6 +24,8 @@ fn test_all_defaults_are_sensible() {
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 2_000);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 300_000);
+    assert_eq!(cfg.git.workspace_pr_annotations_cache_ttl_ms, 30_000);
+    assert_eq!(cfg.git.workspace_pr_annotations_check_run_fetch_limit, 10);
     assert_eq!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         30_000
@@ -129,6 +131,8 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS" => Some("750".to_string()),
         "RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS" => Some("900".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS" => Some("1200".to_string()),
+        "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS" => Some("45000".to_string()),
+        "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT" => Some("7".to_string()),
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS" => Some("45000".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
         "RALPHX_SCHEDULER_READY_SETTLE_MS" => Some("500".to_string()),
@@ -147,6 +151,8 @@ fn test_env_overrides_apply() {
     assert_eq!(cfg.git.workspace_freshness_cache_ttl_ms, 750);
     assert_eq!(cfg.git.workspace_review_cache_ttl_ms, 900);
     assert_eq!(cfg.git.workspace_pr_description_cache_ttl_ms, 1200);
+    assert_eq!(cfg.git.workspace_pr_annotations_cache_ttl_ms, 45_000);
+    assert_eq!(cfg.git.workspace_pr_annotations_check_run_fetch_limit, 7);
     assert_eq!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         45_000

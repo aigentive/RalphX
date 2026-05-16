@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrBranchMatch, PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrReviewFeedback, PrStatus, PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -25,6 +25,8 @@ pub struct MockGithubState {
     pub check_pr_sync_state_result: Option<AppResult<PrSyncState>>,
     pub check_pr_review_feedback_result: Option<AppResult<Option<PrReviewFeedback>>>,
     pub check_pr_review_feedback_delay_ms: u64,
+    pub fetch_pr_diff_annotations_result: Option<AppResult<PrDiffAnnotations>>,
+    pub fetch_pr_diff_annotations_delay_ms: u64,
     pub push_branch_result: Option<AppResult<()>>,
     pub close_pr_result: Option<AppResult<()>>,
     pub delete_remote_branch_result: Option<AppResult<()>>,
@@ -42,6 +44,7 @@ pub struct MockGithubState {
     pub check_pr_review_feedback_calls: u32,
     pub active_check_pr_review_feedback_calls: u32,
     pub max_concurrent_check_pr_review_feedback_calls: u32,
+    pub fetch_pr_diff_annotations_calls: u32,
     pub push_branch_calls: u32,
     pub close_pr_calls: u32,
     pub delete_remote_branch_calls: u32,
@@ -59,6 +62,7 @@ pub struct MockGithubState {
     pub last_check_pr_status_number: Option<i64>,
     pub last_check_pr_sync_state_number: Option<i64>,
     pub last_check_pr_review_feedback_number: Option<i64>,
+    pub last_fetch_pr_diff_annotations_number: Option<i64>,
     pub last_push_branch_name: Option<String>,
     pub last_close_pr_number: Option<i64>,
     pub last_delete_remote_branch_name: Option<String>,
@@ -121,6 +125,19 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn with_review_feedback_delay_ms(&self, delay_ms: u64) {
         self.state().check_pr_review_feedback_delay_ms = delay_ms;
+    }
+
+    /// Shorthand: configure PR diff annotations returned by fetch_pr_diff_annotations.
+    #[allow(dead_code)]
+    pub fn will_return_pr_diff_annotations(&self, annotations: PrDiffAnnotations) {
+        self.state().fetch_pr_diff_annotations_result = Some(Ok(annotations));
+    }
+
+    /// Shorthand: add an artificial delay to annotation fetches so tests can
+    /// observe command-level request coalescing.
+    #[allow(dead_code)]
+    pub fn with_pr_diff_annotations_delay_ms(&self, delay_ms: u64) {
+        self.state().fetch_pr_diff_annotations_delay_ms = delay_ms;
     }
 
     /// Shorthand: configure any method to fail with the given message (Infrastructure error).
@@ -266,6 +283,28 @@ impl GithubServiceTrait for MockGithubService {
         s.active_check_pr_review_feedback_calls =
             s.active_check_pr_review_feedback_calls.saturating_sub(1);
         result.unwrap_or(Ok(None))
+    }
+
+    async fn fetch_pr_diff_annotations(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrDiffAnnotations> {
+        let (delay_ms, result) = {
+            let mut s = self.state.lock().expect("lock poisoned");
+            s.fetch_pr_diff_annotations_calls += 1;
+            s.last_fetch_pr_diff_annotations_number = Some(pr_number);
+            (
+                s.fetch_pr_diff_annotations_delay_ms,
+                s.fetch_pr_diff_annotations_result.take(),
+            )
+        };
+
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        result.unwrap_or_else(|| Ok(PrDiffAnnotations::empty(pr_number)))
     }
 
     async fn push_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {

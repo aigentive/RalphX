@@ -12,15 +12,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { DiffHunk, DiffLine } from "@/api/diff";
+import type { DiffHunk, DiffLine, PrDiffAnnotation } from "@/api/diff";
 
 // ── Mock diffApi ─────────────────────────────────────────────────────────
 const mockGetRange = vi.fn();
+const mockOpenUrl = vi.fn();
 vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileContentRange: (...args: unknown[]) =>
       mockGetRange(...args),
   },
+}));
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => mockOpenUrl(...args),
 }));
 
 import { SimpleDiffView } from "./SimpleDiffView";
@@ -55,6 +59,29 @@ function makeHunk(overrides: Partial<DiffHunk> = {}): DiffHunk {
 }
 
 const defaultHunks: DiffHunk[] = [makeHunk()];
+
+function makeAnnotation(overrides: Partial<PrDiffAnnotation> = {}): PrDiffAnnotation {
+  return {
+    id: "annotation-1",
+    source: "check_run",
+    path: "src/foo.ts",
+    side: "right",
+    startLine: 2,
+    endLine: 2,
+    startColumn: null,
+    endColumn: null,
+    level: "failure",
+    status: "failure",
+    title: "CodeQL warning",
+    message: "Validate externally influenced paths.",
+    author: null,
+    checkName: "CodeQL",
+    url: null,
+    isOutdated: false,
+    createdAt: null,
+    ...overrides,
+  };
+}
 
 describe("SimpleDiffView", () => {
   beforeEach(() => {
@@ -175,6 +202,44 @@ describe("SimpleDiffView", () => {
       expect(screen.getByText("@@ -20,3 +20,3 @@")).toBeInTheDocument();
       expect(screen.getByText("far away line")).toBeInTheDocument();
     });
+
+    it("renders GitHub annotations on matching diff lines", () => {
+      render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          annotations={[makeAnnotation()]}
+        />
+      );
+
+      expect(screen.getByTestId("diff-annotation-row")).toBeInTheDocument();
+      expect(screen.getByText("CodeQL:")).toBeInTheDocument();
+      expect(screen.getByText("CodeQL warning")).toBeInTheDocument();
+    });
+
+    it("opens annotation URLs in GitHub", async () => {
+      mockOpenUrl.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          annotations={[
+            makeAnnotation({
+              url: "https://github.com/owner/repo/pull/1#annotation",
+            }),
+          ]}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: /open annotation in github/i }));
+
+      expect(mockOpenUrl).toHaveBeenCalledWith(
+        "https://github.com/owner/repo/pull/1#annotation"
+      );
+    });
   });
 
   // ── Gap expanders ────────────────────────────────────────────────────
@@ -254,6 +319,38 @@ describe("SimpleDiffView", () => {
         />
       );
       expect(screen.getByRole("button", { name: /show 6 unchanged lines/i })).toBeInTheDocument();
+    });
+
+    it("shows hidden annotation affordance inside collapsed gaps", () => {
+      const hunks: DiffHunk[] = [
+        makeHunk({ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 }),
+        makeHunk({
+          oldStart: 10,
+          oldLines: 3,
+          newStart: 10,
+          newLines: 3,
+          header: "@@ -10,3 +10,3 @@",
+          lines: [makeDiffLine({ kind: "addition", content: "later", oldLineNum: null, newLineNum: 10 })],
+        }),
+      ];
+      render(
+        <SimpleDiffView
+          hunks={hunks}
+          oldTotalLines={15}
+          newTotalLines={15}
+          annotations={[makeAnnotation({ startLine: 6, endLine: 6 })]}
+          {...rangeProps}
+        />
+      );
+
+      expect(screen.getByTestId("diff-hidden-annotations")).toHaveTextContent(
+        "1 GitHub annotation in hidden context"
+      );
+      expect(
+        screen.getByRole("button", {
+          name: /show 1 hidden annotations in 6 unchanged lines/i,
+        })
+      ).toBeInTheDocument();
     });
 
     it("fires range fetch with correct args on button click", async () => {

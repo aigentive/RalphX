@@ -4,6 +4,7 @@
 // All methods take `working_dir: &Path` for stateless, multi-project support (AD7).
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::AppResult;
@@ -97,6 +98,55 @@ pub struct PrReviewFeedback {
     pub comments: Vec<PrReviewCommentFeedback>,
 }
 
+/// Normalized GitHub PR annotation that can be rendered against RalphX diffs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDiffAnnotation {
+    pub id: String,
+    pub source: String,
+    pub path: Option<String>,
+    pub side: Option<String>,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub start_column: Option<i64>,
+    pub end_column: Option<i64>,
+    pub level: String,
+    pub status: Option<String>,
+    pub title: Option<String>,
+    pub message: String,
+    pub author: Option<String>,
+    pub check_name: Option<String>,
+    pub url: Option<String>,
+    pub is_outdated: bool,
+    pub created_at: Option<String>,
+}
+
+/// A source that could not be synced without failing the whole annotation payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrAnnotationSourceUnavailable {
+    pub source: String,
+    pub reason: String,
+}
+
+/// Live PR annotation payload for a published agent workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDiffAnnotations {
+    pub pr_number: i64,
+    pub head_sha: Option<String>,
+    pub annotations: Vec<PrDiffAnnotation>,
+    pub sources_unavailable: Vec<PrAnnotationSourceUnavailable>,
+}
+
+impl PrDiffAnnotations {
+    pub fn empty(pr_number: i64) -> Self {
+        Self {
+            pr_number,
+            head_sha: None,
+            annotations: Vec::new(),
+            sources_unavailable: Vec::new(),
+        }
+    }
+}
+
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
 #[async_trait]
 pub trait GithubServiceTrait: Send + Sync {
@@ -143,6 +193,15 @@ pub trait GithubServiceTrait: Send + Sync {
         _pr_number: i64,
     ) -> AppResult<Option<PrReviewFeedback>> {
         Ok(None)
+    }
+
+    /// Fetch normalized review/check annotations for display in RalphX diff viewers.
+    async fn fetch_pr_diff_annotations(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrDiffAnnotations> {
+        Ok(PrDiffAnnotations::empty(pr_number))
     }
 
     /// Push a branch to origin.
