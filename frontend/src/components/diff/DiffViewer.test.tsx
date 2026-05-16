@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DiffViewer, type FileChange, type Commit, type DiffData } from "./DiffViewer";
+import type { PrDiffAnnotation } from "@/api/diff";
 
 // Mock the git-diff-view library
 vi.mock("@git-diff-view/react", () => ({
@@ -57,6 +58,29 @@ const createDiffData = (overrides: Partial<DiffData> = {}): DiffData => ({
   oldTotalLines: 1,
   newTotalLines: 1,
   isBinary: false,
+  ...overrides,
+});
+
+const createAnnotation = (
+  overrides: Partial<PrDiffAnnotation> = {},
+): PrDiffAnnotation => ({
+  id: "annotation-1",
+  source: "check_run",
+  path: "src/components/Test.tsx",
+  side: "right",
+  startLine: 1,
+  endLine: 1,
+  startColumn: null,
+  endColumn: null,
+  level: "failure",
+  status: "failure",
+  title: "CodeQL warning",
+  message: "Validate externally influenced paths.",
+  author: null,
+  checkName: "CodeQL",
+  url: null,
+  isOutdated: false,
+  createdAt: null,
   ...overrides,
 });
 
@@ -321,6 +345,34 @@ describe("DiffViewer", () => {
         expect(screen.getByText("const old = 'value';")).toBeInTheDocument();
         expect(screen.getByText("const new = 'value';")).toBeInTheDocument();
       });
+    });
+
+    it("renders matching PR annotations for the selected changes file", async () => {
+      const diffData = createDiffData({ filePath: "src/annotated.ts" });
+      const onFetchDiff = vi.fn().mockResolvedValue(diffData);
+      const changes = [createFileChange({ path: "src/annotated.ts" })];
+
+      render(
+        <DiffViewer
+          {...defaultProps}
+          changes={changes}
+          onFetchDiff={onFetchDiff}
+          annotations={[
+            createAnnotation({ path: "src/annotated.ts" }),
+            createAnnotation({
+              id: "annotation-other",
+              path: "src/other.ts",
+              message: "Other file annotation.",
+            }),
+          ]}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("diff-annotation-row")).toBeInTheDocument();
+      });
+      expect(screen.getByText("CodeQL warning")).toBeInTheDocument();
+      expect(screen.queryByText("Other file annotation.")).not.toBeInTheDocument();
     });
 
     it("shows error state when diff fetch fails", async () => {

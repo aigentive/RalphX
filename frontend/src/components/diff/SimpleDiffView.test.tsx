@@ -240,6 +240,74 @@ describe("SimpleDiffView", () => {
         "https://github.com/owner/repo/pull/1#annotation"
       );
     });
+
+    it("renders code scanning annotation detail and outdated state without a GitHub action", () => {
+      render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          annotations={[
+            makeAnnotation({
+              source: "code_scanning",
+              checkName: null,
+              level: "medium",
+              title: "Filesystem path injection",
+              message: "Validate externally influenced paths before use.",
+              isOutdated: true,
+              url: null,
+            }),
+          ]}
+        />
+      );
+
+      expect(screen.getByText("Code scanning")).toBeInTheDocument();
+      expect(screen.getByText("Filesystem path injection")).toBeInTheDocument();
+      expect(
+        screen.getByText("Validate externally influenced paths before use.")
+      ).toBeInTheDocument();
+      expect(screen.getByText("outdated")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /open annotation in github/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders old-side and custom-source annotations on matching lines", () => {
+      render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          annotations={[
+            makeAnnotation({
+              id: "review-comment:2",
+              source: "review_comment",
+              side: "LEFT",
+              startLine: 2,
+              level: "notice",
+              title: null,
+              message: "Review note on the removed line.",
+              checkName: null,
+            }),
+            makeAnnotation({
+              id: "third-party:1",
+              source: "third_party_check",
+              side: "right",
+              startLine: 2,
+              level: "note",
+              title: null,
+              message: "Custom checker note.",
+              checkName: null,
+            }),
+          ]}
+        />
+      );
+
+      expect(screen.getByText("Review")).toBeInTheDocument();
+      expect(screen.getByText("Review note on the removed line.")).toBeInTheDocument();
+      expect(screen.getByText("third party check")).toBeInTheDocument();
+      expect(screen.getByText("Custom checker note.")).toBeInTheDocument();
+    });
   });
 
   // ── Gap expanders ────────────────────────────────────────────────────

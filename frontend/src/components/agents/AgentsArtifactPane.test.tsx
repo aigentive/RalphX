@@ -2092,6 +2092,37 @@ describe("AgentsArtifactPane", () => {
     expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith("conversation-1");
   });
 
+  it("shows partial GitHub PR annotation unavailability for published workspaces", async () => {
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: null,
+      annotations: [],
+      sourcesUnavailable: [
+        {
+          source: "check_runs",
+          reason: "Missing checks permission",
+        },
+      ],
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      }),
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("agents-pr-annotations-summary")).toHaveTextContent(
+          "GitHub annotations partially unavailable",
+        ),
+      deferredHydrationTimeout,
+    );
+  });
+
   it("hides the publish pipeline after agent repair terminal state", () => {
     renderPane("publish", workspace({ mode: "edit", publicationPushStatus: "needs_agent" }));
 

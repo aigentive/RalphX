@@ -11,7 +11,7 @@ use crate::infrastructure::services::gh_cli_github_service::{
     parse_pr_create_output, parse_pr_create_plain_output,
     parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
     parse_pr_review_feedback_output, parse_pr_status_output, parse_pr_sync_state_output,
-    sanitize_stderr_line, scrub_token_urls,
+    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -325,6 +325,37 @@ fn parse_pr_annotation_head_sha_output_reads_head_ref_oid() {
 }
 
 #[test]
+fn parse_pr_annotation_head_sha_output_returns_none_for_missing_or_blank_sha() {
+    assert!(parse_pr_annotation_head_sha_output(r#"{}"#)
+        .unwrap()
+        .is_none());
+    assert!(
+        parse_pr_annotation_head_sha_output(r#"{"headRefOid":"  "}"#)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn parse_check_runs_output_accepts_single_object_and_skips_missing_ids() {
+    let runs = parse_check_runs_output(
+        r#"{
+            "check_runs": [
+                {"name": "missing id", "annotations_count": 10},
+                {"id": 902, "status": "queued"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, 902);
+    assert_eq!(runs[0].name, "GitHub check");
+    assert_eq!(runs[0].status.as_deref(), Some("queued"));
+    assert_eq!(runs[0].annotations_count, 0);
+}
+
+#[test]
 fn parse_check_run_annotations_normalizes_check_failures() {
     let runs = parse_check_runs_output(
         r#"[
@@ -376,6 +407,41 @@ fn parse_check_run_annotations_normalizes_check_failures() {
 }
 
 #[test]
+fn parse_check_run_annotations_uses_raw_details_and_run_url_fallbacks() {
+    let run = CheckRunAnnotationSource {
+        id: 902,
+        name: "lint".to_string(),
+        conclusion: None,
+        status: Some("completed".to_string()),
+        html_url: Some("https://github.com/owner/repo/runs/902".to_string()),
+        annotations_count: 1,
+    };
+
+    let annotations = parse_check_run_annotations_output(
+        &run,
+        r#"[
+            {
+                "path": "src/main.rs",
+                "start_line": 8,
+                "raw_details": "clippy reported a lint"
+            }
+        ]"#,
+    )
+    .unwrap();
+
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].id, "check-run:902:0");
+    assert_eq!(annotations[0].end_line, Some(8));
+    assert_eq!(annotations[0].level, "warning");
+    assert_eq!(annotations[0].status.as_deref(), Some("completed"));
+    assert_eq!(annotations[0].message, "clippy reported a lint");
+    assert_eq!(
+        annotations[0].url.as_deref(),
+        Some("https://github.com/owner/repo/runs/902")
+    );
+}
+
+#[test]
 fn parse_code_scanning_alert_annotations_normalizes_codeql_locations() {
     let annotations = parse_code_scanning_alert_annotations_output(
         r#"[
@@ -417,6 +483,44 @@ fn parse_code_scanning_alert_annotations_normalizes_codeql_locations() {
     assert_eq!(annotations[0].end_line, Some(23));
     assert_eq!(annotations[0].level, "high");
     assert_eq!(annotations[0].message, "This path depends on user input.");
+}
+
+#[test]
+fn parse_code_scanning_alert_annotations_falls_back_to_rule_name_and_skips_missing_instances() {
+    let annotations = parse_code_scanning_alert_annotations_output(
+        r#"[
+            {
+                "number": 1,
+                "rule": {"description": "No instance"}
+            },
+            {
+                "number": "A-2",
+                "html_url": "https://github.com/owner/repo/security/code-scanning/2",
+                "state": "open",
+                "rule": {
+                    "name": "Unchecked path construction"
+                },
+                "most_recent_instance": {
+                    "location": {
+                        "path": "src-tauri/src/main.rs",
+                        "start_line": 31
+                    }
+                }
+            }
+        ]"#,
+    )
+    .unwrap();
+
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].id, "code-scanning:A-2");
+    assert_eq!(
+        annotations[0].title.as_deref(),
+        Some("Unchecked path construction")
+    );
+    assert_eq!(annotations[0].message, "Unchecked path construction");
+    assert_eq!(annotations[0].level, "warning");
+    assert_eq!(annotations[0].check_name.as_deref(), Some("Code scanning"));
+    assert_eq!(annotations[0].end_line, Some(31));
 }
 
 // ── sanitize_stderr_line ───────────────────────────────────────────────────
@@ -1116,6 +1220,41 @@ mod mock_roundtrip {
                 "--slurp".to_string(),
             ]
         }));
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_diff_annotations_records_partial_failures_and_missing_head_sha() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Err(AppError::Infrastructure("comments denied".to_string())),
+            Ok(vec!["not json".to_string()]),
+            Ok(vec![r#"{}"#.to_string()]),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let payload = service
+            .fetch_pr_diff_annotations(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(payload.pr_number, 68);
+        assert!(payload.head_sha.is_none());
+        assert!(payload.annotations.is_empty());
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "review_comments" && source.reason.contains("comments denied")
+        }));
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "code_scanning"
+                && source
+                    .reason
+                    .contains("Failed to parse gh code scanning alerts JSON")
+        }));
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "check_runs"
+                && source
+                    .reason
+                    .contains("Pull request head SHA was unavailable")
+        }));
+        assert_eq!(runner.gh_calls().len(), 3);
     }
 
     #[tokio::test]
