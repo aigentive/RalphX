@@ -119,6 +119,7 @@ pub(crate) fn run_app_setup(
     // Create application state with production SQLite repositories
     let mut app_state =
         AppState::new_production(app_handle.clone()).expect("Failed to initialize AppState");
+    crate::commands::workspace_open_commands::warm_workspace_open_target_cache();
 
     // Construct WebhookPublisher ONCE — Arc-clone into both AppState instances.
     // Follows the question_state/permission_state dual-AppState sharing pattern.

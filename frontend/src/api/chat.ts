@@ -1448,6 +1448,8 @@ export const chatApi = {
   archiveConversation,
   restoreConversation,
   getAgentConversationWorkspace,
+  listWorkspaceOpenTargets,
+  openAgentConversationWorkspace,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents,
@@ -1527,6 +1529,14 @@ export interface AgentConversationWorkspace {
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type WorkspaceOpenTargetKind = "editor" | "fileManager";
+
+export interface WorkspaceOpenTarget {
+  id: string;
+  label: string;
+  kind: WorkspaceOpenTargetKind;
 }
 
 export interface StartAgentConversationInput {
@@ -1706,6 +1716,11 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   effective_base_ref: z.string().nullable().optional().default(null),
   effective_base_display_name: z.string().nullable().optional().default(null),
   base_block_reason: z.string().nullable().optional().default(null),
+});
+const WorkspaceOpenTargetResponseSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.enum(["editor", "fileManager"]),
 });
 
 const StartAgentConversationResponseSchema = z.object({
@@ -1933,6 +1948,25 @@ export async function getAgentConversationWorkspace(
     AgentConversationWorkspaceResponseSchema.nullable()
   );
   return raw ? transformAgentConversationWorkspace(raw) : null;
+}
+
+export async function listWorkspaceOpenTargets(): Promise<WorkspaceOpenTarget[]> {
+  return typedInvoke(
+    "list_workspace_open_targets",
+    {},
+    z.array(WorkspaceOpenTargetResponseSchema)
+  );
+}
+
+export async function openAgentConversationWorkspace(
+  conversationId: string,
+  targetId: string
+): Promise<void> {
+  await typedInvoke(
+    "open_agent_conversation_workspace",
+    { conversationId, targetId },
+    z.null()
+  );
 }
 
 export async function listAgentConversationWorkspacesByProject(
