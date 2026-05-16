@@ -116,6 +116,7 @@ describe("diff api", () => {
       ],
       baseRef: "origin/main",
       headRef: "HEAD",
+      supportsWorktreeModes: true,
     });
   });
 
