@@ -642,10 +642,11 @@ mod tests {
     use super::{
         agent_subprocess_env_path_from_parts, find_claude_cli_path,
         find_cli_path_with_candidate_groups_for_test, find_codex_cli_candidates,
-        find_codex_cli_path, is_safe_tool_name, launchable_cli_paths_from_shell_output,
-        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
-        prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
-        TEST_ENV_MUTEX,
+        find_codex_cli_path, find_launchable_cli_path, find_launchable_cli_path_without_shell,
+        find_launchable_cli_paths_with_login_shell, is_safe_tool_name,
+        launchable_cli_paths_from_shell_output, nvm_versioned_tool_candidates_from_home,
+        parse_nvm_node_version_dir, prepend_resolved_node_bin_to_path, resolve_node_cli_path,
+        safe_cli_path_from_shell_output, TEST_ENV_MUTEX,
     };
     use std::cell::Cell;
     use std::ffi::OsStr;
@@ -733,11 +734,81 @@ mod tests {
     }
 
     #[test]
+    fn shell_batch_output_ignores_malformed_lines() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cursor = temp_dir.path().join("cursor");
+        write_fake_tool(&cursor);
+        let output = format!(
+            "malformed\ncursor\t{}\ncode\t{}\n",
+            cursor.display(),
+            temp_dir.path().join("missing-code").display()
+        );
+
+        let paths = launchable_cli_paths_from_shell_output(&["cursor", "code"], &output);
+
+        assert_eq!(paths.get("cursor"), Some(&cursor));
+        assert!(!paths.contains_key("code"));
+    }
+
+    #[test]
     fn safe_tool_name_rejects_shell_metacharacters() {
         assert!(is_safe_tool_name("code-insiders"));
         assert!(is_safe_tool_name("explorer.exe"));
         assert!(!is_safe_tool_name("code;rm"));
         assert!(!is_safe_tool_name("bad tool"));
+    }
+
+    #[test]
+    fn find_launchable_cli_path_uses_nvm_bin_candidate() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let nvm_bin = temp_dir.path().join("nvm-bin");
+        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+        let launcher = nvm_bin.join("fake-launcher");
+        write_fake_tool(&launcher);
+
+        let _path = EnvGuard::set_os("PATH", "");
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _nvm_bin = EnvGuard::set_os("NVM_BIN", &nvm_bin);
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(
+            find_launchable_cli_path("fake-launcher", &[]),
+            Some(launcher)
+        );
+    }
+
+    #[test]
+    fn find_launchable_cli_path_without_shell_uses_fixed_candidate() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let launcher = temp_dir.path().join("fake-launcher");
+        write_fake_tool(&launcher);
+        let fixed_candidate: &'static str =
+            Box::leak(launcher.to_string_lossy().into_owned().into_boxed_str());
+
+        let _path = EnvGuard::set_os("PATH", "");
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(
+            find_launchable_cli_path_without_shell("fake-launcher", &[fixed_candidate]),
+            Some(launcher)
+        );
+    }
+
+    #[test]
+    fn login_shell_batch_rejects_empty_or_unsafe_tool_names() {
+        assert!(find_launchable_cli_paths_with_login_shell(&[]).is_empty());
+        assert!(find_launchable_cli_paths_with_login_shell(&["code;rm"]).is_empty());
+    }
+
+    #[test]
+    fn login_shell_batch_returns_empty_for_missing_tool() {
+        let paths = find_launchable_cli_paths_with_login_shell(&["definitely-missing-ralphx-tool"]);
+
+        assert!(paths.is_empty());
     }
 
     #[test]

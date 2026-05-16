@@ -202,46 +202,44 @@ const FILES_COMMANDS: &[WorkspaceOpenCommandDefinition] = &[WorkspaceOpenCommand
     base_args: &[],
 }];
 
+macro_rules! editor_target {
+    ($id:expr, $label:expr, $commands:expr $(,)?) => {
+        WorkspaceOpenTargetDefinition {
+            id: $id,
+            label: $label,
+            kind: WorkspaceOpenTargetKind::Editor,
+            launch_style: WorkspaceOpenLaunchStyle::Path,
+            commands: $commands,
+        }
+    };
+}
+
 const EDITOR_TARGETS: &[WorkspaceOpenTargetDefinition] = &[
-    target("cursor", "Cursor", CURSOR_COMMANDS),
-    target("trae", "Trae", TRAE_COMMANDS),
-    target("kiro", "Kiro", KIRO_COMMANDS),
-    target("vscode", "VS Code", VSCODE_COMMANDS),
-    target(
+    editor_target!("cursor", "Cursor", CURSOR_COMMANDS),
+    editor_target!("trae", "Trae", TRAE_COMMANDS),
+    editor_target!("kiro", "Kiro", KIRO_COMMANDS),
+    editor_target!("vscode", "VS Code", VSCODE_COMMANDS),
+    editor_target!(
         "vscode-insiders",
         "VS Code Insiders",
         VSCODE_INSIDERS_COMMANDS,
     ),
-    target("vscodium", "VSCodium", VSCODIUM_COMMANDS),
-    target("zed", "Zed", ZED_COMMANDS),
-    target("antigravity", "Antigravity", ANTIGRAVITY_COMMANDS),
-    target("idea", "IntelliJ IDEA", IDEA_COMMANDS),
-    target("aqua", "Aqua", AQUA_COMMANDS),
-    target("clion", "CLion", CLION_COMMANDS),
-    target("datagrip", "DataGrip", DATAGRIP_COMMANDS),
-    target("dataspell", "DataSpell", DATASPELL_COMMANDS),
-    target("goland", "GoLand", GOLAND_COMMANDS),
-    target("phpstorm", "PhpStorm", PHPSTORM_COMMANDS),
-    target("pycharm", "PyCharm", PYCHARM_COMMANDS),
-    target("rider", "Rider", RIDER_COMMANDS),
-    target("rubymine", "RubyMine", RUBYMINE_COMMANDS),
-    target("rustrover", "RustRover", RUSTROVER_COMMANDS),
-    target("webstorm", "WebStorm", WEBSTORM_COMMANDS),
+    editor_target!("vscodium", "VSCodium", VSCODIUM_COMMANDS),
+    editor_target!("zed", "Zed", ZED_COMMANDS),
+    editor_target!("antigravity", "Antigravity", ANTIGRAVITY_COMMANDS),
+    editor_target!("idea", "IntelliJ IDEA", IDEA_COMMANDS),
+    editor_target!("aqua", "Aqua", AQUA_COMMANDS),
+    editor_target!("clion", "CLion", CLION_COMMANDS),
+    editor_target!("datagrip", "DataGrip", DATAGRIP_COMMANDS),
+    editor_target!("dataspell", "DataSpell", DATASPELL_COMMANDS),
+    editor_target!("goland", "GoLand", GOLAND_COMMANDS),
+    editor_target!("phpstorm", "PhpStorm", PHPSTORM_COMMANDS),
+    editor_target!("pycharm", "PyCharm", PYCHARM_COMMANDS),
+    editor_target!("rider", "Rider", RIDER_COMMANDS),
+    editor_target!("rubymine", "RubyMine", RUBYMINE_COMMANDS),
+    editor_target!("rustrover", "RustRover", RUSTROVER_COMMANDS),
+    editor_target!("webstorm", "WebStorm", WEBSTORM_COMMANDS),
 ];
-
-const fn target(
-    id: &'static str,
-    label: &'static str,
-    commands: &'static [WorkspaceOpenCommandDefinition],
-) -> WorkspaceOpenTargetDefinition {
-    WorkspaceOpenTargetDefinition {
-        id,
-        label,
-        kind: WorkspaceOpenTargetKind::Editor,
-        launch_style: WorkspaceOpenLaunchStyle::Path,
-        commands,
-    }
-}
 
 fn file_manager_target(platform: &str) -> WorkspaceOpenTargetDefinition {
     let (label, commands): (&'static str, &'static [WorkspaceOpenCommandDefinition]) =
@@ -260,14 +258,19 @@ fn file_manager_target(platform: &str) -> WorkspaceOpenTargetDefinition {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn current_platform() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "linux") {
-        "linux"
-    } else {
-        "macos"
-    }
+    "windows"
+}
+
+#[cfg(target_os = "linux")]
+fn current_platform() -> &'static str {
+    "linux"
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn current_platform() -> &'static str {
+    "macos"
 }
 
 fn available_workspace_open_targets_with_resolver(
@@ -605,9 +608,54 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::collections::HashMap;
+    use std::ffi::OsStr;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn fake_command_path(command: &WorkspaceOpenCommandDefinition) -> PathBuf {
         PathBuf::from(format!("/tools/{}", command.name))
+    }
+
+    fn target_ids(targets: &[WorkspaceOpenTargetResponse]) -> Vec<&str> {
+        targets.iter().map(|target| target.id.as_str()).collect()
+    }
+
+    fn write_fake_cursor(bin_dir: &Path, body: &str) -> PathBuf {
+        let cursor = bin_dir.join("cursor");
+        std::fs::write(&cursor, format!("#!/bin/sh\n{body}\n")).expect("write fake cursor");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&cursor)
+                .expect("fake cursor metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&cursor, permissions).expect("mark fake cursor executable");
+        }
+        cursor
     }
 
     #[test]
@@ -631,6 +679,52 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn platform_file_manager_targets_use_native_labels_and_commands() {
+        let linux = file_manager_target("linux");
+        assert_eq!(linux.id, "file-manager");
+        assert_eq!(linux.label, "Files");
+        assert_eq!(linux.kind, WorkspaceOpenTargetKind::FileManager);
+        assert_eq!(linux.commands[0].name, "xdg-open");
+
+        let macos = file_manager_target("macos");
+        assert_eq!(macos.label, "Finder");
+        assert_eq!(macos.commands[0].name, "open");
+
+        let windows = file_manager_target("windows");
+        assert_eq!(windows.label, "Explorer");
+        assert_eq!(windows.commands[0].name, "explorer.exe");
+    }
+
+    #[test]
+    fn target_definition_iterators_include_editor_aliases_and_file_manager() {
+        let target_ids = workspace_open_target_definitions("macos")
+            .map(|target| target.id)
+            .collect::<Vec<_>>();
+        assert!(target_ids.contains(&"cursor"));
+        assert!(target_ids.contains(&"zed"));
+        assert!(target_ids.contains(&"file-manager"));
+
+        let command_names = workspace_open_command_definitions("macos")
+            .map(|command| command.name)
+            .collect::<Vec<_>>();
+        assert!(command_names.contains(&"zed"));
+        assert!(command_names.contains(&"zeditor"));
+        assert!(command_names.contains(&"open"));
+    }
+
+    #[test]
+    fn first_available_command_uses_later_alias_when_primary_is_missing() {
+        let zed = find_target("zed", "macos").expect("zed target");
+        let (command, path) = first_available_command(zed, &mut |command| {
+            (command.name == "zeditor").then(|| fake_command_path(command))
+        })
+        .expect("zeditor alias should resolve");
+
+        assert_eq!(command.name, "zeditor");
+        assert_eq!(path, PathBuf::from("/tools/zeditor"));
     }
 
     #[test]
@@ -663,6 +757,40 @@ mod tests {
     }
 
     #[test]
+    fn build_launch_rejects_existing_file_workspace_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("not-a-dir");
+        std::fs::write(&file_path, "workspace").expect("write file");
+
+        let error = build_workspace_open_launch("cursor", &file_path, "macos", |command| {
+            (command.name == "cursor").then(|| fake_command_path(command))
+        })
+        .expect_err("file path should be rejected");
+
+        assert!(error.to_string().contains("existing directory"));
+    }
+
+    #[test]
+    fn build_launch_rejects_unknown_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let error = build_workspace_open_launch("unknown", temp.path(), "macos", |_| None)
+            .expect_err("unknown target should be rejected");
+
+        assert!(error.to_string().contains("Unknown workspace open target"));
+    }
+
+    #[test]
+    fn build_launch_rejects_unavailable_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let error = build_workspace_open_launch("cursor", temp.path(), "macos", |_| None)
+            .expect_err("unavailable target should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("Workspace open target is not available: Cursor"));
+    }
+
+    #[test]
     fn windows_file_manager_uses_explorer_exe_command_name() {
         let targets = available_workspace_open_targets_with_resolver("windows", |command| {
             (command.name == "explorer.exe").then(|| fake_command_path(command))
@@ -676,6 +804,20 @@ mod tests {
                 kind: WorkspaceOpenTargetKind::FileManager,
             }]
         );
+    }
+
+    #[test]
+    fn shell_probe_results_do_not_override_direct_resolution() {
+        let targets = probe_workspace_open_targets(
+            "macos",
+            |command| {
+                matches!(command.name, "cursor" | "open")
+                    .then(|| PathBuf::from(format!("/direct/{}", command.name)))
+            },
+            |_| HashMap::from([("cursor", PathBuf::from("/shell/cursor"))]),
+        );
+
+        assert_eq!(target_ids(&targets), vec!["cursor", "file-manager"]);
     }
 
     #[test]
@@ -708,5 +850,69 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn cached_target_list_is_returned_without_reprobing() {
+        let cached = vec![WorkspaceOpenTargetResponse {
+            id: "cursor".to_string(),
+            label: "Cursor".to_string(),
+            kind: WorkspaceOpenTargetKind::Editor,
+        }];
+        store_workspace_open_target_cache(cached.clone());
+
+        assert_eq!(cached_workspace_open_targets(), Some(cached.clone()));
+        assert_eq!(list_workspace_open_targets(), cached);
+    }
+
+    #[test]
+    fn launch_workspace_open_target_accepts_immediate_success() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_fake_cursor(&bin_dir, "exit 0");
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        launch_workspace_open_target("cursor", temp.path()).expect("launch should succeed");
+    }
+
+    #[test]
+    fn launch_workspace_open_target_reports_spawn_failures() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        let cursor = bin_dir.join("cursor");
+        std::fs::write(&cursor, "#!/definitely/missing/ralphx-shell\n").expect("write fake cursor");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&cursor)
+                .expect("fake cursor metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&cursor, permissions).expect("mark fake cursor executable");
+        }
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        let error = launch_workspace_open_target("cursor", temp.path())
+            .expect_err("spawn failure should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("Failed to launch workspace open target"));
+    }
+
+    #[test]
+    fn launch_workspace_open_target_accepts_background_process() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        write_fake_cursor(&bin_dir, "sleep 1\nexit 0");
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        launch_workspace_open_target("cursor", temp.path()).expect("launch should spawn");
     }
 }

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
 import { useChatStore } from "@/stores/chatStore";
+import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import {
@@ -10,6 +11,12 @@ import {
   conversationWorkspaceFixture as conversationWorkspace,
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+  },
+}));
 
 function conversationStats(
   overrides: Partial<ConversationStatsResponse> = {},
@@ -663,6 +670,35 @@ describe("AgentsChatHeader", () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(openButton).not.toBeDisabled();
+  });
+
+  it("clears the workspace opening state immediately when launch fails", async () => {
+    vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    vi.spyOn(chatApi, "openAgentConversationWorkspace").mockRejectedValue(
+      new Error("Cursor failed")
+    );
+
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const openButton = await screen.findByTestId("agents-open-workspace");
+    fireEvent.click(openButton);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Cursor failed"));
+    expect(openButton).not.toBeDisabled();
+    expect(openButton).toHaveTextContent("Open");
   });
 
   it("shows the commit and publish shortcut for ideation workspaces linked to execution branches", () => {
