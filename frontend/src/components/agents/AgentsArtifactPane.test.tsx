@@ -1400,11 +1400,46 @@ describe("AgentsArtifactPane", () => {
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
-    expect(screen.getByText("Workspace is published and current.")).toBeInTheDocument();
+    await screen.findByText("1 changed file published for review.");
 
     fireEvent.click(publishButton);
 
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("keeps the inline review diff visible after a PR has been opened", async () => {
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Published.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "base-sha",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        publicationPrStatus: "open",
+      }),
+    );
+
+    await screen.findByTestId("agents-publish-inline-diffs-section");
+    await waitFor(() =>
+      expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("1"),
+    );
+    expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1");
   });
 
   it("keeps publish enabled for a pushed current branch until a PR exists", async () => {

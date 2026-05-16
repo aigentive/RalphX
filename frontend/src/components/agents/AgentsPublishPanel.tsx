@@ -142,13 +142,10 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
-  // Workspace-only flags computed early so reviewQuery can decide whether the
-  // inline diff view will be visible. Hidden states (terminal PR, published PR
-  // current) skip the eager fetch and keep the dialog-driven flow.
-  const earlyTerminalStatus = getAgentWorkspaceTerminalPublicationStatus(workspace);
-  const earlyHasPublishedPr = hasPublishedWorkspacePr(workspace);
-  const inlineDiffsCandidate =
-    !earlyTerminalStatus && !earlyHasPublishedPr && workspace?.mode === "edit";
+  // Workspace-only flag computed early so reviewQuery can decide whether the
+  // inline diff view will be visible.
+  const inlineDiffsCandidate = workspace?.mode === "edit" && workspace.status !== "missing";
+  const hasPublishedPr = hasPublishedWorkspacePr(workspace);
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
@@ -167,7 +164,7 @@ export function AgentPublishPanel({
   const prAnnotationsQuery = useQuery({
     queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
-    enabled: canHydratePublishFacts && !!conversationId && earlyHasPublishedPr,
+    enabled: canHydratePublishFacts && !!conversationId && hasPublishedPr,
     staleTime: 30_000,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
   });
@@ -176,7 +173,6 @@ export function AgentPublishPanel({
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
-  const hasPublishedPr = hasPublishedWorkspacePr(workspace);
   const freshnessQuery = useQuery({
     queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
     queryFn: () =>
@@ -315,7 +311,7 @@ export function AgentPublishPanel({
       ? `${prAnnotations.length} GitHub annotation${prAnnotations.length === 1 ? "" : "s"} synced`
       : prAnnotationSourcesUnavailable.length > 0
         ? "GitHub annotations partially unavailable"
-        : prAnnotationsQuery.isLoading && earlyHasPublishedPr
+        : prAnnotationsQuery.isLoading && hasPublishedPr
           ? "Checking GitHub annotations..."
           : null;
   const isChangesLoading =
@@ -843,6 +839,7 @@ export function AgentPublishPanel({
               commits={commits}
               isLoading={Boolean(conversationId) && reviewQuery.isLoading}
               annotations={prAnnotations}
+              error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
             />
           </section>

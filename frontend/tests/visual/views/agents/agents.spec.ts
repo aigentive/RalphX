@@ -17,6 +17,7 @@ const baseRef = {
 const editConversationId = "conv-agent-edit-visual";
 const ideationConversationId = "conv-agent-ideation-visual";
 const archivedConversationId = "conv-agent-archived-visual";
+const stablePublishEventCreatedAt = "2026-05-13T05:20:00";
 
 function makeConversation({
   id,
@@ -338,6 +339,34 @@ async function seedPublishHistory(page: Page, conversationId: string) {
   }, conversationId);
 }
 
+async function stabilizePublishHistoryTimestamps(page: Page, conversationId: string) {
+  await page.evaluate(
+    ({ targetConversationId, createdAt }) => {
+      const queryClient = window.__queryClient;
+      if (!queryClient) {
+        throw new Error("Expected query client to be available");
+      }
+      const queryKey = [
+        "agents",
+        "conversation-workspace-publication-events",
+        targetConversationId,
+      ];
+      const events = queryClient.getQueryData(queryKey);
+      if (!Array.isArray(events)) {
+        return;
+      }
+      queryClient.setQueryData(
+        queryKey,
+        events.map((event) => ({ ...event, createdAt })),
+      );
+    },
+    {
+      targetConversationId: conversationId,
+      createdAt: stablePublishEventCreatedAt,
+    },
+  );
+}
+
 async function hydrateIdeationArtifactCache(page: Page, conversationId: string) {
   await page.evaluate(async (targetConversationId) => {
     const queryClient = window.__queryClient;
@@ -614,6 +643,8 @@ test.describe("Agents View", () => {
     await expect(page.getByTestId("agents-publish-events")).toBeVisible();
     await page.getByTestId("agents-publish-history-toggle").click();
     await expect(page.getByTestId("agents-publish-event-published")).toBeVisible();
+    await stabilizePublishHistoryTimestamps(page, editConversationId);
+    await expect(page.getByText("Published / May 13, 5:20 AM")).toBeVisible();
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
       fullPage: false,

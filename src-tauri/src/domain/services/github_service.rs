@@ -216,6 +216,14 @@ pub trait GithubServiceTrait: Send + Sync {
     /// Fetch a branch from origin.
     async fn fetch_remote(&self, working_dir: &Path, branch: &str) -> AppResult<()>;
 
+    /// Return a pull request's unified patch diff.
+    async fn get_pr_diff_patch(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        pr_url: Option<&str>,
+    ) -> AppResult<String>;
+
     /// Find an existing open PR by head branch. Returns (pr_number, pr_url) if found.
     async fn find_pr_by_head_branch(
         &self,
@@ -312,6 +320,15 @@ mod tests {
             _working_dir: &Path,
             _head: &str,
         ) -> AppResult<Option<(i64, String)>> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn get_pr_diff_patch(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+            _pr_url: Option<&str>,
+        ) -> AppResult<String> {
             unimplemented!("not needed for default annotation coverage")
         }
     }

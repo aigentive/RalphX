@@ -17,6 +17,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     mode,
     onModeChange,
     uncommittedCount,
+    supportsWorktreeModes,
   }: {
     mode: string;
     onModeChange: (m: string) => void;
@@ -24,8 +25,14 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     stagedCount?: number;
     unstagedCount?: number;
     commits: unknown[];
+    supportsWorktreeModes?: boolean;
   }) => (
-    <div data-testid="mock-diff-filter" data-mode={mode} data-count={uncommittedCount}>
+    <div
+      data-testid="mock-diff-filter"
+      data-mode={mode}
+      data-count={uncommittedCount}
+      data-supports-worktree-modes={String(supportsWorktreeModes)}
+    >
       <button onClick={() => onModeChange("uncommitted")}>Uncommitted</button>
       <button onClick={() => onModeChange("sha-abc")}>Commit sha-abc</button>
       <button onClick={() => onModeChange("staged")}>Staged</button>
@@ -844,6 +851,32 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("mode=cumulative — diff fetching", () => {
+    it("uses read-only cumulative mode when historical review cannot inspect a worktree", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={{ ...makeReview(changes), supportsWorktreeModes: false }}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "cumulative",
+      );
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-supports-worktree-modes",
+        "false",
+      );
+      await waitFor(() => expect(mockGetCumulativeFiles).toHaveBeenCalledWith("conv-1"));
+      expect(mockGetStagedFiles).not.toHaveBeenCalled();
+      expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
+    });
+
     it("fetches cumulative file changes when mode switches to cumulative", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];

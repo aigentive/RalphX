@@ -872,7 +872,40 @@ mod mock_roundtrip {
             vec![vec!["pr", "edit", "68", "--base", "main"]
                 .into_iter()
                 .map(str::to_string)
-                .collect::<Vec<_>>()]
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_pr_diff_patch_uses_pr_url_and_disables_color() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let patch = service
+            .get_pr_diff_patch(
+                Path::new("/tmp"),
+                68,
+                Some("https://github.com/owner/repo/pull/68"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(patch, "diff --git a/src/lib.rs b/src/lib.rs");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "diff",
+                "https://github.com/owner/repo/pull/68",
+                "--patch",
+                "--color",
+                "never",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
         );
     }
 

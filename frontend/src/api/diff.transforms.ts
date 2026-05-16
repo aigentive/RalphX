@@ -145,5 +145,6 @@ export function transformAgentWorkspaceReview(
     commits: raw.commits.map(transformCommitInfo),
     baseRef: raw.base_ref,
     headRef: raw.head_ref,
+    supportsWorktreeModes: raw.supports_worktree_modes,
   };
 }

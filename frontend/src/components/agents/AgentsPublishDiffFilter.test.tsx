@@ -235,6 +235,26 @@ describe("AgentsPublishDiffFilter", () => {
       await user.click(screen.getByTestId("diff-filter-trigger"));
       expect(screen.getByTestId("diff-filter-option-cumulative")).toBeInTheDocument();
     });
+
+    it("hides worktree-only modes for read-only historical reviews", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="cumulative"
+            uncommittedCount={5}
+            commits={[makeCommit()]}
+            supportsWorktreeModes={false}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      expect(screen.queryByTestId("diff-filter-option-uncommitted")).toBeNull();
+      expect(screen.queryByTestId("diff-filter-option-staged")).toBeNull();
+      expect(screen.queryByTestId("diff-filter-option-unstaged")).toBeNull();
+      expect(screen.getByTestId("diff-filter-option-cumulative")).toBeInTheDocument();
+    });
   });
 
   describe("mode selection", () => {

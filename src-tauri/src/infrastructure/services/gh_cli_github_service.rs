@@ -375,6 +375,22 @@ fn build_code_scanning_alerts_api_args(pr_number: i64) -> Vec<String> {
     ]
 }
 
+fn build_pr_diff_patch_args(pr_number: i64, pr_url: Option<&str>) -> Vec<String> {
+    let selector = pr_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| pr_number.to_string());
+    vec![
+        "pr".to_string(),
+        "diff".to_string(),
+        selector,
+        "--patch".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+    ]
+}
+
 fn is_duplicate_pr_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
     DUPLICATE_PR_FRAGMENTS
@@ -807,6 +823,19 @@ impl GithubServiceTrait for GhCliGithubService {
             branch.to_string(),
         ];
         self.runner.run_git(working_dir, &args).await
+    }
+
+    async fn get_pr_diff_patch(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        pr_url: Option<&str>,
+    ) -> AppResult<String> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_diff_patch_args(pr_number, pr_url))
+            .await?;
+        Ok(stdout.join("\n"))
     }
 
     async fn find_pr_by_head_branch(

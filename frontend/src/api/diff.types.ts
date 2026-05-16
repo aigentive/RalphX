@@ -102,4 +102,5 @@ export interface AgentWorkspaceReview {
   commits: CommitInfo[];
   baseRef: string;
   headRef: string;
+  supportsWorktreeModes?: boolean;
 }

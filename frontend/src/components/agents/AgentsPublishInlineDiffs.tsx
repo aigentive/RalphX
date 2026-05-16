@@ -38,6 +38,7 @@ export interface AgentsPublishInlineDiffsProps {
   commits: DiffViewerCommit[];
   isLoading: boolean;
   annotations?: PrDiffAnnotation[] | undefined;
+  error?: unknown;
   onOpenInDialog?: ((filePath: string) => void) | undefined;
 }
 
@@ -47,6 +48,7 @@ export function AgentsPublishInlineDiffs({
   commits,
   isLoading,
   annotations = [],
+  error,
   onOpenInDialog,
 }: AgentsPublishInlineDiffsProps) {
   const [mode, setMode] = useState<DiffFilterMode>("uncommitted");
@@ -63,12 +65,21 @@ export function AgentsPublishInlineDiffs({
   // Show-anyway overrides — paths where the user has dismissed the generated-file placeholder.
   const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
 
-  const isStagedMode = mode === "staged";
-  const isUnstagedMode = mode === "unstaged";
-  const isCumulativeMode = mode === "cumulative";
+  const supportsWorktreeModes = review?.supportsWorktreeModes ?? true;
+  const effectiveMode =
+    !supportsWorktreeModes &&
+    (mode === "uncommitted" || mode === "staged" || mode === "unstaged")
+      ? "cumulative"
+      : mode;
+  const isStagedMode = effectiveMode === "staged";
+  const isUnstagedMode = effectiveMode === "unstaged";
+  const isCumulativeMode = effectiveMode === "cumulative";
   const isCommitMode =
-    mode !== "uncommitted" && !isStagedMode && !isUnstagedMode && !isCumulativeMode;
-  const commitSha = isCommitMode ? mode : undefined;
+    effectiveMode !== "uncommitted" &&
+    !isStagedMode &&
+    !isUnstagedMode &&
+    !isCumulativeMode;
+  const commitSha = isCommitMode ? effectiveMode : undefined;
 
   /** Map the current mode to the backend DiffRefKind for range fetches. */
   const refKind = useMemo<DiffRefKind>(() => {
@@ -110,14 +121,14 @@ export function AgentsPublishInlineDiffs({
   const stagedFilesQuery = useQuery({
     queryKey: ["staged-files", conversationId],
     queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
-    enabled: isStagedMode,
+    enabled: supportsWorktreeModes && isStagedMode,
   });
 
   // ── Unstaged file list (only active in unstaged mode) ─────────────────
   const unstagedFilesQuery = useQuery({
     queryKey: ["unstaged-files", conversationId],
     queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
-    enabled: isUnstagedMode,
+    enabled: supportsWorktreeModes && isUnstagedMode,
   });
 
   // ── Cumulative file list (only active in cumulative mode) ─────────────
@@ -130,15 +141,16 @@ export function AgentsPublishInlineDiffs({
   // ── Current file list (mode-dependent) ────────────────────────────────
   const currentFiles = useMemo<FileChange[]>(() => {
     if (isCommitMode) return commitFilesQuery.data ?? [];
-    if (isStagedMode) return stagedFilesQuery.data ?? [];
-    if (isUnstagedMode) return unstagedFilesQuery.data ?? [];
-    if (isCumulativeMode) return cumulativeFilesQuery.data ?? [];
+    if (isStagedMode && supportsWorktreeModes) return stagedFilesQuery.data ?? [];
+    if (isUnstagedMode && supportsWorktreeModes) return unstagedFilesQuery.data ?? [];
+    if (isCumulativeMode) return cumulativeFilesQuery.data ?? review?.changes ?? [];
     return review?.changes ?? [];
   }, [
     isCommitMode,
     isStagedMode,
     isUnstagedMode,
     isCumulativeMode,
+    supportsWorktreeModes,
     commitFilesQuery.data,
     stagedFilesQuery.data,
     unstagedFilesQuery.data,
@@ -149,7 +161,7 @@ export function AgentsPublishInlineDiffs({
   // ── Mode change → reset hydrated set (new mode = new file list) ─────────
   useEffect(() => {
     setHydratedPaths(new Set());
-  }, [mode]);
+  }, [effectiveMode]);
 
   // ── IntersectionObserver — lazy hydration ─────────────────────────────
   useEffect(() => {
@@ -222,7 +234,7 @@ export function AgentsPublishInlineDiffs({
 
   // ── Staged diffs ──────────────────────────────────────────────────────
   const stagedDiffQueries = useQueries({
-    queries: (isStagedMode ? expandedFiles : []).map((file) => ({
+    queries: (supportsWorktreeModes && isStagedMode ? expandedFiles : []).map((file) => ({
       queryKey: ["staged-diff", conversationId, file.path],
       queryFn: () =>
         diffApi.getAgentConversationWorkspaceStagedFileDiff(conversationId, file.path),
@@ -231,7 +243,7 @@ export function AgentsPublishInlineDiffs({
 
   // ── Unstaged diffs ────────────────────────────────────────────────────
   const unstagedDiffQueries = useQueries({
-    queries: (isUnstagedMode ? expandedFiles : []).map((file) => ({
+    queries: (supportsWorktreeModes && isUnstagedMode ? expandedFiles : []).map((file) => ({
       queryKey: ["unstaged-diff", conversationId, file.path],
       queryFn: () =>
         diffApi.getAgentConversationWorkspaceUnstagedFileDiff(conversationId, file.path),
@@ -344,7 +356,7 @@ export function AgentsPublishInlineDiffs({
         }}
       >
         <AgentsPublishDiffFilter
-          mode={mode}
+          mode={effectiveMode}
           uncommittedCount={uncommittedCount}
           {...(stagedFilesQuery.data !== undefined && {
             stagedCount: stagedFilesQuery.data.length,
@@ -353,6 +365,7 @@ export function AgentsPublishInlineDiffs({
             unstagedCount: unstagedFilesQuery.data.length,
           })}
           commits={commits}
+          supportsWorktreeModes={supportsWorktreeModes}
           onModeChange={handleModeChange}
         />
 
@@ -501,6 +514,17 @@ export function AgentsPublishInlineDiffs({
           {[1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-10 w-full rounded-md" />
           ))}
+        </div>
+      ) : error ? (
+        <div
+          data-testid="inline-diffs-error"
+          className="flex flex-col items-center justify-center px-4 py-12 text-center"
+          style={{ color: "var(--text-muted)" }}
+        >
+          <p className="text-sm">Could not load workspace changes</p>
+          <p className="mt-1 max-w-xl text-xs" style={{ color: "var(--text-muted)" }}>
+            {error instanceof Error ? error.message : String(error)}
+          </p>
         </div>
       ) : currentFiles.length === 0 ? (
         <div
