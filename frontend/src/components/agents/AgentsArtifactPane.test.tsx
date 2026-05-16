@@ -19,6 +19,7 @@ const {
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
+  getWorkspacePrAnnotationsMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -47,6 +48,7 @@ const {
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
+  getWorkspacePrAnnotationsMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -104,6 +106,8 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitChangesMock(...args),
     getAgentConversationWorkspaceCommitFileDiff: (...args: unknown[]) =>
       getWorkspaceCommitDiffMock(...args),
+    getAgentConversationWorkspacePrAnnotations: (...args: unknown[]) =>
+      getWorkspacePrAnnotationsMock(...args),
   },
 }));
 
@@ -372,6 +376,12 @@ describe("AgentsArtifactPane", () => {
       oldTotalLines: 1,
       newTotalLines: 1,
       isBinary: false,
+    });
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [],
+      sourcesUnavailable: [],
     });
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
@@ -2033,6 +2043,84 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
     expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
+  });
+
+  it("shows synced GitHub PR annotation count for published workspaces", async () => {
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [
+        {
+          id: "review-comment:1",
+          source: "review_comment",
+          path: "frontend/src/App.tsx",
+          side: "right",
+          startLine: 1,
+          endLine: 1,
+          startColumn: null,
+          endColumn: null,
+          level: "comment",
+          status: null,
+          title: null,
+          message: "Please adjust this line.",
+          author: "octocat",
+          checkName: null,
+          url: null,
+          isOutdated: false,
+          createdAt: null,
+        },
+      ],
+      sourcesUnavailable: [],
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      }),
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("agents-pr-annotations-summary")).toHaveTextContent(
+          "1 GitHub annotation synced",
+        ),
+      deferredHydrationTimeout,
+    );
+    expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith("conversation-1");
+  });
+
+  it("shows partial GitHub PR annotation unavailability for published workspaces", async () => {
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: null,
+      annotations: [],
+      sourcesUnavailable: [
+        {
+          source: "check_runs",
+          reason: "Missing checks permission",
+        },
+      ],
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      }),
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("agents-pr-annotations-summary")).toHaveTextContent(
+          "GitHub annotations partially unavailable",
+        ),
+      deferredHydrationTimeout,
+    );
   });
 
   it("hides the publish pipeline after agent repair terminal state", () => {

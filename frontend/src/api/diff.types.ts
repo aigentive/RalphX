@@ -53,6 +53,40 @@ export interface FileDiff {
   isBinary: boolean;
 }
 
+// ── GitHub PR annotation types ─────────────────────────────────────────────
+
+export interface PrDiffAnnotation {
+  id: string;
+  source: string;
+  path: string | null;
+  side: string | null;
+  startLine: number | null;
+  endLine: number | null;
+  startColumn: number | null;
+  endColumn: number | null;
+  level: string;
+  status: string | null;
+  title: string | null;
+  message: string;
+  author: string | null;
+  checkName: string | null;
+  url: string | null;
+  isOutdated: boolean;
+  createdAt: string | null;
+}
+
+export interface PrAnnotationSourceUnavailable {
+  source: string;
+  reason: string;
+}
+
+export interface PrDiffAnnotationsResponse {
+  prNumber: number;
+  headSha: string | null;
+  annotations: PrDiffAnnotation[];
+  sourcesUnavailable: PrAnnotationSourceUnavailable[];
+}
+
 // ── Other domain types ────────────────────────────────────────────────────
 
 export interface CommitInfo {

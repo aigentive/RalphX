@@ -45,6 +45,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     refKind,
     conversationId,
     shouldHydrate,
+    annotations,
     isShowAnywayOverridden,
     onShowAnyway,
   }: {
@@ -58,6 +59,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     refKind?: { kind: string };
     conversationId?: string;
     shouldHydrate: boolean;
+    annotations?: unknown[];
     isShowAnywayOverridden: boolean;
     onShowAnyway: () => void;
   }) => (
@@ -68,6 +70,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-ref-kind={refKind?.kind}
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
+      data-annotation-count={String(annotations?.length ?? 0)}
       data-show-anyway-overridden={String(isShowAnywayOverridden)}
     >
       <button onClick={() => onCopyPath(file.path)}>copy</button>
@@ -167,7 +170,7 @@ function fireIntersection(elementIdx: number, isIntersecting: boolean) {
 }
 
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
-import type { FileChange } from "@/api/diff";
+import type { FileChange, PrDiffAnnotation } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import type { AgentWorkspaceReview } from "@/api/diff";
 
@@ -208,6 +211,30 @@ const makeCommit = (sha: string): DiffViewerCommit => ({
   message: `commit ${sha}`,
   author: "Alice",
   date: new Date("2026-01-01"),
+});
+
+const makeAnnotation = (
+  path: string | null,
+  overrides: Partial<PrDiffAnnotation> = {},
+): PrDiffAnnotation => ({
+  id: `annotation-${path ?? "none"}`,
+  source: "check_run",
+  path,
+  side: "right",
+  startLine: 1,
+  endLine: 1,
+  startColumn: null,
+  endColumn: null,
+  level: "failure",
+  status: "failure",
+  title: "CodeQL warning",
+  message: "Validate externally influenced paths.",
+  author: null,
+  checkName: "CodeQL",
+  url: null,
+  isOutdated: false,
+  createdAt: null,
+  ...overrides,
 });
 
 describe("AgentsPublishInlineDiffs", () => {
@@ -480,6 +507,34 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
     });
+
+    it("passes matching GitHub annotations to head-mode file cards", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[
+              makeAnnotation("src/Foo.tsx"),
+              makeAnnotation(null),
+              makeAnnotation("src/Other.tsx"),
+            ]}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-annotation-count",
+        "1",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-annotation-count",
+        "0",
+      );
+    });
   });
 
   describe("mode=commit — diff fetching", () => {
@@ -679,6 +734,32 @@ describe("AgentsPublishInlineDiffs", () => {
         expect(card).toHaveAttribute("data-conversation-id", "conv-1");
       });
     });
+
+    it("does not pass PR annotations to staged file cards", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetStagedFiles.mockResolvedValue([makeFileChange("src/Foo.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[makeAnnotation("src/Foo.tsx")]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-annotation-count",
+          "0",
+        ),
+      );
+    });
   });
 
   describe("mode=unstaged — diff fetching", () => {
@@ -862,6 +943,32 @@ describe("AgentsPublishInlineDiffs", () => {
       await user.click(screen.getByRole("button", { name: "All commits" }));
       await waitFor(() =>
         expect(mockGetCumulativeFileDiff).toHaveBeenCalledWith("conv-1", "src/CumulativeFile.tsx"),
+      );
+    });
+
+    it("passes matching GitHub annotations to cumulative file cards", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/Foo.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+            annotations={[makeAnnotation("src/Foo.tsx")]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-annotation-count",
+          "1",
+        ),
       );
     });
   });

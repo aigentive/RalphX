@@ -8,6 +8,7 @@ use crate::application::{
 };
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{ChatConversationId, PlanBranch, Project, Task, TaskId};
+use crate::domain::services::github_service::{PrAnnotationSourceUnavailable, PrDiffAnnotations};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
@@ -245,6 +246,12 @@ struct AgentWorkspaceReviewCacheEntry {
     snapshot: AgentWorkspaceReviewSnapshot,
 }
 
+#[derive(Clone)]
+struct AgentWorkspacePrAnnotationsCacheEntry {
+    inserted_at: Instant,
+    payload: PrDiffAnnotations,
+}
+
 #[derive(Clone, Copy)]
 enum AgentWorkspaceDiffCacheStatus {
     Hit,
@@ -266,11 +273,22 @@ fn agent_workspace_review_cache_ttl() -> Duration {
     Duration::from_millis(git_runtime_config().workspace_review_cache_ttl_ms)
 }
 
+fn agent_workspace_pr_annotations_cache_ttl() -> Duration {
+    Duration::from_millis(git_runtime_config().workspace_pr_annotations_cache_ttl_ms)
+}
+
 fn agent_workspace_diff_cache_key(conversation_id: &ChatConversationId) -> Option<String> {
     if conversation_id.as_uuid().is_nil() {
         return None;
     }
     Some(conversation_id.as_str())
+}
+
+fn agent_workspace_pr_annotations_cache_key(
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> Option<String> {
+    agent_workspace_diff_cache_key(conversation_id).map(|key| format!("{key}:{pr_number}"))
 }
 
 fn agent_workspace_context_cache() -> &'static DashMap<String, AgentWorkspaceContextCacheEntry> {
@@ -289,6 +307,18 @@ fn agent_workspace_review_cache() -> &'static DashMap<String, AgentWorkspaceRevi
 }
 
 fn agent_workspace_review_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_pr_annotations_cache(
+) -> &'static DashMap<String, AgentWorkspacePrAnnotationsCacheEntry> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspacePrAnnotationsCacheEntry>> =
+        OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_pr_annotations_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
     static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
     LOCKS.get_or_init(DashMap::new)
 }
@@ -365,12 +395,67 @@ fn store_agent_workspace_review(
     );
 }
 
+fn cached_agent_workspace_pr_annotations(
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> Option<PrDiffAnnotations> {
+    let ttl = agent_workspace_pr_annotations_cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let key = agent_workspace_pr_annotations_cache_key(conversation_id, pr_number)?;
+    let entry = agent_workspace_pr_annotations_cache().get(&key)?;
+    if entry.inserted_at.elapsed() <= ttl {
+        return Some(entry.payload.clone());
+    }
+    drop(entry);
+    agent_workspace_pr_annotations_cache().remove(&key);
+    None
+}
+
+fn store_agent_workspace_pr_annotations(
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    payload: &PrDiffAnnotations,
+) {
+    if agent_workspace_pr_annotations_cache_ttl().is_zero() {
+        return;
+    }
+    let Some(key) = agent_workspace_pr_annotations_cache_key(conversation_id, pr_number) else {
+        return;
+    };
+    agent_workspace_pr_annotations_cache().insert(
+        key,
+        AgentWorkspacePrAnnotationsCacheEntry {
+            inserted_at: Instant::now(),
+            payload: payload.clone(),
+        },
+    );
+}
+
+#[cfg(test)]
+fn clear_agent_workspace_pr_annotations_cache_for_test() {
+    agent_workspace_pr_annotations_cache().clear();
+    agent_workspace_pr_annotations_locks().clear();
+}
+
 pub(crate) fn invalidate_agent_workspace_diff_caches(conversation_id: &ChatConversationId) {
     let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
         return;
     };
     agent_workspace_context_cache().remove(&key);
     agent_workspace_review_cache().remove(&key);
+    let annotation_prefix = format!("{key}:");
+    let annotation_keys = agent_workspace_pr_annotations_cache()
+        .iter()
+        .filter_map(|entry| {
+            let key = entry.key();
+            key.starts_with(&annotation_prefix).then(|| key.clone())
+        })
+        .collect::<Vec<_>>();
+    for key in annotation_keys {
+        agent_workspace_pr_annotations_cache().remove(&key);
+    }
 }
 
 async fn get_agent_workspace_context(
@@ -516,6 +601,111 @@ pub async fn get_agent_conversation_workspace_review(
     result.map(|(snapshot, _)| snapshot.response)
 }
 
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_pr_annotations(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<PrDiffAnnotations> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result =
+        get_agent_conversation_workspace_pr_annotations_cached(app_state.inner(), &conversation_id)
+            .await;
+    match &result {
+        Ok((payload, cache_status)) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "pr_annotations",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            cache_status = cache_status.as_str(),
+            pr_number = payload.pr_number,
+            annotations = payload.annotations.len(),
+            unavailable_sources = payload.sources_unavailable.len(),
+            "Loaded agent workspace PR annotations"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "pr_annotations",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load agent workspace PR annotations"
+        ),
+    }
+    result.map(|(payload, _)| payload)
+}
+
+async fn get_agent_conversation_workspace_pr_annotations_cached(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<(PrDiffAnnotations, AgentWorkspaceDiffCacheStatus)> {
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok((
+            PrDiffAnnotations::empty(0),
+            AgentWorkspaceDiffCacheStatus::Miss,
+        ));
+    };
+    if let Some(payload) = cached_agent_workspace_pr_annotations(conversation_id, pr_number) {
+        return Ok((payload, AgentWorkspaceDiffCacheStatus::Hit));
+    }
+    let Some(key) = agent_workspace_pr_annotations_cache_key(conversation_id, pr_number) else {
+        let payload = get_agent_conversation_workspace_pr_annotations_for_state(
+            app_state,
+            conversation_id,
+            pr_number,
+        )
+        .await?;
+        return Ok((payload, AgentWorkspaceDiffCacheStatus::Miss));
+    };
+    let lock = agent_workspace_pr_annotations_locks()
+        .entry(key)
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = lock.lock().await;
+    if let Some(payload) = cached_agent_workspace_pr_annotations(conversation_id, pr_number) {
+        return Ok((payload, AgentWorkspaceDiffCacheStatus::Coalesced));
+    }
+    let payload = get_agent_conversation_workspace_pr_annotations_for_state(
+        app_state,
+        conversation_id,
+        pr_number,
+    )
+    .await?;
+    store_agent_workspace_pr_annotations(conversation_id, pr_number, &payload);
+    Ok((payload, AgentWorkspaceDiffCacheStatus::Miss))
+}
+
+async fn get_agent_conversation_workspace_pr_annotations_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+) -> AppResult<PrDiffAnnotations> {
+    let Some(github) = app_state.github_service.as_ref() else {
+        let mut payload = PrDiffAnnotations::empty(pr_number);
+        payload
+            .sources_unavailable
+            .push(PrAnnotationSourceUnavailable {
+                source: "github".to_string(),
+                reason: "GitHub service is unavailable".to_string(),
+            });
+        return Ok(payload);
+    };
+    let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    github
+        .fetch_pr_diff_annotations(&ctx.working_path, pr_number)
+        .await
+}
+
 async fn get_agent_conversation_workspace_review_for_state(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
@@ -577,8 +767,7 @@ async fn get_agent_workspace_review_for_context(
             }?;
             let flags = {
                 let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
-                diff_service
-                    .compute_generated_flags(Path::new(&changes_path), &path_strs)?
+                diff_service.compute_generated_flags(Path::new(&changes_path), &path_strs)?
             };
             for change in &mut changes {
                 if let Some(&is_gen) = flags.get(&change.path) {
@@ -962,9 +1151,7 @@ pub async fn get_agent_conversation_workspace_staged_file_changes_for_state(
         Ok(changes)
     })
     .await
-    .map_err(|e| {
-        AppError::Infrastructure(format!("staged file changes task failed: {e}"))
-    })?
+    .map_err(|e| AppError::Infrastructure(format!("staged file changes task failed: {e}")))?
 }
 
 #[doc(hidden)]
@@ -989,9 +1176,7 @@ pub async fn get_agent_conversation_workspace_unstaged_file_changes_for_state(
         Ok(changes)
     })
     .await
-    .map_err(|e| {
-        AppError::Infrastructure(format!("unstaged file changes task failed: {e}"))
-    })?
+    .map_err(|e| AppError::Infrastructure(format!("unstaged file changes task failed: {e}")))?
 }
 
 #[doc(hidden)]
@@ -1032,7 +1217,10 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
-    let head_ref = ctx.diff_target.clone().unwrap_or_else(|| "HEAD".to_string());
+    let head_ref = ctx
+        .diff_target
+        .clone()
+        .unwrap_or_else(|| "HEAD".to_string());
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
         let mut changes =
@@ -1049,9 +1237,7 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
         Ok(changes)
     })
     .await
-    .map_err(|e| {
-        AppError::Infrastructure(format!("cumulative file changes task failed: {e}"))
-    })?
+    .map_err(|e| AppError::Infrastructure(format!("cumulative file changes task failed: {e}")))?
 }
 
 #[doc(hidden)]
@@ -1063,9 +1249,17 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
-    let head_ref = ctx.diff_target.clone().unwrap_or_else(|| "HEAD".to_string());
+    let head_ref = ctx
+        .diff_target
+        .clone()
+        .unwrap_or_else(|| "HEAD".to_string());
     tokio::task::spawn_blocking(move || {
-        DiffService::new().get_file_diff_between_refs(&file_path, &working_path, &base_ref, &head_ref)
+        DiffService::new().get_file_diff_between_refs(
+            &file_path,
+            &working_path,
+            &base_ref,
+            &head_ref,
+        )
     })
     .await
     .map_err(|e| AppError::Infrastructure(format!("cumulative file diff task failed: {e}")))?
@@ -1507,6 +1701,8 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
     };
+    use crate::tests::mock_github_service::MockGithubService;
+    use std::sync::Arc;
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
     use tempfile::TempDir;
@@ -1668,9 +1864,12 @@ mod tests {
             diff_target: Some("feature/review-cache".to_string()),
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
+        let mut annotations = PrDiffAnnotations::empty(68);
+        annotations.head_sha = Some("head-sha".to_string());
 
         store_agent_workspace_context(&conversation_id, &context);
         store_agent_workspace_review(&conversation_id, &snapshot);
+        store_agent_workspace_pr_annotations(&conversation_id, 68, &annotations);
 
         let cached_context =
             cached_agent_workspace_context(&conversation_id).expect("context should hit");
@@ -1688,10 +1887,18 @@ mod tests {
             cached_review.response.commits[0].sha,
             snapshot.response.commits[0].sha
         );
+        assert_eq!(
+            cached_agent_workspace_pr_annotations(&conversation_id, 68)
+                .expect("annotations should hit")
+                .head_sha
+                .as_deref(),
+            Some("head-sha")
+        );
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
         assert!(cached_agent_workspace_context(&conversation_id).is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
+        assert!(cached_agent_workspace_pr_annotations(&conversation_id, 68).is_none());
     }
 
     #[test]
@@ -1703,12 +1910,15 @@ mod tests {
             diff_target: None,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
+        let annotations = PrDiffAnnotations::empty(68);
 
         store_agent_workspace_context(&conversation_id, &context);
         store_agent_workspace_review(&conversation_id, &snapshot);
+        store_agent_workspace_pr_annotations(&conversation_id, 68, &annotations);
 
         assert!(cached_agent_workspace_context(&conversation_id).is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
+        assert!(cached_agent_workspace_pr_annotations(&conversation_id, 68).is_none());
         invalidate_agent_workspace_diff_caches(&conversation_id);
     }
 
@@ -1786,6 +1996,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pr_annotation_loader_coalesces_and_caches_by_published_pr() {
+        clear_agent_workspace_pr_annotations_cache_for_test();
+        let (_temp_dir, mut state, conversation_id, _worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_pr_number = Some(68);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be updated");
+
+        let github = Arc::new(MockGithubService::new());
+        let mut payload = PrDiffAnnotations::empty(68);
+        payload.head_sha = Some("head-sha".to_string());
+        github.will_return_pr_diff_annotations(payload);
+        github.with_pr_diff_annotations_delay_ms(50);
+        let github_trait: Arc<dyn crate::domain::services::github_service::GithubServiceTrait> =
+            github.clone();
+        state.github_service = Some(github_trait);
+
+        let first =
+            get_agent_conversation_workspace_pr_annotations_cached(&state, &conversation_id);
+        let second =
+            get_agent_conversation_workspace_pr_annotations_cached(&state, &conversation_id);
+        let (first, second) = tokio::join!(first, second);
+        let first = first.expect("first annotations call should load");
+        let second = second.expect("second annotations call should coalesce");
+        let statuses = [first.1.as_str(), second.1.as_str()];
+
+        assert!(statuses.contains(&"miss"));
+        assert!(statuses.contains(&"coalesced"));
+        assert_eq!(first.0.head_sha.as_deref(), Some("head-sha"));
+        assert_eq!(second.0.head_sha.as_deref(), Some("head-sha"));
+        assert_eq!(github.state().fetch_pr_diff_annotations_calls, 1);
+
+        let (cached, status) =
+            get_agent_conversation_workspace_pr_annotations_cached(&state, &conversation_id)
+                .await
+                .expect("cached annotations should load");
+        assert_eq!(status.as_str(), "hit");
+        assert_eq!(cached.head_sha.as_deref(), Some("head-sha"));
+        assert_eq!(github.state().fetch_pr_diff_annotations_calls, 1);
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        clear_agent_workspace_pr_annotations_cache_for_test();
+    }
+
+    #[tokio::test]
+    async fn pr_annotation_loader_returns_empty_without_published_pr() {
+        let (_temp_dir, mut state, conversation_id, _worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn crate::domain::services::github_service::GithubServiceTrait> =
+            github.clone();
+        state.github_service = Some(github_trait);
+
+        let (payload, status) =
+            get_agent_conversation_workspace_pr_annotations_cached(&state, &conversation_id)
+                .await
+                .expect("annotations should return an empty unpublished payload");
+
+        assert_eq!(status.as_str(), "miss");
+        assert_eq!(payload.pr_number, 0);
+        assert!(payload.annotations.is_empty());
+        assert!(payload.sources_unavailable.is_empty());
+        assert_eq!(github.state().fetch_pr_diff_annotations_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn pr_annotation_loader_reports_unavailable_github_service() {
+        let (_temp_dir, state, conversation_id, _worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_pr_number = Some(68);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be updated");
+
+        let (payload, status) =
+            get_agent_conversation_workspace_pr_annotations_cached(&state, &conversation_id)
+                .await
+                .expect("annotations should return partial unavailable payload");
+
+        assert_eq!(status.as_str(), "miss");
+        assert_eq!(payload.pr_number, 68);
+        assert!(payload.annotations.is_empty());
+        assert_eq!(payload.sources_unavailable.len(), 1);
+        assert_eq!(payload.sources_unavailable[0].source, "github");
+        assert_eq!(
+            payload.sources_unavailable[0].reason,
+            "GitHub service is unavailable"
+        );
+    }
+
+    #[tokio::test]
     async fn agent_workspace_diff_commands_use_shared_review_cache() {
         let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
             create_agent_workspace_command_state().await;
@@ -1829,7 +2147,11 @@ mod tests {
         .expect("workspace file diff should load");
         // Hunk-based: the committed "answer" function appears as additions in the diff hunks
         assert!(
-            file_diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("answer")),
+            file_diff
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("answer")),
             "file diff hunks should contain the 'answer' function"
         );
 
@@ -1853,7 +2175,11 @@ mod tests {
         .await
         .expect("commit file diff should load through cached commit validation");
         assert!(
-            commit_diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("answer")),
+            commit_diff
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("answer")),
             "commit diff hunks should contain the 'answer' function"
         );
 
@@ -1967,7 +2293,11 @@ mod tests {
 
         let worktree_path = PathBuf::from(&workspace.worktree_path);
         let state = AppState::new_test();
-        state.project_repo.create(project).await.expect("seed project");
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("seed project");
         state
             .agent_conversation_workspace_repo
             .create_or_update(workspace)
@@ -2052,7 +2382,11 @@ mod tests {
         run_git(&worktree_path, &["add", "base.txt"]);
 
         // Make a further unstaged change (should not appear in staged diff)
-        std::fs::write(worktree_path.join("base.txt"), "base\nstaged line\nfurther\n").unwrap();
+        std::fs::write(
+            worktree_path.join("base.txt"),
+            "base\nstaged line\nfurther\n",
+        )
+        .unwrap();
 
         let diff = get_agent_conversation_workspace_staged_file_diff(
             app.state(),
@@ -2065,12 +2399,19 @@ mod tests {
         assert_eq!(diff.file_path, "base.txt");
         // Hunk-based: staged diff HEAD→index; "staged line" appears as an addition
         assert!(
-            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("staged line")),
+            diff.hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("staged line")),
             "staged diff hunks should contain the staged addition"
         );
         // The unstaged disk change ("further") must NOT appear in the staged diff
         assert!(
-            !diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("further")),
+            !diff
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("further")),
             "staged diff should not include disk-only change"
         );
         // old_total_lines = HEAD version (1 line: "base\n"), new_total_lines = index (2 lines)
@@ -2105,7 +2446,10 @@ mod tests {
         assert_eq!(diff.file_path, "base.txt");
         // Hunk-based: unstaged diff index→disk; "disk" line appears as an addition
         assert!(
-            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("disk")),
+            diff.hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("disk")),
             "unstaged diff hunks should contain the disk-only addition"
         );
         // old_total_lines = index (2 lines), new_total_lines = disk (3 lines)
@@ -2159,11 +2503,17 @@ mod tests {
         assert_eq!(diff.file_path, "src/lib.rs");
         // Hunk-based: cumulative diff base→HEAD; "answer" fn appears as additions
         assert!(
-            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("answer")),
+            diff.hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("answer")),
             "cumulative diff hunks should contain the committed change"
         );
         // File did not exist at base, so old_total_lines = 0
-        assert_eq!(diff.old_total_lines, 0, "File did not exist in base, so old_total_lines is 0");
+        assert_eq!(
+            diff.old_total_lines, 0,
+            "File did not exist in base, so old_total_lines is 0"
+        );
     }
 
     // =========================================================================
@@ -2183,12 +2533,9 @@ mod tests {
 
         // Each call should return Err (no workspace registered) — exercises warn! branch
         assert!(
-            get_agent_conversation_workspace_staged_file_changes(
-                app.state(),
-                unknown_id.as_str()
-            )
-            .await
-            .is_err(),
+            get_agent_conversation_workspace_staged_file_changes(app.state(), unknown_id.as_str())
+                .await
+                .is_err(),
             "staged_file_changes should error for unknown workspace"
         );
         assert!(

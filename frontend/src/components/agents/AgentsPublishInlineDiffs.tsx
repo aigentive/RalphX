@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { diffApi } from "@/api/diff";
-import type { AgentWorkspaceReview, FileChange, DiffRefKind } from "@/api/diff";
+import type { AgentWorkspaceReview, FileChange, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
@@ -37,6 +37,7 @@ export interface AgentsPublishInlineDiffsProps {
   review: AgentWorkspaceReview | null;
   commits: DiffViewerCommit[];
   isLoading: boolean;
+  annotations?: PrDiffAnnotation[] | undefined;
   onOpenInDialog?: ((filePath: string) => void) | undefined;
 }
 
@@ -45,6 +46,7 @@ export function AgentsPublishInlineDiffs({
   review,
   commits,
   isLoading,
+  annotations = [],
   onOpenInDialog,
 }: AgentsPublishInlineDiffsProps) {
   const [mode, setMode] = useState<DiffFilterMode>("uncommitted");
@@ -76,6 +78,23 @@ export function AgentsPublishInlineDiffs({
     if (isCommitMode && commitSha !== undefined) return { kind: "commit", sha: commitSha };
     return { kind: "head" }; // uncommitted = diff vs HEAD
   }, [isStagedMode, isUnstagedMode, isCumulativeMode, isCommitMode, commitSha]);
+  const canRenderPrAnnotations = refKind.kind === "head" || refKind.kind === "cumulative_head";
+  const annotationsByPath = useMemo(() => {
+    const map = new Map<string, PrDiffAnnotation[]>();
+    if (!canRenderPrAnnotations) {
+      return map;
+    }
+    for (const annotation of annotations) {
+      if (!annotation.path) continue;
+      const existing = map.get(annotation.path);
+      if (existing) {
+        existing.push(annotation);
+      } else {
+        map.set(annotation.path, [annotation]);
+      }
+    }
+    return map;
+  }, [annotations, canRenderPrAnnotations]);
 
   // ── Commit file list (only active in commit mode) ──────────────────────
   const commitFilesQuery = useQuery({
@@ -521,6 +540,7 @@ export function AgentsPublishInlineDiffs({
                 conversationId={conversationId}
                 refKind={refKind}
                 shouldHydrate={hydratedPaths.has(fileChange.path)}
+                annotations={annotationsByPath.get(fileChange.path) ?? []}
                 isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
                 onShowAnyway={() => {
                   setUserShowAnywayPaths((prev) => new Set([...prev, fileChange.path]));

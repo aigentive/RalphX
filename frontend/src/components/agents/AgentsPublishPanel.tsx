@@ -164,6 +164,13 @@ export function AgentPublishPanel({
     staleTime: 0,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 1_500 : false,
   });
+  const prAnnotationsQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
+    enabled: canHydratePublishFacts && !!conversationId && earlyHasPublishedPr,
+    staleTime: 30_000,
+    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
+  });
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
   const terminalPublicationLabel =
@@ -300,6 +307,17 @@ export function AgentPublishPanel({
     [reviewQuery.data?.commits],
   );
   const publicationEvents = publicationEventsQuery.data ?? [];
+  const prAnnotations = prAnnotationsQuery.data?.annotations ?? [];
+  const prAnnotationSourcesUnavailable =
+    prAnnotationsQuery.data?.sourcesUnavailable ?? [];
+  const prAnnotationSummary =
+    prAnnotations.length > 0
+      ? `${prAnnotations.length} GitHub annotation${prAnnotations.length === 1 ? "" : "s"} synced`
+      : prAnnotationSourcesUnavailable.length > 0
+        ? "GitHub annotations partially unavailable"
+        : prAnnotationsQuery.isLoading && earlyHasPublishedPr
+          ? "Checking GitHub annotations..."
+          : null;
   const isChangesLoading =
     Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
@@ -778,6 +796,22 @@ export function AgentPublishPanel({
               }
             />
           </div>
+          {prAnnotationSummary && (
+            <div
+              className="mt-3 rounded-md border px-3 py-2 text-xs"
+              data-testid="agents-pr-annotations-summary"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor:
+                  prAnnotations.length > 0
+                    ? "var(--status-warning-border)"
+                    : "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {prAnnotationSummary}
+            </div>
+          )}
           {shouldShowPublishPipeline && (
             <PublishPipelineSteps
               status={pipelineStatus}
@@ -808,6 +842,7 @@ export function AgentPublishPanel({
               review={reviewQuery.data ?? null}
               commits={commits}
               isLoading={Boolean(conversationId) && reviewQuery.isLoading}
+              annotations={prAnnotations}
               onOpenInDialog={() => setReviewOpen(true)}
             />
           </section>
@@ -842,6 +877,7 @@ export function AgentPublishPanel({
                   changesEmptySubtitle: changesError instanceof Error ? changesError.message : String(changesError),
                 } : {})}
                 commitFiles={commitFiles}
+                annotations={prAnnotations}
                 onFetchDiff={async (filePath, commitSha) => {
                   if (!conversationId) {
                     return null;

@@ -86,6 +86,8 @@ index_lock_stale_secs: 5
 workspace_freshness_cache_ttl_ms: 2000
 workspace_review_cache_ttl_ms: 2000
 workspace_pr_description_cache_ttl_ms: 300000
+workspace_pr_annotations_cache_ttl_ms: 30000
+workspace_pr_annotations_check_run_fetch_limit: 10
 orphan_worktree_cleanup_marker_retry_secs: 86400
 agent_kill_settle_secs: 1
 agent_stop_timeout_secs: 10

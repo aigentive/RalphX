@@ -21,7 +21,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SimpleDiffView } from "./SimpleDiffView";
-import type { DiffRefKind } from "@/api/diff";
+import type { DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 
 import {
   type FileChange,
@@ -299,6 +299,7 @@ interface DiffPanelProps {
   onOpenInIDE?: ((path: string) => void) | undefined;
   conversationId?: string;
   refKind?: DiffRefKind;
+  annotations?: PrDiffAnnotation[];
 }
 
 export function DiffPanel({
@@ -308,6 +309,7 @@ export function DiffPanel({
   onOpenInIDE,
   conversationId,
   refKind,
+  annotations = [],
 }: DiffPanelProps) {
   if (isLoading) {
     return (
@@ -405,6 +407,7 @@ export function DiffPanel({
             filePath,
             refKind,
           })}
+          annotations={annotations}
         />
       </div>
     </div>

@@ -7,6 +7,7 @@ import {
   FileDiffSchema,
   TaskCommitsResponseSchema,
   AgentWorkspaceReviewResponseSchema,
+  PrDiffAnnotationsResponseSchema,
   RangeFetchResponseSchema,
 } from "./diff.schemas";
 import {
@@ -14,6 +15,7 @@ import {
   transformFileDiff,
   transformCommitInfo,
   transformAgentWorkspaceReview,
+  transformPrDiffAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 import type {
@@ -22,6 +24,7 @@ import type {
   FileDiff,
   CommitInfo,
   DiffRefKind,
+  PrDiffAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 import { backendApiUrl } from "./backend";
@@ -37,6 +40,9 @@ export type {
   DiffLine,
   DiffHunk,
   DiffRefKind,
+  PrDiffAnnotation,
+  PrAnnotationSourceUnavailable,
+  PrDiffAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 
@@ -53,6 +59,9 @@ export {
   DiffLineSchema,
   DiffHunkSchema,
   DiffRefKindSchema,
+  PrDiffAnnotationSchema,
+  PrAnnotationSourceUnavailableSchema,
+  PrDiffAnnotationsResponseSchema,
   RangeLineSchema,
   RangeFetchResponseSchema,
 } from "./diff.schemas";
@@ -65,6 +74,9 @@ export {
   transformDiffLine,
   transformDiffHunk,
   transformCommitInfo,
+  transformPrDiffAnnotation,
+  transformPrAnnotationSourceUnavailable,
+  transformPrDiffAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 
@@ -182,6 +194,16 @@ export const diffApi = {
       { conversationId },
       AgentWorkspaceReviewResponseSchema,
       transformAgentWorkspaceReview
+    ),
+
+  getAgentConversationWorkspacePrAnnotations: (
+    conversationId: string
+  ): Promise<PrDiffAnnotationsResponse> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_pr_annotations",
+      { conversationId },
+      PrDiffAnnotationsResponseSchema,
+      transformPrDiffAnnotationsResponse
     ),
 
   getAgentConversationWorkspaceFileDiff: (
