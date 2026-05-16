@@ -354,6 +354,7 @@ describe("diff api", () => {
       commits: [],
       base_ref: "base-sha",
       head_ref: "feature/publish",
+      supports_worktree_modes: false,
     });
 
     expect(review).toEqual({
@@ -369,6 +370,7 @@ describe("diff api", () => {
       commits: [],
       baseRef: "base-sha",
       headRef: "feature/publish",
+      supportsWorktreeModes: false,
     });
   });
 

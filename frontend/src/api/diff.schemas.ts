@@ -116,4 +116,5 @@ export const AgentWorkspaceReviewResponseSchema = z.object({
   commits: z.array(CommitInfoSchema),
   base_ref: z.string(),
   head_ref: z.string(),
+  supports_worktree_modes: z.boolean().default(true),
 });

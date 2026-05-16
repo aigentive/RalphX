@@ -3,8 +3,11 @@
 //! Provides file change and diff data for reviewing task execution results.
 
 use crate::application::{
-    agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path, AppState,
-    ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, GitService, RangeLine,
+    agent_conversation_workspace::{
+        resolve_agent_conversation_workspace_path, resolve_valid_agent_conversation_workspace_path,
+    },
+    AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, GitService,
+    RangeLine,
 };
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{ChatConversationId, PlanBranch, Project, Task, TaskId};
@@ -219,6 +222,11 @@ struct AgentWorkspaceContext {
     base_ref: String,
     /// For plan-branch workspaces, the diff target is the plan branch (not HEAD).
     diff_target: Option<String>,
+    /// Unified patch fallback when local git refs are no longer available.
+    patch_diff: Option<Arc<str>>,
+    /// True only when the context points at the agent worktree and can inspect
+    /// unstaged/staged changes. Branch-target contexts are read-only history.
+    supports_worktree_modes: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +235,7 @@ pub struct AgentWorkspaceReviewResponse {
     pub commits: Vec<CommitInfoResponse>,
     pub base_ref: String,
     pub head_ref: String,
+    pub supports_worktree_modes: bool,
 }
 
 #[derive(Clone)]
@@ -493,23 +502,145 @@ async fn get_agent_workspace_context(
                 working_path: project_path,
                 base_ref: merge_base,
                 diff_target: Some(plan_branch.branch_name.clone()),
+                patch_diff: None,
+                supports_worktree_modes: false,
             });
         }
     }
 
-    let worktree_path =
-        resolve_valid_agent_conversation_workspace_path(&project, &workspace).await?;
     let base_commit = workspace.base_commit.clone().ok_or_else(|| {
         AppError::Validation(format!(
             "Agent conversation workspace {} is missing its captured base commit",
             conversation_id
         ))
     })?;
-    Ok(AgentWorkspaceContext {
-        working_path: worktree_path,
-        base_ref: base_commit,
-        diff_target: None,
-    })
+    match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
+        Ok(worktree_path) => Ok(AgentWorkspaceContext {
+            working_path: worktree_path,
+            base_ref: base_commit,
+            diff_target: None,
+            patch_diff: None,
+            supports_worktree_modes: true,
+        }),
+        Err(worktree_error) => {
+            if let Some(context) =
+                resolve_agent_workspace_local_branch_context(&project, &workspace, &base_commit)
+                    .await?
+            {
+                return Ok(context);
+            }
+            if let Some(context) =
+                resolve_agent_workspace_pr_head_context(&project, &workspace, &base_commit).await?
+            {
+                return Ok(context);
+            }
+            if let Some(context) = resolve_agent_workspace_github_patch_context(
+                app_state, &project, &workspace, &base_commit,
+            )
+            .await?
+            {
+                return Ok(context);
+            }
+            Err(worktree_error)
+        }
+    }
+}
+
+async fn resolve_agent_workspace_local_branch_context(
+    project: &Project,
+    workspace: &crate::domain::entities::AgentConversationWorkspace,
+    base_commit: &str,
+) -> AppResult<Option<AgentWorkspaceContext>> {
+    let project_path = PathBuf::from(&project.working_directory);
+    let expected_path =
+        resolve_agent_conversation_workspace_path(project, &workspace.conversation_id)?;
+    let stored_path = PathBuf::from(&workspace.worktree_path);
+    if stored_path != expected_path || expected_path == project_path || expected_path.exists() {
+        return Ok(None);
+    }
+
+    if !GitService::branch_exists(&project_path, &workspace.branch_name).await? {
+        return Ok(None);
+    }
+
+    Ok(Some(AgentWorkspaceContext {
+        working_path: project_path,
+        base_ref: base_commit.to_string(),
+        diff_target: Some(workspace.branch_name.clone()),
+        patch_diff: None,
+        supports_worktree_modes: false,
+    }))
+}
+
+async fn resolve_agent_workspace_pr_head_context(
+    project: &Project,
+    workspace: &crate::domain::entities::AgentConversationWorkspace,
+    base_commit: &str,
+) -> AppResult<Option<AgentWorkspaceContext>> {
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(None);
+    };
+    let project_path = PathBuf::from(&project.working_directory);
+    let expected_path =
+        resolve_agent_conversation_workspace_path(project, &workspace.conversation_id)?;
+    let stored_path = PathBuf::from(&workspace.worktree_path);
+    if stored_path != expected_path || expected_path == project_path || expected_path.exists() {
+        return Ok(None);
+    }
+
+    let Some(pr_head_ref) =
+        GitService::fetch_pull_request_head_for_review(&project_path, pr_number).await?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(AgentWorkspaceContext {
+        working_path: project_path,
+        base_ref: base_commit.to_string(),
+        diff_target: Some(pr_head_ref),
+        patch_diff: None,
+        supports_worktree_modes: false,
+    }))
+}
+
+async fn resolve_agent_workspace_github_patch_context(
+    app_state: &AppState,
+    project: &Project,
+    workspace: &crate::domain::entities::AgentConversationWorkspace,
+    base_commit: &str,
+) -> AppResult<Option<AgentWorkspaceContext>> {
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(None);
+    };
+    let Some(github_service) = app_state.github_service.as_ref() else {
+        return Ok(None);
+    };
+    let project_path = PathBuf::from(&project.working_directory);
+    let expected_path =
+        resolve_agent_conversation_workspace_path(project, &workspace.conversation_id)?;
+    let stored_path = PathBuf::from(&workspace.worktree_path);
+    if stored_path != expected_path || expected_path == project_path || expected_path.exists() {
+        return Ok(None);
+    }
+
+    let patch = github_service
+        .get_pr_diff_patch(
+            &project_path,
+            pr_number,
+            workspace.publication_pr_url.as_deref(),
+        )
+        .await?;
+    if patch.trim().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(AgentWorkspaceContext {
+        working_path: project_path,
+        base_ref: base_commit.to_string(),
+        diff_target: Some(format!("github-pr-diff/{pr_number}")),
+        patch_diff: Some(Arc::<str>::from(patch)),
+        supports_worktree_modes: false,
+    }))
 }
 
 async fn get_agent_workspace_context_cached(
@@ -750,6 +881,29 @@ async fn get_agent_workspace_review_for_context(
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
 
+    if let Some(patch) = ctx.patch_diff {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_file_changes_from_unified_diff(&patch);
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(ctx.working_path.as_path(), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        return Ok(AgentWorkspaceReviewSnapshot {
+            response: AgentWorkspaceReviewResponse {
+                changes,
+                commits: Vec::new(),
+                base_ref,
+                head_ref,
+                supports_worktree_modes: ctx.supports_worktree_modes,
+            },
+        });
+    }
+
     let changes_path = working_path.clone();
     let changes_base_ref = base_ref.clone();
     let changes_target = ctx.diff_target.clone();
@@ -797,6 +951,7 @@ async fn get_agent_workspace_review_for_context(
             commits: commits.into_iter().map(CommitInfoResponse::from).collect(),
             base_ref,
             head_ref,
+            supports_worktree_modes: ctx.supports_worktree_modes,
         },
     })
 }
@@ -850,7 +1005,9 @@ pub async fn get_agent_conversation_workspace_file_diff(
             get_agent_workspace_context_cached(app_state.inner(), &conversation_id).await?;
         let working_path = ctx.working_path.to_string_lossy().to_string();
         let diff_service = DiffService::new();
-        let diff = if let Some(target) = &ctx.diff_target {
+        let diff = if let Some(patch) = &ctx.patch_diff {
+            diff_service.get_file_diff_from_unified_diff(patch, &file_path)
+        } else if let Some(target) = &ctx.diff_target {
             diff_service.get_file_diff_between_refs(
                 &file_path,
                 &working_path,
@@ -1215,6 +1372,20 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
     conversation_id: &ChatConversationId,
 ) -> AppResult<Vec<FileChange>> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    if let Some(patch) = ctx.patch_diff {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_file_changes_from_unified_diff(&patch);
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(ctx.working_path.as_path(), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        return Ok(changes);
+    }
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
     let head_ref = ctx
@@ -1247,6 +1418,9 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
     file_path: String,
 ) -> AppResult<FileDiff> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    if let Some(patch) = ctx.patch_diff {
+        return DiffService::new().get_file_diff_from_unified_diff(&patch, &file_path);
+    }
     let working_path = ctx.working_path.to_string_lossy().to_string();
     let base_ref = ctx.base_ref.clone();
     let head_ref = ctx
@@ -1701,6 +1875,7 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, IdeationAnalysisBaseRefKind, Project,
     };
+    use crate::domain::services::GithubServiceTrait;
     use crate::tests::mock_github_service::MockGithubService;
     use std::sync::Arc;
     use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -1827,6 +2002,7 @@ mod tests {
                 }],
                 base_ref: "base-sha".to_string(),
                 head_ref: "HEAD".to_string(),
+                supports_worktree_modes: true,
             },
         }
     }
@@ -1862,6 +2038,8 @@ mod tests {
             working_path: PathBuf::from("/tmp/agent-workspace-review-cache"),
             base_ref: "base-sha".to_string(),
             diff_target: Some("feature/review-cache".to_string()),
+            patch_diff: None,
+            supports_worktree_modes: false,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         let mut annotations = PrDiffAnnotations::empty(68);
@@ -1908,6 +2086,8 @@ mod tests {
             working_path: PathBuf::from("/tmp/uncacheable-agent-workspace"),
             base_ref: "base-sha".to_string(),
             diff_target: None,
+            patch_diff: None,
+            supports_worktree_modes: true,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         let annotations = PrDiffAnnotations::empty(68);
@@ -1960,6 +2140,8 @@ mod tests {
             working_path: PathBuf::from("/tmp/pre-resolved-agent-workspace"),
             base_ref: "base-sha".to_string(),
             diff_target: None,
+            patch_diff: None,
+            supports_worktree_modes: true,
         };
         invalidate_agent_workspace_diff_caches(&conversation_id);
         store_agent_workspace_context(&conversation_id, &context);
@@ -2187,6 +2369,201 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_workspace_review_uses_local_branch_after_worktree_cleanup() {
+        let (temp_dir, state, conversation_id, worktree_path, commit_sha) =
+            create_agent_workspace_command_state().await;
+        let repo = temp_dir.path().join("repo");
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let branch_name = workspace.branch_name.clone();
+        let worktree_arg = worktree_path
+            .to_str()
+            .expect("test worktree path should be utf-8");
+        run_git(&repo, &["worktree", "remove", worktree_arg]);
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let review =
+            get_agent_conversation_workspace_review(app.state(), conversation_id.as_str()).await;
+        let review = review.expect("review payload should load from the local branch");
+        assert_eq!(review.head_ref, branch_name);
+        assert!(!review.supports_worktree_modes);
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "src/lib.rs"));
+        assert!(review.commits.iter().any(|commit| commit.sha == commit_sha));
+
+        let file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+        )
+        .await
+        .expect("workspace file diff should load from branch target");
+        assert!(
+            file_diff
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|line| line.content.contains("answer")),
+            "file diff hunks should contain the branch change"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_review_fetches_pr_head_after_worktree_and_branch_cleanup() {
+        let (temp_dir, state, conversation_id, worktree_path, commit_sha) =
+            create_agent_workspace_command_state().await;
+        let repo = temp_dir.path().join("repo");
+        let remote = temp_dir.path().join("origin.git");
+        std::fs::create_dir_all(&remote).expect("remote dir should be created");
+        run_git(&remote, &["init", "--bare"]);
+        let remote_arg = remote
+            .to_str()
+            .expect("test remote path should be utf-8");
+        run_git(&repo, &["remote", "add", "origin", remote_arg]);
+        run_git(&worktree_path, &["push", "origin", "HEAD:refs/pull/123/head"]);
+
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let branch_name = workspace.branch_name.clone();
+        workspace.publication_pr_number = Some(123);
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be updated with publication metadata");
+
+        let worktree_arg = worktree_path
+            .to_str()
+            .expect("test worktree path should be utf-8");
+        run_git(&repo, &["worktree", "remove", worktree_arg]);
+        run_git(&repo, &["branch", "-D", &branch_name]);
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let review =
+            get_agent_conversation_workspace_review(app.state(), conversation_id.as_str()).await;
+        let review = review.expect("review payload should load from fetched PR head");
+        assert_eq!(review.head_ref, "refs/ralphx/pr-heads/123");
+        assert!(!review.supports_worktree_modes);
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "src/lib.rs"));
+        assert!(review.commits.iter().any(|commit| commit.sha == commit_sha));
+        assert!(
+            !GitService::branch_exists(&repo, &branch_name)
+                .await
+                .expect("branch existence check should succeed"),
+            "review fallback should not recreate the deleted workspace branch"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn agent_workspace_review_uses_github_patch_after_git_refs_are_unavailable() {
+        let (temp_dir, mut state, conversation_id, worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let repo = temp_dir.path().join("repo");
+        let patch = "\
+diff --git a/src/lib.rs b/src/lib.rs
+new file mode 100644
+--- /dev/null
++++ b/src/lib.rs
+@@ -0,0 +1,1 @@
++pub fn answer() -> u8 { 42 }
+";
+        let github = Arc::new(MockGithubService::new());
+        github.state().get_pr_diff_patch_result = Some(Ok(patch.to_string()));
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let branch_name = workspace.branch_name.clone();
+        workspace.publication_pr_number = Some(123);
+        workspace.publication_pr_url =
+            Some("https://github.com/mock/project/pull/123".to_string());
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be updated with publication metadata");
+
+        let worktree_arg = worktree_path
+            .to_str()
+            .expect("test worktree path should be utf-8");
+        run_git(&repo, &["worktree", "remove", worktree_arg]);
+        run_git(&repo, &["branch", "-D", &branch_name]);
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let review =
+            get_agent_conversation_workspace_review(app.state(), conversation_id.as_str()).await;
+        let review = review.expect("review payload should load from GitHub patch");
+        assert_eq!(review.head_ref, "github-pr-diff/123");
+        assert!(!review.supports_worktree_modes);
+        assert!(review.commits.is_empty());
+        let change = review
+            .changes
+            .iter()
+            .find(|change| change.path == "src/lib.rs")
+            .expect("patch-backed change should be present");
+        assert!(matches!(change.status, FileChangeStatus::Added));
+        assert_eq!(change.additions, 1);
+
+        let file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "src/lib.rs".to_string(),
+        )
+        .await
+        .expect("workspace file diff should load from GitHub patch");
+        assert!(file_diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|line| line.content.contains("answer")));
+
+        let state = github.state();
+        assert_eq!(state.get_pr_diff_patch_calls, 1);
+        assert_eq!(state.last_get_pr_diff_patch_number, Some(123));
+        assert_eq!(
+            state.last_get_pr_diff_patch_url.as_deref(),
+            Some("https://github.com/mock/project/pull/123")
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
     async fn agent_workspace_review_for_context_collects_changes_and_commits_from_head() {
         let (_temp_dir, repo, base) = create_review_repo();
 
@@ -2194,6 +2571,8 @@ mod tests {
             working_path: repo,
             base_ref: base,
             diff_target: None,
+            patch_diff: None,
+            supports_worktree_modes: true,
         })
         .await
         .expect("review payload should load");
@@ -2229,6 +2608,8 @@ mod tests {
             working_path: repo,
             base_ref: base,
             diff_target: Some("feature/target-review".to_string()),
+            patch_diff: None,
+            supports_worktree_modes: false,
         })
         .await
         .expect("targeted review payload should load");

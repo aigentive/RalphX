@@ -142,13 +142,9 @@ export function AgentPublishPanel({
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
-  // Workspace-only flags computed early so reviewQuery can decide whether the
-  // inline diff view will be visible. Hidden states (terminal PR, published PR
-  // current) skip the eager fetch and keep the dialog-driven flow.
-  const earlyTerminalStatus = getAgentWorkspaceTerminalPublicationStatus(workspace);
-  const earlyHasPublishedPr = hasPublishedWorkspacePr(workspace);
-  const inlineDiffsCandidate =
-    !earlyTerminalStatus && !earlyHasPublishedPr && workspace?.mode === "edit";
+  // Workspace-only flag computed early so reviewQuery can decide whether the
+  // inline diff view will be visible.
+  const inlineDiffsCandidate = workspace?.mode === "edit" && workspace.status !== "missing";
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
@@ -843,6 +839,7 @@ export function AgentPublishPanel({
               commits={commits}
               isLoading={Boolean(conversationId) && reviewQuery.isLoading}
               annotations={prAnnotations}
+              error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
             />
           </section>

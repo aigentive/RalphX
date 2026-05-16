@@ -31,6 +31,7 @@ pub struct MockGithubState {
     pub close_pr_result: Option<AppResult<()>>,
     pub delete_remote_branch_result: Option<AppResult<()>>,
     pub fetch_remote_result: Option<AppResult<()>>,
+    pub get_pr_diff_patch_result: Option<AppResult<String>>,
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
 
@@ -49,6 +50,7 @@ pub struct MockGithubState {
     pub close_pr_calls: u32,
     pub delete_remote_branch_calls: u32,
     pub fetch_remote_calls: u32,
+    pub get_pr_diff_patch_calls: u32,
     pub find_pr_by_head_branch_calls: u32,
     pub find_latest_pr_by_head_branch_calls: u32,
 
@@ -69,6 +71,8 @@ pub struct MockGithubState {
     /// All branches passed to delete_remote_branch (accumulated across all calls).
     pub all_deleted_remote_branch_names: Vec<String>,
     pub last_fetch_remote_branch_name: Option<String>,
+    pub last_get_pr_diff_patch_number: Option<i64>,
+    pub last_get_pr_diff_patch_url: Option<String>,
     pub last_find_pr_by_head_branch_name: Option<String>,
     pub last_find_latest_pr_by_head_branch_name: Option<String>,
 }
@@ -334,6 +338,21 @@ impl GithubServiceTrait for MockGithubService {
         s.fetch_remote_calls += 1;
         s.last_fetch_remote_branch_name = Some(branch.to_string());
         s.fetch_remote_result.take().unwrap_or(Ok(()))
+    }
+
+    async fn get_pr_diff_patch(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        pr_url: Option<&str>,
+    ) -> AppResult<String> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.get_pr_diff_patch_calls += 1;
+        s.last_get_pr_diff_patch_number = Some(pr_number);
+        s.last_get_pr_diff_patch_url = pr_url.map(str::to_string);
+        s.get_pr_diff_patch_result
+            .take()
+            .unwrap_or_else(|| Ok(String::new()))
     }
 
     async fn find_pr_by_head_branch(

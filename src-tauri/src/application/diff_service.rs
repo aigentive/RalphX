@@ -379,6 +379,69 @@ impl DiffService {
         })
     }
 
+    /// Get file changes from a unified multi-file patch.
+    pub fn get_file_changes_from_unified_diff(&self, raw_patch: &str) -> Vec<FileChange> {
+        let mut changes: Vec<FileChange> = file_patches_from_unified_diff(raw_patch)
+            .into_iter()
+            .map(|patch| FileChange {
+                path: patch.path,
+                status: patch.status,
+                additions: patch.additions,
+                deletions: patch.deletions,
+                is_generated: false,
+            })
+            .collect();
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        changes
+    }
+
+    /// Get a single file diff from a unified multi-file patch.
+    pub fn get_file_diff_from_unified_diff(
+        &self,
+        raw_patch: &str,
+        file_path: &str,
+    ) -> AppResult<FileDiff> {
+        validate_diff_file_path(file_path)?;
+        let Some(patch) = file_patches_from_unified_diff(raw_patch)
+            .into_iter()
+            .find(|patch| patch.path == file_path)
+        else {
+            return Ok(FileDiff {
+                file_path: file_path.to_string(),
+                language: get_language_from_path(file_path),
+                hunks: Vec::new(),
+                old_total_lines: 0,
+                new_total_lines: 0,
+                is_binary: false,
+            });
+        };
+
+        let hunks = if patch.is_binary {
+            Vec::new()
+        } else {
+            parse_unified_diff(&patch.raw)
+        };
+        let old_total_lines = if matches!(patch.status, FileChangeStatus::Added) {
+            0
+        } else {
+            max_old_line_from_hunks(&hunks)
+        };
+        let new_total_lines = if matches!(patch.status, FileChangeStatus::Deleted) {
+            0
+        } else {
+            max_new_line_from_hunks(&hunks)
+        };
+
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary: patch.is_binary,
+        })
+    }
+
     /// Determine if a commit has a second parent (true merge commit)
     pub fn is_merge_commit(&self, project_path: &str, commit_sha: &str) -> bool {
         let output = Command::new(resolve_git_cli_path())
@@ -960,6 +1023,162 @@ impl DiffService {
         }
         Ok(map)
     }
+}
+
+#[derive(Debug)]
+struct UnifiedFilePatch {
+    path: String,
+    status: FileChangeStatus,
+    additions: u32,
+    deletions: u32,
+    raw: String,
+    is_binary: bool,
+}
+
+#[derive(Debug)]
+struct UnifiedFilePatchBuilder {
+    old_path: Option<String>,
+    new_path: Option<String>,
+    status: FileChangeStatus,
+    additions: u32,
+    deletions: u32,
+    raw: String,
+    in_hunk: bool,
+    is_binary: bool,
+}
+
+impl UnifiedFilePatchBuilder {
+    fn new(first_line: &str) -> Self {
+        let mut builder = Self {
+            old_path: None,
+            new_path: None,
+            status: FileChangeStatus::Modified,
+            additions: 0,
+            deletions: 0,
+            raw: String::new(),
+            in_hunk: false,
+            is_binary: false,
+        };
+        builder.record_line(first_line);
+        builder
+    }
+
+    fn record_line(&mut self, line: &str) {
+        self.raw.push_str(line);
+        self.raw.push('\n');
+
+        if line.starts_with("new file mode") {
+            self.status = FileChangeStatus::Added;
+            return;
+        }
+        if line.starts_with("deleted file mode") {
+            self.status = FileChangeStatus::Deleted;
+            return;
+        }
+        if let Some(path) = line.strip_prefix("--- ") {
+            self.old_path = parse_unified_diff_path(path);
+            if self.old_path.is_none() {
+                self.status = FileChangeStatus::Added;
+            }
+            return;
+        }
+        if let Some(path) = line.strip_prefix("+++ ") {
+            self.new_path = parse_unified_diff_path(path);
+            if self.new_path.is_none() {
+                self.status = FileChangeStatus::Deleted;
+            }
+            return;
+        }
+        if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            self.is_binary = true;
+            return;
+        }
+        if line.starts_with("@@ ") {
+            self.in_hunk = true;
+            return;
+        }
+        if !self.in_hunk {
+            return;
+        }
+        if line.starts_with('+') {
+            self.additions += 1;
+        } else if line.starts_with('-') {
+            self.deletions += 1;
+        }
+    }
+
+    fn finish(self) -> Option<UnifiedFilePatch> {
+        let path = match self.status {
+            FileChangeStatus::Deleted => self.old_path.or(self.new_path)?,
+            _ => self.new_path.or(self.old_path)?,
+        };
+        if validate_diff_file_path(&path).is_err() {
+            return None;
+        }
+        Some(UnifiedFilePatch {
+            path,
+            status: self.status,
+            additions: self.additions,
+            deletions: self.deletions,
+            raw: self.raw,
+            is_binary: self.is_binary,
+        })
+    }
+}
+
+fn file_patches_from_unified_diff(raw_patch: &str) -> Vec<UnifiedFilePatch> {
+    let mut patches = Vec::new();
+    let mut current: Option<UnifiedFilePatchBuilder> = None;
+
+    for line in raw_patch.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(builder) = current.take().and_then(UnifiedFilePatchBuilder::finish) {
+                patches.push(builder);
+            }
+            current = Some(UnifiedFilePatchBuilder::new(line));
+            continue;
+        }
+        if let Some(builder) = current.as_mut() {
+            builder.record_line(line);
+        }
+    }
+
+    if let Some(builder) = current.and_then(UnifiedFilePatchBuilder::finish) {
+        patches.push(builder);
+    }
+
+    patches
+}
+
+fn parse_unified_diff_path(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed == "/dev/null" || trimmed.is_empty() {
+        return None;
+    }
+    let unquoted = trimmed.trim_matches('"');
+    unquoted
+        .strip_prefix("a/")
+        .or_else(|| unquoted.strip_prefix("b/"))
+        .or(Some(unquoted))
+        .map(str::to_string)
+}
+
+fn max_old_line_from_hunks(hunks: &[DiffHunk]) -> u32 {
+    hunks
+        .iter()
+        .filter(|hunk| hunk.old_lines > 0)
+        .map(|hunk| hunk.old_start + hunk.old_lines - 1)
+        .max()
+        .unwrap_or(0)
+}
+
+fn max_new_line_from_hunks(hunks: &[DiffHunk]) -> u32 {
+    hunks
+        .iter()
+        .filter(|hunk| hunk.new_lines > 0)
+        .map(|hunk| hunk.new_start + hunk.new_lines - 1)
+        .max()
+        .unwrap_or(0)
 }
 
 fn run_git_text(project_path: &str, args: &[&str]) -> AppResult<String> {
