@@ -366,6 +366,17 @@ describe("safeTrace — file logging", () => {
     expect(fs.existsSync(unsafeTraceDir)).toBe(false);
   });
 
+  it("rejects relative trace dir overrides", () => {
+    const unsafeTraceDir = path.join("relative", "logs", "mcp-proxy");
+    process.env.RALPHX_MCP_TRACE_DIR = unsafeTraceDir;
+
+    safeTrace("tool.request");
+
+    const logPath = getTraceLogPath();
+    expect(logPath.startsWith(unsafeTraceDir + path.sep)).toBe(false);
+    expect(fs.existsSync(unsafeTraceDir)).toBe(false);
+  });
+
   it("rejects trace dir overrides symlinked into the target working directory", () => {
     const traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-mcp-trace-root-"));
     const targetProject = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-target-project-"));
