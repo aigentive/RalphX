@@ -119,10 +119,88 @@ function resolveFallbackTraceDir(): string {
   return path.join(fallbackRoot, "ralphx-mcp-proxy-traces");
 }
 
-function buildTraceLogPathInDir(traceDir: string): string | null {
+function isPathInside(childPath: string, parentPath: string): boolean {
+  const relative = path.relative(parentPath, childPath);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isTargetProjectPath(resolvedPath: string): boolean {
+  const workingDirectory = process.env.RALPHX_WORKING_DIRECTORY;
+  if (!workingDirectory || !path.isAbsolute(workingDirectory)) {
+    return false;
+  }
+
+  const resolvedWorkingDirectory = path.resolve(workingDirectory);
+  return (
+    resolvedPath === resolvedWorkingDirectory ||
+    isPathInside(resolvedPath, resolvedWorkingDirectory)
+  );
+}
+
+function resolveSafeTraceDir(traceDir: string): string | null {
+  if (!path.isAbsolute(traceDir)) {
+    return null;
+  }
+
+  const resolvedTraceDir = path.resolve(traceDir);
+  if (path.basename(resolvedTraceDir) !== TRACE_SUBDIR) {
+    safeError("[RalphX MCP] Ignoring trace dir with unexpected leaf directory");
+    return null;
+  }
+
+  if (isTargetProjectPath(resolvedTraceDir)) {
+    safeError("[RalphX MCP] Ignoring trace dir inside target working directory");
+    return null;
+  }
+
+  return resolvedTraceDir;
+}
+
+function resolveConfiguredTraceDir(): string | null {
+  const configuredTraceDir = process.env.RALPHX_MCP_TRACE_DIR;
+  if (!configuredTraceDir) {
+    return null;
+  }
+
+  return resolveSafeTraceDir(configuredTraceDir);
+}
+
+function buildTraceLogPathInExistingDir(traceDir: string): string | null {
   try {
-    fs.mkdirSync(traceDir, { recursive: true });
-    return path.join(traceDir, buildTraceFilename());
+    const safeTraceDir = resolveSafeTraceDir(traceDir);
+    if (!safeTraceDir) {
+      return null;
+    }
+
+    // safeTraceDir passed the same fixed-leaf and target-project containment checks
+    // before the realpath lookup.
+    // codeql[js/path-injection]
+    const realTraceDir = fs.realpathSync.native(safeTraceDir);
+    if (isTargetProjectPath(realTraceDir)) {
+      safeError("[RalphX MCP] Ignoring trace dir symlinked into target working directory");
+      return null;
+    }
+
+    return path.join(realTraceDir, buildTraceFilename());
+  } catch (error) {
+    safeError("[RalphX MCP] Failed to use existing MCP trace dir:", error);
+    return null;
+  }
+}
+
+function buildTraceLogPathInOwnedDir(traceDir: string): string | null {
+  try {
+    const safeTraceDir = resolveSafeTraceDir(traceDir);
+    if (!safeTraceDir) {
+      return null;
+    }
+
+    // safeTraceDir is one of this module's fixed RalphX-owned fallback roots,
+    // not a configured runtime path from CLI/env.
+    // codeql[js/path-injection]
+    fs.mkdirSync(safeTraceDir, { recursive: true });
+
+    return buildTraceLogPathInExistingDir(safeTraceDir);
   } catch (error) {
     safeError("[RalphX MCP] Failed to initialize MCP trace dir:", error);
     return null;
@@ -130,13 +208,17 @@ function buildTraceLogPathInDir(traceDir: string): string | null {
 }
 
 function resolveTraceLogPath(): string | null {
-  const candidateDirs = [
-    resolveModuleTraceDir(),
-    resolveFallbackTraceDir(),
-  ].filter((dir): dir is string => Boolean(dir));
+  const configuredTraceDir = resolveConfiguredTraceDir();
+  if (configuredTraceDir) {
+    const configuredCandidate = buildTraceLogPathInExistingDir(configuredTraceDir);
+    if (configuredCandidate) {
+      return configuredCandidate;
+    }
+  }
 
+  const candidateDirs = [resolveModuleTraceDir(), resolveFallbackTraceDir()];
   for (const traceDir of candidateDirs) {
-    const candidate = buildTraceLogPathInDir(traceDir);
+    const candidate = buildTraceLogPathInOwnedDir(traceDir);
     if (candidate) {
       return candidate;
     }
@@ -191,6 +273,9 @@ export function safeTrace(event: string, _payload?: unknown): void {
   }
 
   try {
+    // logPath is produced only by buildTraceLogPathInDir, which creates and
+    // realpath-validates the fixed mcp-proxy trace directory first.
+    // codeql[js/path-injection]
     fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
   } catch (error) {
     safeError("[RalphX MCP] Failed to append MCP trace log:", error);

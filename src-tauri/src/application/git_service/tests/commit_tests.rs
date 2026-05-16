@@ -121,10 +121,7 @@ async fn test_commit_all_does_not_stage_deleted_files() {
         .current_dir(repo)
         .output()
         .unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&show.stdout).trim(),
-        "modified"
-    );
+    assert_eq!(String::from_utf8_lossy(&show.stdout).trim(), "modified");
 }
 
 #[tokio::test]
@@ -385,7 +382,9 @@ async fn test_commit_all_returns_none_when_only_deletions() {
     // Only change is a deletion — commit_all should skip it and return None
     std::fs::remove_file(repo.join("only_file.txt")).unwrap();
 
-    let result = GitService::commit_all(repo, "should be empty").await.unwrap();
+    let result = GitService::commit_all(repo, "should be empty")
+        .await
+        .unwrap();
     assert!(
         result.is_none(),
         "commit_all should return None when the only changes are deletions"
@@ -613,6 +612,66 @@ async fn test_commit_all_including_deletions_respects_gitignore() {
 }
 
 #[tokio::test]
+async fn test_commit_all_including_deletions_skips_ralphx_generated_artifacts_only() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let repo = temp_dir.path();
+    init_test_repo(repo);
+
+    std::fs::write(repo.join("tracked.txt"), "initial").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+
+    std::fs::write(repo.join("tracked.txt"), "modified").unwrap();
+
+    std::fs::create_dir_all(repo.join(".claude/mcp-proxy")).unwrap();
+    std::fs::write(repo.join(".claude/mcp-proxy/trace.jsonl"), "{}\n").unwrap();
+    std::fs::create_dir_all(repo.join(".claude/worktrees/session-a")).unwrap();
+    std::fs::write(repo.join(".claude/worktrees/session-a/file.txt"), "scratch").unwrap();
+    std::fs::create_dir_all(repo.join(".claude/memory-archive/memories")).unwrap();
+    std::fs::write(
+        repo.join(".claude/memory-archive/memories/mem.md"),
+        "snapshot",
+    )
+    .unwrap();
+    std::fs::create_dir_all(repo.join(".artifacts/screenshots")).unwrap();
+    std::fs::write(repo.join(".artifacts/screenshots/qa.png"), "png").unwrap();
+
+    std::fs::create_dir_all(repo.join(".claude/agents")).unwrap();
+    std::fs::write(repo.join(".claude/agents/reviewer.md"), "project subagent").unwrap();
+
+    let sha = GitService::commit_all_including_deletions(repo, "skip generated artifacts")
+        .await
+        .unwrap()
+        .expect("commit should be created");
+    assert!(!sha.is_empty());
+
+    let tree = Command::new("git")
+        .args(["ls-tree", "-r", "--name-only", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    let tree_output = String::from_utf8_lossy(&tree.stdout);
+
+    assert!(tree_output.contains("tracked.txt"));
+    assert!(
+        tree_output.contains(".claude/agents/reviewer.md"),
+        "Claude-native project subagents should remain stageable"
+    );
+    assert!(!tree_output.contains(".claude/mcp-proxy/trace.jsonl"));
+    assert!(!tree_output.contains(".claude/worktrees/session-a/file.txt"));
+    assert!(!tree_output.contains(".claude/memory-archive/memories/mem.md"));
+    assert!(!tree_output.contains(".artifacts/screenshots/qa.png"));
+}
+
+#[tokio::test]
 async fn test_commit_all_including_deletions_handles_renames() {
     let temp_dir = tempfile::tempdir().unwrap();
     let repo = temp_dir.path();
@@ -688,7 +747,11 @@ async fn test_commit_all_including_deletions_batches_large_file_count() {
 
     // Create 150 files (exceeds batch size of 100) to verify batching works
     for i in 0..150 {
-        std::fs::write(repo.join(format!("file_{:03}.txt", i)), format!("content {}", i)).unwrap();
+        std::fs::write(
+            repo.join(format!("file_{:03}.txt", i)),
+            format!("content {}", i),
+        )
+        .unwrap();
     }
 
     let sha = GitService::commit_all_including_deletions(repo, "batch test")
@@ -707,7 +770,8 @@ async fn test_commit_all_including_deletions_batches_large_file_count() {
     for i in 0..150 {
         assert!(
             tree_output.contains(&format!("file_{:03}.txt", i)),
-            "File file_{:03}.txt should be committed (batch staging)", i
+            "File file_{:03}.txt should be committed (batch staging)",
+            i
         );
     }
 }

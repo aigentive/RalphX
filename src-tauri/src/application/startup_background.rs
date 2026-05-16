@@ -31,7 +31,6 @@ pub async fn recover_memory_archive_jobs_on_startup(
         Arc::clone(&memory_archive_repo),
         memory_entry_repo,
         project_repo,
-        PathBuf::from("."),
     ));
 
     let recovered_count = match memory_archive_repo.count_claimable().await {
@@ -93,7 +92,6 @@ pub fn spawn_cleanup_loops(
             memory_archive_repo,
             memory_entry_repo,
             project_repo,
-            PathBuf::from("."),
         ));
 
         let mut backoff_duration = Duration::from_secs(0);

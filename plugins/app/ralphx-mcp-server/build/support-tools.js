@@ -129,7 +129,7 @@ export const SUPPORT_TOOLS = [
     {
         name: "rebuild_archive_snapshots",
         description: "Enqueue full rebuild of archive snapshots from DB canonical state. " +
-            "Generates .claude/memory-archive/ snapshots for disaster recovery. " +
+            "Generates RalphX-owned app-data archive snapshots for disaster recovery. " +
             "WRITE-ONLY tool restricted to ralphx-memory-maintainer agent.",
         inputSchema: {
             type: "object",

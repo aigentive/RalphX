@@ -159,7 +159,7 @@ pub fn build_codex_mcp_overrides(
         "--tauri-api-url".to_string(),
         crate::utils::backend_endpoint::backend_http_base_url(),
         "--trace-dir".to_string(),
-        crate::utils::runtime_log_paths::mcp_proxy_trace_dir()
+        crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
             .to_string_lossy()
             .into_owned(),
     ];
@@ -714,6 +714,10 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     cmd.env(
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
+    );
+    cmd.env(
+        "RALPHX_AGENT_SCREENSHOT_DIR",
+        crate::utils::runtime_log_paths::agent_screenshot_dir(),
     );
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
