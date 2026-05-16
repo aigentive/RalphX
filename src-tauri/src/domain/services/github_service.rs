@@ -322,6 +322,15 @@ mod tests {
         ) -> AppResult<Option<(i64, String)>> {
             unimplemented!("not needed for default annotation coverage")
         }
+
+        async fn get_pr_diff_patch(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+            _pr_url: Option<&str>,
+        ) -> AppResult<String> {
+            unimplemented!("not needed for default annotation coverage")
+        }
     }
 
     #[tokio::test]
