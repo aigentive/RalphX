@@ -150,11 +150,13 @@ pub(crate) async fn stop_and_archive_children(
             if let Ok(Some(info)) = app_state.running_agent_registry.stop(&key).await {
                 // Remove from interactive process registry (closes stdin pipe)
                 let ipr_key = InteractiveProcessKey::new("ideation", child.id.as_str());
-                app_state.interactive_process_registry.remove(&ipr_key).await;
+                app_state
+                    .interactive_process_registry
+                    .remove(&ipr_key)
+                    .await;
 
                 // Mark agent run as failed
-                let run_id =
-                    crate::domain::entities::AgentRunId::from_string(&info.agent_run_id);
+                let run_id = crate::domain::entities::AgentRunId::from_string(&info.agent_run_id);
                 app_state
                     .agent_run_repo
                     .fail(&run_id, "Verification cancelled")
@@ -300,7 +302,9 @@ pub async fn stop_verification(
     }
 
     // Kill any running verification child agents (best-effort)
-    stop_verification_children(&session_id, &state.app_state).await.ok();
+    stop_verification_children(&session_id, &state.app_state)
+        .await
+        .ok();
 
     // Update native verification snapshot state for the current generation.
     let mut snapshot = crate::domain::services::load_current_verification_snapshot_or_default(
@@ -429,8 +433,7 @@ pub async fn mark_verification_infra_failure(
             )
         })?;
 
-    if !effective_in_progress && effective_status != VerificationStatus::Reviewing
-    {
+    if !effective_in_progress && effective_status != VerificationStatus::Reviewing {
         return Err(json_error(
             StatusCode::CONFLICT,
             "Verification is not in progress on the parent session.",
@@ -463,8 +466,10 @@ pub async fn mark_verification_infra_failure(
     snapshot.status = VerificationStatus::Unverified;
     snapshot.in_progress = false;
     snapshot.current_gaps.clear();
-    snapshot.convergence_reason =
-        Some(req.convergence_reason.unwrap_or_else(|| "agent_error".to_string()));
+    snapshot.convergence_reason = Some(
+        req.convergence_reason
+            .unwrap_or_else(|| "agent_error".to_string()),
+    );
     let convergence_reason = snapshot.convergence_reason.clone();
     state
         .app_state
@@ -519,14 +524,13 @@ pub async fn mark_verification_infra_failure(
             .ok();
     });
 
-    let mut response =
-        get_plan_verification(
-            State(state),
-            ProjectScope(None),
-            Path(session_id),
-            axum::extract::Query(crate::http_server::types::VerificationQueryParams::default()),
-        )
-        .await?;
+    let mut response = get_plan_verification(
+        State(state),
+        ProjectScope(None),
+        Path(session_id),
+        axum::extract::Query(crate::http_server::types::VerificationQueryParams::default()),
+    )
+    .await?;
     response.0.verification_generation = next_generation;
     response.0.convergence_reason = convergence_reason;
     Ok(response)
@@ -631,7 +635,9 @@ pub async fn revert_and_skip(
 
     // Kill any running verification child agents before emitting events.
     // Generation increment is handled inside the atomic SQL transaction above.
-    stop_verification_children(&session_id, &state.app_state).await.ok();
+    stop_verification_children(&session_id, &state.app_state)
+        .await
+        .ok();
 
     // Emit event with canonical payload (B3: was missing round/gaps/rounds fields)
     if let Some(app_handle) = &state.app_state.app_handle {

@@ -9,7 +9,11 @@
 // restricted by network topology (only processes on the same machine can
 // reach this server).
 
-use axum::{extract::{Path, State}, http::StatusCode, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
 use serde::Serialize;
 
 use super::*;
@@ -50,15 +54,10 @@ pub struct InternalProjectSummary {
 pub async fn list_projects_internal(
     State(state): State<HttpServerState>,
 ) -> Result<Json<Vec<InternalProjectSummary>>, StatusCode> {
-    let projects = state
-        .app_state
-        .project_repo
-        .get_all()
-        .await
-        .map_err(|e| {
-            tracing::error!("list_projects_internal: failed to query projects: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let projects = state.app_state.project_repo.get_all().await.map_err(|e| {
+        tracing::error!("list_projects_internal: failed to query projects: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let mut summaries = Vec::new();
     for project in &projects {

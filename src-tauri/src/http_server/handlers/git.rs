@@ -20,7 +20,9 @@ use crate::application::{GitService, TaskTransitionService};
 use crate::domain::entities::{task_metadata::MergeFailureSource, InternalStatus, TaskId};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
-use crate::domain::state_machine::transition_handler::{parse_metadata, set_source_conflict_resolved};
+use crate::domain::state_machine::transition_handler::{
+    parse_metadata, set_source_conflict_resolved,
+};
 
 // ============================================================================
 // Request/Response Types
@@ -254,11 +256,25 @@ pub async fn complete_merge(
         {
             use crate::application::interactive_process_registry::InteractiveProcessKey;
             let key = InteractiveProcessKey::new("merge", task_id.as_str());
-            if let Some(signal) = state.app_state.interactive_process_registry.get_completion_signal(&key).await {
+            if let Some(signal) = state
+                .app_state
+                .interactive_process_registry
+                .get_completion_signal(&key)
+                .await
+            {
                 signal.notify_one();
             }
-            if state.app_state.interactive_process_registry.remove(&key).await.is_some() {
-                tracing::info!("IPR removed for merger on task {} (complete_merge rebase retry)", task_id.as_str());
+            if state
+                .app_state
+                .interactive_process_registry
+                .remove(&key)
+                .await
+                .is_some()
+            {
+                tracing::info!(
+                    "IPR removed for merger on task {} (complete_merge rebase retry)",
+                    task_id.as_str()
+                );
             }
         }
 
@@ -340,11 +356,25 @@ pub async fn complete_merge(
             {
                 use crate::application::interactive_process_registry::InteractiveProcessKey;
                 let key = InteractiveProcessKey::new("merge", task_id.as_str());
-                if let Some(signal) = state.app_state.interactive_process_registry.get_completion_signal(&key).await {
+                if let Some(signal) = state
+                    .app_state
+                    .interactive_process_registry
+                    .get_completion_signal(&key)
+                    .await
+                {
                     signal.notify_one();
                 }
-                if state.app_state.interactive_process_registry.remove(&key).await.is_some() {
-                    tracing::info!("IPR removed for merger on task {} (source update conflict resolved)", task_id.as_str());
+                if state
+                    .app_state
+                    .interactive_process_registry
+                    .remove(&key)
+                    .await
+                    .is_some()
+                {
+                    tracing::info!(
+                        "IPR removed for merger on task {} (source update conflict resolved)",
+                        task_id.as_str()
+                    );
                 }
             }
 
@@ -423,9 +453,12 @@ pub async fn complete_merge(
         }
 
         // Guard branch deletion with shared helper (handles squash merges too)
-        let (safe_to_delete, reason) =
-            GitService::is_branch_merged_or_content_equivalent(&repo_path, task_branch, &target_branch)
-                .await;
+        let (safe_to_delete, reason) = GitService::is_branch_merged_or_content_equivalent(
+            &repo_path,
+            task_branch,
+            &target_branch,
+        )
+        .await;
 
         if safe_to_delete {
             match GitService::delete_branch(&repo_path, task_branch, true).await {
@@ -491,7 +524,11 @@ pub async fn complete_merge(
         if let Err(e) = state
             .app_state
             .external_events_repo
-            .insert_event("merge:completed", &project_id_str, &merge_payload.to_string())
+            .insert_event(
+                "merge:completed",
+                &project_id_str,
+                &merge_payload.to_string(),
+            )
             .await
         {
             tracing::warn!(
@@ -515,11 +552,25 @@ pub async fn complete_merge(
     {
         use crate::application::interactive_process_registry::InteractiveProcessKey;
         let key = InteractiveProcessKey::new("merge", task_id.as_str());
-        if let Some(signal) = state.app_state.interactive_process_registry.get_completion_signal(&key).await {
+        if let Some(signal) = state
+            .app_state
+            .interactive_process_registry
+            .get_completion_signal(&key)
+            .await
+        {
             signal.notify_one();
         }
-        if state.app_state.interactive_process_registry.remove(&key).await.is_some() {
-            tracing::info!("IPR removed for merger on task {} (complete_merge)", task_id.as_str());
+        if state
+            .app_state
+            .interactive_process_registry
+            .remove(&key)
+            .await
+            .is_some()
+        {
+            tracing::info!(
+                "IPR removed for merger on task {} (complete_merge)",
+                task_id.as_str()
+            );
         }
     }
 
@@ -643,7 +694,11 @@ pub async fn report_conflict(
         if let Err(e) = state
             .app_state
             .external_events_repo
-            .insert_event("merge:conflict", &project_id_str, &conflict_payload.to_string())
+            .insert_event(
+                "merge:conflict",
+                &project_id_str,
+                &conflict_payload.to_string(),
+            )
             .await
         {
             tracing::warn!(
@@ -667,11 +722,25 @@ pub async fn report_conflict(
     {
         use crate::application::interactive_process_registry::InteractiveProcessKey;
         let key = InteractiveProcessKey::new("merge", task_id.as_str());
-        if let Some(signal) = state.app_state.interactive_process_registry.get_completion_signal(&key).await {
+        if let Some(signal) = state
+            .app_state
+            .interactive_process_registry
+            .get_completion_signal(&key)
+            .await
+        {
             signal.notify_one();
         }
-        if state.app_state.interactive_process_registry.remove(&key).await.is_some() {
-            tracing::info!("IPR removed for merger on task {} (conflict)", task_id.as_str());
+        if state
+            .app_state
+            .interactive_process_registry
+            .remove(&key)
+            .await
+            .is_some()
+        {
+            tracing::info!(
+                "IPR removed for merger on task {} (conflict)",
+                task_id.as_str()
+            );
         }
     }
 
@@ -766,11 +835,25 @@ pub async fn report_incomplete(
     {
         use crate::application::interactive_process_registry::InteractiveProcessKey;
         let key = InteractiveProcessKey::new("merge", task_id.as_str());
-        if let Some(signal) = state.app_state.interactive_process_registry.get_completion_signal(&key).await {
+        if let Some(signal) = state
+            .app_state
+            .interactive_process_registry
+            .get_completion_signal(&key)
+            .await
+        {
             signal.notify_one();
         }
-        if state.app_state.interactive_process_registry.remove(&key).await.is_some() {
-            tracing::info!("IPR removed for merger on task {} (incomplete)", task_id.as_str());
+        if state
+            .app_state
+            .interactive_process_registry
+            .remove(&key)
+            .await
+            .is_some()
+        {
+            tracing::info!(
+                "IPR removed for merger on task {} (incomplete)",
+                task_id.as_str()
+            );
         }
     }
 
@@ -794,16 +877,16 @@ pub async fn get_task_commits(
         task_id,
         state.app_state.as_ref(),
     )
-        .await
-        .map_err(|e| {
-            if e == "Task not found" || e == "Project not found" {
-                (StatusCode::NOT_FOUND, e)
-            } else if e == "Task has no branch assigned" {
-                (StatusCode::BAD_REQUEST, e)
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e)
-            }
-        })?;
+    .await
+    .map_err(|e| {
+        if e == "Task not found" || e == "Project not found" {
+            (StatusCode::NOT_FOUND, e)
+        } else if e == "Task has no branch assigned" {
+            (StatusCode::BAD_REQUEST, e)
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, e)
+        }
+    })?;
 
     let response: Vec<CommitInfoResponse> = commits
         .commits
@@ -951,19 +1034,20 @@ pub fn is_valid_git_sha(sha: &str) -> bool {
 /// paths (rebase retry, source-update retry, normal Merged, freshness routing)
 /// use the same service instance, avoiding duplicate construction.
 fn build_transition_service(state: &HttpServerState) -> TaskTransitionService<tauri::Wry> {
-    let scheduler_concrete = std::sync::Arc::new(
-        state.app_state.build_task_scheduler_for_runtime(
-            std::sync::Arc::clone(&state.execution_state),
-            state.app_state.app_handle.as_ref().cloned(),
-        ),
+    let scheduler_concrete = std::sync::Arc::new(state.app_state.build_task_scheduler_for_runtime(
+        std::sync::Arc::clone(&state.execution_state),
+        state.app_state.app_handle.as_ref().cloned(),
+    ));
+    scheduler_concrete.set_self_ref(
+        std::sync::Arc::clone(&scheduler_concrete) as std::sync::Arc<dyn TaskScheduler>
     );
-    scheduler_concrete
-        .set_self_ref(std::sync::Arc::clone(&scheduler_concrete) as std::sync::Arc<dyn TaskScheduler>);
     let task_scheduler: std::sync::Arc<dyn TaskScheduler> = scheduler_concrete;
 
     state
         .app_state
-        .build_transition_service_with_execution_state(std::sync::Arc::clone(&state.execution_state))
+        .build_transition_service_with_execution_state(std::sync::Arc::clone(
+            &state.execution_state,
+        ))
         .with_task_scheduler(task_scheduler)
 }
 

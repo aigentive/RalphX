@@ -179,7 +179,10 @@ pub async fn get_session_tasks_http(
 
     // Apply changed_since filter in-memory after loading
     let filtered_tasks: Vec<_> = if let Some(cutoff) = since_cutoff {
-        tasks.into_iter().filter(|t| t.updated_at > cutoff).collect()
+        tasks
+            .into_iter()
+            .filter(|t| t.updated_at > cutoff)
+            .collect()
     } else {
         tasks.into_iter().collect()
     };
@@ -238,12 +241,9 @@ pub async fn list_ideation_sessions_http(
             )
         })?;
 
-    project.assert_project_scope(&scope).map_err(|e| {
-        (
-            e.status,
-            Json(serde_json::json!({"error": "Forbidden"})),
-        )
-    })?;
+    project
+        .assert_project_scope(&scope)
+        .map_err(|e| (e.status, Json(serde_json::json!({"error": "Forbidden"}))))?;
 
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
 
@@ -273,7 +273,10 @@ pub async fn list_ideation_sessions_http(
                 .get_by_project_and_status(pid.as_str(), &status_str, limit)
                 .await
                 .map_err(|e| {
-                    error!("Failed to list sessions by status for project {}: {}", project_id, e);
+                    error!(
+                        "Failed to list sessions by status for project {}: {}",
+                        project_id, e
+                    );
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": "Internal server error"})),
@@ -315,7 +318,11 @@ pub async fn list_ideation_sessions_http(
             .count_by_session(&session.id)
             .await
             .map_err(|e| {
-                error!("Failed to count proposals for session {}: {}", session.id.as_str(), e);
+                error!(
+                    "Failed to count proposals for session {}: {}",
+                    session.id.as_str(),
+                    e
+                );
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": "Internal server error"})),
@@ -331,5 +338,7 @@ pub async fn list_ideation_sessions_http(
         });
     }
 
-    Ok(Json(ListSessionsResponse { sessions: summaries }))
+    Ok(Json(ListSessionsResponse {
+        sessions: summaries,
+    }))
 }

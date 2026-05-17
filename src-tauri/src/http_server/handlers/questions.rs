@@ -7,8 +7,8 @@ use tauri::Emitter;
 use uuid::Uuid;
 
 use super::*;
-use crate::application::{QuestionAnswer, QuestionOption};
 use crate::application::harness_runtime_registry::default_external_mcp_human_wait_timeout_secs;
+use crate::application::{QuestionAnswer, QuestionOption};
 
 pub async fn request_question(
     State(state): State<HttpServerState>,

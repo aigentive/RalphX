@@ -16,12 +16,10 @@ pub async fn analyze_session_dependencies(
     State(state): State<HttpServerState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<AnalyzeDependenciesResponse>, StatusCode> {
+    use crate::domain::entities::{DependencyGraph, DependencyGraphEdge, DependencyGraphNode};
     use crate::http_server::types::{
         AnalyzeDependenciesResponse, DependencyAnalysisSummary, DependencyEdgeResponse,
         DependencyNodeResponse,
-    };
-    use crate::domain::entities::{
-        DependencyGraph, DependencyGraphEdge, DependencyGraphNode,
     };
 
     let session_id = IdeationSessionId::from_string(session_id.clone());

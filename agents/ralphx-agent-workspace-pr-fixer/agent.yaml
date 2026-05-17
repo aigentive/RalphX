@@ -1,0 +1,27 @@
+name: ralphx-agent-workspace-pr-fixer
+role: agent_workspace_pr_fixer
+description: "Fixes published agent workspace PR CI/review failures and signals completion"
+capabilities:
+  mcp_tools:
+    - get_agent_workspace_pr_fix_context
+    - update_agent_workspace_from_base
+    - complete_agent_workspace_pr_fix
+    - fs_read_file
+    - fs_list_dir
+    - fs_grep
+    - fs_glob
+    - search_memories
+    - get_memory
+    - get_memories_for_paths
+harnesses:
+  claude:
+    model: opus
+    permission_mode: acceptEdits
+    tools:
+      extends: base_tools
+      include:
+        - Edit
+    preapproved_cli_tools:
+      - Read
+      - Edit
+      - Bash

@@ -19,9 +19,10 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrAnnotationSourceUnavailable, PrBranchMatch, PrDiffAnnotation,
-    PrDiffAnnotations, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
-    PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch,
+    PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary,
+    PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrStatus,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -318,12 +319,55 @@ fn build_pr_sync_state_args(pr_number: i64) -> Vec<String> {
     ]
 }
 
+fn build_pr_health_view_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--json".to_string(),
+        "state,mergeStateStatus,mergeable,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,reviewDecision,statusCheckRollup,autoMergeRequest".to_string(),
+    ]
+}
+
 fn build_pr_reviews_api_args(pr_number: i64) -> Vec<String> {
     vec![
         "api".to_string(),
         format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
         "--paginate".to_string(),
         "--slurp".to_string(),
+    ]
+}
+
+fn build_pr_issue_comments_api_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/issues/{pr_number}/comments"),
+        "--paginate".to_string(),
+        "--slurp".to_string(),
+    ]
+}
+
+fn build_pr_enable_auto_merge_args(pr_number: i64, method: &str) -> Vec<String> {
+    let method_flag = match method {
+        "merge" => "--merge",
+        "rebase" => "--rebase",
+        _ => "--squash",
+    };
+    vec![
+        "pr".to_string(),
+        "merge".to_string(),
+        pr_number.to_string(),
+        "--auto".to_string(),
+        method_flag.to_string(),
+    ]
+}
+
+fn build_pr_disable_auto_merge_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "merge".to_string(),
+        pr_number.to_string(),
+        "--disable-auto".to_string(),
     ]
 }
 
@@ -730,6 +774,40 @@ impl GithubServiceTrait for GhCliGithubService {
         Ok(payload)
     }
 
+    async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
+        let view_stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_health_view_args(pr_number))
+            .await?;
+        let comments_stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_issue_comments_api_args(pr_number))
+            .await?;
+        parse_pr_health_output(&view_stdout.join("\n"), &comments_stdout.join("\n"))
+    }
+
+    async fn enable_pr_auto_merge(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        method: &str,
+    ) -> AppResult<()> {
+        self.runner
+            .run_gh(
+                working_dir,
+                &build_pr_enable_auto_merge_args(pr_number, method),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn disable_pr_auto_merge(&self, working_dir: &Path, pr_number: i64) -> AppResult<()> {
+        self.runner
+            .run_gh(working_dir, &build_pr_disable_auto_merge_args(pr_number))
+            .await?;
+        Ok(())
+    }
+
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()> {
         // git push origin <branch> — fire-and-forget style (stdout null, stderr piped for safety)
         let args = vec!["push".to_string(), "origin".to_string(), branch.to_string()];
@@ -1071,9 +1149,13 @@ pub(crate) fn parse_pr_sync_state_output(json_str: &str) -> AppResult<PrSyncStat
         ))
     })?;
 
+    parse_pr_sync_state_value(&v, "gh pr view sync-state")
+}
+
+fn parse_pr_sync_state_value(v: &Value, context: &str) -> AppResult<PrSyncState> {
     let status = parse_pr_status_value(&v)?;
-    let head_ref_name = required_string(&v, "headRefName", "gh pr view sync-state")?;
-    let base_ref_name = required_string(&v, "baseRefName", "gh pr view sync-state")?;
+    let head_ref_name = required_string(v, "headRefName", context)?;
+    let base_ref_name = required_string(v, "baseRefName", context)?;
 
     Ok(PrSyncState {
         status,
@@ -1097,6 +1179,133 @@ pub(crate) fn parse_pr_sync_state_output(json_str: &str) -> AppResult<PrSyncStat
             .and_then(Value::as_str)
             .map(str::to_string),
     })
+}
+
+pub(crate) fn parse_pr_health_output(view_json: &str, comments_json: &str) -> AppResult<PrHealth> {
+    let view_value: Value = serde_json::from_str(view_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr view health JSON: {e}\nRaw: {view_json}"
+        ))
+    })?;
+    let comments_value: Value = serde_json::from_str(comments_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh PR comments JSON: {e}\nRaw: {comments_json}"
+        ))
+    })?;
+
+    Ok(PrHealth {
+        sync_state: parse_pr_sync_state_value(&view_value, "gh pr view health")?,
+        review_decision: view_value
+            .get("reviewDecision")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        checks: parse_status_check_rollup(&view_value),
+        issue_comments: parse_pr_issue_comments_value(&comments_value)?,
+        auto_merge_request: parse_auto_merge_request(&view_value),
+    })
+}
+
+fn parse_status_check_rollup(view_value: &Value) -> Vec<PrHealthCheck> {
+    view_value
+        .get("statusCheckRollup")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|check| {
+            let name = check
+                .get("name")
+                .or_else(|| check.get("context"))
+                .or_else(|| check.get("workflowName"))
+                .and_then(Value::as_str)
+                .unwrap_or("GitHub check")
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(PrHealthCheck {
+                name,
+                status: check
+                    .get("status")
+                    .or_else(|| check.get("state"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                conclusion: check
+                    .get("conclusion")
+                    .or_else(|| check.get("state"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                details_url: check
+                    .get("detailsUrl")
+                    .or_else(|| check.get("targetUrl"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect()
+}
+
+fn parse_auto_merge_request(view_value: &Value) -> Option<PrAutoMergeRequest> {
+    let request = view_value.get("autoMergeRequest")?;
+    if request.is_null() {
+        return None;
+    }
+    Some(PrAutoMergeRequest {
+        enabled_by: request
+            .get("enabledBy")
+            .and_then(|user| user.get("login"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        merge_method: request
+            .get("mergeMethod")
+            .and_then(Value::as_str)
+            .map(|method| method.to_ascii_lowercase()),
+    })
+}
+
+fn parse_pr_issue_comments_value(value: &Value) -> AppResult<Vec<PrIssueCommentSummary>> {
+    let comments = flatten_paginated_array(value).ok_or_else(|| {
+        AppError::Infrastructure("gh PR comments: expected JSON array/pages".to_string())
+    })?;
+    Ok(comments
+        .into_iter()
+        .rev()
+        .take(20)
+        .map(|comment| {
+            let author = comment
+                .get("user")
+                .and_then(|user| user.get("login"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let body = comment
+                .get("body")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let source = format!(
+                "{}\n{}",
+                author.as_deref().unwrap_or_default().to_ascii_lowercase(),
+                body.to_ascii_lowercase()
+            );
+            PrIssueCommentSummary {
+                id: json_id_to_string(comment.get("id")).unwrap_or_default(),
+                author,
+                body,
+                url: comment
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                created_at: comment
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                is_codecov: source.contains("codecov"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect())
 }
 
 fn parse_pr_status_value(v: &Value) -> AppResult<PrStatus> {

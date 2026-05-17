@@ -9,9 +9,10 @@ use crate::infrastructure::services::gh_cli_github_service::{
     parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_pr_annotation_head_sha_output,
     parse_pr_create_output, parse_pr_create_plain_output,
-    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
-    parse_pr_review_feedback_output, parse_pr_status_output, parse_pr_sync_state_output,
-    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
+    parse_pr_health_output, parse_pr_review_comment_annotations_output,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_status_output,
+    parse_pr_sync_state_output, sanitize_stderr_line, scrub_token_urls,
+    CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -177,6 +178,65 @@ fn parse_pr_sync_state_preserves_unknown_merge_state_conservatively() {
     );
     assert_eq!(state.mergeable, Some(PrMergeableState::Unknown));
     assert!(state.is_draft);
+}
+
+#[test]
+fn parse_pr_health_collects_rollup_comments_and_auto_merge() {
+    let view_json = r#"{
+        "state": "OPEN",
+        "mergeStateStatus": "UNSTABLE",
+        "mergeable": "MERGEABLE",
+        "isDraft": false,
+        "headRefName": "feature/pr-autofix",
+        "baseRefName": "main",
+        "headRefOid": "head-sha",
+        "baseRefOid": "base-sha",
+        "mergedAt": null,
+        "mergeCommit": null,
+        "reviewDecision": "CHANGES_REQUESTED",
+        "autoMergeRequest": {
+            "mergeMethod": "SQUASH",
+            "enabledBy": {"login": "maintainer"}
+        },
+        "statusCheckRollup": [
+            {
+                "__typename": "CheckRun",
+                "name": "CodeQL",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/owner/repo/actions/runs/1"
+            },
+            {
+                "__typename": "StatusContext",
+                "context": "codecov/project",
+                "state": "FAILURE",
+                "targetUrl": "https://codecov.io/gh/owner/repo/pull/7"
+            }
+        ]
+    }"#;
+    let comments_json = r#"[[
+        {
+            "id": 7001,
+            "body": "Codecov report: project coverage is below threshold.",
+            "html_url": "https://github.com/owner/repo/pull/7#issuecomment-7001",
+            "created_at": "2026-05-17T10:00:00Z",
+            "user": {"login": "codecov-commenter"}
+        }
+    ]]"#;
+
+    let health = parse_pr_health_output(view_json, comments_json).unwrap();
+
+    assert_eq!(health.sync_state.merge_state_status, Some(PrMergeStateStatus::Unstable));
+    assert_eq!(health.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
+    assert_eq!(health.checks.len(), 2);
+    assert_eq!(health.checks[0].name, "CodeQL");
+    assert_eq!(health.checks[1].name, "codecov/project");
+    assert_eq!(
+        health.auto_merge_request.as_ref().and_then(|request| request.merge_method.as_deref()),
+        Some("squash")
+    );
+    assert_eq!(health.issue_comments.len(), 1);
+    assert!(health.issue_comments[0].is_codecov);
 }
 
 #[test]
@@ -1033,6 +1093,85 @@ mod mock_roundtrip {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_health_uses_view_and_issue_comments_api() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(vec![r#"{
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "mergeable": "MERGEABLE",
+                "isDraft": false,
+                "headRefName": "feature",
+                "baseRefName": "main",
+                "statusCheckRollup": [],
+                "autoMergeRequest": null,
+                "reviewDecision": "APPROVED"
+            }"#.to_string()]),
+            Ok(vec!["[]".to_string()]),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let health = service.fetch_pr_health(Path::new("/tmp"), 68).await.unwrap();
+
+        assert_eq!(health.sync_state.head_ref_name, "feature");
+        assert_eq!(health.review_decision.as_deref(), Some("APPROVED"));
+        let calls = runner.gh_calls();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "view",
+                "68",
+                "--json",
+                "state,mergeStateStatus,mergeable,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,reviewDecision,statusCheckRollup,autoMergeRequest",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls[1],
+            vec![
+                "api",
+                "repos/{owner}/{repo}/issues/68/comments",
+                "--paginate",
+                "--slurp",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_merge_commands_use_selected_method() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![]), Ok(vec![])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        service
+            .enable_pr_auto_merge(Path::new("/tmp"), 68, "squash")
+            .await
+            .unwrap();
+        service
+            .disable_pr_auto_merge(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            runner.gh_calls(),
+            vec![
+                vec!["pr", "merge", "68", "--auto", "--squash"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                vec!["pr", "merge", "68", "--disable-auto"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+            ]
         );
     }
 

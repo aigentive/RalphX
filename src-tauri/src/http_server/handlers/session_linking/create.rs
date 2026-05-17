@@ -1,6 +1,8 @@
 use super::*;
 use crate::application::harness_runtime_registry::default_verification_max_rounds;
-use crate::domain::entities::{build_child_session, matching_blocker_followup_session, ChildSessionDraftInput, TaskId};
+use crate::domain::entities::{
+    build_child_session, matching_blocker_followup_session, ChildSessionDraftInput, TaskId,
+};
 use crate::http_server::helpers::get_task_context_impl;
 
 async fn initialize_verification_state(
@@ -191,7 +193,10 @@ fn build_child_session_response(
             .unwrap_or_else(|| "Child Session".to_string()),
         status: session.status.to_string(),
         created_at: session.created_at.to_rfc3339(),
-        inherited_plan_id: session.inherited_plan_artifact_id.as_ref().map(ToString::to_string),
+        inherited_plan_id: session
+            .inherited_plan_artifact_id
+            .as_ref()
+            .map(ToString::to_string),
         initial_prompt: req.initial_prompt.clone(),
         parent_context,
         orchestration_triggered,
@@ -256,7 +261,10 @@ async fn resolve_blocker_fingerprint(
         .map_err(|e| {
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to resolve blocker fingerprint from task context: {}", e),
+                format!(
+                    "Failed to resolve blocker fingerprint from task context: {}",
+                    e
+                ),
             )
         })?;
 
@@ -305,13 +313,8 @@ async fn spawn_child_orchestration(
         Err(e) => {
             error!("{error_context} {}: {}", child_session_str, e);
             if let Some(current_generation) = verification_generation.take() {
-                rollback_verification_state(
-                    state,
-                    parent_id,
-                    current_generation,
-                    "spawn failure",
-                )
-                .await;
+                rollback_verification_state(state, parent_id, current_generation, "spawn failure")
+                    .await;
             }
             // Only archive verification children on spawn failure — general follow-up
             // children remain Active so users can retry orchestration later.
@@ -414,8 +417,7 @@ pub(crate) async fn create_child_session_impl(
     }
 
     if req.purpose.as_deref() == Some("verification") {
-        verification_generation =
-            initialize_verification_state(state, &parent_id, &parent).await?;
+        verification_generation = initialize_verification_state(state, &parent_id, &parent).await?;
     }
 
     let (resolved_team_mode, resolved_team_config_json) = if let Some(mode) = &req.team_mode {
@@ -423,7 +425,10 @@ pub(crate) async fn create_child_session_impl(
             .team_config
             .as_ref()
             .and_then(|config| serde_json::to_value(config).ok());
-        (Some(mode.clone()), config_json.map(|value| value.to_string()))
+        (
+            Some(mode.clone()),
+            config_json.map(|value| value.to_string()),
+        )
     } else if req.inherit_context {
         (parent.team_mode.clone(), parent.team_config_json.clone())
     } else {
@@ -438,17 +443,18 @@ pub(crate) async fn create_child_session_impl(
             Some(parent.project_id.as_str()),
         )
         .await;
-    let (resolved_team_mode, resolved_team_config_json) =
-        if team_mode_requested && !team_mode_supported {
-            tracing::info!(
-                parent_session_id = %parent_id.as_str(),
-                project_id = %parent.project_id,
-                "Downgrading child ideation session team mode to solo because the primary harness does not support team mode"
-            );
-            (Some("solo".to_string()), None)
-        } else {
-            (resolved_team_mode, resolved_team_config_json)
-        };
+    let (resolved_team_mode, resolved_team_config_json) = if team_mode_requested
+        && !team_mode_supported
+    {
+        tracing::info!(
+            parent_session_id = %parent_id.as_str(),
+            project_id = %parent.project_id,
+            "Downgrading child ideation session team mode to solo because the primary harness does not support team mode"
+        );
+        (Some("solo".to_string()), None)
+    } else {
+        (resolved_team_mode, resolved_team_config_json)
+    };
 
     let (team_mode, team_config_json) = validate_resolved_team_config(
         resolved_team_mode.as_ref(),
@@ -580,9 +586,11 @@ pub(crate) async fn create_child_session_impl(
     // drain service can auto-launch the session once a slot frees up.
     let persisted_pending_prompt =
         if orchestration_result == ChildOrchestrationResult::DeferredCapacity {
-            let effective_prompt_for_defer = effective_initial_prompt
-                .clone()
-                .or_else(|| effective_description.clone().filter(|d| !d.trim().is_empty()));
+            let effective_prompt_for_defer = effective_initial_prompt.clone().or_else(|| {
+                effective_description
+                    .clone()
+                    .filter(|d| !d.trim().is_empty())
+            });
             if let Some(ref deferred_prompt) = effective_prompt_for_defer {
                 if let Err(e) = state
                     .app_state

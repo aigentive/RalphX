@@ -36,6 +36,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
@@ -130,6 +131,7 @@ const {
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  setAgentConversationWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   switchAgentConversationModeMock,
   sendAgentMessageMock,
@@ -409,6 +411,8 @@ vi.mock("@/api/chat", () => ({
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
+      setAgentConversationWorkspacePrSupervisionMock(...args),
     precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
       precomputePrDescriptionMock(...args),
     switchAgentConversationMode: (...args: unknown[]) =>
@@ -901,6 +905,7 @@ export function setupAgentsViewTest() {
   listAgentConversationWorkspacesByProjectMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  setAgentConversationWorkspacePrSupervisionMock.mockReset();
   switchAgentConversationModeMock.mockReset();
   sendAgentMessageMock.mockReset();
   createConversationMock.mockReset();
@@ -1005,6 +1010,33 @@ export function setupAgentsViewTest() {
     prNumber: 42,
     prUrl: "https://github.com/mock/project/pull/42",
   });
+  setAgentConversationWorkspacePrSupervisionMock.mockImplementation(
+    async (conversationId: string, input: { autoFixEnabled: boolean; autoMergeDesired: boolean }) => ({
+      conversationId,
+      projectId: "project-1",
+      mode: "edit",
+      baseRefKind: "project_default",
+      baseRef: "main",
+      baseDisplayName: "Project default (main)",
+      baseCommit: null,
+      branchName: `ralphx/demo/agent-${conversationId}`,
+      worktreePath: `/tmp/ralphx/${conversationId}`,
+      linkedIdeationSessionId: null,
+      linkedPlanBranchId: null,
+      publicationPrNumber: 42,
+      publicationPrUrl: "https://github.com/mock/project/pull/42",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      prAutofixEnabled: input.autoFixEnabled,
+      prAutoMergeDesired: input.autoMergeDesired,
+      prAutoMergeMethod: "squash",
+      prSupervisionStatus:
+        input.autoFixEnabled || input.autoMergeDesired ? "monitoring" : "disabled",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
+  );
   switchAgentConversationModeMock.mockResolvedValue({
     conversation: conversation({
       id: "conversation-1",

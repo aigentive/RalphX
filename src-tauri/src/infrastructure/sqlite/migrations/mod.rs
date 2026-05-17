@@ -342,9 +342,12 @@ mod v20260512093000_startup_local_cleanup_markers_tests;
 mod v20260513143000_orphan_worktree_cleanup_markers;
 #[cfg(test)]
 mod v20260513143000_orphan_worktree_cleanup_markers_tests;
+mod v20260517153000_agent_workspace_pr_supervision;
+#[cfg(test)]
+mod v20260517153000_agent_workspace_pr_supervision_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260513143000;
+pub const SCHEMA_VERSION: i64 = 20260517153000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -973,6 +976,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260513143000,
         name: "orphan_worktree_cleanup_markers",
         migrate: v20260513143000_orphan_worktree_cleanup_markers::migrate,
+    },
+    Migration {
+        version: 20260517153000,
+        name: "agent_workspace_pr_supervision",
+        migrate: v20260517153000_agent_workspace_pr_supervision::migrate,
     },
 ];
 

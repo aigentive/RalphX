@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::AppResult;
 
 /// Status of a GitHub pull request
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrStatus {
     Open,
     Closed,
@@ -21,7 +21,7 @@ pub enum PrStatus {
 }
 
 /// GitHub's merge-state status for an open pull request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrMergeStateStatus {
     Clean,
     Behind,
@@ -35,7 +35,7 @@ pub enum PrMergeStateStatus {
 }
 
 /// GitHub's coarse mergeability value for a pull request.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrMergeableState {
     Mergeable,
     Conflicting,
@@ -44,7 +44,7 @@ pub enum PrMergeableState {
 }
 
 /// Rich GitHub pull-request state used by PR-mode freshness reconciliation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrSyncState {
     pub status: PrStatus,
     pub merge_state_status: Option<PrMergeStateStatus>,
@@ -54,6 +54,43 @@ pub struct PrSyncState {
     pub base_ref_name: String,
     pub head_ref_oid: Option<String>,
     pub base_ref_oid: Option<String>,
+}
+
+/// GitHub auto-merge request state for a pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrAutoMergeRequest {
+    pub enabled_by: Option<String>,
+    pub merge_method: Option<String>,
+}
+
+/// Lightweight status-check summary used by PR supervision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrHealthCheck {
+    pub name: String,
+    pub status: Option<String>,
+    pub conclusion: Option<String>,
+    pub details_url: Option<String>,
+}
+
+/// PR issue comment summary used for bot-only feedback such as Codecov.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrIssueCommentSummary {
+    pub id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub url: Option<String>,
+    pub created_at: Option<String>,
+    pub is_codecov: bool,
+}
+
+/// Cheap PR health payload for background supervision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrHealth {
+    pub sync_state: PrSyncState,
+    pub review_decision: Option<String>,
+    pub checks: Vec<PrHealthCheck>,
+    pub issue_comments: Vec<PrIssueCommentSummary>,
+    pub auto_merge_request: Option<PrAutoMergeRequest>,
 }
 
 /// Pull request found by an exact head-branch lookup.
@@ -79,7 +116,7 @@ impl PrBranchMatch {
 }
 
 /// Inline review comment attached to a GitHub pull request review.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrReviewCommentFeedback {
     pub id: String,
     pub author: String,
@@ -89,7 +126,7 @@ pub struct PrReviewCommentFeedback {
 }
 
 /// Actionable GitHub review feedback that should re-enter RalphX revision flow.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrReviewFeedback {
     pub review_id: String,
     pub author: String,
@@ -202,6 +239,33 @@ pub trait GithubServiceTrait: Send + Sync {
         pr_number: i64,
     ) -> AppResult<PrDiffAnnotations> {
         Ok(PrDiffAnnotations::empty(pr_number))
+    }
+
+    /// Fetch lightweight PR health for background supervision.
+    async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
+        let sync_state = self.check_pr_sync_state(working_dir, pr_number).await?;
+        Ok(PrHealth {
+            sync_state,
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        })
+    }
+
+    /// Enable GitHub auto-merge for a PR with the selected merge method.
+    async fn enable_pr_auto_merge(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+        _method: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// Disable GitHub auto-merge for a PR.
+    async fn disable_pr_auto_merge(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
+        Ok(())
     }
 
     /// Push a branch to origin.

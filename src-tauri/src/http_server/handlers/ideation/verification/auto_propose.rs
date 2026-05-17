@@ -112,7 +112,11 @@ pub async fn auto_propose_with_retry(
                     "project_id": project_id,
                 });
                 if let Err(e) = external_events_repo
-                    .insert_event("ideation:auto_propose_sent", project_id, &sent_payload.to_string())
+                    .insert_event(
+                        "ideation:auto_propose_sent",
+                        project_id,
+                        &sent_payload.to_string(),
+                    )
                     .await
                 {
                     tracing::warn!(
@@ -123,11 +127,13 @@ pub async fn auto_propose_with_retry(
                 }
                 // Layer 3: webhook push (non-fatal, fire-and-forget)
                 if let Some(ref publisher) = webhook_publisher {
-                    let _ = publisher.publish(
-                        ralphx_domain::entities::EventType::IdeationAutoProposeSent,
-                        project_id,
-                        sent_payload,
-                    ).await;
+                    let _ = publisher
+                        .publish(
+                            ralphx_domain::entities::EventType::IdeationAutoProposeSent,
+                            project_id,
+                            sent_payload,
+                        )
+                        .await;
                 }
                 return;
             }
@@ -178,10 +184,12 @@ pub async fn auto_propose_with_retry(
     }
     // Layer 3: webhook push for failure (Layer 2 insert above) — non-fatal, fire-and-forget
     if let Some(ref publisher) = webhook_publisher {
-        let _ = publisher.publish(
-            ralphx_domain::entities::EventType::IdeationAutoProposeFailed,
-            project_id,
-            payload,
-        ).await;
+        let _ = publisher
+            .publish(
+                ralphx_domain::entities::EventType::IdeationAutoProposeFailed,
+                project_id,
+                payload,
+            )
+            .await;
     }
 }

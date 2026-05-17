@@ -16,14 +16,14 @@ use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, ChatMessage, DelegatedSession,
-    DelegatedSessionId, IdeationSessionId, SessionPurpose,
+    AgentRun, ChatContextType, ChatConversation, ChatMessage, DelegatedSession, DelegatedSessionId,
+    IdeationSessionId, SessionPurpose,
 };
 use crate::http_server::delegation::DelegationJobSnapshot;
 use crate::http_server::types::{
-    AgentStateInfo, ChatMessageSummary, DelegateCancelRequest, DelegatedRunSummary,
-    DelegatedSessionStatusResponse, DelegatedSessionSummary, DelegateStartRequest,
-    DelegateWaitRequest, HttpServerState,
+    AgentStateInfo, ChatMessageSummary, DelegateCancelRequest, DelegateStartRequest,
+    DelegateWaitRequest, DelegatedRunSummary, DelegatedSessionStatusResponse,
+    DelegatedSessionSummary, HttpServerState,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, resolve_project_root_from_plugin_dir,
@@ -53,18 +53,20 @@ fn resolve_delegation_policy(
     ),
     JsonError,
 > {
-    let caller = load_canonical_agent_definition(project_root, caller_agent_name).ok_or_else(|| {
-        json_error(
-            StatusCode::BAD_REQUEST,
-            format!("Unknown canonical caller agent '{}'", caller_agent_name),
-        )
-    })?;
-    let target = load_canonical_agent_definition(project_root, target_agent_name).ok_or_else(|| {
-        json_error(
-            StatusCode::BAD_REQUEST,
-            format!("Unknown canonical agent '{}'", target_agent_name),
-        )
-    })?;
+    let caller =
+        load_canonical_agent_definition(project_root, caller_agent_name).ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                format!("Unknown canonical caller agent '{}'", caller_agent_name),
+            )
+        })?;
+    let target =
+        load_canonical_agent_definition(project_root, target_agent_name).ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                format!("Unknown canonical agent '{}'", target_agent_name),
+            )
+        })?;
 
     if !caller.delegation.is_enabled() {
         return Err(json_error(
@@ -127,8 +129,7 @@ async fn resolve_delegated_session_id(
         return Ok(delegated_session_id.clone());
     }
 
-    let (project_id, _) =
-        load_parent_project_working_directory(state, parent_session_id).await?;
+    let (project_id, _) = load_parent_project_working_directory(state, parent_session_id).await?;
     let mut session = DelegatedSession::new(
         crate::domain::entities::ProjectId::from_string(project_id),
         "ideation",
@@ -220,21 +221,21 @@ async fn resolve_parent_session_id(
                 )
             })?;
 
-        let derived_parent_session_id = if caller_session.session_purpose == SessionPurpose::Verification
-        {
-            caller_session
-                .parent_session_id
-                .as_ref()
-                .map(|id| id.as_str().to_string())
-                .ok_or_else(|| {
-                    json_error(
+        let derived_parent_session_id =
+            if caller_session.session_purpose == SessionPurpose::Verification {
+                caller_session
+                    .parent_session_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_string())
+                    .ok_or_else(|| {
+                        json_error(
                         StatusCode::BAD_REQUEST,
                         "Verification child session has no parent_session_id for delegate_start",
                     )
-                })?
-        } else {
-            caller_session.id.as_str().to_string()
-        };
+                    })?
+            } else {
+                caller_session.id.as_str().to_string()
+            };
 
         if let Some(explicit_parent_session_id) = req.parent_session_id.as_ref() {
             if explicit_parent_session_id != &derived_parent_session_id {
@@ -297,8 +298,7 @@ fn delegated_event_seq() -> u64 {
 }
 
 fn delegated_total_tokens(latest_run: &DelegatedRunSummary) -> Option<u64> {
-    let total =
-        latest_run.input_tokens.unwrap_or(0)
+    let total = latest_run.input_tokens.unwrap_or(0)
         + latest_run.output_tokens.unwrap_or(0)
         + latest_run.cache_creation_tokens.unwrap_or(0)
         + latest_run.cache_read_tokens.unwrap_or(0);
@@ -326,7 +326,9 @@ fn delegated_duration_ms(latest_run: &DelegatedRunSummary) -> Option<u64> {
     }
 }
 
-fn cached_streaming_task_from_started_payload(payload: &AgentTaskStartedPayload) -> CachedStreamingTask {
+fn cached_streaming_task_from_started_payload(
+    payload: &AgentTaskStartedPayload,
+) -> CachedStreamingTask {
     CachedStreamingTask {
         tool_use_id: payload.tool_use_id.clone(),
         description: payload.description.clone(),
@@ -751,8 +753,7 @@ async fn build_delegated_session_status_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to load delegated conversation: {error}"),
             )
-        })?
-    {
+        })? {
         let latest_run = state
             .app_state
             .agent_run_repo
@@ -811,11 +812,12 @@ pub(crate) async fn start_delegate_impl(
         )
     })?;
     let parent_session_id = resolve_parent_session_id(state, &req).await?;
-    let parent_conversation_id = resolve_parent_conversation_id(state, &req, &parent_session_id).await?;
+    let parent_conversation_id =
+        resolve_parent_conversation_id(state, &req, &parent_session_id).await?;
     let (project_id, working_directory) =
         load_parent_project_working_directory(state, &parent_session_id).await?;
-    let harness = resolve_delegate_harness(state, caller_agent_name, project_id.as_str(), req.harness)
-        .await;
+    let harness =
+        resolve_delegate_harness(state, caller_agent_name, project_id.as_str(), req.harness).await;
 
     let resolved_spawn = resolve_agent_spawn_settings(
         caller_agent_name,
@@ -969,7 +971,9 @@ pub(crate) async fn start_delegate_impl(
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let run = match agent_run_repo
-                .get_by_id(&crate::domain::entities::AgentRunId::from_string(agent_run_id.clone()))
+                .get_by_id(&crate::domain::entities::AgentRunId::from_string(
+                    agent_run_id.clone(),
+                ))
                 .await
             {
                 Ok(Some(run)) => run,
@@ -993,7 +997,9 @@ pub(crate) async fn start_delegate_impl(
                             let _ = handle.emit(events::AGENT_TASK_COMPLETED, payload);
                         }
                     }
-                    delegation_service.mark_failed(&job_id, error.to_string()).await;
+                    delegation_service
+                        .mark_failed(&job_id, error.to_string())
+                        .await;
                     let _ = delegated_session_repo
                         .update_status(
                             &DelegatedSessionId::from_string(delegated_session_id_for_task.clone()),
@@ -1078,7 +1084,9 @@ pub(crate) async fn start_delegate_impl(
                             let _ = handle.emit(events::AGENT_TASK_COMPLETED, payload);
                         }
                     }
-                    delegation_service.mark_failed(&job_id, detail.clone()).await;
+                    delegation_service
+                        .mark_failed(&job_id, detail.clone())
+                        .await;
                     let _ = delegated_session_repo
                         .update_status(
                             &DelegatedSessionId::from_string(delegated_session_id_for_task.clone()),

@@ -10,7 +10,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId,
+    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -59,6 +59,18 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         publication_pr_url: row.get("publication_pr_url")?,
         publication_pr_status: row.get("publication_pr_status")?,
         publication_push_status: row.get("publication_push_status")?,
+        pr_autofix_enabled: row.get("pr_autofix_enabled")?,
+        pr_auto_merge_desired: row.get("pr_auto_merge_desired")?,
+        pr_auto_merge_method: row
+            .get::<_, Option<String>>("pr_auto_merge_method")?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()),
+        pr_auto_merge_current: row.get("pr_auto_merge_current")?,
+        pr_supervision_status: row.get("pr_supervision_status")?,
+        pr_supervision_summary: row.get("pr_supervision_summary")?,
+        pr_supervision_updated_at: row
+            .get::<_, Option<String>>("pr_supervision_updated_at")?
+            .map(|value| parse_datetime(&value)),
         status: AgentConversationWorkspaceStatus::from_str(&status)
             .unwrap_or(AgentConversationWorkspaceStatus::Active),
         created_at: parse_datetime(&created_at),
@@ -126,6 +138,15 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let publication_pr_url = workspace.publication_pr_url.clone();
         let publication_pr_status = workspace.publication_pr_status.clone();
         let publication_push_status = workspace.publication_push_status.clone();
+        let pr_autofix_enabled = workspace.pr_autofix_enabled;
+        let pr_auto_merge_desired = workspace.pr_auto_merge_desired;
+        let pr_auto_merge_method = workspace.pr_auto_merge_method.clone();
+        let pr_auto_merge_current = workspace.pr_auto_merge_current;
+        let pr_supervision_status = workspace.pr_supervision_status.clone();
+        let pr_supervision_summary = workspace.pr_supervision_summary.clone();
+        let pr_supervision_updated_at = workspace
+            .pr_supervision_updated_at
+            .map(|value| value.to_rfc3339());
         let status = workspace.status.to_string();
         let created_at = workspace.created_at.to_rfc3339();
         let updated_at = Utc::now().to_rfc3339();
@@ -139,8 +160,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         base_display_name, base_commit, branch_name, worktree_path,
                         linked_ideation_session_id, linked_plan_branch_id,
                         publication_pr_number, publication_pr_url, publication_pr_status,
-                        publication_push_status, status, created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                        publication_push_status, pr_autofix_enabled, pr_auto_merge_desired,
+                        pr_auto_merge_method, pr_auto_merge_current, pr_supervision_status,
+                        pr_supervision_summary, pr_supervision_updated_at, status, created_at,
+                        updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -156,6 +180,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_url=excluded.publication_pr_url,
                         publication_pr_status=excluded.publication_pr_status,
                         publication_push_status=excluded.publication_push_status,
+                        pr_autofix_enabled=excluded.pr_autofix_enabled,
+                        pr_auto_merge_desired=excluded.pr_auto_merge_desired,
+                        pr_auto_merge_method=excluded.pr_auto_merge_method,
+                        pr_auto_merge_current=excluded.pr_auto_merge_current,
+                        pr_supervision_status=excluded.pr_supervision_status,
+                        pr_supervision_summary=excluded.pr_supervision_summary,
+                        pr_supervision_updated_at=excluded.pr_supervision_updated_at,
                         status=excluded.status,
                         updated_at=excluded.updated_at",
                     rusqlite::params![
@@ -174,6 +205,13 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         publication_pr_url,
                         publication_pr_status,
                         publication_push_status,
+                        pr_autofix_enabled,
+                        pr_auto_merge_desired,
+                        pr_auto_merge_method,
+                        pr_auto_merge_current,
+                        pr_supervision_status,
+                        pr_supervision_summary,
+                        pr_supervision_updated_at,
                         status,
                         created_at,
                         updated_at,
@@ -448,6 +486,96 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_status,
                         push_status,
                         updated_at
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let auto_merge_method = auto_merge_method.trim().to_string();
+        let auto_merge_method = if auto_merge_method.is_empty() {
+            DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()
+        } else {
+            auto_merge_method
+        };
+        let supervision_status = if autofix_enabled || auto_merge_desired {
+            Some("monitoring".to_string())
+        } else {
+            Some("disabled".to_string())
+        };
+        let supervision_summary = if autofix_enabled || auto_merge_desired {
+            Some("RalphX PR supervision is enabled.".to_string())
+        } else {
+            None
+        };
+        let now = Utc::now().to_rfc3339();
+        let supervision_updated_at = now.clone();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET pr_autofix_enabled = ?2,
+                         pr_auto_merge_desired = ?3,
+                         pr_auto_merge_method = ?4,
+                         pr_supervision_status = ?5,
+                         pr_supervision_summary = ?6,
+                         pr_supervision_updated_at = ?7,
+                         updated_at = ?8
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![
+                        conversation_id,
+                        autofix_enabled,
+                        auto_merge_desired,
+                        auto_merge_method,
+                        supervision_status,
+                        supervision_summary,
+                        supervision_updated_at,
+                        now
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn update_pr_auto_merge_state(
+        &self,
+        conversation_id: &ChatConversationId,
+        auto_merge_current: Option<bool>,
+        status: Option<&str>,
+        summary: Option<&str>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let status = status.map(str::to_string);
+        let summary = summary.map(str::to_string);
+        let now = Utc::now().to_rfc3339();
+        let supervision_updated_at = now.clone();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET pr_auto_merge_current = ?2,
+                         pr_supervision_status = COALESCE(?3, pr_supervision_status),
+                         pr_supervision_summary = COALESCE(?4, pr_supervision_summary),
+                         pr_supervision_updated_at = ?5,
+                         updated_at = ?6
+                     WHERE conversation_id = ?1",
+                    rusqlite::params![
+                        conversation_id,
+                        auto_merge_current,
+                        status,
+                        summary,
+                        supervision_updated_at,
+                        now
                     ],
                 )?;
                 Ok(())

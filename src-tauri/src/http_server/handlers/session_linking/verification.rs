@@ -88,7 +88,10 @@ pub(crate) async fn create_verification_child_session(
                 if let Err(persist_err) = state
                     .app_state
                     .ideation_session_repo
-                    .set_pending_initial_prompt(&child_session_str, Some(effective_description.clone()))
+                    .set_pending_initial_prompt(
+                        &child_session_str,
+                        Some(effective_description.clone()),
+                    )
                     .await
                 {
                     error!(

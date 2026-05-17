@@ -33,6 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
 import { GitAuthRepairPanel } from "@/components/git/GitAuthRepairPanel";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
@@ -291,6 +292,32 @@ export function AgentPublishPanel({
       );
     },
   });
+  const prSupervisionMutation = useMutation<
+    AgentConversationWorkspace,
+    Error,
+    { autoFixEnabled: boolean; autoMergeDesired: boolean }
+  >({
+    mutationFn: (input) =>
+      chatApi.setAgentConversationWorkspacePrSupervision(conversationId!, {
+        autoFixEnabled: input.autoFixEnabled,
+        autoMergeDesired: input.autoMergeDesired,
+        autoMergeMethod: workspace?.prAutoMergeMethod ?? "squash",
+      }),
+    onSuccess: (updatedWorkspace) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(updatedWorkspace.conversationId),
+        updatedWorkspace,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.publicationEvents(updatedWorkspace.conversationId),
+      });
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to update PR supervision",
+      );
+    },
+  });
   const changesError = reviewQuery.error;
   const changes = reviewQuery.data?.changes ?? [];
   const commits = useMemo<DiffViewerCommit[]>(
@@ -421,6 +448,35 @@ export function AgentPublishPanel({
     hasPublishedPr &&
     !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
+  const pendingPrSupervision = prSupervisionMutation.variables;
+  const prAutofixEnabled =
+    pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
+  const prAutoMergeDesired =
+    pendingPrSupervision?.autoMergeDesired ?? workspace.prAutoMergeDesired ?? false;
+  const canConfigurePrSupervision =
+    workspace.mode === "edit" && workspace.status !== "missing" && !terminalPublicationStatus;
+  const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
+  const prSupervisionStatusLabel =
+    prSupervisionMutation.isPending
+      ? "Saving PR supervision"
+      : prSupervisionStatus === "fixing"
+        ? "Fixing PR"
+        : prSupervisionStatus === "waiting_for_checks"
+          ? "Waiting for checks"
+          : prSupervisionStatus === "blocked"
+            ? "PR supervision blocked"
+            : prAutofixEnabled || prAutoMergeDesired
+              ? "Monitoring PR"
+              : null;
+  const updatePrSupervisionPreferences = (next: {
+    autoFixEnabled: boolean;
+    autoMergeDesired: boolean;
+  }) => {
+    if (!canConfigurePrSupervision || prSupervisionMutation.isPending) {
+      return;
+    }
+    prSupervisionMutation.mutate(next);
+  };
   const terminalPrLabel =
     workspace.publicationPrNumber != null
       ? `PR #${workspace.publicationPrNumber}`
@@ -644,6 +700,58 @@ export function AgentPublishPanel({
               )}
             </div>
           </div>
+          {workspace.mode === "edit" && (
+            <div
+              className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs"
+              data-testid="agents-pr-supervision-controls"
+            >
+              <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
+                <Switch
+                  checked={prAutofixEnabled}
+                  disabled={!canConfigurePrSupervision || prSupervisionMutation.isPending}
+                  onCheckedChange={(checked) =>
+                    updatePrSupervisionPreferences({
+                      autoFixEnabled: checked,
+                      autoMergeDesired: prAutoMergeDesired,
+                    })
+                  }
+                  aria-label="Let RalphX autofix CI failures and reviews"
+                  data-testid="agents-pr-autofix-switch"
+                />
+                <span>Let RalphX autofix CI failures and reviews</span>
+              </label>
+              <label className="flex min-h-8 items-center gap-2 text-[var(--text-secondary)]">
+                <Switch
+                  checked={prAutoMergeDesired}
+                  disabled={!canConfigurePrSupervision || prSupervisionMutation.isPending}
+                  onCheckedChange={(checked) =>
+                    updatePrSupervisionPreferences({
+                      autoFixEnabled: prAutofixEnabled,
+                      autoMergeDesired: checked,
+                    })
+                  }
+                  aria-label="Enable GitHub auto-merge"
+                  data-testid="agents-pr-auto-merge-switch"
+                />
+                <span>Enable GitHub auto-merge</span>
+              </label>
+              {prSupervisionStatusLabel && (
+                <span
+                  className="rounded-full border px-2 py-1 text-[11px] font-medium"
+                  style={{
+                    backgroundColor: "var(--bg-elevated)",
+                    borderColor: "var(--border-subtle)",
+                    borderStyle: "solid",
+                    borderWidth: "1px",
+                    color: "var(--text-muted)",
+                  }}
+                  data-testid="agents-pr-supervision-status"
+                >
+                  {prSupervisionStatusLabel}
+                </span>
+              )}
+            </div>
+          )}
           {isBranchUpdateNeeded && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"

@@ -13,8 +13,8 @@ use crate::domain::entities::{
     IdeationSession, IdeationSessionId, SessionOrigin, VerificationStatus,
 };
 use crate::domain::repositories::IdeationSessionRepository;
-use crate::domain::services::running_agent_registry::{RunningAgentKey, RunningAgentRegistry};
 use crate::domain::services::emit_verification_status_changed;
+use crate::domain::services::running_agent_registry::{RunningAgentKey, RunningAgentRegistry};
 use crate::error::AppError;
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,

@@ -7,6 +7,7 @@ import {
   getConversationRefDisplay,
   getSidebarPublicationGroupLabel,
   getSidebarPublicationLabel,
+  getSidebarPublicationLabelForWorkspace,
   getSidebarPublicationState,
   shouldShowConversationForPublicationFilters,
 } from "./agentSidebarMetadata";
@@ -101,6 +102,35 @@ describe("agent sidebar metadata helpers", () => {
     expect(getSidebarPublicationLabel("uncommitted")).toBe("uncommitted");
     expect(getSidebarPublicationGroupLabel("merged")).toBe("Merged");
     expect(getSidebarPublicationGroupLabel("unknown" as never)).toBe("Active");
+  });
+
+  it("surfaces PR supervision attention labels without changing filter state", () => {
+    expect(
+      getSidebarPublicationLabelForWorkspace(
+        workspace({
+          publicationPushStatus: "needs_agent",
+          prSupervisionStatus: "fixing",
+        })
+      )
+    ).toBe("fixing");
+    expect(
+      getSidebarPublicationLabelForWorkspace(
+        workspace({
+          publicationPushStatus: "pushed",
+          prSupervisionStatus: "monitoring",
+          prAutoMergeCurrent: true,
+        })
+      )
+    ).toBe("auto-merge");
+    expect(
+      getSidebarPublicationState(
+        workspace({
+          publicationPushStatus: "pushed",
+          prSupervisionStatus: "monitoring",
+          prAutoMergeCurrent: true,
+        })
+      )
+    ).toBe("active");
   });
 
   it("chooses PR metadata before branch fallback labels", () => {

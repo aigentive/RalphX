@@ -13,11 +13,13 @@ pub async fn link_proposals_to_plan(
         .run_transaction(move |conn| {
             let artifact_id_str = ArtifactRepo::resolve_latest_sync(conn, &input_artifact_id)?;
 
-            let artifact = ArtifactRepo::get_by_id_sync(conn, &artifact_id_str)?.ok_or_else(|| {
-                AppError::NotFound(format!("Artifact {} not found", artifact_id_str))
-            })?;
+            let artifact =
+                ArtifactRepo::get_by_id_sync(conn, &artifact_id_str)?.ok_or_else(|| {
+                    AppError::NotFound(format!("Artifact {} not found", artifact_id_str))
+                })?;
 
-            let owning_sessions = SessionRepo::get_by_plan_artifact_id_sync(conn, &artifact_id_str)?;
+            let owning_sessions =
+                SessionRepo::get_by_plan_artifact_id_sync(conn, &artifact_id_str)?;
             if let Some(session) = owning_sessions.first() {
                 crate::http_server::helpers::assert_session_mutable(session)?;
             }

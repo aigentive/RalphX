@@ -9,16 +9,16 @@ use axum::{
 use tauri::Emitter;
 use tracing::error;
 
+use crate::application::task_cleanup_service::TaskCleanupService;
 use crate::application::{
     spawn_ready_task_scheduler_if_needed, CreateProposalOptions, UpdateProposalOptions,
     UpdateSource,
 };
+use crate::domain::entities::{ChatConversationId, IdeationSessionId, Priority, TaskProposalId};
 use crate::domain::services::{
     emit_external_webhook_event, PresentationKind, WebhookPresentationContext,
 };
-use crate::application::task_cleanup_service::TaskCleanupService;
 use crate::http_server::handlers::ideation::stop_verification_children;
-use crate::domain::entities::{ChatConversationId, IdeationSessionId, Priority, TaskProposalId};
 use crate::http_server::helpers::{
     archive_proposal_impl, create_proposal_impl, finalize_proposals_impl, parse_category,
     parse_priority, update_proposal_impl,
@@ -147,7 +147,10 @@ pub async fn finalize_proposals(
     let response = finalize_proposals_impl(&state.app_state, &req.session_id, is_external)
         .await
         .map_err(|e| {
-            error!("Failed to finalize proposals for session {}: {}", req.session_id, e);
+            error!(
+                "Failed to finalize proposals for session {}: {}",
+                req.session_id, e
+            );
             let status = match &e {
                 crate::error::AppError::Validation(_) => StatusCode::BAD_REQUEST,
                 crate::error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
@@ -180,10 +183,20 @@ pub async fn finalize_proposals(
             )
             .await
             {
-                tracing::warn!(error = e, context = "finalize_proposals: ideation:proposals_ready emit", "Non-fatal error in enrichment path");
+                tracing::warn!(
+                    error = e,
+                    context = "finalize_proposals: ideation:proposals_ready emit",
+                    "Non-fatal error in enrichment path"
+                );
             }
-        } else if let Err(e) = state.app_state.external_events_repo
-            .insert_event("ideation:proposals_ready", &response.project_id, &payload.to_string())
+        } else if let Err(e) = state
+            .app_state
+            .external_events_repo
+            .insert_event(
+                "ideation:proposals_ready",
+                &response.project_id,
+                &payload.to_string(),
+            )
             .await
         {
             tracing::warn!(error = %e, "Failed to persist ideation:proposals_ready event");
@@ -214,10 +227,20 @@ pub async fn finalize_proposals(
             )
             .await
             {
-                tracing::warn!(error = e, context = "finalize_proposals: ideation:session_accepted emit", "Non-fatal error in enrichment path");
+                tracing::warn!(
+                    error = e,
+                    context = "finalize_proposals: ideation:session_accepted emit",
+                    "Non-fatal error in enrichment path"
+                );
             }
-        } else if let Err(e) = state.app_state.external_events_repo
-            .insert_event("ideation:session_accepted", &response.project_id, &accepted_payload.to_string())
+        } else if let Err(e) = state
+            .app_state
+            .external_events_repo
+            .insert_event(
+                "ideation:session_accepted",
+                &response.project_id,
+                &accepted_payload.to_string(),
+            )
             .await
         {
             tracing::warn!(error = %e, "Failed to persist ideation:session_accepted event");
@@ -236,7 +259,8 @@ pub async fn finalize_proposals(
             }
 
             // Notify task scheduler: newly created tasks may be Ready
-            let project_id = crate::domain::entities::ProjectId::from_string(response.project_id.clone());
+            let project_id =
+                crate::domain::entities::ProjectId::from_string(response.project_id.clone());
             let queued_count = match state
                 .app_state
                 .task_repo
@@ -504,7 +528,10 @@ pub async fn update_session_title(
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?
                 .ok_or_else(|| {
-                    error!("Conversation not found after title update: {}", conversation_id);
+                    error!(
+                        "Conversation not found after title update: {}",
+                        conversation_id
+                    );
                     StatusCode::NOT_FOUND
                 })?;
 

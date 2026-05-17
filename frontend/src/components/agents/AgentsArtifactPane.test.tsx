@@ -23,6 +23,7 @@ const {
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
+  setWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
   loadBranchBaseOptionsMock,
@@ -52,6 +53,7 @@ const {
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
+  setWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
@@ -84,6 +86,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getWorkspaceFreshnessMock(...args),
       updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
         updateWorkspaceFromBaseMock(...args),
+      setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
+        setWorkspacePrSupervisionMock(...args),
       precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
         precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
@@ -404,6 +408,27 @@ describe("AgentsArtifactPane", () => {
       targetRef: "origin/main",
       baseCommit: "base-sha",
     });
+    setWorkspacePrSupervisionMock.mockImplementation(
+      async (
+        conversationId: string,
+        input: { autoFixEnabled: boolean; autoMergeDesired: boolean }
+      ) =>
+        workspace({
+          mode: "edit",
+          conversationId,
+          publicationPrNumber: 90,
+          publicationPrUrl: "https://github.com/mock/project/pull/90",
+          publicationPrStatus: "open",
+          publicationPushStatus: "pushed",
+          prAutofixEnabled: input.autoFixEnabled,
+          prAutoMergeDesired: input.autoMergeDesired,
+          prAutoMergeMethod: "squash",
+          prSupervisionStatus:
+            input.autoFixEnabled || input.autoMergeDesired
+              ? "monitoring"
+              : "disabled",
+        })
+    );
     precomputePrDescriptionMock.mockClear();
     precomputePrDescriptionMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -596,6 +621,29 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("persists PR supervision switches from the publish pane", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-pr-autofix-switch"));
+
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenCalledWith("conversation-1", {
+        autoFixEnabled: true,
+        autoMergeDesired: false,
+        autoMergeMethod: "squash",
+      })
+    );
   });
 
   it("surfaces git auth repair actions in the publish pane", () => {

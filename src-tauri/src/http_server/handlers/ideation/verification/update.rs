@@ -9,14 +9,14 @@ pub async fn post_verification_status(
     Path(session_id): Path<String>,
     Json(req): Json<UpdateVerificationRequest>,
 ) -> Result<Json<VerificationResponse>, JsonError> {
-    use std::collections::HashSet;
-    use crate::http_server::VerificationRoundDetailResponse;
     use crate::domain::entities::ideation::{
         VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
     };
     use crate::domain::services::{
         gap_fingerprint, gap_score, jaccard_similarity, load_effective_verification_status,
     };
+    use crate::http_server::VerificationRoundDetailResponse;
+    use std::collections::HashSet;
 
     let requested_session_id = session_id;
     let requested_session_id_obj =
@@ -116,19 +116,21 @@ pub async fn post_verification_status(
         ));
     }
 
-    let (current, current_in_progress) =
-        load_effective_verification_status(state.app_state.ideation_session_repo.as_ref(), &session)
-            .await
-            .map_err(|e| {
-                error!(
-                    "Failed to load effective verification status for {}: {}",
-                    session_id, e
-                );
-                json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to load verification status",
-                )
-            })?;
+    let (current, current_in_progress) = load_effective_verification_status(
+        state.app_state.ideation_session_repo.as_ref(),
+        &session,
+    )
+    .await
+    .map_err(|e| {
+        error!(
+            "Failed to load effective verification status for {}: {}",
+            session_id, e
+        );
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to load verification status",
+        )
+    })?;
 
     // Transition validation matrix
     let has_convergence_reason = req.convergence_reason.is_some();
@@ -164,7 +166,10 @@ pub async fn post_verification_status(
         }
         if matches!(
             (current, new_status),
-            (VerificationStatus::NeedsRevision, VerificationStatus::Verified)
+            (
+                VerificationStatus::NeedsRevision,
+                VerificationStatus::Verified
+            )
         ) {
             return Err(json_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -287,8 +292,7 @@ pub async fn post_verification_status(
             convergence_reason: None,
             current_gaps: vec![],
             rounds: vec![],
-        })
-        ;
+        });
 
     if req.in_progress
         && new_status == VerificationStatus::Reviewing
@@ -438,7 +442,10 @@ pub async fn post_verification_status(
     }
 
     // Condition 3: max_rounds hard cap (R4-H3)
-    if !matches!(new_status, VerificationStatus::Verified | VerificationStatus::Skipped) {
+    if !matches!(
+        new_status,
+        VerificationStatus::Verified | VerificationStatus::Skipped
+    ) {
         let current_round = req.round.unwrap_or(run_snapshot.current_round);
         if run_snapshot.max_rounds > 0 && current_round >= run_snapshot.max_rounds {
             new_status = VerificationStatus::Verified;
@@ -464,7 +471,10 @@ pub async fn post_verification_status(
             .filter(|round| round.parse_failed)
             .count();
         if last_5_failures >= 3
-            && !matches!(new_status, VerificationStatus::Verified | VerificationStatus::Skipped)
+            && !matches!(
+                new_status,
+                VerificationStatus::Verified | VerificationStatus::Skipped
+            )
         {
             new_status = VerificationStatus::Verified;
             if run_snapshot.convergence_reason.is_none() {
@@ -530,7 +540,9 @@ pub async fn post_verification_status(
     // external follow-on work (event emission, auto-propose) is not cut off by the child's
     // own termination.
     if matches!(new_status, VerificationStatus::Skipped) {
-        stop_verification_children(&session_id, &state.app_state).await.ok();
+        stop_verification_children(&session_id, &state.app_state)
+            .await
+            .ok();
     }
 
     // Defense-in-depth: increment generation on skip so any in-flight zombie agent
@@ -690,7 +702,9 @@ pub async fn post_verification_status(
     // have been scheduled/emitted. This avoids cutting off the external auto-propose path
     // when the verifier child is itself the caller that reported Verified.
     if matches!(new_status, VerificationStatus::Verified) {
-        stop_verification_children(&session_id, &state.app_state).await.ok();
+        stop_verification_children(&session_id, &state.app_state)
+            .await
+            .ok();
     }
 
     use crate::http_server::types::{VerificationGapResponse, VerificationRoundSummary};

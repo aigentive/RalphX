@@ -345,7 +345,8 @@ pub async fn approve_team_plan(
         warn!(plan_id = %req.plan_id, "Approve rejected: plan channel gone (agent already received timeout)");
         return Err((
             StatusCode::CONFLICT,
-            "Plan expired — agent already received timeout. Cannot approve expired plan.".to_string(),
+            "Plan expired — agent already received timeout. Cannot approve expired plan."
+                .to_string(),
         ));
     }
 

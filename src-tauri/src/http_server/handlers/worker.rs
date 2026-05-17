@@ -5,11 +5,11 @@ use axum::{
 };
 
 use super::*;
-use tracing::error;
 use crate::domain::entities::{
     Artifact, ArtifactContent, ArtifactId, ArtifactSummary, ArtifactType, TaskContext, TaskId,
 };
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
+use tracing::error;
 
 pub async fn get_task_context(
     State(state): State<HttpServerState>,

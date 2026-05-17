@@ -12,10 +12,10 @@ use axum::{
     http::{request::Parts, StatusCode},
 };
 
+use crate::domain::entities::types::ProjectId;
 use crate::domain::entities::{
     ideation::IdeationSession, project::Project, review::Review, task::Task,
 };
-use crate::domain::entities::types::ProjectId;
 use crate::http_server::types::HttpError;
 
 // ============================================================================
@@ -98,9 +98,7 @@ pub trait ProjectScopeGuard {
             if !allowed.contains(self.project_id()) {
                 return Err(HttpError {
                     status: StatusCode::FORBIDDEN,
-                    message: Some(
-                        "API key does not have access to this project".to_string(),
-                    ),
+                    message: Some("API key does not have access to this project".to_string()),
                 });
             }
         }
