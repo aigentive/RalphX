@@ -54,6 +54,12 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
+  getWorkspaceStagedChangesMock: vi.fn(),
+  getWorkspaceUnstagedChangesMock: vi.fn(),
+  getWorkspaceCumulativeChangesMock: vi.fn(),
+  getWorkspaceStagedDiffMock: vi.fn(),
+  getWorkspaceUnstagedDiffMock: vi.fn(),
+  getWorkspaceCumulativeDiffMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
@@ -143,6 +149,12 @@ const {
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
+  getWorkspaceStagedChangesMock,
+  getWorkspaceUnstagedChangesMock,
+  getWorkspaceCumulativeChangesMock,
+  getWorkspaceStagedDiffMock,
+  getWorkspaceUnstagedDiffMock,
+  getWorkspaceCumulativeDiffMock,
   toastErrorMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
@@ -446,6 +458,18 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitChangesMock(...args),
     getAgentConversationWorkspaceCommitFileDiff: (...args: unknown[]) =>
       getWorkspaceCommitDiffMock(...args),
+    getAgentConversationWorkspaceStagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceStagedChangesMock(...args),
+    getAgentConversationWorkspaceUnstagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceUnstagedChangesMock(...args),
+    getAgentConversationWorkspaceCumulativeFileChanges: (...args: unknown[]) =>
+      getWorkspaceCumulativeChangesMock(...args),
+    getAgentConversationWorkspaceStagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceStagedDiffMock(...args),
+    getAgentConversationWorkspaceUnstagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceUnstagedDiffMock(...args),
+    getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
+      getWorkspaceCumulativeDiffMock(...args),
   },
 }));
 
@@ -547,6 +571,7 @@ vi.mock("./AgentsArtifactPane", () => {
     conversation,
     activeTab,
     focusedIdeationSessionId,
+    publishFocusRequest,
     onClose,
     onFocusVerificationSession,
     onPublishWorkspace,
@@ -554,6 +579,7 @@ vi.mock("./AgentsArtifactPane", () => {
     conversation: AgentConversation | null;
     activeTab?: string;
     focusedIdeationSessionId?: string | null;
+    publishFocusRequest?: { filePath: string; mode: string } | null;
     onClose?: () => void;
     onFocusVerificationSession?: (parentSessionId: string, childSessionId: string) => void;
     onPublishWorkspace?: (conversationId: string) => Promise<void>;
@@ -562,6 +588,8 @@ vi.mock("./AgentsArtifactPane", () => {
       data-testid="agents-artifact-pane"
       data-active-tab={activeTab ?? ""}
       data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+      data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
+      data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
     >
       {onClose ? (
         <button type="button" data-testid="agents-artifact-pane-close" onClick={onClose}>
@@ -943,6 +971,12 @@ export function setupAgentsViewTest() {
   getWorkspaceCommitsMock.mockResolvedValue([]);
   getWorkspaceCommitChangesMock.mockResolvedValue([]);
   getWorkspaceCommitDiffMock.mockResolvedValue("");
+  getWorkspaceStagedChangesMock.mockResolvedValue([]);
+  getWorkspaceUnstagedChangesMock.mockResolvedValue([]);
+  getWorkspaceCumulativeChangesMock.mockResolvedValue([]);
+  getWorkspaceStagedDiffMock.mockResolvedValue("");
+  getWorkspaceUnstagedDiffMock.mockResolvedValue("");
+  getWorkspaceCumulativeDiffMock.mockResolvedValue("");
   precomputePrDescriptionMock.mockResolvedValue({
     conversationId: "conversation-1",
     status: "skipped",

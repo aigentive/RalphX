@@ -17,6 +17,7 @@ import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import type { AgentConversation } from "./agentConversations";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -51,6 +52,7 @@ interface AgentsArtifactPaneRegionProps {
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
+  publishFocusRequest: AgentPublishFocusRequest | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onClose: () => void;
   terminalUnavailableReason: string | null;
@@ -72,6 +74,7 @@ export function AgentsArtifactPaneRegion({
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace,
+  publishFocusRequest,
   onFocusVerificationSession,
   onClose,
   terminalUnavailableReason,
@@ -130,6 +133,7 @@ export function AgentsArtifactPaneRegion({
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
+                    publishFocusRequest={publishFocusRequest}
                     onFocusVerificationSession={onFocusVerificationSession}
                     onClose={onClose}
                   />

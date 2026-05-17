@@ -51,6 +51,7 @@ import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDet
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 
@@ -161,6 +162,7 @@ interface AgentsArtifactPaneProps {
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
+  publishFocusRequest?: AgentPublishFocusRequest | null;
   onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onClose: () => void;
 }
@@ -176,6 +178,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
+  publishFocusRequest = null,
   onFocusVerificationSession,
   onClose,
 }: AgentsArtifactPaneProps) {
@@ -552,6 +555,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           proposals={proposals}
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
+          publishFocusRequest={publishFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           taskArtifactSelectedId={taskArtifactSelectedId}
@@ -579,6 +583,7 @@ type ArtifactContentProps = {
   proposals: TaskProposal[];
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
+  publishFocusRequest: AgentPublishFocusRequest | null;
   onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onDisplayedVerificationStatusChange: (status: {
     status: VerificationStatus;
@@ -605,6 +610,7 @@ function ArtifactContent({
   proposals,
   onPublishWorkspace,
   isPublishingWorkspace,
+  publishFocusRequest,
   onFocusVerificationSession: _onFocusVerificationSession,
   onDisplayedVerificationStatusChange,
   taskArtifactSelectedId,
@@ -653,6 +659,7 @@ function ArtifactContent({
         projectBaseBranch={projectBaseBranch}
         onPublishWorkspace={onPublishWorkspace}
         isPublishingWorkspace={isPublishingWorkspace}
+        publishFocusRequest={publishFocusRequest}
       />
     );
   }
