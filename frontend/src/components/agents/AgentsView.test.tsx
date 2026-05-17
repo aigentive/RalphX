@@ -57,6 +57,24 @@ describe("AgentsView", () => {
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
   });
 
+  it("places a supplied footer under the chat and artifact split, not under the sidebar", () => {
+    mockAgentViewData();
+
+    renderAgentsView({
+      footer: <div data-testid="agents-view-footer-content">Execution footer</div>,
+    });
+
+    const contentColumn = screen.getByTestId("agents-content-column");
+    const splitContainer = screen.getByTestId("agents-split-container");
+    const footerShell = screen.getByTestId("agents-footer-shell");
+    const sidebarContainer = screen.getByTestId("agents-sidebar-container");
+
+    expect(contentColumn).toContainElement(splitContainer);
+    expect(contentColumn).toContainElement(footerShell);
+    expect(footerShell).toContainElement(screen.getByTestId("agents-view-footer-content"));
+    expect(sidebarContainer).not.toContainElement(footerShell);
+  });
+
   it("shows the conversation base branch as a read-only start-from line", async () => {
     mockAgentViewData();
     getAgentConversationWorkspaceMock.mockResolvedValue({

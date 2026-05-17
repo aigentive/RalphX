@@ -181,10 +181,14 @@ function AppContent() {
   const prevProjectIdRef = useRef<string | null>(null);
   const agentsReturnViewRef = useRef<ViewType>(DEFAULT_PROJECT_VIEW);
   const showsExecutionFooter =
-    currentView === "kanban" || currentView === "graph" || currentView === "ideation";
+    currentView === "kanban" ||
+    currentView === "graph" ||
+    currentView === "ideation" ||
+    currentView === "agents";
   const shouldHydrateAgentHaltState = currentView === "agents";
   const shouldHydrateExecutionStatus =
     showsExecutionFooter || shouldHydrateAgentHaltState;
+  const shouldPollExecutionStatus = showsExecutionFooter && Boolean(activeProjectId);
   const shouldHydrateIdeationView = currentView === "ideation";
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
@@ -272,8 +276,8 @@ function AppContent() {
   // Pass currentProjectId for per-project execution status scoping
   useExecutionStatus(currentProjectId || undefined, {
     enabled: shouldHydrateExecutionStatus && Boolean(currentProjectId),
-    refetchInterval: showsExecutionFooter ? 30000 : false,
-    refetchOnWindowFocus: showsExecutionFooter,
+    refetchInterval: shouldPollExecutionStatus ? 30000 : false,
+    refetchOnWindowFocus: shouldPollExecutionStatus,
     staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
   });
   const { isApproving, isRequestingChanges } = useReviewMutations();
@@ -807,7 +811,37 @@ function AppContent() {
     return testPage;
   }
 
-  const toastBottomOffset = (currentView === "kanban" || currentView === "graph") ? "92px" : "16px";
+  const executionFooter = currentProjectId ? (
+    <ExecutionControlBar
+      projectId={currentProjectId}
+      runningCount={executionStatus.runningCount}
+      maxConcurrent={executionStatus.maxConcurrent}
+      queuedCount={executionStatus.queuedCount}
+      queuedMessageCount={executionStatus.queuedMessageCount ?? 0}
+      pausedCount={pausedCount}
+      pausedTasks={pausedTasks}
+      ideationActive={executionStatus.ideationActive}
+      ideationMax={executionStatus.ideationMaxProject}
+      ideationWaiting={executionStatus.ideationWaiting}
+      mergingCount={mergingCount}
+      mergeAttentionCount={mergeAttentionCount}
+      hasAttentionMerges={hasAttentionMerges}
+      mergePipelineData={mergePipelineData ?? null}
+      isPaused={executionStatus.isPaused}
+      haltMode={executionStatus.haltMode}
+      isLoading={isExecutionLoading}
+      onPauseToggle={handlePauseToggle}
+      onStop={handleStop}
+      runningProcesses={runningProcessesData?.processes ?? []}
+      ideationSessions={runningProcessesData?.ideationSessions ?? []}
+      onPauseProcess={handlePauseProcess}
+      onStopProcess={handleStopProcess}
+      onOpenSettings={handleOpenSettings}
+      onNavigateToSession={handleNavigateToSession}
+    />
+  ) : null;
+
+  const toastBottomOffset = showsExecutionFooter ? "92px" : "16px";
   const quickSwitcherAnchorSelector =
     currentView === "kanban"
       ? '[data-testid="kanban-split-left"]'
@@ -870,35 +904,7 @@ function AppContent() {
               {currentView === "kanban" && (
                 <KanbanSplitLayout
                   projectId={currentProjectId}
-                  footer={
-                    <ExecutionControlBar
-                      projectId={currentProjectId}
-                      runningCount={executionStatus.runningCount}
-                      maxConcurrent={executionStatus.maxConcurrent}
-                      queuedCount={executionStatus.queuedCount}
-                      queuedMessageCount={executionStatus.queuedMessageCount ?? 0}
-                      pausedCount={pausedCount}
-                      pausedTasks={pausedTasks}
-                      ideationActive={executionStatus.ideationActive}
-                      ideationMax={executionStatus.ideationMaxProject}
-                      ideationWaiting={executionStatus.ideationWaiting}
-                      mergingCount={mergingCount}
-                      mergeAttentionCount={mergeAttentionCount}
-                      hasAttentionMerges={hasAttentionMerges}
-                      mergePipelineData={mergePipelineData ?? null}
-                      isPaused={executionStatus.isPaused}
-                      haltMode={executionStatus.haltMode}
-                      isLoading={isExecutionLoading}
-                      onPauseToggle={handlePauseToggle}
-                      onStop={handleStop}
-                      runningProcesses={runningProcessesData?.processes ?? []}
-                      ideationSessions={runningProcessesData?.ideationSessions ?? []}
-                      onPauseProcess={handlePauseProcess}
-                      onStopProcess={handleStopProcess}
-                      onOpenSettings={handleOpenSettings}
-                      onNavigateToSession={handleNavigateToSession}
-                    />
-                  }
+                  footer={executionFooter}
                 >
                   <TaskBoard
                     projectId={currentProjectId}
@@ -910,35 +916,7 @@ function AppContent() {
                 <TaskGraphView
                   projectId={currentProjectId}
                   onOpenPlanQuickSwitcher={handleOpenPlanQuickSwitcher}
-                  footer={
-                    <ExecutionControlBar
-                      projectId={currentProjectId}
-                      runningCount={executionStatus.runningCount}
-                      maxConcurrent={executionStatus.maxConcurrent}
-                      queuedCount={executionStatus.queuedCount}
-                      queuedMessageCount={executionStatus.queuedMessageCount ?? 0}
-                      pausedCount={pausedCount}
-                      pausedTasks={pausedTasks}
-                      ideationActive={executionStatus.ideationActive}
-                      ideationMax={executionStatus.ideationMaxProject}
-                      ideationWaiting={executionStatus.ideationWaiting}
-                      mergingCount={mergingCount}
-                      mergeAttentionCount={mergeAttentionCount}
-                      hasAttentionMerges={hasAttentionMerges}
-                      mergePipelineData={mergePipelineData ?? null}
-                      isPaused={executionStatus.isPaused}
-                      haltMode={executionStatus.haltMode}
-                      isLoading={isExecutionLoading}
-                      onPauseToggle={handlePauseToggle}
-                      onStop={handleStop}
-                      runningProcesses={runningProcessesData?.processes ?? []}
-                      ideationSessions={runningProcessesData?.ideationSessions ?? []}
-                      onPauseProcess={handlePauseProcess}
-                      onStopProcess={handleStopProcess}
-                      onOpenSettings={handleOpenSettings}
-                      onNavigateToSession={handleNavigateToSession}
-                    />
-                  }
+                  footer={executionFooter}
                 />
               )}
               {currentView === "ideation" && (
@@ -955,39 +933,12 @@ function AppContent() {
                   onRemoveProposal={handleRemoveProposal}
                   onReorderProposals={handleReorderProposals}
                   onApply={handleApplyProposals}
-                  footer={
-                    <ExecutionControlBar
-                      projectId={currentProjectId}
-                      runningCount={executionStatus.runningCount}
-                      maxConcurrent={executionStatus.maxConcurrent}
-                      queuedCount={executionStatus.queuedCount}
-                      queuedMessageCount={executionStatus.queuedMessageCount ?? 0}
-                      pausedCount={pausedCount}
-                      pausedTasks={pausedTasks}
-                      ideationActive={executionStatus.ideationActive}
-                      ideationMax={executionStatus.ideationMaxProject}
-                      ideationWaiting={executionStatus.ideationWaiting}
-                      mergingCount={mergingCount}
-                      mergeAttentionCount={mergeAttentionCount}
-                      hasAttentionMerges={hasAttentionMerges}
-                      mergePipelineData={mergePipelineData ?? null}
-                      isPaused={executionStatus.isPaused}
-                      haltMode={executionStatus.haltMode}
-                      isLoading={isExecutionLoading}
-                      onPauseToggle={handlePauseToggle}
-                      onStop={handleStop}
-                      runningProcesses={runningProcessesData?.processes ?? []}
-                      ideationSessions={runningProcessesData?.ideationSessions ?? []}
-                      onPauseProcess={handlePauseProcess}
-                      onStopProcess={handleStopProcess}
-                      onOpenSettings={handleOpenSettings}
-                      onNavigateToSession={handleNavigateToSession}
-                    />
-                  }
+                  footer={executionFooter}
                 />
               )}
               {currentView === "agents" && (
                 <AgentsView
+                  footer={executionFooter}
                   projectId={currentProjectId}
                   onCreateProject={handleOpenProjectWizard}
                 />
@@ -1019,14 +970,14 @@ function AppContent() {
 
           {/* ReviewsPanel - right sidebar surface.
               bottomOffset 76 when ExecutionControlBar is visible below this
-              panel (kanban/graph/ideation), 0 elsewhere so the panel fills
+              panel, 0 elsewhere so the panel fills
               the viewport instead of leaving a ~84px void. */}
           {reviewsPanelOpen && (
             <div
               className="fixed top-12 right-0 z-50 flex w-[400px] flex-col border-l"
               data-testid="reviews-panel-shell"
               style={{
-                bottom: (currentView === "kanban" || currentView === "graph" || currentView === "ideation") ? "76px" : "0px",
+                bottom: showsExecutionFooter ? "76px" : "0px",
                 backgroundColor: "var(--app-sidebar-bg)",
                 borderLeftColor: "var(--app-sidebar-border)",
                 borderLeftStyle: "solid",

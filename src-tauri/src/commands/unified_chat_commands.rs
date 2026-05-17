@@ -25,8 +25,8 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
 
 use crate::application::agent_conversation_workspace::{
-    agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
-    prepare_agent_conversation_workspace_with_setup_mode,
+    agent_name_for_workspace_mode, is_terminal_agent_conversation_publication_status,
+    prepare_agent_conversation_workspace, prepare_agent_conversation_workspace_with_setup_mode,
     resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceSetupMode,
@@ -874,6 +874,32 @@ impl AgentConversationWorkspaceFreshnessResponse {
             base_status: BaseStatus::Valid.as_str().to_string(),
             effective_base_ref: Some(base_ref),
             effective_base_display_name: base_display_name,
+            base_block_reason: None,
+        }
+    }
+
+    fn from_terminal_publication(
+        conversation_id: String,
+        freshness_scope: AgentWorkspaceFreshnessScope,
+        workspace: &AgentConversationWorkspace,
+    ) -> Self {
+        let target_base_commit = workspace.base_commit.clone().unwrap_or_default();
+        Self {
+            conversation_id,
+            freshness_scope: freshness_scope.as_str().to_string(),
+            base_ref: workspace.base_ref.clone(),
+            base_display_name: workspace.base_display_name.clone(),
+            target_ref: workspace.branch_name.clone(),
+            captured_base_commit: workspace.base_commit.clone(),
+            target_base_commit,
+            is_base_ahead: false,
+            has_uncommitted_changes: false,
+            unpublished_commit_count: Some(0),
+            remote_refreshed: false,
+            worktree_status_checked: false,
+            base_status: BaseStatus::Valid.as_str().to_string(),
+            effective_base_ref: Some(workspace.base_ref.clone()),
+            effective_base_display_name: workspace.base_display_name.clone(),
             base_block_reason: None,
         }
     }
@@ -3530,6 +3556,16 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         "stale_publish_repair",
         phase_started_at,
     );
+    if is_terminal_agent_conversation_publication_status(workspace.publication_pr_status.as_deref())
+    {
+        return Ok(
+            AgentConversationWorkspaceFreshnessResponse::from_terminal_publication(
+                conversation_id.as_str(),
+                freshness_scope,
+                &workspace,
+            ),
+        );
+    }
 
     let phase_started_at = Instant::now();
     let project = state
@@ -7966,6 +8002,51 @@ mod tests {
         assert_eq!(second.freshness_scope, "local");
         assert_eq!(second.target_base_commit, first.target_base_commit);
         assert_eq!(second.target_ref, first.target_ref);
+    }
+
+    #[tokio::test]
+    async fn workspace_freshness_command_treats_merged_missing_workspace_as_terminal() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-merged-missing",
+            true,
+            Some(243),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        workspace.publication_pr_status = Some("merged".to_string());
+        workspace.publication_push_status = Some("pushed".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should update");
+        std::fs::remove_dir_all(&worktree_path).expect("worktree should be removed");
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("terminal workspace freshness should not require the removed worktree");
+
+        assert_eq!(response.freshness_scope, "local");
+        assert_eq!(response.base_status, "valid");
+        assert_eq!(response.unpublished_commit_count, Some(0));
+        assert!(!response.remote_refreshed);
+        assert!(!response.worktree_status_checked);
     }
 
     #[tokio::test]
