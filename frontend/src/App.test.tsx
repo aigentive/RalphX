@@ -114,7 +114,12 @@ vi.mock("@/components/activity", () => ({
 
 // Mock AgentsView
 vi.mock("@/components/agents", () => ({
-  AgentsView: () => <div data-testid="agents-view-mock">Agents View</div>,
+  AgentsView: ({ footer }: { footer?: React.ReactNode }) => (
+    <div data-testid="agents-view-mock">
+      Agents View
+      {footer && <div data-testid="agents-footer-mock">{footer}</div>}
+    </div>
+  ),
 }));
 
 // Mock UpdateChecker to avoid delayed non-critical updater checks during shell tests.
@@ -1017,6 +1022,13 @@ describe("App", () => {
       expect(screen.getByTestId("ideation-footer-mock")).toBeInTheDocument();
     });
 
+    it("should pass footer with ExecutionControlBar to Agents view", () => {
+      render(<App />);
+
+      expect(screen.getByTestId("agents-footer-mock")).toBeInTheDocument();
+      expect(screen.getByTestId("execution-control-bar")).toBeInTheDocument();
+    });
+
     it("should switch to Extensibility view when clicked", async () => {
       const user = userEvent.setup();
       render(<App />);
@@ -1296,25 +1308,25 @@ describe("App", () => {
         "test-project-123",
         expect.objectContaining({
           enabled: true,
-          refetchInterval: false,
-          refetchOnWindowFocus: false,
+          refetchInterval: 30000,
+          refetchOnWindowFocus: true,
           staleTime: 30_000,
         })
       );
     });
 
-    it("does not hydrate footer-only execution data on the Agents view", () => {
+    it("hydrates footer-only execution data on the Agents view", () => {
       useProjectStore.setState({ activeProjectId: "test-project-123" });
 
       render(<App />);
 
       expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
         "test-project-123",
-        expect.objectContaining({ enabled: false })
+        expect.objectContaining({ enabled: true })
       );
       expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
         "test-project-123",
-        expect.objectContaining({ enabled: false })
+        expect.objectContaining({ enabled: true })
       );
     });
 

@@ -841,9 +841,13 @@ export function resetAgentSessionState(
   });
 }
 
-export function renderAgentsView() {
+export function renderAgentsView(options: { footer?: ReactNode } = {}) {
   return renderWithProviders(
-    <AgentsView projectId="project-1" onCreateProject={vi.fn()} />
+    <AgentsView
+      projectId="project-1"
+      onCreateProject={vi.fn()}
+      {...(options.footer !== undefined ? { footer: options.footer } : {})}
+    />
   );
 }
 
