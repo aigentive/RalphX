@@ -322,7 +322,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                        AND mode = 'edit'
                        AND linked_plan_branch_id IS NULL
                        AND publication_pr_number IS NOT NULL
-                       AND COALESCE(publication_push_status, 'pushed') = 'pushed'
+                       AND COALESCE(publication_push_status, 'pushed') IN ('pushed', 'refreshed')
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
                      ORDER BY updated_at DESC",
                 )?;

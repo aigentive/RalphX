@@ -115,6 +115,22 @@ fn expected_workspace_branch(project: &Project, conversation_id: &str) -> String
     agent_conversation_branch_name(project, &conversation_id)
 }
 
+#[test]
+fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
+    let repo = init_cleanup_repo();
+    let worktree_parent = repo.path().join("worktrees");
+    let project = cleanup_project(repo.path(), &worktree_parent);
+    let mut workspace = cleanup_workspace_with_conversation(
+        &project,
+        "ralphx/demo/agent-refreshed",
+        "conversation-refreshed-polling",
+    );
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
+
+    assert!(super::agent_workspace_pr_polling_is_current(&workspace, 101));
+}
+
 fn repo_error() -> AppError {
     AppError::Database("forced workspace repository failure".to_string())
 }
