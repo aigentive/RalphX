@@ -229,14 +229,8 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number.is_some()
-        && matches!(
-            workspace.publication_push_status.as_deref(),
-            None | Some("pushed")
-        )
-        && !matches!(
-            workspace.publication_pr_status.as_deref(),
-            Some("closed") | Some("merged")
-        )
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
 }
 
 fn is_active_direct_external_pr_reconciliation_candidate(
@@ -380,6 +374,32 @@ mod tests {
             format!("ralphx/demo/agent-{id}"),
             format!("/tmp/ralphx-demo-{id}"),
         )
+    }
+
+    #[tokio::test]
+    async fn active_direct_published_workspaces_include_refreshed_prs_for_status_polling() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut pushed = candidate_workspace("pushed");
+        pushed.publication_pr_number = Some(12);
+        pushed.publication_pr_status = Some("open".to_string());
+        pushed.publication_push_status = Some("pushed".to_string());
+        let mut refreshed = candidate_workspace("refreshed");
+        refreshed.publication_pr_number = Some(13);
+        refreshed.publication_pr_status = Some("open".to_string());
+        refreshed.publication_push_status = Some("refreshed".to_string());
+
+        repo.create_or_update(pushed.clone()).await.unwrap();
+        repo.create_or_update(refreshed.clone()).await.unwrap();
+
+        let workspaces = repo.list_active_direct_published_workspaces().await.unwrap();
+
+        assert_eq!(workspaces.len(), 2);
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == pushed.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
     }
 
     #[tokio::test]
