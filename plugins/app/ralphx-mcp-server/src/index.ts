@@ -50,8 +50,8 @@ import {
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import {
-  callCompleteAgentWorkspaceRepairTool,
-  callSubmitAgentWorkspacePrDescriptionTool,
+  callAgentWorkspaceTool,
+  isAgentWorkspaceToolName,
 } from "./agent-workspace-tools.js";
 
 /**

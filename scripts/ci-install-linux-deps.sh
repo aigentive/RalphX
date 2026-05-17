@@ -27,6 +27,7 @@ retry_apt install --no-install-recommends -y \
   build-essential \
   curl \
   file \
+  lsof \
   libayatana-appindicator3-dev \
   libgtk-3-dev \
   librsvg2-dev \

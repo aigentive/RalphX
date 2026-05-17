@@ -6,17 +6,25 @@ import {
   type UpdateAgentHarnessLaneInput,
 } from "@/api/ideation-harness";
 
-function harnessQueryKey(projectId: string | null) {
-  return ["agent", "harness", projectId] as const;
+function harnessQueryKey(projectId: string | null, refreshRuntime: boolean) {
+  return ["agent", "harness", projectId, { refreshRuntime }] as const;
 }
 
-export function useAgentHarnessSettings(projectId: string | null) {
+interface UseAgentHarnessSettingsOptions {
+  refreshRuntime?: boolean;
+}
+
+export function useAgentHarnessSettings(
+  projectId: string | null,
+  options: UseAgentHarnessSettingsOptions = {},
+) {
   const queryClient = useQueryClient();
-  const queryKey = harnessQueryKey(projectId);
+  const refreshRuntime = options.refreshRuntime ?? false;
+  const queryKey = harnessQueryKey(projectId, refreshRuntime);
 
   const query = useQuery({
     queryKey,
-    queryFn: () => agentHarnessApi.get(projectId),
+    queryFn: () => agentHarnessApi.get(projectId, { refreshRuntime }),
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 10,
     placeholderData: defaultAgentHarnessLanes,

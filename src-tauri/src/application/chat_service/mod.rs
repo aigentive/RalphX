@@ -31,8 +31,9 @@ pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
     is_terminal_agent_conversation_publication_status,
-    resolve_valid_agent_conversation_workspace_path, rollover_agent_conversation_workspace,
-    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    resolve_agent_conversation_workspace_path_for_send,
+    rollover_agent_conversation_workspace_with_setup_mode,
+    AgentConversationWorkspaceSetupMode, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
@@ -68,9 +69,11 @@ use crate::infrastructure::agents::claude::agent_names::{
 };
 use async_trait::async_trait;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio_util::sync::CancellationToken;
 
@@ -90,9 +93,9 @@ pub use chat_service_context::{
     resolve_working_directory, ProviderResumeMode,
 };
 pub use chat_service_errors::{
-    classify_agent_error, classify_provider_error, parse_retry_after_from_message,
-    truncate_error_message, PauseReason, ProviderErrorCategory, ProviderErrorMetadata, StreamError,
-    STALE_SESSION_ERROR,
+    classify_agent_error, classify_codex_stream_failure, classify_provider_error,
+    parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
+    ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
 };
 pub use chat_service_helpers::harness_supports_team_mode;
 pub use chat_service_helpers::{
@@ -107,6 +110,8 @@ pub use chat_service_mock::{MockChatResponse, MockChatService};
 pub use chat_service_replay::{build_rehydration_prompt, ConversationReplay, ReplayBuilder, Turn};
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_assistant_message_for_test;
+#[doc(hidden)]
+pub use chat_service_send_background::finalize_no_output_assistant_message_for_test;
 #[doc(hidden)]
 pub use chat_service_send_background::finalize_structured_assistant_message_for_test;
 pub use chat_service_streaming::process_stream_background;
@@ -155,13 +160,27 @@ pub(crate) fn has_meaningful_output(
     false
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistryCleanupCaller {
+    SendGate,
+    ReadOnly,
+}
+
+impl RegistryCleanupCaller {
+    fn permits_pid_zero_cleanup(self) -> bool {
+        matches!(self, Self::SendGate)
+    }
+}
+
 fn registry_entry_blocks_send_but_is_stale(
     info: &RunningAgentInfo,
     now: chrono::DateTime<chrono::Utc>,
+    cleanup_caller: RegistryCleanupCaller,
 ) -> bool {
     if info.pid == 0 {
         let age = now.signed_duration_since(info.started_at);
-        return age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS);
+        return cleanup_caller.permits_pid_zero_cleanup()
+            && age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS);
     }
 
     !is_process_alive(info.pid)
@@ -171,6 +190,7 @@ fn registry_entry_blocks_send_because_run_inactive(
     info: &RunningAgentInfo,
     run_status: Option<AgentRunStatus>,
     now: chrono::DateTime<chrono::Utc>,
+    cleanup_caller: RegistryCleanupCaller,
 ) -> bool {
     if info.agent_run_id.is_empty() {
         return false;
@@ -181,6 +201,9 @@ fn registry_entry_blocks_send_because_run_inactive(
         Some(_) => true,
         None => {
             let age = now.signed_duration_since(info.started_at);
+            if info.pid == 0 && !cleanup_caller.permits_pid_zero_cleanup() {
+                return false;
+            }
             age >= chrono::Duration::seconds(REGISTRY_PID_ZERO_GRACE_SECONDS)
         }
     }
@@ -221,6 +244,18 @@ fn runtime_context_id_for_send(
     }
 
     context_id.to_string()
+}
+
+fn interactive_continuation_run_id(active_agent: Option<&RunningAgentInfo>) -> String {
+    active_agent
+        .and_then(|info| {
+            if info.agent_run_id.is_empty() {
+                None
+            } else {
+                Some(info.agent_run_id.clone())
+            }
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
 /// Returns true for context types that consume execution slots (running count).
@@ -565,6 +600,13 @@ pub trait ChatService: Send + Sync {
     /// Check if an agent is running for a context
     async fn is_agent_running(&self, context_type: ChatContextType, context_id: &str) -> bool;
 
+    /// Bulk-check whether agents are running for the given context ids.
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool>;
+
     /// Override team mode at runtime (interior mutability).
     /// Default is a no-op; AppChatService uses AtomicBool.
     fn set_team_mode(&self, _mode: bool) {}
@@ -590,6 +632,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     plugin_dir: PathBuf,
     default_working_directory: PathBuf,
     chat_message_repo: Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     conversation_repo: Arc<dyn ChatConversationRepository>,
@@ -663,6 +706,7 @@ impl<R: Runtime> AppChatService<R> {
             plugin_dir: bootstrap.plugin_dir,
             default_working_directory: bootstrap.default_working_directory,
             chat_message_repo,
+            chat_timeline_repo: None,
             chat_attachment_repo,
             artifact_repo,
             conversation_repo,
@@ -704,6 +748,11 @@ impl<R: Runtime> AppChatService<R> {
 
     pub fn with_execution_state(mut self, state: Arc<crate::commands::ExecutionState>) -> Self {
         self.execution_state = Some(state);
+        self
+    }
+
+    pub fn with_chat_timeline_repo(mut self, repo: Arc<dyn ChatTimelineRepository>) -> Self {
+        self.chat_timeline_repo = Some(repo);
         self
     }
 
@@ -909,8 +958,13 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         source: &'static str,
+        cleanup_caller: RegistryCleanupCaller,
     ) -> bool {
-        if !registry_entry_blocks_send_but_is_stale(existing, chrono::Utc::now()) {
+        if !registry_entry_blocks_send_but_is_stale(
+            existing,
+            chrono::Utc::now(),
+            cleanup_caller,
+        ) {
             return false;
         }
 
@@ -957,6 +1011,7 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         source: &'static str,
+        cleanup_caller: RegistryCleanupCaller,
     ) -> bool {
         let run = match self
             .agent_run_repo
@@ -983,6 +1038,7 @@ impl<R: Runtime> AppChatService<R> {
             existing,
             run_status,
             chrono::Utc::now(),
+            cleanup_caller,
         ) {
             return false;
         }
@@ -1253,6 +1309,97 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_pre_spawn_failure(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: ChatConversationId,
+        agent_run_id: &str,
+        agent_run_persisted: bool,
+        user_message_persisted: bool,
+        error: &ChatServiceError,
+        assistant_message_attribution: Option<ChatMessageAttribution>,
+    ) {
+        if !agent_run_persisted && !user_message_persisted {
+            return;
+        }
+
+        let redacted_error = crate::utils::secret_redactor::redact(&error.to_string());
+
+        if agent_run_persisted {
+            if let Err(error) = self
+                .agent_run_repo
+                .fail(&AgentRunId::from_string(agent_run_id.to_string()), &redacted_error)
+                .await
+            {
+                tracing::warn!(
+                    agent_run_id,
+                    error = %error,
+                    "Failed to mark pre-spawn agent run as failed"
+                );
+            }
+        }
+
+        let error_content = format!("{} {}]", AGENT_ERROR_PREFIX, redacted_error);
+        let mut assistant_msg = chat_service_context::create_assistant_message(
+            context_type,
+            context_id,
+            &error_content,
+            conversation_id,
+            &[],
+            &[],
+        );
+        if let Some(attribution) = assistant_message_attribution {
+            assistant_msg = assistant_msg.with_attribution(attribution);
+        }
+        let assistant_msg_id = assistant_msg.id.as_str().to_string();
+        let assistant_msg_created_at = assistant_msg.created_at.to_rfc3339();
+
+        match self.chat_message_repo.create(assistant_msg.clone()).await {
+            Ok(_) => {
+                chat_service_streaming::persist_message_text_timeline_item(
+                    &self.chat_timeline_repo,
+                    &assistant_msg,
+                )
+                .await;
+                self.emit_event(
+                    "agent:message_created",
+                    AgentMessageCreatedPayload {
+                        message_id: assistant_msg_id,
+                        conversation_id: conversation_id.as_str().to_string(),
+                        context_type: context_type.to_string(),
+                        context_id: context_id.to_string(),
+                        role: get_assistant_role(&context_type).to_string(),
+                        content: error_content.clone(),
+                        created_at: Some(assistant_msg_created_at),
+                        metadata: None,
+                    },
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    agent_run_id,
+                    error = %error,
+                    "Failed to persist pre-spawn assistant error message"
+                );
+            }
+        }
+
+        self.emit_event(
+            "agent:error",
+            AgentErrorPayload {
+                conversation_id: Some(conversation_id.as_str().to_string()),
+                context_type: context_type.to_string(),
+                context_id: context_id.to_string(),
+                agent_run_id: Some(agent_run_id.to_string()),
+                error: redacted_error.clone(),
+                stderr: Some(redacted_error),
+            },
+        );
+    }
+
     /// Resolve the project's working directory from a context.
     ///
     /// Returns `Err` for Merge contexts that resolve to the primary repo
@@ -1309,7 +1456,7 @@ impl<R: Runtime> AppChatService<R> {
                 ))
             })?;
 
-        match resolve_valid_agent_conversation_workspace_path(&project, workspace).await {
+        match resolve_agent_conversation_workspace_path_for_send(&project, workspace) {
             Ok(path) => Ok(path),
             Err(error) => {
                 if error
@@ -1409,18 +1556,53 @@ impl<R: Runtime> AppChatService<R> {
         ),
         ChatServiceError,
     > {
+        let spawn_total_started = Instant::now();
         let effective_harness = resolved_spawn_settings.effective_harness;
+        let bootstrap_started = Instant::now();
+        let cli_resolve_started = Instant::now();
         let cli_path = if effective_harness == DEFAULT_AGENT_HARNESS {
             self.cli_path.clone()
         } else {
             resolve_chat_service_bootstrap(effective_harness).cli_path
         };
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            cli_path = %cli_path.display(),
+            phase = "resolve_cli_path",
+            elapsed_ms = cli_resolve_started.elapsed().as_millis() as u64,
+            "chat_service.send_message spawn bootstrap phase completed"
+        );
+        let plugin_dir_resolve_started = Instant::now();
         let plugin_dir = if effective_harness == DEFAULT_AGENT_HARNESS {
             self.plugin_dir.clone()
         } else {
             resolve_harness_plugin_dir(effective_harness, working_directory)
         };
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            plugin_dir = %plugin_dir.display(),
+            phase = "resolve_plugin_dir",
+            elapsed_ms = plugin_dir_resolve_started.elapsed().as_millis() as u64,
+            "chat_service.send_message spawn bootstrap phase completed"
+        );
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            cli_path = %cli_path.display(),
+            plugin_dir = %plugin_dir.display(),
+            elapsed_ms = bootstrap_started.elapsed().as_millis() as u64,
+            "chat_service.send_message spawn bootstrap resolved"
+        );
 
+        let build_plan_started = Instant::now();
         let launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
             &cli_path,
@@ -1455,13 +1637,32 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            elapsed_ms = build_plan_started.elapsed().as_millis() as u64,
+            "chat_service.send_message launch plan built"
+        );
 
         let launch_mode = launch_plan.launch_mode();
         tracing::info!(mode = ?launch_mode, plan = ?launch_plan, "Spawning chat harness agent");
+        let process_spawn_started = Instant::now();
         let launched = launch_plan.spawn().await.map_err(|error| {
             tracing::error!(mode = ?launch_mode, error = %error, "chat_service.send_message harness spawn failed");
             ChatServiceError::SpawnFailed(error.to_string())
         })?;
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id,
+            harness = %effective_harness,
+            mode = ?launch_mode,
+            pid = ?launched.child.id(),
+            elapsed_ms = process_spawn_started.elapsed().as_millis() as u64,
+            "chat_service.send_message harness process spawned"
+        );
         tracing::debug!(
             mode = ?launch_mode,
             pid = ?launched.child.id(),
@@ -1469,6 +1670,7 @@ impl<R: Runtime> AppChatService<R> {
         );
 
         if let Some(child_stdin) = launched.child_stdin {
+            let ipr_register_started = Instant::now();
             let interactive_key_for_register =
                 InteractiveProcessKey::new(context_type.to_string(), runtime_context_id);
             tracing::info!(
@@ -1487,9 +1689,26 @@ impl<R: Runtime> AppChatService<R> {
                     },
                 )
                 .await;
+            tracing::info!(
+                %context_type,
+                context_id,
+                runtime_context_id,
+                harness = %effective_harness,
+                elapsed_ms = ipr_register_started.elapsed().as_millis() as u64,
+                total_elapsed_ms = spawn_total_started.elapsed().as_millis() as u64,
+                "chat_service.send_message interactive process registered"
+            );
 
             Ok((launched.cli_path, launched.child, Some(self.ipr())))
         } else {
+            tracing::info!(
+                %context_type,
+                context_id,
+                runtime_context_id,
+                harness = %effective_harness,
+                total_elapsed_ms = spawn_total_started.elapsed().as_millis() as u64,
+                "chat_service.send_message spawn process completed"
+            );
             Ok((launched.cli_path, launched.child, None))
         }
     }
@@ -1542,6 +1761,23 @@ impl<R: Runtime> AppChatService<R> {
             ChatContextType::Project => None,
         }
     }
+}
+
+fn log_send_message_spawn_prep_phase(
+    context_type: ChatContextType,
+    context_id: &str,
+    runtime_context_id: &str,
+    phase: &'static str,
+    started: Instant,
+) {
+    tracing::info!(
+        %context_type,
+        context_id,
+        runtime_context_id,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "chat_service.send_message spawn prep phase completed"
+    );
 }
 
 #[async_trait]
@@ -1673,6 +1909,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             });
         }
 
+        let workspace_continuation_started = Instant::now();
         self.prepare_agent_workspace_continuation_for_send(
             context_type,
             context_id,
@@ -1680,6 +1917,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             options.conversation_id_override.as_ref(),
         )
         .await?;
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "prepare_agent_workspace_continuation",
+            workspace_continuation_started,
+        );
 
         // 1. Interactive fast-path (Gate 1): if an interactive process is already
         //    running for this context, write the message directly to its stdin.
@@ -1817,7 +2061,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         );
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        let _ = self.chat_message_repo.create(user_msg).await;
+                        if self.chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                            chat_service_streaming::persist_message_text_timeline_item(
+                                &self.chat_timeline_repo,
+                                &user_msg,
+                            )
+                            .await;
+                        }
 
                         if context_type == ChatContextType::Ideation {
                             let _ = self
@@ -1842,8 +2092,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         );
                     }
 
-                    // Emit run_started so frontend shows activity spinner
-                    let interactive_run_id = uuid::Uuid::new_v4().to_string();
+                    // Emit run_started so frontend shows activity spinner. Reuse the
+                    // live process run id so later turn_completed/run_completed events
+                    // still pass frontend stale-run guards.
+                    let active_agent = self
+                        .running_agent_registry
+                        .get(&RunningAgentKey::new(
+                            context_type.to_string(),
+                            &runtime_context_id,
+                        ))
+                        .await;
+                    let interactive_run_id =
+                        interactive_continuation_run_id(active_agent.as_ref());
                     let process_metadata = ipr_ref.get_metadata(&interactive_key).await;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
@@ -1853,7 +2113,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     self.emit_event(
                         "agent:run_started",
                         AgentRunStartedPayload::with_provider_session(
-                            interactive_run_id,
+                            interactive_run_id.clone(),
                             conversation.id.as_str().to_string(),
                             context_type.to_string(),
                             context_id.to_string(),
@@ -1868,7 +2128,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
                     return Ok(SendResult {
                         conversation_id: conversation.id.as_str().to_string(),
-                        agent_run_id: uuid::Uuid::new_v4().to_string(),
+                        agent_run_id: interactive_run_id,
                         is_new_conversation: false,
                         ..Default::default()
                     });
@@ -1891,6 +2151,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // 2. Get or create conversation (only reached when Gate 1 misses or fails).
         //    For TaskExecution/Merge this creates a fresh conversation (force_fresh=true),
         //    which is correct for new spawns.
+        let spawn_context_started = Instant::now();
         let (mut conversation, spawn_path_is_new_conversation) = self
             .get_or_create_conversation_for_send(context_type, context_id, &options)
             .await?;
@@ -1967,6 +2228,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 .and_then(|parent| parent.provider_session_ref().map(|session_ref| session_ref.harness)),
             "chat_service.send_message conversation (new spawn path)"
         );
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "load_spawn_context",
+            spawn_context_started,
+        );
 
         // 2b. Atomic guard: claim the agent slot to prevent TOCTOU race.
         //     If an agent is already registered for this context, queue the message.
@@ -1983,6 +2251,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             gate = "GATE_2_REGISTRY",
             "[GATE_TRACE] Gate 2 (running_agent_registry.try_register)"
         );
+        let registry_started = Instant::now();
         let mut registration_result = self
             .running_agent_registry
             .try_register(
@@ -2000,6 +2269,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     &runtime_context_id,
                     "send_message_gate_2",
+                    RegistryCleanupCaller::SendGate,
                 )
                 .await;
             let cleaned_inactive_entry = if cleaned_stale_entry {
@@ -2053,6 +2323,13 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 queued_as_pending: false,
             });
         }
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "running_agent_registry_register",
+            registry_started,
+        );
 
         // From here on, we hold the agent slot. Any early return must unregister.
         tracing::info!(
@@ -2062,12 +2339,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             gate = "GATE_3_SPAWN",
             "[GATE_TRACE] Gate 3 reached — no IPR entry, no running agent. Will spawn new process."
         );
+        let post_gate_started = Instant::now();
         let mut running_incremented = false;
+        let mut user_message_persisted = false;
+        let mut agent_run_persisted = false;
+        let mut pre_spawn_assistant_attribution: Option<ChatMessageAttribution> = None;
 
         // Cleanup macro: unregisters slot + decrements running count on failure.
         // Uses textual expansion so `.await` works inside the async fn body.
         macro_rules! cleanup_and_err {
             ($err:expr) => {{
+                let error: ChatServiceError = $err;
                 self.running_agent_registry
                     .unregister(&registry_key, &agent_run_id)
                     .await;
@@ -2079,7 +2361,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         }
                     }
                 }
-                return Err($err);
+                self.persist_pre_spawn_failure(
+                    context_type,
+                    context_id,
+                    conversation.id,
+                    &agent_run_id,
+                    agent_run_persisted,
+                    user_message_persisted,
+                    &error,
+                    pre_spawn_assistant_attribution.clone(),
+                )
+                .await;
+                return Err(error);
             }};
         }
 
@@ -2351,9 +2644,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
             let user_msg_id = user_msg.id.as_str().to_string();
             let user_msg_created_at = user_msg.created_at.to_rfc3339();
-            if let Err(e) = self.chat_message_repo.create(user_msg).await {
+            if let Err(e) = self.chat_message_repo.create(user_msg.clone()).await {
                 cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
             }
+            user_message_persisted = true;
+            chat_service_streaming::persist_message_text_timeline_item(
+                &self.chat_timeline_repo,
+                &user_msg,
+            )
+            .await;
             if context_type == ChatContextType::Ideation {
                 let _ = self
                     .ideation_session_repo
@@ -2453,8 +2752,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             working_directory = %working_directory.display(),
             "chat_service.send_message working_directory resolved"
         );
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "resolve_working_directory",
+            working_directory_started,
+        );
 
         // 6a. Resolve project ID for RALPHX_PROJECT_ID env var
+        let project_id_started = Instant::now();
         let project_id = chat_service_context::resolve_project_id(
             context_type,
             context_id,
@@ -2463,13 +2770,20 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             Arc::clone(&self.delegated_session_repo),
         )
         .await;
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "resolve_project_id",
+            project_id_started,
+        );
 
         if context_type == ChatContextType::Ideation {
-            let lane_repo = self.agent_lane_settings_repo.as_ref().ok_or_else(|| {
-                ChatServiceError::SpawnFailed(
+            let Some(lane_repo) = self.agent_lane_settings_repo.as_ref() else {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(
                     "Unified ideation chat service requires agent lane settings repo".to_string(),
-                )
-            })?;
+                ));
+            };
             let lane_availability =
                 crate::application::resolve_primary_ideation_harness_availability(
                     lane_repo,
@@ -2501,6 +2815,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         }
 
         // 7a. Build and spawn command
+        let spawn_settings_started = Instant::now();
         let mut resolved_spawn_settings =
             crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
                 agent_name,
@@ -2513,15 +2828,32 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             )
             .await;
         apply_send_message_overrides(&mut resolved_spawn_settings, &options);
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "resolve_spawn_settings",
+            spawn_settings_started,
+        );
+        let provider_spawn_check_started = Instant::now();
         if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
-            crate::application::ensure_provider_spawn_enabled(
+            if let Err(error) = crate::application::ensure_provider_spawn_enabled(
                 provider_repo,
                 resolved_spawn_settings.effective_harness,
                 "send_agent_message",
             )
             .await
-            .map_err(ChatServiceError::SpawnFailed)?;
+            {
+                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+            }
         }
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "ensure_provider_spawn_enabled",
+            provider_spawn_check_started,
+        );
         let runtime_team_mode = chat_service_helpers::effective_team_mode_for_harness(
             team_mode_val,
             resolved_spawn_settings.effective_harness,
@@ -2551,7 +2883,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 resolved_spawn_settings.effective_harness,
                 Some(&resolved_agent_name),
             );
+        let effective_model_id = resolved_spawn_settings.model.clone();
+        let effective_effort = chat_service_helpers::effective_effort_for_harness(
+            resolved_spawn_settings.effective_harness,
+            resolved_spawn_settings.claude_effort.as_deref(),
+            resolved_spawn_settings.logical_effort,
+        );
 
+        let provider_origin_started = Instant::now();
         if conversation.upstream_provider != upstream_provider
             || conversation.provider_profile != provider_profile
         {
@@ -2568,32 +2907,56 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             }
             conversation.set_provider_origin(upstream_provider.clone(), provider_profile.clone());
         }
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "persist_provider_origin",
+            provider_origin_started,
+        );
 
         agent_run.harness = Some(resolved_spawn_settings.effective_harness);
         agent_run.provider_session_id = stored_session_id.clone();
         agent_run.upstream_provider = upstream_provider.clone();
         agent_run.provider_profile = provider_profile.clone();
         agent_run.logical_model = resolved_spawn_settings.configured_model.clone();
-        agent_run.effective_model_id = Some(resolved_spawn_settings.model.clone());
+        agent_run.effective_model_id = Some(effective_model_id.clone());
         agent_run.logical_effort = resolved_spawn_settings.configured_logical_effort;
-        agent_run.effective_effort = Some(chat_service_helpers::effective_effort_for_harness(
-            resolved_spawn_settings.effective_harness,
-            resolved_spawn_settings.claude_effort.as_deref(),
-            resolved_spawn_settings.logical_effort,
-        ));
+        agent_run.effective_effort = Some(effective_effort.clone());
         agent_run.approval_policy = resolved_spawn_settings.approval_policy.clone();
         agent_run.sandbox_mode = resolved_spawn_settings.sandbox_mode.clone();
 
+        let assistant_message_attribution = ChatMessageAttribution {
+            attribution_source: Some("native_runtime".to_string()),
+            provider_harness: Some(resolved_spawn_settings.effective_harness),
+            provider_session_id: stored_session_id.clone(),
+            upstream_provider: upstream_provider.clone(),
+            provider_profile: provider_profile.clone(),
+            logical_model: resolved_spawn_settings.configured_model.clone(),
+            effective_model_id: Some(effective_model_id.clone()),
+            logical_effort: resolved_spawn_settings.configured_logical_effort,
+            effective_effort: Some(effective_effort),
+        };
+        pre_spawn_assistant_attribution = Some(assistant_message_attribution.clone());
+
         // Persist agent run record after the effective harness/model metadata is populated.
+        let agent_run_create_started = Instant::now();
         if let Err(e) = self.agent_run_repo.create(agent_run).await {
             cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
         }
+        agent_run_persisted = true;
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "persist_agent_run",
+            agent_run_create_started,
+        );
         tracing::debug!(
             run_id = %agent_run_id,
             "chat_service.send_message agent_run created"
         );
 
-        let effective_model_id = resolved_spawn_settings.model.clone();
         let effective_model_label = Some(chat_service_helpers::effective_model_label_for_harness(
             resolved_spawn_settings.effective_harness,
             &effective_model_id,
@@ -2616,9 +2979,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             ),
         );
 
-        // Fetch recent session messages for Ideation context ONLY when spawning a new process.
-        // The agent has no prior context at spawn time, so we inject the history into the prompt.
-        // For non-ideation contexts and already-running agents (IPR path above), we pass empty slice.
+        // Fetch recent session messages when spawning a new process. The agent has no prior
+        // context at spawn time, so we inject the history into the bootstrap prompt.
+        //
+        // Already-running agents (IPR path above) skip this — they have live context from
+        // the existing interactive process.
+        //
+        // Ideation keys by session_id; Project/Task chat key by conversation_id because their
+        // messages are not tied to an ideation session. Execution/Review/Merge intentionally
+        // remain history-free — they reload context from task state on every spawn.
+        let session_history_started = Instant::now();
         let (session_messages, session_total) = if context_type == ChatContextType::Ideation {
             let session_id = IdeationSessionId::from_string(context_id.to_string());
             let total = self
@@ -2639,9 +3009,35 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             } else {
                 (vec![], 0usize)
             }
+        } else if chat_service_context::context_type_supports_history_injection(context_type) {
+            let msgs = self
+                .chat_message_repo
+                .get_recent_by_conversation_paginated(
+                    &conversation_id,
+                    chat_service_context::SESSION_HISTORY_LIMIT as u32,
+                    0,
+                )
+                .await
+                .unwrap_or_default();
+            let total = msgs.len();
+            (msgs, total)
         } else {
             (vec![], 0usize)
         };
+        log_send_message_spawn_prep_phase(
+            context_type,
+            context_id,
+            &runtime_context_id,
+            "load_session_history",
+            session_history_started,
+        );
+        tracing::info!(
+            %context_type,
+            context_id,
+            runtime_context_id = %runtime_context_id,
+            elapsed_ms = post_gate_started.elapsed().as_millis() as u64,
+            "chat_service.send_message pre-spawn preparation completed"
+        );
         let (selected_cli_path, child, interactive_process_registry) = match self
             .spawn_process_for_harness(
                 &conversation,
@@ -2765,6 +3161,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             plugin_dir: self.plugin_dir.clone(),
             repos: chat_service_send_background::BackgroundRunRepos {
                 chat_message_repo: Arc::clone(&self.chat_message_repo),
+                chat_timeline_repo: self.chat_timeline_repo.clone(),
                 chat_attachment_repo: Arc::clone(&self.chat_attachment_repo),
                 artifact_repo: Arc::clone(&self.artifact_repo),
                 conversation_repo: Arc::clone(&self.conversation_repo),
@@ -2801,21 +3198,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             conversation: Some(conversation.clone()),
             agent_name: Some(resolved_agent_name),
             team_mode: runtime_team_mode,
-            assistant_message_attribution: crate::domain::entities::ChatMessageAttribution {
-                attribution_source: Some("native_runtime".to_string()),
-                provider_harness: Some(resolved_spawn_settings.effective_harness),
-                provider_session_id: stored_session_id.clone(),
-                upstream_provider,
-                provider_profile,
-                logical_model: resolved_spawn_settings.configured_model.clone(),
-                effective_model_id: Some(effective_model_id.clone()),
-                logical_effort: resolved_spawn_settings.configured_logical_effort,
-                effective_effort: Some(chat_service_helpers::effective_effort_for_harness(
-                    resolved_spawn_settings.effective_harness,
-                    resolved_spawn_settings.claude_effort.as_deref(),
-                    resolved_spawn_settings.logical_effort,
-                )),
-            },
+            assistant_message_attribution,
             persist_conversation_provider_session_ref: !options
                 .preserve_conversation_provider_session_ref,
             cancellation_token,
@@ -2930,7 +3313,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     );
                     let user_msg_id = user_msg.id.as_str().to_string();
                     let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                    let _ = self.chat_message_repo.create(user_msg).await;
+                    if self
+                        .chat_message_repo
+                        .create(user_msg.clone())
+                        .await
+                        .is_ok()
+                    {
+                        chat_service_streaming::persist_message_text_timeline_item(
+                            &self.chat_timeline_repo,
+                            &user_msg,
+                        )
+                        .await;
+                    }
 
                     if context_type == ChatContextType::Ideation {
                         let _ = self
@@ -3100,7 +3494,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "agent:stopped",
                     serde_json::json!({
                         "conversation_id": info.conversation_id,
-                        "agent_run_id": info.agent_run_id,
+                        "agent_run_id": info.agent_run_id.clone(),
                         "context_type": context_type.to_string(),
                         "context_id": context_id,
                     }),
@@ -3118,7 +3512,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 // Also emit run_completed so frontend knows agent is no longer running
                 self.emit_event(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(info.agent_run_id.clone()),
                         info.conversation_id,
                         context_type.to_string(),
                         context_id.to_string(),
@@ -3160,6 +3555,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_type,
                     context_id,
                     "is_agent_running",
+                    RegistryCleanupCaller::ReadOnly,
                 )
                 .await
         {
@@ -3167,6 +3563,76 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         }
 
         true
+    }
+
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool> {
+        let requested_ids: HashSet<String> = context_ids
+            .iter()
+            .filter(|id| !id.is_empty())
+            .cloned()
+            .collect();
+        let mut states: HashMap<String, bool> =
+            requested_ids.iter().map(|id| (id.clone(), false)).collect();
+
+        if requested_ids.is_empty() {
+            return states;
+        }
+
+        let context_type_name = context_type.to_string();
+        let entries = match self
+            .running_agent_registry
+            .list_by_context_type(&context_type_name)
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    error = %error,
+                    "Failed to bulk-list running-agent registry entries"
+                );
+                return states;
+            }
+        };
+
+        for (key, info) in entries {
+            if !requested_ids.contains(&key.context_id) {
+                continue;
+            }
+
+            let context_id = key.context_id.clone();
+            let cleaned_stale = self
+                .cleanup_stale_registry_block(
+                    &key,
+                    &info,
+                    context_type,
+                    &context_id,
+                    "get_agent_running_states",
+                    RegistryCleanupCaller::ReadOnly,
+                )
+                .await;
+            let cleaned_inactive = if cleaned_stale {
+                false
+            } else {
+                self.cleanup_inactive_registry_block(
+                    &key,
+                    &info,
+                    context_type,
+                    &context_id,
+                    "get_agent_running_states",
+                    RegistryCleanupCaller::ReadOnly,
+                )
+                .await
+            };
+
+            states.insert(context_id, !(cleaned_stale || cleaned_inactive));
+        }
+
+        states
     }
 
     fn set_team_mode(&self, mode: bool) {
@@ -3189,12 +3655,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 #[cfg(test)]
 mod stale_registry_gate_tests {
     use super::{
-        claude_launches_paused, registry_entry_blocks_send_because_run_inactive,
-        registry_entry_blocks_send_but_is_stale, runtime_context_id_for_send, AgentRunStatus,
-        ChatContextType, ChatConversationId, RunningAgentInfo,
+        claude_launches_paused, interactive_continuation_run_id,
+        registry_entry_blocks_send_because_run_inactive, registry_entry_blocks_send_but_is_stale,
+        runtime_context_id_for_send,
+        log_send_message_spawn_prep_phase, AgentRunStatus, ChatContextType, ChatConversationId,
+        RegistryCleanupCaller, RunningAgentInfo,
     };
     use crate::commands::ExecutionState;
     use std::sync::Arc;
+    use std::time::Instant;
 
     fn registry_info(
         pid: u32,
@@ -3253,6 +3722,26 @@ mod stale_registry_gate_tests {
     }
 
     #[test]
+    fn interactive_continuation_reuses_registered_process_run_id() {
+        let info = registry_info(0, chrono::Utc::now());
+
+        assert_eq!(
+            interactive_continuation_run_id(Some(&info)),
+            "run-1",
+            "interactive stdin continuations must correlate with process terminal events"
+        );
+    }
+
+    #[test]
+    fn interactive_continuation_falls_back_when_registry_run_id_missing() {
+        let mut info = registry_info(0, chrono::Utc::now());
+        info.agent_run_id.clear();
+
+        assert!(!interactive_continuation_run_id(Some(&info)).is_empty());
+        assert!(!interactive_continuation_run_id(None).is_empty());
+    }
+
+    #[test]
     fn paused_execution_blocks_slot_consuming_contexts() {
         let execution_state = Arc::new(ExecutionState::new());
         execution_state.pause();
@@ -3295,19 +3784,50 @@ mod stale_registry_gate_tests {
     }
 
     #[test]
+    fn send_message_spawn_prep_phase_telemetry_smoke() {
+        log_send_message_spawn_prep_phase(
+            ChatContextType::Project,
+            "project-telemetry",
+            "conversation-telemetry",
+            "load_spawn_context",
+            Instant::now(),
+        );
+    }
+
+    #[test]
     fn young_pid_zero_registry_entry_is_not_cleaned_before_spawn_finishes() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(5));
 
-        assert!(!registry_entry_blocks_send_but_is_stale(&info, now));
+        assert!(!registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
     }
 
     #[test]
-    fn old_pid_zero_registry_entry_is_treated_as_stale() {
+    fn old_pid_zero_registry_entry_is_not_cleaned_by_read_paths() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
 
-        assert!(registry_entry_blocks_send_but_is_stale(&info, now));
+        assert!(!registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::ReadOnly,
+        ));
+    }
+
+    #[test]
+    fn old_pid_zero_registry_entry_unblocks_send_gate() {
+        let now = chrono::Utc::now();
+        let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
+
+        assert!(registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
     }
 
     #[test]
@@ -3315,7 +3835,11 @@ mod stale_registry_gate_tests {
         let now = chrono::Utc::now();
         let info = registry_info(std::process::id(), now - chrono::Duration::minutes(5));
 
-        assert!(!registry_entry_blocks_send_but_is_stale(&info, now));
+        assert!(!registry_entry_blocks_send_but_is_stale(
+            &info,
+            now,
+            RegistryCleanupCaller::SendGate,
+        ));
     }
 
     #[test]
@@ -3327,6 +3851,7 @@ mod stale_registry_gate_tests {
             &info,
             Some(AgentRunStatus::Running),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
     }
 
@@ -3339,16 +3864,19 @@ mod stale_registry_gate_tests {
             &info,
             Some(AgentRunStatus::Completed),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Failed),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
         assert!(registry_entry_blocks_send_because_run_inactive(
             &info,
             Some(AgentRunStatus::Cancelled),
             now,
+            RegistryCleanupCaller::ReadOnly,
         ));
     }
 
@@ -3358,22 +3886,296 @@ mod stale_registry_gate_tests {
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(5));
 
         assert!(!registry_entry_blocks_send_because_run_inactive(
-            &info, None, now
+            &info,
+            None,
+            now,
+            RegistryCleanupCaller::SendGate,
         ));
     }
 
     #[test]
-    fn old_missing_agent_run_unblocks_registry_entry() {
+    fn old_missing_agent_run_does_not_unblock_read_paths() {
+        let now = chrono::Utc::now();
+        let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
+
+        assert!(!registry_entry_blocks_send_because_run_inactive(
+            &info,
+            None,
+            now,
+            RegistryCleanupCaller::ReadOnly,
+        ));
+    }
+
+    #[test]
+    fn old_missing_agent_run_unblocks_send_gate() {
         let now = chrono::Utc::now();
         let info = registry_info(pid_zero(), now - chrono::Duration::seconds(31));
 
         assert!(registry_entry_blocks_send_because_run_inactive(
-            &info, None, now
+            &info,
+            None,
+            now,
+            RegistryCleanupCaller::SendGate,
         ));
     }
 
     fn pid_zero() -> u32 {
         0
+    }
+}
+
+#[cfg(test)]
+mod agent_workspace_send_tests {
+    use super::{ChatService, SendMessageOptions, AGENT_ERROR_PREFIX};
+    use crate::application::interactive_process_registry::InteractiveProcessKey;
+    use crate::application::AppState;
+    use crate::commands::ExecutionState;
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
+        MessageRole, Project, ProjectId, TaskId,
+    };
+    use crate::domain::services::RunningAgentKey;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn interactive_stdin_send_returns_registered_process_run_id() {
+        let state = AppState::new_test();
+        let context_id = "task-interactive-run-id";
+        let conversation = ChatConversation::new_task(TaskId::from_string(context_id.to_string()));
+        let conversation_id = conversation.id.as_str().to_string();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat should spawn for stdin test");
+        let stdin = child.stdin.take().expect("cat stdin should be piped");
+        let interactive_key = InteractiveProcessKey::new("task", context_id);
+        state
+            .interactive_process_registry
+            .register(interactive_key.clone(), stdin)
+            .await;
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("task", context_id),
+                0,
+                conversation_id.clone(),
+                "run-original-process".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+        let result = service
+            .send_message(
+                ChatContextType::Task,
+                context_id,
+                "follow-up",
+                SendMessageOptions::default(),
+            )
+            .await
+            .expect("interactive stdin send should succeed");
+
+        state.interactive_process_registry.remove(&interactive_key).await;
+        let _ = child.kill().await;
+
+        assert_eq!(result.conversation_id, conversation_id);
+        assert_eq!(
+            result.agent_run_id, "run-original-process",
+            "Gate 1 sends must not invent a run id that terminal events cannot match"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_conversation_cli_launch_failure_persists_visible_error() {
+        let state = AppState::new_test();
+        let project_dir = tempfile::tempdir().expect("project dir should be created");
+        let project = Project::new(
+            "CLI Failure Project".to_string(),
+            project_dir.path().to_string_lossy().to_string(),
+        );
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let conversation = ChatConversation::new_project(project.id.clone());
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let missing_cli_path = project_dir.path().join("missing-claude-cli");
+        let service = state
+            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+            .with_cli_path(missing_cli_path.clone())
+            .with_working_directory(project_dir.path());
+
+        let error = service
+            .send_message(
+                ChatContextType::Project,
+                project.id.as_str(),
+                "start a project agent",
+                SendMessageOptions {
+                    conversation_id_override: Some(conversation_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("missing CLI should fail launch");
+
+        assert!(
+            error.to_string().contains("Claude CLI not found"),
+            "spawn failure should preserve the CLI error: {error}"
+        );
+
+        let messages = state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .expect("messages should load");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == MessageRole::User
+                    && message.content == "start a project agent"),
+            "user turn should remain in the transcript"
+        );
+        let assistant_error = messages
+            .iter()
+            .find(|message| {
+                message.role == MessageRole::Orchestrator
+                    && message.content.contains(AGENT_ERROR_PREFIX)
+            })
+            .expect("launch failure should persist a visible assistant error");
+        assert!(
+            assistant_error.content.contains("Claude CLI not found"),
+            "assistant error should include the redacted CLI failure: {}",
+            assistant_error.content
+        );
+
+        let run = state
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation_id)
+            .await
+            .expect("run lookup should succeed")
+            .expect("agent run should be persisted before launch");
+        assert_eq!(run.status, AgentRunStatus::Failed);
+        assert!(
+            run.error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Claude CLI not found"),
+            "failed run should retain the CLI error: {:?}",
+            run.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn project_edit_conversation_without_workspace_fails_before_spawn() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-missing-workspace".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+        let conversation_id = conversation.id.clone();
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let error = service
+            .send_message(
+                ChatContextType::Project,
+                project_id.as_str(),
+                "continue in edit mode",
+                SendMessageOptions {
+                    conversation_id_override: Some(conversation_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("edit conversations without workspaces must not spawn");
+
+        assert!(
+            error
+                .to_string()
+                .contains("edit mode but has no isolated workspace"),
+            "missing workspace should produce a clear spawn failure: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bulk_running_state_tests {
+    use super::{ChatContextType, ChatService};
+    use crate::application::AppState;
+    use crate::commands::ExecutionState;
+    use crate::domain::services::{MemoryRunningAgentRegistry, RunningAgentKey};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_intersects_requested_project_ids() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-running"))
+            .await;
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-unrequested"))
+            .await;
+        registry
+            .set_running(RunningAgentKey::new("ideation", "conv-running"))
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(registry);
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let requested_ids = vec![
+            "conv-running".to_string(),
+            "conv-idle".to_string(),
+            "conv-running".to_string(),
+            String::new(),
+        ];
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &requested_ids)
+            .await;
+
+        assert_eq!(states.get("conv-running"), Some(&true));
+        assert_eq!(states.get("conv-idle"), Some(&false));
+        assert_eq!(states.get("conv-unrequested"), None);
+        assert_eq!(states.get(""), None);
+        assert_eq!(states.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_returns_empty_for_empty_request() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .set_running(RunningAgentKey::new("project", "conv-running"))
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(registry);
+        let service =
+            app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let states = service
+            .get_agent_running_states(ChatContextType::Project, &[])
+            .await;
+
+        assert!(states.is_empty());
     }
 }
 

@@ -105,7 +105,10 @@ fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
         .expect("PATH env");
     let path_entries = std::env::split_paths(&path_value).collect::<Vec<_>>();
 
-    assert_eq!(path_entries.first(), Some(&std::path::PathBuf::from("/tmp/git-node-bin")));
+    assert_eq!(
+        path_entries.first(),
+        Some(&std::path::PathBuf::from("/tmp/git-node-bin"))
+    );
     assert_eq!(
         path_entries,
         vec![
@@ -208,12 +211,96 @@ fn test_transient_patterns_constant_coverage() {
 }
 
 #[test]
+fn git_command_lane_labels_are_stable() {
+    assert_eq!(GitCommandLane::Foreground.as_str(), "foreground");
+    assert_eq!(GitCommandLane::Background.as_str(), "background");
+}
+
+#[test]
 fn test_retry_backoff_array_length() {
     let git_cfg = git_runtime_config();
     assert_eq!(
         git_cfg.retry_backoff_secs.len(),
         git_cfg.max_retries as usize,
         "retry_backoff_secs must have one entry per retry attempt"
+    );
+}
+
+#[test]
+fn git_command_telemetry_helpers_cover_success_error_and_timeout_paths() {
+    let args: Vec<String> = vec!["--version".to_string()];
+    let cwd = std::env::temp_dir();
+    let caller = std::panic::Location::caller();
+    let output = std::process::Command::new("git")
+        .arg("--version")
+        .current_dir(&cwd)
+        .output()
+        .expect("git --version should run");
+
+    log_git_command_result(
+        "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        Ok(&output),
+    );
+    log_git_command_result(
+        "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now() - Duration::from_millis(SLOW_GIT_COMMAND_MS + 1),
+        caller,
+        Ok(&output),
+    );
+
+    let error = AppError::GitOperation("test git failure".to_string());
+    log_git_command_result(
+        "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        Err(&error),
+    );
+
+    log_git_status_result(
+        "run_status",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        true,
+    );
+    log_git_status_result(
+        "run_status",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now() - Duration::from_millis(SLOW_GIT_COMMAND_MS + 1),
+        caller,
+        false,
+    );
+
+    log_git_command_timeout(
+        "run",
+        GitCommandLane::Foreground,
+        &args,
+        &cwd,
+        Instant::now(),
+        caller,
+        5,
+    );
+    log_git_admission_wait(
+        "run",
+        GitCommandLane::Background,
+        &args,
+        &cwd,
+        Instant::now() - Duration::from_millis(GIT_ADMISSION_WAIT_LOG_MS as u64 + 1),
     );
 }
 
@@ -227,11 +314,48 @@ async fn test_run_basic_git_version() {
 }
 
 #[tokio::test]
+async fn test_run_background_basic_git_version() {
+    let tmpdir = std::env::temp_dir();
+    let result = run_background(&["--version"], &tmpdir).await;
+    assert!(
+        result.is_ok(),
+        "background git --version should succeed: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn scoped_git_lane_overrides_default_lane() {
+    assert_eq!(
+        current_git_command_lane(GitCommandLane::Foreground),
+        GitCommandLane::Foreground
+    );
+
+    let lane = with_git_command_lane(GitCommandLane::Background, async {
+        current_git_command_lane(GitCommandLane::Foreground)
+    })
+    .await;
+
+    assert_eq!(lane, GitCommandLane::Background);
+}
+
+#[tokio::test]
 async fn test_run_status_basic() {
     let tmpdir = std::env::temp_dir();
     let result = run_status(&["--version"], &tmpdir).await;
     assert!(result.is_ok());
     assert!(result.unwrap(), "git --version should report success");
+}
+
+#[tokio::test]
+async fn test_run_status_background_basic() {
+    let tmpdir = std::env::temp_dir();
+    let result = run_status_background(&["--version"], &tmpdir).await;
+    assert!(result.is_ok());
+    assert!(
+        result.unwrap(),
+        "background git --version should report success"
+    );
 }
 
 #[tokio::test]
@@ -274,14 +398,11 @@ async fn test_timeout_drops_future_cleanly() {
     let args: Vec<String> = vec!["--version".to_string()];
     let cwd = tmpdir.to_path_buf();
 
-    // Use a generous 5s timeout — `git --version` should complete well within this.
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        exec_git_async(&args, &cwd),
-    )
-    .await;
+    // Keep this as a hang guard instead of a performance assertion; macOS
+    // subprocess startup can exceed 5s on overloaded developer machines.
+    let result = tokio::time::timeout(Duration::from_secs(30), exec_git_async(&args, &cwd)).await;
 
     // Should complete within timeout
-    assert!(result.is_ok(), "git --version should complete within 5s");
+    assert!(result.is_ok(), "git --version should complete within 30s");
     assert!(result.unwrap().is_ok());
 }

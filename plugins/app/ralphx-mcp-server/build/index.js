@@ -24,7 +24,7 @@ import { handleRequestTeamPlan } from "./team-plan-handler.js";
 import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runtime-context.js";
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
-import { callCompleteAgentWorkspaceRepairTool, callSubmitAgentWorkspacePrDescriptionTool, } from "./agent-workspace-tools.js";
+import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -539,6 +539,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // POST /api/git/tasks/:task_id/complete-merge
             const { task_id, commit_sha } = args;
             result = await callTauri(`git/tasks/${task_id}/complete-merge`, { commit_sha });
+            /* c8 ignore next 2 -- index.ts is a side-effectful MCP server; pure dispatch is covered in agent-workspace-tools tests. */
         }
         else if (name === "complete_agent_workspace_repair") {
             // POST /api/agent-workspaces/:conversation_id/complete-repair

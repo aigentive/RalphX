@@ -319,11 +319,8 @@ fn build_codex_exec_args_preserves_gpt55_xhigh_selection() {
 
 #[test]
 fn build_codex_exec_args_defaults_to_mcp_safe_approval_and_sandbox() {
-    let args = build_codex_exec_args(
-        &full_codex_capabilities(),
-        &CodexExecCliConfig::default(),
-    )
-    .expect("build codex exec args");
+    let args = build_codex_exec_args(&full_codex_capabilities(), &CodexExecCliConfig::default())
+        .expect("build codex exec args");
 
     assert!(args
         .windows(2)
@@ -654,6 +651,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("--tauri-api-url"),
         "expected tauri-api-url CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--trace-dir"),
+        "expected trace-dir CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("mcp-proxy"),
+        "expected app-owned MCP proxy trace dir in overrides: {args_override}"
     );
     assert!(
         args_override.contains("http://127.0.0.1:"),

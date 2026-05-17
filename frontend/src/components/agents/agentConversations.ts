@@ -1,9 +1,6 @@
 import type { IdeationSessionResponse } from "@/api/ideation";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
-import {
-  formatHumanTimestampLabel,
-  formatHumanTimestampTitle,
-} from "@/lib/formatters";
+import { formatHumanTimestampTitle } from "@/lib/formatters";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 export type AgentIdeationSession = Pick<

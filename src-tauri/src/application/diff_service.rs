@@ -10,8 +10,10 @@ use crate::domain::entities::TaskId;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// A file that was changed by the agent
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +26,10 @@ pub struct FileChange {
     pub additions: u32,
     /// Number of lines deleted
     pub deletions: u32,
+    /// Whether the file is considered auto-generated (source maps, lockfiles,
+    /// minified bundles, build outputs). Set by `DiffService::compute_generated_flags`.
+    #[serde(default)]
+    pub is_generated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -34,17 +40,87 @@ pub enum FileChangeStatus {
     Deleted,
 }
 
-/// Diff data for a single file
+/// Diff data for a single file — hunk-based format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDiff {
     /// File path
     pub file_path: String,
-    /// Content before changes (empty for new files)
-    pub old_content: String,
-    /// Content after changes (empty for deleted files)
-    pub new_content: String,
     /// Programming language for syntax highlighting
     pub language: String,
+    /// Parsed diff hunks
+    pub hunks: Vec<DiffHunk>,
+    /// Total line count of the old (before) version; 0 for new files
+    pub old_total_lines: u32,
+    /// Total line count of the new (after) version; 0 for deleted files
+    pub new_total_lines: u32,
+    /// True when git reports binary content and hunks are unavailable
+    pub is_binary: bool,
+}
+
+// =========================================================================
+// Hunk-based diff types
+// =========================================================================
+
+/// Classification of a single diff line
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineKind {
+    Context,
+    Addition,
+    Deletion,
+}
+
+/// A single line in a diff hunk with source-position metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+    /// 1-indexed line number in the old file (None for additions)
+    pub old_line_num: Option<u32>,
+    /// 1-indexed line number in the new file (None for deletions)
+    pub new_line_num: Option<u32>,
+}
+
+/// A contiguous changed region in a unified diff
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffHunk {
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    /// Raw `@@ ... @@` header line, including optional trailing function context
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+/// Which side of a diff to view (for range fetching)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffSide {
+    Old,
+    New,
+}
+
+/// Identifies a git ref in the context of an agent workspace diff
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffRefKind {
+    Head,
+    Staged,
+    Unstaged,
+    Commit { sha: String },
+    /// Workspace cumulative base ref — caller must resolve before passing to DiffService
+    CumulativeBase,
+    /// Workspace cumulative head ref — caller must resolve before passing to DiffService
+    CumulativeHead,
+}
+
+/// A single line returned by the range-fetch endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeLine {
+    /// 1-indexed line number
+    pub line_num: u32,
+    pub content: String,
 }
 
 /// 3-way diff data for a file with merge conflicts
@@ -97,45 +173,12 @@ impl DiffService {
             .args(["diff", "--name-status", base_ref])
             .current_dir(project_path)
             .output()
-            .map_err(|e| AppError::GitOperation(format!("Failed to run git diff: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::GitOperation(format!(
-                "git diff failed: {}",
-                stderr
-            )));
+            .ok()?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
         }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut changes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status_char = parts[0].chars().next().unwrap_or('M');
-                let file_path = parts[1];
-
-                let status = match status_char {
-                    'A' => FileChangeStatus::Added,
-                    'D' => FileChangeStatus::Deleted,
-                    _ => FileChangeStatus::Modified,
-                };
-
-                let (additions, deletions) =
-                    self.get_worktree_file_line_counts_from_ref(file_path, project_path, base_ref);
-
-                changes.push(FileChange {
-                    path: file_path.to_string(),
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
-
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(changes)
     }
 
     /// Get line additions/deletions for a file compared to base branch
@@ -200,9 +243,25 @@ impl DiffService {
         project_path: &str,
         base_branch: &str,
     ) -> AppResult<FileDiff> {
-        let full_path = std::path::Path::new(project_path).join(file_path);
-        let new_content = std::fs::read_to_string(&full_path).unwrap_or_default();
-        self.get_file_diff_between_refs_with_new(file_path, project_path, base_branch, &new_content)
+        let raw_diff =
+            run_git_text(project_path, &["diff", base_branch, "--", file_path])
+                .unwrap_or_default();
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_ref(project_path, base_branch, file_path);
+        let new_total_lines = Self::count_lines_on_disk(project_path, file_path);
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
+        })
     }
 
     /// Get files changed in a specific commit
@@ -211,95 +270,22 @@ impl DiffService {
         commit_sha: &str,
         project_path: &str,
     ) -> AppResult<Vec<FileChange>> {
-        // Use git diff-tree to get files changed in this commit
-        // Format: status\tpath (e.g., "A\tfile.rs" for added, "M\tfile.rs" for modified)
-        let output = Command::new(resolve_git_cli_path())
-            .args([
+        let name_status = run_git_text(
+            project_path,
+            &[
                 "diff-tree",
                 "--no-commit-id",
                 "--name-status",
                 "-r",
                 commit_sha,
-            ])
-            .current_dir(project_path)
-            .output()
-            .map_err(|e| AppError::GitOperation(format!("Failed to run git diff-tree: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::GitOperation(format!(
-                "git diff-tree failed: {}",
-                stderr
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut changes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status_char = parts[0].chars().next().unwrap_or('M');
-                let file_path = parts[1];
-
-                let status = match status_char {
-                    'A' => FileChangeStatus::Added,
-                    'D' => FileChangeStatus::Deleted,
-                    _ => FileChangeStatus::Modified, // M, R, C, etc.
-                };
-
-                // Get line counts using git diff for this specific commit
-                let (additions, deletions) =
-                    self.get_commit_file_line_counts(commit_sha, file_path, project_path);
-
-                changes.push(FileChange {
-                    path: file_path.to_string(),
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
-
-        // Sort by path for consistent ordering
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-
-        Ok(changes)
-    }
-
-    /// Get line additions/deletions for a file in a specific commit
-    fn get_commit_file_line_counts(
-        &self,
-        commit_sha: &str,
-        file_path: &str,
-        project_path: &str,
-    ) -> (u32, u32) {
-        // git diff commit^..commit --numstat -- file_path
-        let output = Command::new(resolve_git_cli_path())
-            .args([
-                "diff",
-                "--numstat",
-                &format!("{}^", commit_sha),
-                commit_sha,
-                "--",
-                file_path,
-            ])
-            .current_dir(project_path)
-            .output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let additions: u32 = parts[0].parse().unwrap_or(0);
-                    let deletions: u32 = parts[1].parse().unwrap_or(0);
-                    return (additions, deletions);
-                }
-            }
-        }
-
-        (0, 0)
+            ],
+        )?;
+        let parent_ref = format!("{}^", commit_sha);
+        let line_counts = run_git_numstat_lossy(
+            project_path,
+            &["diff", "--numstat", &parent_ref, commit_sha],
+        );
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
     /// Get diff for a file in a specific commit (comparing to its parent)
@@ -324,84 +310,13 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<Vec<FileChange>> {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--name-status", from_ref, to_ref])
-            .current_dir(project_path)
-            .output()
-            .map_err(|e| AppError::GitOperation(format!("Failed to run git diff: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(AppError::GitOperation(format!(
-                "git diff failed: {}",
-                stderr
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut changes = Vec::new();
-
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 2 {
-                let status_char = parts[0].chars().next().unwrap_or('M');
-                let file_path = parts[1];
-
-                let status = match status_char {
-                    'A' => FileChangeStatus::Added,
-                    'D' => FileChangeStatus::Deleted,
-                    _ => FileChangeStatus::Modified, // M, R, C, etc.
-                };
-
-                let (additions, deletions) = self.get_file_line_counts_between_refs(
-                    file_path,
-                    project_path,
-                    from_ref,
-                    to_ref,
-                );
-
-                changes.push(FileChange {
-                    path: file_path.to_string(),
-                    status,
-                    additions,
-                    deletions,
-                });
-            }
-        }
-
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(changes)
+        let name_status = run_git_text(project_path, &["diff", "--name-status", from_ref, to_ref])?;
+        let line_counts =
+            run_git_numstat_lossy(project_path, &["diff", "--numstat", from_ref, to_ref]);
+        Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
-    /// Get line additions/deletions for a file between two refs
-    fn get_file_line_counts_between_refs(
-        &self,
-        file_path: &str,
-        project_path: &str,
-        from_ref: &str,
-        to_ref: &str,
-    ) -> (u32, u32) {
-        let output = Command::new(resolve_git_cli_path())
-            .args(["diff", "--numstat", from_ref, to_ref, "--", file_path])
-            .current_dir(project_path)
-            .output();
-
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(line) = stdout.lines().next() {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let additions: u32 = parts[0].parse().unwrap_or(0);
-                    let deletions: u32 = parts[1].parse().unwrap_or(0);
-                    return (additions, deletions);
-                }
-            }
-        }
-
-        (0, 0)
-    }
-
-    /// Get diff for a file between two refs
+    /// Get diff for a file between two git refs
     pub fn get_file_diff_between_refs(
         &self,
         file_path: &str,
@@ -409,39 +324,87 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<FileDiff> {
-        let old_content = self
-            .get_file_content_at_ref(project_path, from_ref, file_path)
-            .unwrap_or_default();
-        let new_content = self
-            .get_file_content_at_ref(project_path, to_ref, file_path)
-            .unwrap_or_default();
-
-        let language = get_language_from_path(file_path);
+        let raw_diff =
+            run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
+                .unwrap_or_default();
+        let is_binary = raw_diff.contains("Binary files");
+        let hunks = if is_binary {
+            vec![]
+        } else {
+            parse_unified_diff(&raw_diff)
+        };
+        let old_total_lines = self.count_lines_at_ref(project_path, from_ref, file_path);
+        let new_total_lines = self.count_lines_at_ref(project_path, to_ref, file_path);
         Ok(FileDiff {
             file_path: file_path.to_string(),
-            old_content,
-            new_content,
-            language,
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary,
         })
     }
 
-    /// Same as get_file_diff_between_refs, but with new content already read from disk.
-    fn get_file_diff_between_refs_with_new(
+    /// Get file changes from a unified multi-file patch.
+    pub fn get_file_changes_from_unified_diff(&self, raw_patch: &str) -> Vec<FileChange> {
+        let mut changes: Vec<FileChange> = file_patches_from_unified_diff(raw_patch)
+            .into_iter()
+            .map(|patch| FileChange {
+                path: patch.path,
+                status: patch.status,
+                additions: patch.additions,
+                deletions: patch.deletions,
+                is_generated: false,
+            })
+            .collect();
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        changes
+    }
+
+    /// Get a single file diff from a unified multi-file patch.
+    pub fn get_file_diff_from_unified_diff(
         &self,
+        raw_patch: &str,
         file_path: &str,
-        project_path: &str,
-        from_ref: &str,
-        new_content: &str,
     ) -> AppResult<FileDiff> {
-        let old_content = self
-            .get_file_content_at_ref(project_path, from_ref, file_path)
-            .unwrap_or_default();
-        let language = get_language_from_path(file_path);
+        validate_diff_file_path(file_path)?;
+        let Some(patch) = file_patches_from_unified_diff(raw_patch)
+            .into_iter()
+            .find(|patch| patch.path == file_path)
+        else {
+            return Ok(FileDiff {
+                file_path: file_path.to_string(),
+                language: get_language_from_path(file_path),
+                hunks: Vec::new(),
+                old_total_lines: 0,
+                new_total_lines: 0,
+                is_binary: false,
+            });
+        };
+
+        let hunks = if patch.is_binary {
+            Vec::new()
+        } else {
+            parse_unified_diff(&patch.raw)
+        };
+        let old_total_lines = if matches!(patch.status, FileChangeStatus::Added) {
+            0
+        } else {
+            max_old_line_from_hunks(&hunks)
+        };
+        let new_total_lines = if matches!(patch.status, FileChangeStatus::Deleted) {
+            0
+        } else {
+            max_new_line_from_hunks(&hunks)
+        };
+
         Ok(FileDiff {
             file_path: file_path.to_string(),
-            old_content,
-            new_content: new_content.to_string(),
-            language,
+            language: get_language_from_path(file_path),
+            hunks,
+            old_total_lines,
+            new_total_lines,
+            is_binary: patch.is_binary,
         })
     }
 
@@ -539,6 +502,145 @@ impl DiffService {
     ) -> AppResult<FileDiff> {
         let from_ref = self.get_merged_base_ref(project_path, base_branch, merge_commit_sha);
         self.get_file_diff_between_refs(file_path, project_path, &from_ref, merge_commit_sha)
+    }
+
+    // =========================================================================
+    // Line-count helpers (used for old_total_lines / new_total_lines)
+    // =========================================================================
+
+    fn count_lines_at_ref(&self, project_path: &str, git_ref: &str, file_path: &str) -> u32 {
+        self.get_file_content_at_ref(project_path, git_ref, file_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    }
+
+    fn count_lines_at_index(&self, project_path: &str, file_path: &str) -> u32 {
+        self.get_file_content_at_index(project_path, file_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    }
+
+    fn count_lines_on_disk(project_path: &str, file_path: &str) -> u32 {
+        let full_path = std::path::Path::new(project_path).join(file_path);
+        std::fs::read_to_string(&full_path)
+            .map(|c| c.lines().count() as u32)
+            .unwrap_or(0)
+    }
+
+    // =========================================================================
+    // Range fetch endpoint
+    // =========================================================================
+
+    /// Fetch a range of lines [from, to] (1-indexed, inclusive) from a specific
+    /// version of a file.  Maximum range size is 5 000 lines.
+    ///
+    /// `DiffRefKind::CumulativeBase` and `DiffRefKind::CumulativeHead` are NOT
+    /// handled here — the caller must resolve them to `DiffRefKind::Commit { sha }`
+    /// using workspace context before calling this method.
+    ///
+    /// # Errors
+    /// * `Validation` — range too large, `from > to`, or unsafe path components.
+    /// * `GitOperation` — file not found at the requested ref / index.
+    pub fn get_file_content_range(
+        &self,
+        workspace_path: &str,
+        side: &DiffSide,
+        path: &str,
+        ref_kind: &DiffRefKind,
+        from: u32,
+        to: u32,
+    ) -> AppResult<Vec<RangeLine>> {
+        const MAX_RANGE: u32 = 5_000;
+
+        if from < 1 {
+            return Err(AppError::Validation(
+                "'from' must be >= 1 (1-indexed)".to_string(),
+            ));
+        }
+        if to < from {
+            return Err(AppError::Validation(format!(
+                "'from' ({from}) must be <= 'to' ({to})"
+            )));
+        }
+        if to - from + 1 > MAX_RANGE {
+            return Err(AppError::Validation(format!(
+                "Range too large: {} lines requested (max {MAX_RANGE})",
+                to - from + 1
+            )));
+        }
+
+        // Validate path: must be relative with no unsafe components
+        validate_diff_file_path(path)?;
+
+        let content: String = match ref_kind {
+            DiffRefKind::Unstaged => {
+                if matches!(side, DiffSide::New) {
+                    // Working-tree file — use safe read helper (CodeQL path containment)
+                    let full_path =
+                        std::path::PathBuf::from(workspace_path).join(path);
+                    crate::utils::path_safety::checked_read_to_string(
+                        &full_path,
+                        "content range file",
+                    )?
+                } else {
+                    // Old side of unstaged diff = index
+                    self.get_file_content_at_index(workspace_path, path)
+                        .ok_or_else(|| {
+                            AppError::GitOperation(format!(
+                                "File '{path}' not found in the git index"
+                            ))
+                        })?
+                }
+            }
+            DiffRefKind::Staged => {
+                self.get_file_content_at_index(workspace_path, path)
+                    .ok_or_else(|| {
+                        AppError::GitOperation(format!(
+                            "File '{path}' not found in the git index"
+                        ))
+                    })?
+            }
+            DiffRefKind::Head => {
+                self.get_file_content_at_ref(workspace_path, "HEAD", path)
+                    .ok_or_else(|| {
+                        AppError::GitOperation(format!(
+                            "File '{path}' not found at HEAD"
+                        ))
+                    })?
+            }
+            DiffRefKind::Commit { sha } => {
+                self.get_file_content_at_ref(workspace_path, sha, path)
+                    .ok_or_else(|| {
+                        AppError::GitOperation(format!(
+                            "File '{path}' not found at commit {sha}"
+                        ))
+                    })?
+            }
+            DiffRefKind::CumulativeBase | DiffRefKind::CumulativeHead => {
+                return Err(AppError::Validation(
+                    "CumulativeBase/CumulativeHead must be resolved to Commit by the caller"
+                        .to_string(),
+                ));
+            }
+        };
+
+        let lines: Vec<RangeLine> = content
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                let line_num = (i + 1) as u32;
+                if line_num >= from && line_num <= to {
+                    Some(RangeLine {
+                        line_num,
+                        content: line.to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(lines)
     }
 
     // =========================================================================
@@ -657,7 +759,9 @@ impl DiffService {
     fn is_git_238_or_newer() -> bool {
         static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *CACHE.get_or_init(|| {
-            let output = Command::new(resolve_git_cli_path()).args(["--version"]).output();
+            let output = Command::new(resolve_git_cli_path())
+                .args(["--version"])
+                .output();
 
             if let Ok(output) = output {
                 let version_str = String::from_utf8_lossy(&output.stdout);
@@ -783,6 +887,385 @@ impl DiffService {
             None
         }
     }
+
+    /// Determine whether each path in `paths` is auto-generated, using a single
+    /// batched `git check-attr --stdin linguist-generated` call followed by a
+    /// hardcoded heuristic for paths with no `.gitattributes` opinion.
+    ///
+    /// Returns a map from path → `is_generated`. Every path in `paths` is
+    /// guaranteed to have an entry in the returned map.
+    ///
+    /// # Errors
+    /// Always returns `Ok` — if the git call fails the function logs a warning
+    /// and falls back to the heuristic for all paths.
+    pub fn compute_generated_flags(
+        &self,
+        workspace_path: &Path,
+        paths: &[&str],
+    ) -> AppResult<HashMap<String, bool>> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let attr_map = self.run_git_check_attr_map(workspace_path, paths);
+
+        match attr_map {
+            Ok(ref map) => {
+                let mut flags = HashMap::with_capacity(paths.len());
+                for &path in paths {
+                    let value = map.get(path).map(String::as_str).unwrap_or("unspecified");
+                    let is_gen = match value {
+                        "unspecified" => is_generated_by_heuristic(path),
+                        // Explicit opt-out via `.gitattributes`
+                        "unset" | "false" => false,
+                        // "set", "true", or any other value → generated
+                        _ => true,
+                    };
+                    flags.insert(path.to_string(), is_gen);
+                }
+                Ok(flags)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "git check-attr failed, falling back to heuristic: {e}"
+                );
+                let flags = paths
+                    .iter()
+                    .map(|&p| (p.to_string(), is_generated_by_heuristic(p)))
+                    .collect();
+                Ok(flags)
+            }
+        }
+    }
+
+    /// Run `git check-attr --stdin linguist-generated` and return a map of
+    /// `path → attribute value` for each path.  Paths with no matching rule
+    /// appear with value `"unspecified"`.
+    fn run_git_check_attr_map(
+        &self,
+        workspace_path: &Path,
+        paths: &[&str],
+    ) -> AppResult<HashMap<String, String>> {
+        let mut child = Command::new(resolve_git_cli_path())
+            .args(["check-attr", "--stdin", "linguist-generated"])
+            .current_dir(workspace_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                AppError::GitOperation(format!("Failed to spawn git check-attr: {e}"))
+            })?;
+
+        // Write all paths to stdin (drop closes the pipe, signalling EOF to git)
+        if let Some(mut stdin) = child.stdin.take() {
+            for path in paths {
+                // Paths from git diff --name-status are controlled git output, safe to forward
+                writeln!(stdin, "{path}").ok();
+            }
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            AppError::GitOperation(format!("Failed to wait for git check-attr: {e}"))
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::GitOperation(format!(
+                "git check-attr failed: {stderr}"
+            )));
+        }
+
+        // Output format: "<path>: linguist-generated: <value>\n"
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut map = HashMap::with_capacity(paths.len());
+        const ATTR_INFIX: &str = ": linguist-generated: ";
+        for line in stdout.lines() {
+            if let Some(attr_pos) = line.find(ATTR_INFIX) {
+                let path = line[..attr_pos].to_string();
+                let value = line[attr_pos + ATTR_INFIX.len()..].to_string();
+                map.insert(path, value);
+            }
+        }
+        Ok(map)
+    }
+}
+
+#[derive(Debug)]
+struct UnifiedFilePatch {
+    path: String,
+    status: FileChangeStatus,
+    additions: u32,
+    deletions: u32,
+    raw: String,
+    is_binary: bool,
+}
+
+#[derive(Debug)]
+struct UnifiedFilePatchBuilder {
+    old_path: Option<String>,
+    new_path: Option<String>,
+    status: FileChangeStatus,
+    additions: u32,
+    deletions: u32,
+    raw: String,
+    in_hunk: bool,
+    is_binary: bool,
+}
+
+impl UnifiedFilePatchBuilder {
+    fn new(first_line: &str) -> Self {
+        let mut builder = Self {
+            old_path: None,
+            new_path: None,
+            status: FileChangeStatus::Modified,
+            additions: 0,
+            deletions: 0,
+            raw: String::new(),
+            in_hunk: false,
+            is_binary: false,
+        };
+        builder.record_line(first_line);
+        builder
+    }
+
+    fn record_line(&mut self, line: &str) {
+        self.raw.push_str(line);
+        self.raw.push('\n');
+
+        if line.starts_with("new file mode") {
+            self.status = FileChangeStatus::Added;
+            return;
+        }
+        if line.starts_with("deleted file mode") {
+            self.status = FileChangeStatus::Deleted;
+            return;
+        }
+        if let Some(path) = line.strip_prefix("--- ") {
+            self.old_path = parse_unified_diff_path(path);
+            if self.old_path.is_none() {
+                self.status = FileChangeStatus::Added;
+            }
+            return;
+        }
+        if let Some(path) = line.strip_prefix("+++ ") {
+            self.new_path = parse_unified_diff_path(path);
+            if self.new_path.is_none() {
+                self.status = FileChangeStatus::Deleted;
+            }
+            return;
+        }
+        if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            self.is_binary = true;
+            return;
+        }
+        if line.starts_with("@@ ") {
+            self.in_hunk = true;
+            return;
+        }
+        if !self.in_hunk {
+            return;
+        }
+        if line.starts_with('+') {
+            self.additions += 1;
+        } else if line.starts_with('-') {
+            self.deletions += 1;
+        }
+    }
+
+    fn finish(self) -> Option<UnifiedFilePatch> {
+        let path = match self.status {
+            FileChangeStatus::Deleted => self.old_path.or(self.new_path)?,
+            _ => self.new_path.or(self.old_path)?,
+        };
+        if validate_diff_file_path(&path).is_err() {
+            return None;
+        }
+        Some(UnifiedFilePatch {
+            path,
+            status: self.status,
+            additions: self.additions,
+            deletions: self.deletions,
+            raw: self.raw,
+            is_binary: self.is_binary,
+        })
+    }
+}
+
+fn file_patches_from_unified_diff(raw_patch: &str) -> Vec<UnifiedFilePatch> {
+    let mut patches = Vec::new();
+    let mut current: Option<UnifiedFilePatchBuilder> = None;
+
+    for line in raw_patch.lines() {
+        if line.starts_with("diff --git ") {
+            if let Some(builder) = current.take().and_then(UnifiedFilePatchBuilder::finish) {
+                patches.push(builder);
+            }
+            current = Some(UnifiedFilePatchBuilder::new(line));
+            continue;
+        }
+        if let Some(builder) = current.as_mut() {
+            builder.record_line(line);
+        }
+    }
+
+    if let Some(builder) = current.and_then(UnifiedFilePatchBuilder::finish) {
+        patches.push(builder);
+    }
+
+    patches
+}
+
+fn parse_unified_diff_path(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed == "/dev/null" || trimmed.is_empty() {
+        return None;
+    }
+    let unquoted = trimmed.trim_matches('"');
+    unquoted
+        .strip_prefix("a/")
+        .or_else(|| unquoted.strip_prefix("b/"))
+        .or(Some(unquoted))
+        .map(str::to_string)
+}
+
+fn max_old_line_from_hunks(hunks: &[DiffHunk]) -> u32 {
+    hunks
+        .iter()
+        .filter(|hunk| hunk.old_lines > 0)
+        .map(|hunk| hunk.old_start + hunk.old_lines - 1)
+        .max()
+        .unwrap_or(0)
+}
+
+fn max_new_line_from_hunks(hunks: &[DiffHunk]) -> u32 {
+    hunks
+        .iter()
+        .filter(|hunk| hunk.new_lines > 0)
+        .map(|hunk| hunk.new_start + hunk.new_lines - 1)
+        .max()
+        .unwrap_or(0)
+}
+
+fn run_git_text(project_path: &str, args: &[&str]) -> AppResult<String> {
+    let output = Command::new(resolve_git_cli_path())
+        .args(args)
+        .current_dir(project_path)
+        .output()
+        .map_err(|e| AppError::GitOperation(format!("Failed to run git {}: {}", args[0], e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::GitOperation(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        )));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+// =========================================================================
+// Generated-file heuristic
+// =========================================================================
+
+lazy_static::lazy_static! {
+    /// Patterns that identify auto-generated files when `.gitattributes` has no opinion.
+    static ref GENERATED_PATTERNS: Vec<regex::Regex> = vec![
+        // Source maps
+        regex::Regex::new(r"\.map$").unwrap(),
+        // Minified JS / CSS
+        regex::Regex::new(r"\.min\.(js|css)$").unwrap(),
+        // Common lockfiles
+        regex::Regex::new(
+            r"(?:^|/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|Gemfile\.lock|composer\.lock|poetry\.lock|uv\.lock)$"
+        ).unwrap(),
+        // Jest / Vitest snapshots
+        regex::Regex::new(r"\.snap$").unwrap(),
+        // Build / dist output directories
+        regex::Regex::new(r"^(?:dist|build|out|target)/").unwrap(),
+    ];
+}
+
+/// Return `true` when a file path matches one of the hardcoded generated-file
+/// heuristics (used when `.gitattributes` does not specify `linguist-generated`).
+fn is_generated_by_heuristic(path: &str) -> bool {
+    GENERATED_PATTERNS.iter().any(|re| re.is_match(path))
+}
+
+fn run_git_numstat_lossy(project_path: &str, args: &[&str]) -> HashMap<String, (u32, u32)> {
+    run_git_text(project_path, args)
+        .map(|stdout| numstat_map_from_stdout(&stdout))
+        .unwrap_or_default()
+}
+
+fn numstat_map_from_stdout(stdout: &str) -> HashMap<String, (u32, u32)> {
+    let mut counts = HashMap::new();
+    for line in stdout.lines() {
+        let mut parts = line.split('\t');
+        let Some(additions) = parts.next().and_then(parse_numstat_count) else {
+            continue;
+        };
+        let Some(deletions) = parts.next().and_then(parse_numstat_count) else {
+            continue;
+        };
+        let path_parts: Vec<&str> = parts.collect();
+        let Some(path) = path_parts.last().map(|value| value.trim()) else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        counts.insert(path.to_string(), (additions, deletions));
+    }
+    counts
+}
+
+fn parse_numstat_count(value: &str) -> Option<u32> {
+    if value == "-" {
+        return Some(0);
+    }
+    value.parse().ok()
+}
+
+fn file_changes_from_name_status(
+    name_status: &str,
+    line_counts: &HashMap<String, (u32, u32)>,
+) -> Vec<FileChange> {
+    let mut changes = Vec::new();
+    for line in name_status.lines() {
+        let Some((status, path)) = parse_name_status_line(line) else {
+            continue;
+        };
+        let (additions, deletions) = line_counts.get(&path).copied().unwrap_or((0, 0));
+        changes.push(FileChange {
+            path,
+            status,
+            additions,
+            deletions,
+            is_generated: false,
+        });
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    changes
+}
+
+fn parse_name_status_line(line: &str) -> Option<(FileChangeStatus, String)> {
+    let mut parts = line.split('\t');
+    let status_token = parts.next()?;
+    let path = parts.next_back()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    let status = match status_token.chars().next().unwrap_or('M') {
+        'A' => FileChangeStatus::Added,
+        'D' => FileChangeStatus::Deleted,
+        _ => FileChangeStatus::Modified,
+    };
+
+    Some((status, path.to_string()))
 }
 
 /// Get programming language from file path
@@ -812,6 +1295,135 @@ fn get_language_from_path(path: &str) -> String {
         "sh" | "bash" | "zsh" => "bash".to_string(),
         _ => "plaintext".to_string(),
     }
+}
+
+// =========================================================================
+// Unified diff parser
+// =========================================================================
+
+/// Parse a unified diff (e.g. from `git diff`) into a list of hunks.
+///
+/// Handles:
+/// * Multi-hunk diffs with mixed additions / deletions / context lines.
+/// * New-file hunks (`@@ -0,0 +1,N @@`).
+/// * Deleted-file hunks.
+/// * `\ No newline at end of file` markers — silently skipped.
+/// * Binary-file output — caller detects `"Binary files"` and passes `vec![]`
+///   directly; this function returns `vec![]` for truly empty raw strings.
+pub fn parse_unified_diff(raw: &str) -> Vec<DiffHunk> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_hunk: Option<DiffHunk> = None;
+    let mut old_line: u32 = 0;
+    let mut new_line: u32 = 0;
+
+    for line in raw.lines() {
+        if line.starts_with("@@ ") {
+            if let Some(h) = current_hunk.take() {
+                hunks.push(h);
+            }
+            if let Some(hunk) = parse_hunk_header(line) {
+                old_line = hunk.old_start;
+                new_line = hunk.new_start;
+                current_hunk = Some(hunk);
+            }
+        } else if let Some(ref mut hunk) = current_hunk {
+            if let Some(content) = line.strip_prefix('+') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Addition,
+                    content: content.to_string(),
+                    old_line_num: None,
+                    new_line_num: Some(new_line),
+                });
+                new_line += 1;
+            } else if let Some(content) = line.strip_prefix('-') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Deletion,
+                    content: content.to_string(),
+                    old_line_num: Some(old_line),
+                    new_line_num: None,
+                });
+                old_line += 1;
+            } else if let Some(content) = line.strip_prefix(' ') {
+                hunk.lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    content: content.to_string(),
+                    old_line_num: Some(old_line),
+                    new_line_num: Some(new_line),
+                });
+                old_line += 1;
+                new_line += 1;
+            }
+            // '\ No newline at end of file' — skip (don't emit, don't fail)
+            // Other preamble / header lines (diff --git, index, ---, +++) — skip
+        }
+    }
+
+    if let Some(h) = current_hunk.take() {
+        hunks.push(h);
+    }
+
+    hunks
+}
+
+/// Parse a single `@@ -A,B +C,D @@ optional text` hunk header line.
+fn parse_hunk_header(line: &str) -> Option<DiffHunk> {
+    // Strip leading "@@ "
+    let after_prefix = line.strip_prefix("@@ ")?;
+    // Find the closing " @@"
+    let close_pos = after_prefix.find(" @@")?;
+    let ranges = &after_prefix[..close_pos];
+
+    let mut parts = ranges.split(' ');
+    let old_range = parts.next()?.strip_prefix('-')?;
+    let new_range = parts.next()?.strip_prefix('+')?;
+
+    let (old_start, old_lines) = parse_range_pair(old_range)?;
+    let (new_start, new_lines) = parse_range_pair(new_range)?;
+
+    Some(DiffHunk {
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+        header: line.to_string(),
+        lines: Vec::new(),
+    })
+}
+
+/// Parse `"A,B"` → `(A, B)` or `"A"` → `(A, 1)`.
+fn parse_range_pair(s: &str) -> Option<(u32, u32)> {
+    if let Some(comma_pos) = s.find(',') {
+        let start: u32 = s[..comma_pos].parse().ok()?;
+        let count: u32 = s[comma_pos + 1..].parse().ok()?;
+        Some((start, count))
+    } else {
+        let start: u32 = s.parse().ok()?;
+        Some((start, 1))
+    }
+}
+
+/// Validate a file path received from external input (Tauri command / HTTP query).
+///
+/// Accepts only relative paths whose every component is a normal filename —
+/// no `..`, `.`, absolute roots, or Windows drive prefixes.
+fn validate_diff_file_path(path: &str) -> AppResult<()> {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return Err(AppError::Validation(format!(
+            "File path must be relative: {path}"
+        )));
+    }
+    for component in p.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(AppError::Validation(format!(
+                "File path contains unsafe components: {path}"
+            )));
+        }
+    }
+    if path.is_empty() {
+        return Err(AppError::Validation("File path must not be empty".to_string()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

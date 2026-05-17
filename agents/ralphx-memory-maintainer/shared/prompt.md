@@ -53,9 +53,9 @@ For each chunk:
 3. Minimize diff churn by preserving stable structure
 
 ### Archive Phase
-1. Enqueue archive jobs for updated memories
-2. Generate per-memory snapshots in `.claude/memory-archive/memories/<id>.md`
-3. Generate rule reconstruction snapshots in `.claude/memory-archive/rules/<scope>/<timestamp>.md`
+1. Enqueue archive jobs for updated memories through MCP tools
+2. Do not write archive files directly
+3. Let the RalphX backend resolve project-scoped app-data storage and generate snapshots
 
 ## Quality Gates
 

@@ -12,6 +12,25 @@ coverage:
         target: 90%
         threshold: 0%
         only_pulls: true
+        paths:
+          # Async streaming loops (process_stream_background, process_codex_stream_background)
+          # are only exercised by integration tests with real process spawning.
+          # Testable logic is extracted into public helper functions with full unit coverage.
+          - "!src-tauri/src/application/chat_service/chat_service_streaming.rs"
+          # Startup composition roots mostly wire long-lived Tauri services, timers, and
+          # background loops. Keep behavior covered through extracted helpers/services.
+          - "!src-tauri/src/application/startup_pipeline.rs"
+          - "!src-tauri/src/application/startup_pipeline_launch.rs"
+          - "!src-tauri/src/application/startup_transition_factory.rs"
+          # Pure trait/module export glue has no runtime branch to exercise directly.
+          # Implementations and call sites carry the behavioral coverage.
+          - "!src-tauri/src/domain/repositories/orphan_worktree_cleanup_marker_repository.rs"
+          - "!src-tauri/src/domain/repositories/mod.rs"
+          - "!src-tauri/src/infrastructure/memory/mod.rs"
+          - "!src-tauri/src/infrastructure/sqlite/mod.rs"
+          # GitHub auth subprocess probes depend on local gh credential state.
+          # Deterministic URL parsing and auth-preflight logic are covered separately.
+          - "!src-tauri/src/infrastructure/git_auth.rs"
 
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.
@@ -34,6 +53,27 @@ ignore:
   - "plugins/app/**/__tests__/**"
   - "plugins/app/**/*.test.*"
   - "plugins/app/**/*.spec.*"
+
+flags:
+  rust-lib:
+    paths:
+      - "src-tauri/crates/"
+      - "src-tauri/src/application/"
+      - "src-tauri/src/domain/"
+      - "src-tauri/src/infrastructure/"
+  rust-ipc:
+    paths:
+      - "src-tauri/src/commands/"
+      - "src-tauri/tests/"
+  frontend:
+    paths:
+      - "frontend/src/"
+  plugin-external-mcp:
+    paths:
+      - "plugins/app/ralphx-external-mcp/"
+  plugin-internal-mcp:
+    paths:
+      - "plugins/app/ralphx-mcp-server/"
 
 comment:
   layout: "reach, diff, flags, files"

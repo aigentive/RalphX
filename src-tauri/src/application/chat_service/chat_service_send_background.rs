@@ -32,10 +32,11 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -44,6 +45,7 @@ use tokio_util::sync::CancellationToken;
 /// All repository and service dependencies grouped together.
 pub(super) struct BackgroundRunRepos {
     pub chat_message_repo: Arc<dyn ChatMessageRepository>,
+    pub chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     pub chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
@@ -121,6 +123,17 @@ fn session_changed_after_resume(stored: Option<&str>, new_id: Option<&str>) -> b
         (Some(s), Some(n)) => s != n,
         _ => false,
     }
+}
+
+pub(super) fn should_process_stream_queue(
+    initial_queue_count: usize,
+    has_session_for_queue: bool,
+    silent_interactive_exit: bool,
+    cancellation_requested: bool,
+) -> bool {
+    initial_queue_count > 0
+        && has_session_for_queue
+        && !(silent_interactive_exit && cancellation_requested)
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +244,54 @@ pub(super) async fn should_split_verification_transcript(
         .flatten()
         .map(|session| session.session_purpose == SessionPurpose::Verification)
         .unwrap_or(false)
+}
+
+/// Placeholder text written to chat_messages and chat_message_blocks when the
+/// streaming agent produces no output (no text, no tool calls, no stderr).
+pub(super) const NO_OUTPUT_NOTE: &str = "[Agent completed with no output]";
+
+/// Finalize an assistant message that produced no streamed content.
+///
+/// Writes the `NO_OUTPUT_NOTE` placeholder into both stores:
+/// 1. `chat_messages` — so the legacy chat_messages-backed UI shows the note.
+/// 2. `chat_message_blocks` — so the timeline-backed `IntegratedChatPanel` does
+///    not render a blank assistant turn. Without the timeline mirror, the
+///    post-loop flush in `process_stream_background` wrote zero blocks (empty
+///    content_blocks), so timeline consumers had no row for the turn at all.
+pub(super) async fn finalize_no_output_assistant_message<R: Runtime>(
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    app_handle: Option<&AppHandle<R>>,
+    event_ctx: &EventContextPayload,
+    conversation_id: &ChatConversationId,
+    message_id: &str,
+    role: &str,
+) {
+    finalize_assistant_message(
+        chat_message_repo,
+        app_handle,
+        event_ctx,
+        message_id,
+        role,
+        NO_OUTPUT_NOTE,
+        None,
+        None,
+    )
+    .await;
+
+    let placeholder_blocks = vec![
+        crate::infrastructure::agents::claude::ContentBlockItem::Text {
+            text: NO_OUTPUT_NOTE.to_string(),
+        },
+    ];
+    super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        &placeholder_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
 }
 
 pub(super) async fn finalize_assistant_message<R: Runtime>(
@@ -362,6 +423,34 @@ pub(super) async fn finalize_structured_assistant_message<R: Runtime>(
 }
 
 #[doc(hidden)]
+pub async fn finalize_no_output_assistant_message_for_test<R: Runtime>(
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    app_handle: Option<&AppHandle<R>>,
+    conversation_id: &ChatConversationId,
+    context_type: &str,
+    context_id: &str,
+    message_id: &str,
+    role: &str,
+) {
+    let event_ctx = EventContextPayload {
+        conversation_id: conversation_id.as_str().to_string(),
+        context_type: context_type.to_string(),
+        context_id: context_id.to_string(),
+    };
+    finalize_no_output_assistant_message(
+        chat_message_repo,
+        chat_timeline_repo,
+        app_handle,
+        &event_ctx,
+        conversation_id,
+        message_id,
+        role,
+    )
+    .await;
+}
+
+#[doc(hidden)]
 pub async fn finalize_assistant_message_for_test<R: Runtime>(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
     app_handle: Option<&AppHandle<R>>,
@@ -472,6 +561,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
         } = ctx;
         let BackgroundRunRepos {
             chat_message_repo,
+            chat_timeline_repo,
             chat_attachment_repo,
             artifact_repo,
             conversation_repo,
@@ -564,6 +654,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             Some(Arc::clone(&activity_event_repo)),
             Some(Arc::clone(&task_repo)),
             Some(Arc::clone(&chat_message_repo)),
+            chat_timeline_repo.clone(),
             Some(pre_assistant_msg_id.clone()),
             question_state.clone(),
             cancellation_token.clone(),
@@ -812,17 +903,17 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     .await;
                 } else {
                     // Stream completed with no content — update pre-created message so UI
-                    // doesn't show "..." forever
-                    let note = "[Agent completed with no output]";
-                    finalize_assistant_message(
+                    // doesn't show "..." forever, and mirror the placeholder note into the
+                    // timeline so the chat UI (which renders from chat_message_blocks)
+                    // doesn't show a blank turn either.
+                    finalize_no_output_assistant_message(
                         &chat_message_repo,
+                        &chat_timeline_repo,
                         app_handle.as_ref(),
                         &event_ctx,
+                        &conversation_id,
                         &pre_assistant_msg_id,
                         &assistant_role,
-                        note,
-                        None,
-                        None,
                     )
                     .await;
                 }
@@ -1063,7 +1154,13 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     .get_queued(context_type, &runtime_context_id)
                     .len();
                 let has_session_for_queue = effective_session_id.is_some();
-                let will_process_queue = initial_queue_count > 0 && has_session_for_queue && !outcome.silent_interactive_exit;
+                let cancellation_requested = cancellation_token.is_cancelled();
+                let will_process_queue = should_process_stream_queue(
+                    initial_queue_count,
+                    has_session_for_queue,
+                    outcome.silent_interactive_exit,
+                    cancellation_requested,
+                );
 
                 tracing::info!(
                     context_type = %context_type,
@@ -1071,6 +1168,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     turns_finalized,
                     skip_post_loop_finalization,
                     silent_interactive_exit = outcome.silent_interactive_exit,
+                    cancellation_requested,
                     initial_queue_count,
                     has_session_for_queue,
                     will_process_queue,
@@ -1141,7 +1239,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         if let Some(ref handle) = app_handle {
                             let _ = handle.emit(
                                 "agent:run_completed",
-                                AgentRunCompletedPayload::with_provider_session(
+                                AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                    Some(agent_run_id.clone()),
                                     conversation_id.as_str().to_string(),
                                     context_type.to_string(),
                                     context_id.clone(),
@@ -1175,8 +1274,11 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                 }
 
                 // Process queued messages via extracted function
-                if let Some(ref sess_id) = effective_session_id {
-                    let total_processed = super::chat_service_queue::process_queued_messages(
+                if will_process_queue {
+                    let Some(ref sess_id) = effective_session_id else {
+                        unreachable!("will_process_queue requires has_session_for_queue=true");
+                    };
+                    let queue_outcome = super::chat_service_queue::process_queued_messages(
                         context_type,
                         harness,
                         &context_id,
@@ -1185,6 +1287,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         sess_id,
                         &message_queue,
                         &chat_message_repo,
+                        chat_timeline_repo.clone(),
                         &chat_attachment_repo,
                         &artifact_repo,
                         &activity_event_repo,
@@ -1204,6 +1307,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         streaming_state_cache.clone(),
                     )
                     .await;
+                    let total_processed = queue_outcome.total_processed;
 
                     // After ALL queue processing is done, emit the final run_completed.
                     // Always emit regardless of total_processed — if will_process_queue=true,
@@ -1236,7 +1340,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     if let Some(ref handle) = app_handle {
                         let _ = handle.emit(
                             "agent:run_completed",
-                            AgentRunCompletedPayload::with_provider_session(
+                            AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                Some(queue_outcome.terminal_run_id(&agent_run_id)),
                                 conversation_id.as_str().to_string(),
                                 context_type.to_string(),
                                 context_id.clone(),
@@ -1262,23 +1367,32 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     )
                     .await;
                 } else {
-                    // effective_session_id is None - no session ID from stream OR stored conversation
-                    // run_completed was emitted via the no-queue path above (if not skipped)
                     let queue_count = message_queue
                         .get_queued(context_type, &runtime_context_id)
                         .len();
-                    tracing::warn!(
-                        context_type = %context_type,
-                        context_id = %context_id,
-                        turns_finalized,
-                        skip_post_loop_finalization,
-                        queue_count,
-                        "[LIFECYCLE] effective_session_id=None: queue processing skipped, run_completed handled by no-queue path"
-                    );
-                    if queue_count > 0 {
+                    if effective_session_id.is_none() {
                         tracing::warn!(
-                            "[QUEUE] SKIPPING {} queued messages because no session_id available (neither from stream nor stored)!",
-                            queue_count
+                            context_type = %context_type,
+                            context_id = %context_id,
+                            turns_finalized,
+                            skip_post_loop_finalization,
+                            queue_count,
+                            "[LIFECYCLE] effective_session_id=None: queue processing skipped, run_completed handled by no-queue path"
+                        );
+                        if queue_count > 0 {
+                            tracing::warn!(
+                                "[QUEUE] SKIPPING {} queued messages because no session_id available (neither from stream nor stored)!",
+                                queue_count
+                            );
+                        }
+                    } else if queue_count > 0 {
+                        tracing::info!(
+                            context_type = %context_type,
+                            context_id = %context_id,
+                            turns_finalized,
+                            silent_interactive_exit = outcome.silent_interactive_exit,
+                            queue_count,
+                            "[LIFECYCLE] queue processing skipped by lifecycle gate, run_completed handled by no-queue path"
                         );
                     }
                 }
@@ -1374,6 +1488,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 session_id,
                                 &message_queue,
                                 &chat_message_repo,
+                                chat_timeline_repo.clone(),
                                 &chat_attachment_repo,
                                 &artifact_repo,
                                 &activity_event_repo,
@@ -1392,7 +1507,8 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                                 Some(&agent_run_id),
                                 streaming_state_cache.clone(),
                             )
-                            .await;
+                            .await
+                            .total_processed;
 
                             tracing::info!(
                                 context_type = %context_type,

@@ -12,14 +12,14 @@ use super::chat_service_replay::{
 };
 use super::chat_service_streaming::process_stream_background;
 use super::streaming_state_cache::StreamingStateCache;
+use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
+use crate::domain::entities::VerificationStatus;
 use crate::domain::entities::{ChatContextType, ChatConversation, ChatConversationId};
 use crate::domain::repositories::{
     ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
     ChatMessageRepository, IdeationSessionRepository, TaskProposalRepository,
 };
-use crate::application::AppState;
-use crate::domain::entities::VerificationStatus;
 use crate::domain::services::{
     clear_verification_snapshot, emit_verification_status_changed,
     load_current_verification_snapshot_or_default,
@@ -150,8 +150,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
         ideation_session_repo.as_ref(),
         delegated_session_repo.as_ref(),
         task_repo.as_ref(),
-    )
-    {
+    ) {
         chat_service_context::get_entity_status_for_resume(
             conversation.context_type,
             conversation.context_id.as_str(),
@@ -218,6 +217,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
         None,                                       // no activity persistence
         None,                                       // no task repo
         None,                                       // no incremental message update
+        None,                                       // no timeline persistence
         None,                                       // no assistant message ID
         None,                                       // no question state
         tokio_util::sync::CancellationToken::new(), // standalone token for recovery
@@ -230,7 +230,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
         None,                                       // no execution state for recovery
         None,                                       // no conversation_repo for recovery
         false,                                      // no verification transcript splitting
-        true,                                       // recovery may persist any replacement session externally
+        true, // recovery may persist any replacement session externally
     )
     .await
     {
@@ -335,9 +335,7 @@ async fn build_ideation_recovery_metadata<R: Runtime>(
     // Extract verification state before (potentially) resetting it
     let verification_was_in_progress = session.verification_in_progress;
     let verification_status_str = session.verification_status.to_string();
-    let current_round = session
-        .verification_current_round
-        .unwrap_or(0);
+    let current_round = session.verification_current_round.unwrap_or(0);
 
     // If verification was in-progress when the session crashed, force-reset it.
     // A stuck `verification_in_progress=1` would block reconciliation and confuse the recovered agent.

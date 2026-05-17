@@ -273,6 +273,15 @@ html[data-theme="light"] body {
   color: #6A6A72 !important;
 }
 
+[data-theme="light"] [data-testid="theme-selector-trigger"]:hover,
+[data-theme="light"] [data-testid="theme-selector-trigger"][aria-expanded="true"],
+[data-theme="light"] [data-testid="font-scale-selector-trigger"]:hover,
+[data-theme="light"] [data-testid="font-scale-selector-trigger"][aria-expanded="true"] {
+  background-color: #F1F1F4 !important;
+  border-color: #C8C8CD !important;
+  color: #18181D !important;
+}
+
 [data-theme="light"] [data-testid="topbar-command-search"] kbd,
 [data-theme="light"] [data-testid="theme-selector-trigger"] svg,
 [data-theme="light"] [data-testid="font-scale-selector-trigger"] svg {
@@ -297,6 +306,28 @@ html[data-theme="light"] body {
 [data-theme="light"] [data-testid="agents-new-agent"] {
   background-color: #FFFFFF !important;
   border-color: #D9D9DD !important;
+  color: #18181D !important;
+}
+
+[data-theme="light"] [data-testid="agents-new-agent"]:hover {
+  border-color: #FF6A35 !important;
+  box-shadow:
+    0 0 12px hsla(14 90% 50% / 0.10),
+    0 0 24px hsla(14 90% 50% / 0.05) !important;
+}
+
+[data-theme="light"] [data-testid="agents-add-project"]:hover {
+  background-color: #FFFFFF !important;
+  border-color: #FF6A35 !important;
+  color: #18181D !important;
+  box-shadow:
+    0 0 12px hsla(14 90% 50% / 0.10),
+    0 0 24px hsla(14 90% 50% / 0.05) !important;
+}
+
+[data-theme="light"] [data-testid="agents-filters-trigger"]:hover,
+[data-theme="light"] [data-testid="agents-sort-trigger"]:hover {
+  background-color: #F1F1F4 !important;
   color: #18181D !important;
 }
 

@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
 use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
@@ -957,14 +958,8 @@ fn agent_workspace_pr_polling_is_current(
         && workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number == Some(pr_number)
-        && matches!(
-            workspace.publication_push_status.as_deref(),
-            None | Some("pushed")
-        )
-        && !matches!(
-            workspace.publication_pr_status.as_deref(),
-            Some("closed") | Some("merged")
-        )
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
 }
 
 async fn mark_agent_workspace_pr_open(

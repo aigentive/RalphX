@@ -182,7 +182,7 @@ export function HarnessProvidersSection() {
     updateProviderAsync,
     isUpdating,
     refetchProviders,
-  } = useHarnessProviders();
+  } = useHarnessProviders({ refreshRuntime: true });
   const { models } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();

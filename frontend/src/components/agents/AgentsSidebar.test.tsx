@@ -1,11 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import userEvent from "@testing-library/user-event";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import type { AgentConversationWorkspace } from "@/api/chat";
 import type { Project } from "@/types/project";
 import type { AgentConversation } from "./agentConversations";
 import { formatAgentConversationCreatedAt } from "./agentConversations";
@@ -28,11 +29,29 @@ const { projectConversationCalls } = vi.hoisted(() => ({
     projectId: string | null;
     includeArchived: boolean;
     options?: { search?: string; enabled?: boolean };
+    pinnedConversationIds?: string[];
   }>,
 }));
 const { archivedConversationCounts, archivedCountCalls } = vi.hoisted(() => ({
   archivedConversationCounts: new Map<string, number>(),
   archivedCountCalls: [] as string[][],
+}));
+const { workspacesByProject, workspaceCalls } = vi.hoisted(() => ({
+  workspacesByProject: new Map<string, AgentConversationWorkspace[]>(),
+  workspaceCalls: [] as Array<{
+    projectId: string | null;
+    enabled?: boolean;
+  }>,
+}));
+const { publicationGroupCalls } = vi.hoisted(() => ({
+  publicationGroupCalls: [] as Array<{
+    projectIds: string[];
+    publicationState: string;
+    archivedOnly: boolean;
+    search: string;
+    pinnedConversationIds: string[];
+    sort: string;
+  }>,
 }));
 
 vi.mock("./useProjectAgentConversations", () => ({
@@ -65,6 +84,14 @@ vi.mock("./useProjectAgentConversations", () => ({
     })(),
 }));
 
+vi.mock("./useAgentSidebarRunningStates", () => ({
+  useAgentSidebarRunningStates: vi.fn(),
+}));
+
+vi.mock("./useAgentSidebarPublicationPolling", () => ({
+  useAgentSidebarPublicationPolling: vi.fn(),
+}));
+
 vi.mock("./useArchivedConversationCounts", () => ({
   useArchivedConversationCounts: (projectIds: string[]) => {
     archivedCountCalls.push(projectIds);
@@ -83,6 +110,220 @@ vi.mock("./useArchivedConversationCounts", () => ({
     };
   },
 }));
+
+vi.mock("./useProjectAgentConversationWorkspaces", () => ({
+  useProjectAgentConversationWorkspaces: (
+    projectId: string | null | undefined,
+    options?: { enabled?: boolean }
+  ) => {
+    workspaceCalls.push({
+      projectId: projectId ?? null,
+      enabled: options?.enabled,
+    });
+    return {
+      data: workspacesByProject.get(projectId ?? "") ?? [],
+      isLoading: false,
+    };
+  },
+}));
+
+vi.mock("./useAgentSidebarPublicationGroup", () => {
+  const getPublicationLabel = (state: string): string =>
+    state
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const buildGroupResult = ({
+    projectIds,
+    groupKey,
+    groupLabel,
+    archivedOnly,
+    search,
+    publicationStates,
+    pinnedConversationIds,
+    sort = "latest",
+    total,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    isLoading,
+  }: {
+    projectIds: string[];
+    groupKey: string;
+    groupLabel: string;
+    archivedOnly: boolean;
+    search: string;
+    publicationStates: string[];
+    pinnedConversationIds: string[];
+    sort?: string;
+    total?: number;
+    hasNextPage?: boolean;
+    isFetchingNextPage?: boolean;
+    fetchNextPage?: () => Promise<unknown>;
+    isLoading?: boolean;
+  }) => {
+    const getPublicationState = (
+      workspace: AgentConversationWorkspace | null
+    ): string => {
+      const prStatus = workspace?.publicationPrStatus?.trim().toLowerCase();
+      const pushStatus = workspace?.publicationPushStatus?.trim().toLowerCase();
+      if (prStatus === "merged") return "merged";
+      if (prStatus === "closed") return "closed";
+      if (pushStatus === "needs_agent") return "uncommitted";
+      if (
+        pushStatus === "pending" ||
+        pushStatus === "failed" ||
+        pushStatus === "description_failed"
+      ) {
+        return "unpushed";
+      }
+      if (prStatus === "draft") return "draft";
+      return "active";
+    };
+    const normalizedSearch = search.trim().toLowerCase();
+    const pinnedIds = new Set(pinnedConversationIds);
+    const workspaceByConversationId = new Map(
+      projectIds.flatMap((projectId) =>
+        (workspacesByProject.get(projectId) ?? []).map((workspace) => [
+          workspace.conversationId,
+          workspace,
+        ] as const)
+      )
+    );
+    const rows = projectIds
+      .flatMap((projectId) => conversationsByProject.get(projectId)?.data ?? [])
+      .filter((conversation) =>
+        archivedOnly ? Boolean(conversation.archivedAt) : !conversation.archivedAt
+      )
+      .filter((conversation) => {
+        if (!normalizedSearch) return true;
+        return (conversation.title ?? "Untitled agent")
+          .toLowerCase()
+          .includes(normalizedSearch);
+      })
+      .map((conversation) => {
+        const workspace = workspaceByConversationId.get(conversation.id) ?? null;
+        const state = getPublicationState(workspace);
+        return {
+          conversation,
+          workspace,
+          refKind: workspace?.publicationPrNumber != null ? "pull-request" : "branch",
+          refLabel:
+            workspace?.publicationPrNumber != null
+              ? `PR #${workspace.publicationPrNumber}`
+              : workspace?.baseRef ?? "master",
+          publicationState: state,
+          publicationLabel: state === "active" ? null : state,
+        };
+      })
+      .filter((row) => publicationStates.includes(row.publicationState))
+      .sort((left, right) => {
+        const pinnedDelta =
+          Number(pinnedIds.has(right.conversation.id)) -
+          Number(pinnedIds.has(left.conversation.id));
+        if (pinnedDelta !== 0) return pinnedDelta;
+        if (sort === "az" || sort === "za") {
+          const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
+          const rightTitle = (right.conversation.title ?? "Untitled agent").toLowerCase();
+          const titleDelta = leftTitle.localeCompare(rightTitle);
+          if (titleDelta !== 0) return sort === "az" ? titleDelta : -titleDelta;
+        }
+        return (
+          new Date(right.conversation.createdAt).getTime() -
+          new Date(left.conversation.createdAt).getTime()
+        );
+      });
+
+    return {
+      group: {
+        key: groupKey,
+        label: groupLabel,
+        total: total ?? rows.length,
+        offset: 0,
+        limit: 6,
+        hasMore: hasNextPage ?? false,
+        rows,
+      },
+      isLoading: isLoading ?? false,
+      hasNextPage: hasNextPage ?? false,
+      isFetchingNextPage: isFetchingNextPage ?? false,
+      fetchNextPage: fetchNextPage ?? vi.fn(),
+    };
+  };
+
+  return {
+    useAgentSidebarPublicationGroup: ({
+      projectIds,
+      publicationState,
+      archivedOnly,
+      search,
+      pinnedConversationIds,
+      sort,
+    }: {
+      projectIds: string[];
+      publicationState: string;
+      archivedOnly: boolean;
+      search: string;
+      pinnedConversationIds: string[];
+      sort: string;
+    }) => {
+      publicationGroupCalls.push({
+        projectIds,
+        publicationState,
+        archivedOnly,
+        search,
+        pinnedConversationIds,
+        sort,
+      });
+      return buildGroupResult({
+        projectIds,
+        groupKey: publicationState,
+        groupLabel: getPublicationLabel(publicationState),
+        archivedOnly,
+        search,
+        publicationStates: [publicationState],
+        pinnedConversationIds,
+        sort,
+      });
+    },
+    useAgentSidebarProjectGroup: ({
+      projectId,
+      archivedOnly,
+      search,
+      publicationStates,
+      pinnedConversationIds,
+    }: {
+      projectId: string | null | undefined;
+      archivedOnly: boolean;
+      search: string;
+      publicationStates: string[];
+      pinnedConversationIds: string[];
+    }) => {
+      const projectResult = conversationsByProject.get(projectId ?? "");
+      projectConversationCalls.push({
+        projectId: projectId ?? null,
+        includeArchived: archivedOnly,
+        options: { search, enabled: true },
+        pinnedConversationIds,
+      });
+      return buildGroupResult({
+        projectIds: projectId ? [projectId] : [],
+        groupKey: projectId ?? "",
+        groupLabel: projectId ?? "",
+        archivedOnly,
+        search,
+        publicationStates,
+        pinnedConversationIds,
+        total: projectResult?.total,
+        hasNextPage: projectResult?.hasNextPage,
+        isFetchingNextPage: projectResult?.isFetchingNextPage,
+        fetchNextPage: projectResult?.fetchNextPage,
+        isLoading: projectResult?.isLoading,
+      });
+    },
+  };
+});
 
 const project = (overrides: Partial<Project> = {}): Project => ({
   id: "project-1",
@@ -124,6 +365,30 @@ const conversation = (
   ...overrides,
 });
 
+const workspace = (
+  overrides: Partial<AgentConversationWorkspace> = {}
+): AgentConversationWorkspace => ({
+  conversationId: "conversation-1",
+  projectId: "project-1",
+  mode: "edit",
+  baseRefKind: "project_default",
+  baseRef: "main",
+  baseDisplayName: "Project default (main)",
+  baseCommit: null,
+  branchName: "ralphx/demo/agent-conversation-1",
+  worktreePath: "/tmp/ralphx/conversation-1",
+  linkedIdeationSessionId: null,
+  linkedPlanBranchId: null,
+  publicationPrNumber: null,
+  publicationPrUrl: null,
+  publicationPrStatus: null,
+  publicationPushStatus: null,
+  status: "active",
+  createdAt: "2026-04-22T10:00:00Z",
+  updatedAt: "2026-04-22T12:00:00Z",
+  ...overrides,
+});
+
 function renderSidebar(
   projects: Project[] = [project()],
   props?: Partial<ComponentProps<typeof AgentsSidebar>>
@@ -156,17 +421,37 @@ function getProjectRowOrder() {
     .map((row) => row.getAttribute("data-testid"));
 }
 
+function getSessionRowOrder() {
+  return screen
+    .getAllByTestId((testId) => testId.startsWith("agents-session-conversation-"))
+    .map((row) => row.getAttribute("data-testid"));
+}
+
 describe("AgentsSidebar", () => {
   beforeEach(() => {
     conversationsByProject.clear();
     projectConversationCalls.length = 0;
     archivedConversationCounts.clear();
     archivedCountCalls.length = 0;
+    workspacesByProject.clear();
+    workspaceCalls.length = 0;
+    publicationGroupCalls.length = 0;
     useChatStore.setState({ activeConversationIds: {}, agentStatus: {} });
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": true },
       showAllProjects: false,
       projectSort: "latest",
+      sidebarGroupBy: "project",
+      sidebarProjectFilterIds: [],
+      sidebarPublicationStateFilters: [
+        "active",
+        "draft",
+        "merged",
+        "closed",
+        "uncommitted",
+        "unpushed",
+      ],
+      pinnedConversationIds: {},
     });
   });
 
@@ -211,7 +496,7 @@ describe("AgentsSidebar", () => {
     expect(firstRow.queryByText("codex")).not.toBeInTheDocument();
   });
 
-  it("shows human-diff conversation time with a full timestamp title", () => {
+  it("shows compact conversation time with a full timestamp title", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));
     const activeConversation = conversation({
@@ -228,7 +513,7 @@ describe("AgentsSidebar", () => {
     renderSidebar();
 
     const row = within(screen.getByTestId("agents-session-conversation-1"));
-    expect(row.getByText("2 hours ago")).toHaveAttribute(
+    expect(row.getByText("2h")).toHaveAttribute(
       "title",
       "Apr 25, 2026, 2:33 PM",
     );
@@ -246,8 +531,91 @@ describe("AgentsSidebar", () => {
 
     renderSidebar();
 
-    fireEvent.click(screen.getByTestId("agents-load-more-project-1"));
+    const loadMoreButton = screen.getByTestId("agents-load-more-project-1");
+    expect(loadMoreButton.parentElement).toHaveClass("justify-end");
+
+    fireEvent.click(loadMoreButton);
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a loaded paginated row in place after selecting it", async () => {
+    const user = userEvent.setup();
+    const newer = conversation({
+      id: "conversation-newer",
+      title: "Newer loaded agent",
+      createdAt: "2026-04-22T12:00:00Z",
+    });
+    const older = conversation({
+      id: "conversation-older",
+      title: "Older loaded agent",
+      createdAt: "2026-04-22T10:00:00Z",
+    });
+    conversationsByProject.set("project-1", {
+      data: [newer, older],
+      total: 8,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    function StatefulSidebar() {
+      const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
+        null
+      );
+      const [pinnedConversation, setPinnedConversation] =
+        useState<AgentConversation | null>(null);
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <AgentsSidebar
+            projects={[project()]}
+            focusedProjectId="project-1"
+            selectedConversationId={selectedConversationId}
+            pinnedConversation={pinnedConversation}
+            onFocusProject={vi.fn()}
+            onSelectConversation={(_projectId, selectedConversation) => {
+              setSelectedConversationId(selectedConversation.id);
+              setPinnedConversation(selectedConversation);
+            }}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<StatefulSidebar />);
+
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-newer",
+      "agents-session-conversation-older",
+    ]);
+
+    await user.click(
+      within(screen.getByTestId("agents-session-conversation-older")).getByRole(
+        "button",
+        { name: /Older loaded agent/ }
+      )
+    );
+
+    expect(
+      within(screen.getByTestId("agents-session-conversation-older")).getByRole(
+        "button",
+        { name: /Older loaded agent/ }
+      )
+    ).toHaveAttribute("aria-current", "true");
+    expect(getSessionRowOrder()).toEqual([
+      "agents-session-conversation-newer",
+      "agents-session-conversation-older",
+    ]);
+    expect(projectConversationCalls.at(-1)?.pinnedConversationIds).toEqual([]);
   });
 
   it("shows the backend total session count rather than the loaded page size", () => {
@@ -481,6 +849,24 @@ describe("AgentsSidebar", () => {
       "agents-project-project-1",
       "agents-project-project-2",
     ]);
+
+    await user.click(screen.getByTestId("agents-sort-trigger"));
+    await user.click(screen.getByRole("menuitemradio", { name: "A-Z" }));
+
+    await waitFor(() =>
+      expect(getSessionRowOrder()).toEqual([
+        "agents-session-conversation-alpha",
+        "agents-session-conversation-zulu",
+      ])
+    );
+    expect(publicationGroupCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          publicationState: "active",
+          sort: "az",
+        }),
+      ])
+    );
   });
 
   it("keeps project actions visible while open and confirms before archiving", () => {

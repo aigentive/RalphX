@@ -65,6 +65,9 @@ export interface ChatMessageResponse {
   cacheCreationTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
+  timelineStatus?: string | null;
+  timelineKind?: string | null;
+  timelineSequence?: number | null;
   createdAt: string;
 }
 
@@ -75,6 +78,39 @@ export interface AppendAgentBridgeMessageInput {
   eventKey: string;
   content: string;
   metadata?: unknown;
+}
+
+export interface ChatTimelineItemResponse {
+  id: string;
+  conversationId: string;
+  messageId: string | null;
+  runId: string | null;
+  sequence: number;
+  blockIndex: number;
+  role: string;
+  kind: string;
+  status: string;
+  content: string;
+  contentBlocks: ContentBlockItem[];
+  toolCall: ToolCall | null;
+  metadata: string | null;
+  providerHarness: string | null;
+  providerSessionId: string | null;
+  upstreamProvider?: string | null;
+  providerProfile?: string | null;
+  logicalModel?: string | null;
+  effectiveModelId?: string | null;
+  logicalEffort?: string | null;
+  effectiveEffort?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  cacheReadTokens?: number | null;
+  estimatedUsd?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  finalizedAt: string | null;
+  asMessage: ChatMessageResponse;
 }
 
 // ============================================================================
@@ -110,6 +146,10 @@ function normalizeToolCallDetailRef(raw: unknown): ToolCallDetailRef | undefined
   }
   if (typeof contentBlockIndex === "number") {
     detailRef.contentBlockIndex = contentBlockIndex;
+  }
+  const timelineItemId = record.timeline_item_id ?? record.timelineItemId;
+  if (typeof timelineItemId === "string") {
+    detailRef.timelineItemId = timelineItemId;
   }
   return detailRef;
 }
@@ -271,6 +311,53 @@ export interface ConversationListPageResponse {
   offset: number;
   total: number;
   hasMore: boolean;
+}
+
+export type AgentSidebarPublicationState =
+  | "active"
+  | "draft"
+  | "merged"
+  | "closed"
+  | "uncommitted"
+  | "unpushed";
+
+export type AgentSidebarGroupBy = "project" | "publication";
+export type AgentSidebarSort = "latest" | "az" | "za";
+
+export interface AgentSidebarConversationsInput {
+  projectIds: string[];
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+  search?: string;
+  publicationStates?: AgentSidebarPublicationState[];
+  groupBy?: AgentSidebarGroupBy;
+  sort?: AgentSidebarSort;
+  limitPerGroup?: number;
+  offsets?: Record<string, number>;
+  pinnedConversationIds?: string[];
+}
+
+export interface AgentSidebarConversationRow {
+  conversation: ChatConversation;
+  workspace: AgentConversationWorkspace | null;
+  refKind: "pull-request" | "branch";
+  refLabel: string;
+  publicationState: AgentSidebarPublicationState;
+  publicationLabel: string | null;
+}
+
+export interface AgentSidebarConversationGroup {
+  key: string;
+  label: string;
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  rows: AgentSidebarConversationRow[];
+}
+
+export interface AgentSidebarConversationGroupsResponse {
+  groups: AgentSidebarConversationGroup[];
 }
 
 /**
@@ -573,6 +660,18 @@ export interface ConversationMessagesPageResponse {
   hasOlder: boolean;
 }
 
+export interface ConversationTimelinePageResponse {
+  conversation: ChatConversation;
+  items: ChatTimelineItemResponse[];
+  messages: ChatMessageResponse[];
+  limit: number;
+  beforeSequence: number | null;
+  totalItemCount: number;
+  hasOlder: boolean;
+  oldestLoadedSequence: number | null;
+  newestLoadedSequence: number | null;
+}
+
 const SnakeUsageTotalsResponseSchema = z.object({
   input_tokens: z.number(),
   output_tokens: z.number(),
@@ -853,6 +952,54 @@ type RawConversationMessagesPage = z.infer<
   typeof ConversationMessagesPageResponseSchema
 >;
 
+const AgentTimelineItemSchema = z.object({
+  id: z.string(),
+  conversation_id: z.string(),
+  message_id: z.string().nullable().optional(),
+  run_id: z.string().nullable().optional(),
+  sequence: z.number().int(),
+  block_index: z.number().int(),
+  role: z.string(),
+  kind: z.string(),
+  status: z.string(),
+  content: z.string(),
+  content_blocks: z.any(),
+  tool_call: z.any().nullable().optional(),
+  metadata: z.string().nullable().optional(),
+  provider_harness: z.string().nullable().optional(),
+  provider_session_id: z.string().nullable().optional(),
+  upstream_provider: z.string().nullable().optional(),
+  provider_profile: z.string().nullable().optional(),
+  logical_model: z.string().nullable().optional(),
+  effective_model_id: z.string().nullable().optional(),
+  logical_effort: z.string().nullable().optional(),
+  effective_effort: z.string().nullable().optional(),
+  input_tokens: z.number().nullable().optional(),
+  output_tokens: z.number().nullable().optional(),
+  cache_creation_tokens: z.number().nullable().optional(),
+  cache_read_tokens: z.number().nullable().optional(),
+  estimated_usd: z.number().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  finalized_at: z.string().nullable().optional(),
+});
+
+const ConversationTimelinePageResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  items: z.array(AgentTimelineItemSchema),
+  limit: z.number().int().nonnegative(),
+  before_sequence: z.number().int().nullable().optional(),
+  total_item_count: z.number().int().nonnegative(),
+  has_older: z.boolean(),
+  oldest_loaded_sequence: z.number().int().nullable().optional(),
+  newest_loaded_sequence: z.number().int().nullable().optional(),
+});
+
+type RawAgentTimelineItem = z.infer<typeof AgentTimelineItemSchema>;
+type RawConversationTimelinePage = z.infer<
+  typeof ConversationTimelinePageResponseSchema
+>;
+
 function transformAgentMessage(
   raw: RawAgentMessage,
   fallbackConversationId?: string
@@ -900,6 +1047,98 @@ function transformConversationMessagesPage(
     offset: raw.offset,
     totalMessageCount: raw.total_message_count,
     hasOlder: raw.has_older,
+  };
+}
+
+function transformTimelineItem(
+  raw: RawAgentTimelineItem,
+  fallbackConversationId?: string
+): ChatTimelineItemResponse {
+  const conversationId = raw.conversation_id ?? fallbackConversationId ?? null;
+  const contentBlocks = parseContentBlocks(raw.content_blocks);
+  const toolCall = raw.tool_call ? normalizeToolCall(raw.tool_call) : null;
+  const asMessage: ChatMessageResponse = {
+    id: raw.id,
+    sessionId: null,
+    projectId: null,
+    taskId: null,
+    role: raw.role,
+    sender: null,
+    attributionSource: null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    timelineStatus: raw.status,
+    timelineKind: raw.kind,
+    timelineSequence: raw.sequence,
+    content: raw.content,
+    metadata: raw.metadata ?? null,
+    parentMessageId: raw.message_id ?? null,
+    conversationId,
+    toolCalls: toolCall ? [toolCall] : null,
+    contentBlocks,
+    createdAt: raw.created_at,
+  };
+
+  return {
+    id: raw.id,
+    conversationId: raw.conversation_id,
+    messageId: raw.message_id ?? null,
+    runId: raw.run_id ?? null,
+    sequence: raw.sequence,
+    blockIndex: raw.block_index,
+    role: raw.role,
+    kind: raw.kind,
+    status: raw.status,
+    content: raw.content,
+    contentBlocks,
+    toolCall,
+    metadata: raw.metadata ?? null,
+    providerHarness: raw.provider_harness ?? null,
+    providerSessionId: raw.provider_session_id ?? null,
+    upstreamProvider: raw.upstream_provider ?? null,
+    providerProfile: raw.provider_profile ?? null,
+    logicalModel: raw.logical_model ?? null,
+    effectiveModelId: raw.effective_model_id ?? null,
+    logicalEffort: raw.logical_effort ?? null,
+    effectiveEffort: raw.effective_effort ?? null,
+    inputTokens: raw.input_tokens ?? null,
+    outputTokens: raw.output_tokens ?? null,
+    cacheCreationTokens: raw.cache_creation_tokens ?? null,
+    cacheReadTokens: raw.cache_read_tokens ?? null,
+    estimatedUsd: raw.estimated_usd ?? null,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    finalizedAt: raw.finalized_at ?? null,
+    asMessage,
+  };
+}
+
+function transformConversationTimelinePage(
+  raw: RawConversationTimelinePage
+): ConversationTimelinePageResponse {
+  const conversationId = raw.conversation.id;
+  const items = raw.items.map((item) => transformTimelineItem(item, conversationId));
+  return {
+    conversation: transformConversation(raw.conversation),
+    items,
+    messages: items.map((item) => item.asMessage),
+    limit: raw.limit,
+    beforeSequence: raw.before_sequence ?? null,
+    totalItemCount: raw.total_item_count,
+    hasOlder: raw.has_older,
+    oldestLoadedSequence: raw.oldest_loaded_sequence ?? null,
+    newestLoadedSequence: raw.newest_loaded_sequence ?? null,
   };
 }
 
@@ -952,6 +1191,20 @@ export async function listConversationsPage(
 }
 
 /**
+ * Get lightweight conversation metadata without loading messages.
+ */
+export async function getConversationSummary(
+  conversationId: string
+): Promise<ChatConversation | null> {
+  const raw = await typedInvoke(
+    "get_agent_conversation_summary",
+    { conversationId },
+    ChatConversationResponseSchema.nullable()
+  );
+  return raw ? transformConversation(raw) : null;
+}
+
+/**
  * Get a conversation with its messages
  * @param conversationId The conversation ID
  * @returns The conversation with messages
@@ -992,9 +1245,34 @@ export async function getConversationMessagesPage(
   return transformConversationMessagesPage(raw);
 }
 
+/**
+ * Get a tail-first page of normalized visible timeline items.
+ * `beforeSequence` loads items older than the currently oldest loaded item.
+ */
+export async function getConversationTimelinePage(
+  conversationId: string,
+  limit: number,
+  beforeSequence: number | null = null
+): Promise<ConversationTimelinePageResponse> {
+  const raw = await typedInvoke(
+    "get_agent_conversation_timeline_page",
+    { conversationId, limit, beforeSequence },
+    ConversationTimelinePageResponseSchema
+  );
+
+  return transformConversationTimelinePage(raw);
+}
+
 export async function getAgentMessageToolCallDetail(
   detailRef: ToolCallDetailRef
 ): Promise<AgentToolCallDetailResponse | null> {
+  if (detailRef.timelineItemId) {
+    return getAgentTimelineItemToolCallDetail(
+      detailRef.conversationId,
+      detailRef.timelineItemId
+    );
+  }
+
   const raw = await typedInvoke(
     "get_agent_message_tool_call_detail",
     {
@@ -1003,6 +1281,22 @@ export async function getAgentMessageToolCallDetail(
       toolCallId: detailRef.toolCallId ?? null,
       contentBlockIndex: detailRef.contentBlockIndex ?? null,
     },
+    AgentToolCallDetailResponseSchema.nullable()
+  );
+
+  if (!raw) return null;
+  return {
+    toolCall: normalizeToolCall(raw.tool_call),
+  };
+}
+
+export async function getAgentTimelineItemToolCallDetail(
+  conversationId: string,
+  timelineItemId: string
+): Promise<AgentToolCallDetailResponse | null> {
+  const raw = await typedInvoke(
+    "get_agent_timeline_item_tool_call_detail",
+    { conversationId, timelineItemId },
     AgentToolCallDetailResponseSchema.nullable()
   );
 
@@ -1155,9 +1449,12 @@ export const chatApi = {
   // Conversation management
   listConversations,
   listConversationsPage,
+  getConversationSummary,
   getConversation,
   getConversationMessagesPage,
+  getConversationTimelinePage,
   getAgentMessageToolCallDetail,
+  getAgentTimelineItemToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,
@@ -1166,12 +1463,19 @@ export const chatApi = {
   restoreConversation,
   appendAgentBridgeMessage,
   getAgentConversationWorkspace,
+  listWorkspaceOpenTargets,
+  openAgentConversationWorkspace,
   listAgentConversationWorkspacesByProject,
+  listAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents,
   getAgentConversationWorkspaceFreshness,
+  reconcileAgentConversationWorkspacePublication,
   updateAgentConversationWorkspaceFromBase,
+  precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
   getAgentRunStatus,
+  getAgentRunningStates,
+  getBulkWorkspacePublicationStates,
   // Message sending & queue
   startAgentConversation,
   switchAgentConversationMode,
@@ -1230,6 +1534,8 @@ export interface AgentConversationWorkspace {
   worktreePath: string;
   linkedIdeationSessionId: string | null;
   linkedPlanBranchId: string | null;
+  modeSwitchLocked?: boolean;
+  modeSwitchLockReason?: string | null;
   publicationPrNumber: number | null;
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
@@ -1237,6 +1543,14 @@ export interface AgentConversationWorkspace {
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type WorkspaceOpenTargetKind = "editor" | "fileManager";
+
+export interface WorkspaceOpenTarget {
+  id: string;
+  label: string;
+  kind: WorkspaceOpenTargetKind;
 }
 
 export interface StartAgentConversationInput {
@@ -1275,6 +1589,13 @@ export interface PublishAgentConversationWorkspaceResult {
   prUrl: string | null;
 }
 
+export interface PrecomputeAgentConversationWorkspacePrDescriptionResult {
+  conversationId: string;
+  status: "ready" | "skipped";
+  cacheStatus: string | null;
+  reason: string | null;
+}
+
 export interface AgentConversationWorkspacePublicationEvent {
   id: string;
   conversationId: string;
@@ -1287,6 +1608,7 @@ export interface AgentConversationWorkspacePublicationEvent {
 
 export interface AgentConversationWorkspaceFreshness {
   conversationId: string;
+  freshnessScope: AgentConversationWorkspaceFreshnessScope;
   baseRef: string;
   baseDisplayName: string | null;
   targetRef: string;
@@ -1327,6 +1649,8 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   worktree_path: z.string(),
   linked_ideation_session_id: z.string().nullable(),
   linked_plan_branch_id: z.string().nullable(),
+  mode_switch_locked: z.boolean().optional().default(false),
+  mode_switch_lock_reason: z.string().nullable().optional().default(null),
   publication_pr_number: z.number().nullable(),
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
@@ -1338,6 +1662,33 @@ const AgentConversationWorkspaceResponseSchema = z.object({
 const AgentConversationWorkspaceListResponseSchema = z.array(
   AgentConversationWorkspaceResponseSchema
 );
+const AgentSidebarConversationRowResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  workspace: AgentConversationWorkspaceResponseSchema.nullable(),
+  ref_kind: z.enum(["pull_request", "branch"]),
+  ref_label: z.string(),
+  publication_state: z.enum([
+    "active",
+    "draft",
+    "merged",
+    "closed",
+    "uncommitted",
+    "unpushed",
+  ]),
+  publication_label: z.string().nullable(),
+});
+const AgentSidebarConversationGroupResponseSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  total: z.number(),
+  offset: z.number(),
+  limit: z.number(),
+  has_more: z.boolean(),
+  rows: z.array(AgentSidebarConversationRowResponseSchema),
+});
+const AgentSidebarConversationGroupsResponseSchema = z.object({
+  groups: z.array(AgentSidebarConversationGroupResponseSchema),
+});
 const AgentConversationWorkspacePublicationEventResponseSchema = z.object({
   id: z.string(),
   conversation_id: z.string(),
@@ -1352,6 +1703,7 @@ const AgentConversationWorkspacePublicationEventListResponseSchema = z.array(
 );
 const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   conversation_id: z.string(),
+  freshness_scope: z.enum(["local", "full"]).optional().default("full"),
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
   target_ref: z.string(),
@@ -1360,6 +1712,11 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   is_base_ahead: z.boolean(),
   has_uncommitted_changes: z.boolean(),
   unpublished_commit_count: z.number().nullable(),
+});
+const WorkspaceOpenTargetResponseSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.enum(["editor", "fileManager"]),
 });
 
 const StartAgentConversationResponseSchema = z.object({
@@ -1381,6 +1738,12 @@ const PublishAgentConversationWorkspaceResponseSchema = z.object({
   pr_number: z.number().nullable(),
   pr_url: z.string().nullable(),
 });
+const PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema = z.object({
+  conversation_id: z.string(),
+  status: z.enum(["ready", "skipped"]),
+  cache_status: z.string().nullable(),
+  reason: z.string().nullable(),
+});
 const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   updated: z.boolean(),
@@ -1391,6 +1754,9 @@ const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
 type RawAgentConversationWorkspace = z.infer<
   typeof AgentConversationWorkspaceResponseSchema
 >;
+type RawAgentSidebarConversationGroups = z.infer<
+  typeof AgentSidebarConversationGroupsResponseSchema
+>;
 type RawStartAgentConversationResponse = z.infer<
   typeof StartAgentConversationResponseSchema
 >;
@@ -1399,6 +1765,9 @@ type RawSwitchAgentConversationModeResponse = z.infer<
 >;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
+>;
+type RawPrecomputeAgentConversationWorkspacePrDescriptionResponse = z.infer<
+  typeof PrecomputeAgentConversationWorkspacePrDescriptionResponseSchema
 >;
 type RawAgentConversationWorkspacePublicationEvent = z.infer<
   typeof AgentConversationWorkspacePublicationEventResponseSchema
@@ -1436,6 +1805,8 @@ function transformAgentConversationWorkspace(
     worktreePath: raw.worktree_path,
     linkedIdeationSessionId: raw.linked_ideation_session_id,
     linkedPlanBranchId: raw.linked_plan_branch_id,
+    modeSwitchLocked: raw.mode_switch_locked,
+    modeSwitchLockReason: raw.mode_switch_lock_reason,
     publicationPrNumber: raw.publication_pr_number,
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
@@ -1443,6 +1814,29 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformAgentSidebarConversationGroups(
+  raw: RawAgentSidebarConversationGroups
+): AgentSidebarConversationGroupsResponse {
+  return {
+    groups: raw.groups.map((group) => ({
+      key: group.key,
+      label: group.label,
+      total: group.total,
+      offset: group.offset,
+      limit: group.limit,
+      hasMore: group.has_more,
+      rows: group.rows.map((row) => ({
+        conversation: transformConversation(row.conversation),
+        workspace: row.workspace ? transformAgentConversationWorkspace(row.workspace) : null,
+        refKind: row.ref_kind === "pull_request" ? "pull-request" : "branch",
+        refLabel: row.ref_label,
+        publicationState: row.publication_state,
+        publicationLabel: row.publication_label,
+      })),
+    })),
   };
 }
 
@@ -1478,6 +1872,17 @@ function transformPublishAgentConversationWorkspaceResponse(
   };
 }
 
+function transformPrecomputeAgentConversationWorkspacePrDescriptionResponse(
+  raw: RawPrecomputeAgentConversationWorkspacePrDescriptionResponse
+): PrecomputeAgentConversationWorkspacePrDescriptionResult {
+  return {
+    conversationId: raw.conversation_id,
+    status: raw.status,
+    cacheStatus: raw.cache_status,
+    reason: raw.reason,
+  };
+}
+
 function transformAgentConversationWorkspacePublicationEvent(
   raw: RawAgentConversationWorkspacePublicationEvent
 ): AgentConversationWorkspacePublicationEvent {
@@ -1497,6 +1902,7 @@ function transformAgentConversationWorkspaceFreshness(
 ): AgentConversationWorkspaceFreshness {
   return {
     conversationId: raw.conversation_id,
+    freshnessScope: raw.freshness_scope,
     baseRef: raw.base_ref,
     baseDisplayName: raw.base_display_name,
     targetRef: raw.target_ref,
@@ -1530,6 +1936,25 @@ export async function getAgentConversationWorkspace(
   return raw ? transformAgentConversationWorkspace(raw) : null;
 }
 
+export async function listWorkspaceOpenTargets(): Promise<WorkspaceOpenTarget[]> {
+  return typedInvoke(
+    "list_workspace_open_targets",
+    {},
+    z.array(WorkspaceOpenTargetResponseSchema)
+  );
+}
+
+export async function openAgentConversationWorkspace(
+  conversationId: string,
+  targetId: string
+): Promise<void> {
+  await typedInvoke(
+    "open_agent_conversation_workspace",
+    { conversationId, targetId },
+    z.null()
+  );
+}
+
 export async function listAgentConversationWorkspacesByProject(
   projectId: string
 ): Promise<AgentConversationWorkspace[]> {
@@ -1539,6 +1964,33 @@ export async function listAgentConversationWorkspacesByProject(
     AgentConversationWorkspaceListResponseSchema
   );
   return raw.map(transformAgentConversationWorkspace);
+}
+
+export async function listAgentSidebarConversations(
+  input: AgentSidebarConversationsInput
+): Promise<AgentSidebarConversationGroupsResponse> {
+  const normalizedSearch = input.search?.trim();
+  const raw = await typedInvoke(
+    "list_agent_sidebar_conversations",
+    {
+      input: {
+        projectIds: input.projectIds,
+        includeArchived: input.includeArchived ?? false,
+        archivedOnly: input.archivedOnly ?? false,
+        ...(normalizedSearch ? { search: normalizedSearch } : {}),
+        ...(input.publicationStates ? { publicationStates: input.publicationStates } : {}),
+        ...(input.groupBy ? { groupBy: input.groupBy } : {}),
+        ...(input.sort ? { sort: input.sort } : {}),
+        ...(input.limitPerGroup != null ? { limitPerGroup: input.limitPerGroup } : {}),
+        ...(input.offsets ? { offsets: input.offsets } : {}),
+        ...(input.pinnedConversationIds
+          ? { pinnedConversationIds: input.pinnedConversationIds }
+          : {}),
+      },
+    },
+    AgentSidebarConversationGroupsResponseSchema
+  );
+  return transformAgentSidebarConversationGroups(raw);
 }
 
 export async function listAgentConversationWorkspacePublicationEvents(
@@ -1553,14 +2005,28 @@ export async function listAgentConversationWorkspacePublicationEvents(
 }
 
 export async function getAgentConversationWorkspaceFreshness(
-  conversationId: string
+  conversationId: string,
+  options: { scope?: AgentConversationWorkspaceFreshnessScope } = {}
 ): Promise<AgentConversationWorkspaceFreshness> {
   const raw = await typedInvoke(
     "get_agent_conversation_workspace_freshness",
-    { conversationId },
+    {
+      conversationId,
+      ...(options.scope ? { freshnessScope: options.scope } : {}),
+    },
     AgentConversationWorkspaceFreshnessResponseSchema
   );
   return transformAgentConversationWorkspaceFreshness(raw);
+}
+
+export async function reconcileAgentConversationWorkspacePublication(
+  conversationId: string
+): Promise<void> {
+  await typedInvoke(
+    "reconcile_agent_conversation_workspace_publication",
+    { conversationId },
+    z.void()
+  );
 }
 
 export async function updateAgentConversationWorkspaceFromBase(
@@ -1757,6 +2223,41 @@ export async function isAgentRunning(
     "is_agent_running",
     { contextType, contextId },
     z.boolean()
+  );
+}
+
+/**
+ * Bulk-check whether agents are currently running for multiple context IDs.
+ */
+export async function getAgentRunningStates(
+  contextType: ContextType,
+  contextIds: string[]
+): Promise<Record<string, boolean>> {
+  return typedInvoke(
+    "get_agent_running_states",
+    { contextType, contextIds },
+    z.record(z.string(), z.boolean())
+  );
+}
+
+export interface BulkPublicationStateResponse {
+  publication_state: string;
+  publication_label: string | null;
+}
+
+export async function getBulkWorkspacePublicationStates(
+  conversationIds: string[]
+): Promise<Record<string, BulkPublicationStateResponse>> {
+  return typedInvoke(
+    "get_bulk_workspace_publication_states",
+    { conversationIds },
+    z.record(
+      z.string(),
+      z.object({
+        publication_state: z.string(),
+        publication_label: z.string().nullable(),
+      })
+    )
   );
 }
 

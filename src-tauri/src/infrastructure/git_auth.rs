@@ -156,6 +156,31 @@ pub(crate) async fn check_gh_auth_status() -> bool {
     }
 }
 
+pub(crate) async fn check_gh_auth_token_available() -> bool {
+    let child = match Command::new(resolve_gh_cli_path())
+        .args(gh_auth_token_args())
+        .envs(git_subprocess_env())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    match timeout(Duration::from_secs(2), child.wait_with_output()).await {
+        Ok(Ok(output)) => {
+            output.status.success() && output.stdout.iter().any(|byte| !byte.is_ascii_whitespace())
+        }
+        _ => false,
+    }
+}
+
+fn gh_auth_token_args() -> [&'static str; 4] {
+    ["auth", "token", "--hostname", "github.com"]
+}
+
 pub(crate) fn github_https_remote_to_ssh(url: &str) -> Option<String> {
     let trimmed = url.trim().trim_end_matches('/');
     let path = trimmed.strip_prefix("https://github.com/")?;
@@ -222,17 +247,114 @@ pub(crate) async fn git_auth_error_from_failure(
 pub(crate) async fn inspect_origin_auth_config(
     working_dir: &Path,
 ) -> AppResult<GitRemoteAuthConfig> {
+    if let Some(config) = read_origin_auth_config_from_git_config(working_dir)? {
+        return Ok(config);
+    }
+
     let fetch_url = read_origin_url(working_dir, &["remote", "get-url", "origin"]).await?;
-    let push_url =
+    let push_url = if fetch_url.is_some() {
         match read_origin_url(working_dir, &["remote", "get-url", "--push", "origin"]).await {
             Ok(Some(url)) => Some(url),
             _ => fetch_url.clone(),
-        };
+        }
+    } else {
+        None
+    };
 
     Ok(GitRemoteAuthConfig {
         fetch_url,
         push_url,
     })
+}
+
+fn read_origin_auth_config_from_git_config(
+    working_dir: &Path,
+) -> AppResult<Option<GitRemoteAuthConfig>> {
+    let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
+    let config_path = working_dir.join(".git").join("config");
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+
+    let started_at = std::time::Instant::now();
+    let raw = std::fs::read_to_string(&config_path).map_err(|error| {
+        AppError::GitOperation(format!(
+            "failed to read git config for origin inspection: {error}"
+        ))
+    })?;
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if elapsed_ms >= 500 {
+        tracing::warn!(
+            cwd = %working_dir.display(),
+            elapsed_ms,
+            "Startup Git auth preflight: slow git config file read completed"
+        );
+    } else {
+        tracing::debug!(
+            cwd = %working_dir.display(),
+            elapsed_ms,
+            "Startup Git auth preflight: git config file read completed"
+        );
+    }
+
+    Ok(Some(parse_origin_auth_config_from_git_config(&raw)))
+}
+
+fn parse_origin_auth_config_from_git_config(raw: &str) -> GitRemoteAuthConfig {
+    let mut in_origin_remote = false;
+    let mut fetch_url = None;
+    let mut push_url = None;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_origin_remote = is_origin_remote_section(trimmed);
+            continue;
+        }
+
+        if !in_origin_remote {
+            continue;
+        }
+
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().trim_matches('"').to_string();
+        if value.is_empty() {
+            continue;
+        }
+
+        if key.eq_ignore_ascii_case("url") && fetch_url.is_none() {
+            fetch_url = Some(value);
+        } else if key.eq_ignore_ascii_case("pushurl") && push_url.is_none() {
+            push_url = Some(value);
+        }
+    }
+
+    if push_url.is_none() {
+        push_url = fetch_url.clone();
+    }
+
+    GitRemoteAuthConfig {
+        fetch_url,
+        push_url,
+    }
+}
+
+fn is_origin_remote_section(section: &str) -> bool {
+    let body = section
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    body.eq_ignore_ascii_case(r#"remote "origin""#)
+        || body.eq_ignore_ascii_case("remote.origin")
+        || body.eq_ignore_ascii_case("remote 'origin'")
 }
 
 fn format_git_auth_recovery(
@@ -308,6 +430,7 @@ fn format_git_auth_recovery(
 
 async fn read_origin_url(working_dir: &Path, args: &[&str]) -> AppResult<Option<String>> {
     let working_dir = validate_absolute_non_root_path(working_dir, "git working directory")?;
+    let started_at = std::time::Instant::now();
     let mut command = Command::new(resolve_git_cli_path());
     apply_git_subprocess_env(&mut command);
     let child = command
@@ -321,10 +444,28 @@ async fn read_origin_url(working_dir: &Path, args: &[&str]) -> AppResult<Option<
 
     let output = timeout(Duration::from_secs(5), child.wait_with_output())
         .await
-        .map_err(|_| AppError::GitOperation("git remote get-url timed out".to_string()))?
+        .map_err(|_| {
+            tracing::warn!(
+                command = %args.join(" "),
+                cwd = %working_dir.display(),
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Startup Git auth preflight: git remote inspection timed out"
+            );
+            AppError::GitOperation("git remote get-url timed out".to_string())
+        })?
         .map_err(|error| {
             AppError::GitOperation(format!("failed to inspect git remote: {error}"))
         })?;
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if elapsed_ms >= 500 {
+        tracing::warn!(
+            command = %args.join(" "),
+            cwd = %working_dir.display(),
+            elapsed_ms,
+            success = output.status.success(),
+            "Startup Git auth preflight: slow git remote inspection completed"
+        );
+    }
 
     if !output.status.success() {
         return Ok(None);
@@ -486,6 +627,121 @@ mod tests {
             ]),
             Some(GitNetworkOperation::DeleteRemoteBranch)
         );
+    }
+
+    #[test]
+    fn gh_token_probe_targets_github_without_status_network_check() {
+        assert_eq!(
+            gh_auth_token_args(),
+            ["auth", "token", "--hostname", "github.com"]
+        );
+    }
+
+    #[test]
+    fn parses_origin_remote_from_git_config_without_git_subprocess() {
+        let raw = r#"
+            [core]
+                repositoryformatversion = 0
+            [remote "origin"]
+                url = https://github.com/owner/repo.git
+                pushurl = git@github.com:owner/repo.git
+            [branch "main"]
+                remote = origin
+        "#;
+
+        let config = parse_origin_auth_config_from_git_config(raw);
+
+        assert_eq!(
+            config.fetch_url.as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            config.push_url.as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn parses_origin_remote_push_url_from_fetch_url_when_missing() {
+        let raw = r#"
+            [remote "origin"]
+                url = https://github.com/owner/repo.git
+        "#;
+
+        let config = parse_origin_auth_config_from_git_config(raw);
+
+        assert_eq!(
+            config.fetch_url.as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(config.push_url, config.fetch_url);
+    }
+
+    #[test]
+    fn parses_origin_remote_section_aliases_and_ignores_other_remotes() {
+        let dot_section = r#"
+            [remote.upstream]
+                url = https://github.com/other/repo.git
+            [remote.origin]
+                url = git@github.com:owner/repo.git
+        "#;
+        let single_quote_section = r#"
+            [remote 'origin']
+                url = https://github.com/owner/repo.git
+        "#;
+
+        assert_eq!(
+            parse_origin_auth_config_from_git_config(dot_section)
+                .fetch_url
+                .as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        assert_eq!(
+            parse_origin_auth_config_from_git_config(single_quote_section)
+                .fetch_url
+                .as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn reads_origin_remote_from_git_config_file_without_git_subprocess() {
+        let repo = tempfile::tempdir().expect("temp repo");
+        let git_dir = repo.path().join(".git");
+        std::fs::create_dir_all(&git_dir).expect("git dir");
+        std::fs::write(
+            git_dir.join("config"),
+            r#"
+                [core]
+                    repositoryformatversion = 0
+                [remote "origin"]
+                    url = https://github.com/owner/repo.git
+                    pushurl = git@github.com:owner/repo.git
+            "#,
+        )
+        .expect("write git config");
+
+        let config = read_origin_auth_config_from_git_config(repo.path())
+            .expect("config read should succeed")
+            .expect("origin config should be read");
+
+        assert_eq!(
+            config.fetch_url.as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            config.push_url.as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+    }
+
+    #[test]
+    fn missing_git_config_falls_back_to_git_remote_inspection() {
+        let repo = tempfile::tempdir().expect("temp repo");
+
+        assert!(read_origin_auth_config_from_git_config(repo.path())
+            .expect("missing config should not error")
+            .is_none());
     }
 
     #[tokio::test]

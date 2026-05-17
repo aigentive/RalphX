@@ -18,11 +18,14 @@ import {
   mockCreateConversation,
   mockGetAgentConversationWorkspace,
   mockGetConversation,
+  mockGetConversationTimelinePage,
   mockGetConversationStats,
+  mockListAgentSidebarConversations,
   mockListAgentConversationWorkspacePublicationEvents,
   mockListConversations,
   mockListConversationsPage,
   mockPublishAgentConversationWorkspace,
+  mockReconcileAgentConversationWorkspacePublication,
   mockStartAgentConversation,
   mockSwitchAgentConversationMode,
 } from "@/api-mock/chat";
@@ -53,6 +56,32 @@ function toSnakeConversation(conversation: ChatConversation) {
     created_at: conversation.createdAt,
     updated_at: conversation.updatedAt,
     archived_at: conversation.archivedAt,
+  };
+}
+
+function toSnakeAgentWorkspace(workspace: AgentConversationWorkspace | null) {
+  if (!workspace) return null;
+  return {
+    conversation_id: workspace.conversationId,
+    project_id: workspace.projectId,
+    mode: workspace.mode,
+    base_ref_kind: workspace.baseRefKind,
+    base_ref: workspace.baseRef,
+    base_display_name: workspace.baseDisplayName,
+    base_commit: workspace.baseCommit,
+    branch_name: workspace.branchName,
+    worktree_path: workspace.worktreePath,
+    linked_ideation_session_id: workspace.linkedIdeationSessionId,
+    linked_plan_branch_id: workspace.linkedPlanBranchId,
+    mode_switch_locked: workspace.modeSwitchLocked ?? false,
+    mode_switch_lock_reason: workspace.modeSwitchLockReason ?? null,
+    publication_pr_number: workspace.publicationPrNumber,
+    publication_pr_url: workspace.publicationPrUrl,
+    publication_pr_status: workspace.publicationPrStatus,
+    publication_push_status: workspace.publicationPushStatus,
+    status: workspace.status,
+    created_at: workspace.createdAt,
+    updated_at: workspace.updatedAt,
   };
 }
 
@@ -205,10 +234,12 @@ const commandHandlers: Record<
   list_agent_models: async () => mockAgentModels,
   get_agent_lane_settings: async (args) =>
     mockAgentLaneSettings((args.projectId as string | null | undefined) ?? null),
-  get_agent_harness_availability: async (args) =>
-    mockAgentHarnessAvailability(
-      (args.projectId as string | null | undefined) ?? null,
-    ),
+  get_agent_harness_availability: async (args) => {
+    const input = args.input as { projectId?: string | null } | undefined;
+    return mockAgentHarnessAvailability(
+      input?.projectId ?? (args.projectId as string | null | undefined) ?? null,
+    );
+  },
   update_agent_lane_settings: async (args) => {
     const input = args.input as {
       projectId?: string | null;
@@ -387,6 +418,10 @@ const commandHandlers: Record<
     mockGetConversation(args.conversationId as string),
   get_agent_conversation: async (args) =>
     getMockConversationPayload(args.conversationId as string),
+  get_agent_conversation_summary: async (args) => {
+    const payload = await getMockConversationPayload(args.conversationId as string);
+    return payload.conversation;
+  },
   get_agent_conversation_messages_page: async (args) => {
     const limit = (args.limit as number | undefined) ?? 50;
     const offset = (args.offset as number | undefined) ?? 0;
@@ -399,6 +434,38 @@ const commandHandlers: Record<
       offset,
       total_message_count: payload.messages.length,
       has_older: offset + messages.length < payload.messages.length,
+    };
+  },
+  get_agent_conversation_timeline_page: async (args) => {
+    const controller =
+      typeof window !== "undefined" ? window.__mockChatApi : undefined;
+    const limit = (args.limit as number | undefined) ?? 40;
+    const beforeSequence =
+      typeof args.beforeSequence === "number"
+        ? args.beforeSequence
+        : typeof args.before_sequence === "number"
+          ? args.before_sequence
+          : null;
+    const payload = controller
+      ? await controller.getConversationTimelinePage(
+          args.conversationId as string,
+          limit,
+          beforeSequence
+        )
+      : await mockGetConversationTimelinePage(
+          args.conversationId as string,
+          limit,
+          beforeSequence
+        );
+    return {
+      conversation: toSnakeConversation(payload.conversation),
+      items: payload.items.map(toSnakeTimelineItem),
+      limit: payload.limit,
+      before_sequence: payload.beforeSequence,
+      total_item_count: payload.totalItemCount,
+      has_older: payload.hasOlder,
+      oldest_loaded_sequence: payload.oldestLoadedSequence,
+      newest_loaded_sequence: payload.newestLoadedSequence,
     };
   },
   get_agent_conversation_workspace: async (args) => {
@@ -418,6 +485,8 @@ const commandHandlers: Record<
       worktree_path: workspace.worktreePath,
       linked_ideation_session_id: workspace.linkedIdeationSessionId,
       linked_plan_branch_id: workspace.linkedPlanBranchId,
+      mode_switch_locked: workspace.modeSwitchLocked ?? false,
+      mode_switch_lock_reason: workspace.modeSwitchLockReason ?? null,
       publication_pr_number: workspace.publicationPrNumber,
       publication_pr_url: workspace.publicationPrUrl,
       publication_pr_status: workspace.publicationPrStatus,
@@ -441,6 +510,10 @@ const commandHandlers: Record<
       created_at: event.createdAt,
     }));
   },
+  reconcile_agent_conversation_workspace_publication: async (args) => {
+    await mockReconcileAgentConversationWorkspacePublication(args.conversationId as string);
+    return undefined;
+  },
   publish_agent_conversation_workspace: async (args) => {
     const result = await mockPublishAgentConversationWorkspace(args.conversationId as string);
     const workspace = result.workspace;
@@ -458,6 +531,8 @@ const commandHandlers: Record<
             worktree_path: workspace.worktreePath,
             linked_ideation_session_id: workspace.linkedIdeationSessionId,
             linked_plan_branch_id: workspace.linkedPlanBranchId,
+            mode_switch_locked: workspace.modeSwitchLocked ?? false,
+            mode_switch_lock_reason: workspace.modeSwitchLockReason ?? null,
             publication_pr_number: workspace.publicationPrNumber,
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
@@ -476,6 +551,12 @@ const commandHandlers: Record<
   },
   get_agent_conversation_workspace_file_changes: async () =>
     mockWorkspaceFileChanges.map((change) => ({ ...change })),
+  get_agent_conversation_workspace_review: async () => ({
+    changes: mockWorkspaceFileChanges.map((change) => ({ ...change })),
+    commits: mockWorkspaceCommits.map((commit) => ({ ...commit })),
+    base_ref: "main",
+    head_ref: "HEAD",
+  }),
   get_agent_conversation_workspace_file_diff: async (args) =>
     mockWorkspaceFileDiff(args.filePath as string),
   get_agent_conversation_workspace_commits: async () => ({
@@ -550,6 +631,8 @@ const commandHandlers: Record<
             worktree_path: workspace.worktreePath,
             linked_ideation_session_id: workspace.linkedIdeationSessionId,
             linked_plan_branch_id: workspace.linkedPlanBranchId,
+            mode_switch_locked: workspace.modeSwitchLocked ?? false,
+            mode_switch_lock_reason: workspace.modeSwitchLockReason ?? null,
             publication_pr_number: workspace.publicationPrNumber,
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,
@@ -605,6 +688,8 @@ const commandHandlers: Record<
             worktree_path: workspace.worktreePath,
             linked_ideation_session_id: workspace.linkedIdeationSessionId,
             linked_plan_branch_id: workspace.linkedPlanBranchId,
+            mode_switch_locked: workspace.modeSwitchLocked ?? false,
+            mode_switch_lock_reason: workspace.modeSwitchLockReason ?? null,
             publication_pr_number: workspace.publicationPrNumber,
             publication_pr_url: workspace.publicationPrUrl,
             publication_pr_status: workspace.publicationPrStatus,

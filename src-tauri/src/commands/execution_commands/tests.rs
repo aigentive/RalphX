@@ -6,6 +6,8 @@ use crate::commands::execution_commands::lifecycle::{
 use crate::domain::entities::{GitMode, IdeationSession};
 use crate::domain::services::RunningAgentKey;
 use std::sync::Arc;
+use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::Manager;
 
 // ========================================
 // ExecutionState Unit Tests
@@ -65,6 +67,93 @@ fn test_execution_state_decrement_no_underflow() {
     let count = state.decrement_running();
     assert_eq!(count, 0);
     assert_eq!(state.running_count(), 0);
+}
+
+#[tokio::test]
+async fn test_active_project_state_set_if_changed_dedupes_same_project() {
+    let state = ActiveProjectState::new();
+    let project_id = ProjectId::from_string("project-1".to_string());
+
+    assert!(state.set_if_changed(Some(project_id.clone())).await);
+    assert!(!state.set_if_changed(Some(project_id.clone())).await);
+    assert_eq!(state.get().await, Some(project_id));
+    assert!(state.set_if_changed(None).await);
+    assert!(!state.set_if_changed(None).await);
+}
+
+#[tokio::test]
+async fn test_set_active_project_skips_when_project_is_already_active() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Active Project".into(),
+            "/tmp/active-project".into(),
+        ))
+        .await
+        .unwrap();
+    active_project_state.set(Some(project.id.clone())).await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(execution_state)
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    set_active_project(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("setting the already-active project should be a no-op");
+
+    assert_eq!(active_project_state.get().await, Some(project.id));
+}
+
+#[tokio::test]
+async fn test_set_active_project_persists_when_project_changes() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Changed Project".into(),
+            "/tmp/changed-project".into(),
+        ))
+        .await
+        .unwrap();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(execution_state)
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    set_active_project(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("new active project should be persisted");
+
+    assert_eq!(active_project_state.get().await, Some(project.id.clone()));
+    let persisted = app
+        .state::<AppState>()
+        .app_state_repo
+        .get()
+        .await
+        .unwrap()
+        .active_project_id;
+    assert_eq!(persisted, Some(project.id));
 }
 
 #[test]

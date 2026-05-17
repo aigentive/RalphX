@@ -19,6 +19,7 @@ import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEventBus } from "@/providers/EventProvider";
 import {
+  chatKeys,
   getCachedConversationMessages,
   invalidateConversationDataQueries,
 } from "@/hooks/useChat";
@@ -850,7 +851,13 @@ export function useChatEvents({
           if (assistantMessageId) {
             // Race guard: check if the query already has the message before subscribing
             const existing = getCachedConversationMessages(queryClient, convId);
-            if (existing.some((message) => message.id === assistantMessageId)) {
+            if (
+              existing.some(
+                (message) =>
+                  message.id === assistantMessageId ||
+                  message.parentMessageId === assistantMessageId
+              )
+            ) {
               clearFinalizing();
             } else {
               // Subscribe to query cache updates — clear isFinalizing when the new
@@ -860,7 +867,13 @@ export function useChatEvents({
                 const evKey = event.query.queryKey;
                 if (!Array.isArray(evKey) || evKey.length < 3 || evKey[2] !== convId) return;
                 const data = getCachedConversationMessages(queryClient, convId);
-                if (data.some((message) => message.id === assistantMessageId)) {
+                if (
+                  data.some(
+                    (message) =>
+                      message.id === assistantMessageId ||
+                      message.parentMessageId === assistantMessageId
+                  )
+                ) {
                   clearFinalizing();
                 }
               });
@@ -869,6 +882,12 @@ export function useChatEvents({
           // If no message_id in payload, the safety timeout alone handles cleanup
         }
 
+        // Cancel in-flight fetches so invalidation starts a fresh refetch
+        // instead of deduplicating with a stale in-flight request.
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversation(payload.conversation_id), exact: true });
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversationSummary(payload.conversation_id) });
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversationHistory(payload.conversation_id) });
+        void queryClient.cancelQueries({ queryKey: chatKeys.conversationTimeline(payload.conversation_id) });
         invalidateConversationDataQueries(queryClient, payload.conversation_id);
         queryClient.invalidateQueries({
           queryKey: conversationStatsKey(payload.conversation_id),

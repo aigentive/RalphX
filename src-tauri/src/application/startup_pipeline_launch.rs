@@ -26,6 +26,8 @@ fn build_startup_pipeline_deps(
     let startup_conversation_repo = Arc::clone(&app_state.chat_conversation_repo);
     let startup_agent_conversation_workspace_repo =
         Arc::clone(&app_state.agent_conversation_workspace_repo);
+    let startup_orphan_worktree_cleanup_marker_repo =
+        Arc::clone(&app_state.orphan_worktree_cleanup_marker_repo);
     let startup_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
     let startup_ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
     let startup_activity_event_repo = Arc::clone(&app_state.activity_event_repo);
@@ -37,8 +39,7 @@ fn build_startup_pipeline_deps(
     let startup_memory_entry_repo = Arc::clone(&app_state.memory_entry_repo);
     let startup_execution_settings_repo = Arc::clone(&app_state.execution_settings_repo);
     let startup_agent_lane_settings_repo = Arc::clone(&app_state.agent_lane_settings_repo);
-    let startup_agent_provider_settings_repo =
-        Arc::clone(&app_state.agent_provider_settings_repo);
+    let startup_agent_provider_settings_repo = Arc::clone(&app_state.agent_provider_settings_repo);
     let startup_ideation_effort_settings_repo =
         Arc::clone(&app_state.ideation_effort_settings_repo);
     let startup_ideation_model_settings_repo = Arc::clone(&app_state.ideation_model_settings_repo);
@@ -66,6 +67,7 @@ fn build_startup_pipeline_deps(
         artifact_repo: startup_artifact_repo,
         conversation_repo: startup_conversation_repo,
         agent_conversation_workspace_repo: startup_agent_conversation_workspace_repo,
+        orphan_worktree_cleanup_marker_repo: startup_orphan_worktree_cleanup_marker_repo,
         agent_run_repo: startup_agent_run_repo,
         ideation_session_repo: startup_ideation_session_repo,
         activity_event_repo: startup_activity_event_repo,
@@ -102,6 +104,16 @@ pub(crate) fn launch_startup_pipeline(
 ) {
     // Clone app handle to enable event emission in startup tasks
     let startup_app_handle = app.handle().clone();
+    let external_mcp_app_handle = startup_app_handle.clone();
+    tracing::info!("Scheduling external MCP startup independently of startup recovery pipeline");
+    tauri::async_runtime::spawn(async move {
+        application::startup_background::maybe_start_external_mcp(
+            external_mcp_app_handle,
+            |port, timeout| Box::pin(crate::wait_for_backend_ready(port, timeout)),
+        )
+        .await;
+    });
+
     let deps = build_startup_pipeline_deps(
         app_state,
         startup_execution_state,

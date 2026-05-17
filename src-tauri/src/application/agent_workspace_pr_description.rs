@@ -1,15 +1,20 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::application::git_service::git_cmd;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
 use crate::application::{AppState, GitService};
-use crate::domain::agents::{AgentConfig, AgentRole, DEFAULT_AGENT_HARNESS};
+use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentWorkspacePrDescription, ChatConversation, Project,
+    AgentConversationWorkspace, AgentWorkspacePrDescription, ChatConversation, ChatConversationId,
+    Project,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
+use crate::infrastructure::agents::claude::git_runtime_config;
+use dashmap::DashMap;
+use tracing::info;
 
 pub const DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE: &str =
     include_str!("../../../.github/PULL_REQUEST_TEMPLATE.md");
@@ -22,11 +27,158 @@ const MAX_STAT_CHARS: usize = 8_000;
 const MAX_MESSAGE_CHARS: usize = 1_600;
 const MAX_CONTEXT_MESSAGES: usize = 12;
 const MAX_COMMIT_SUMMARIES: usize = 40;
+const PR_DESCRIBER_SUBMIT_TOOL: &str = "submit_agent_workspace_pr_description";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PullRequestTemplateContext {
     source: &'static str,
     content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentWorkspacePrDescriptionCacheKey {
+    conversation_id: ChatConversationId,
+    review_base: String,
+    branch_head_sha: String,
+    reviewable_commit_count: u32,
+}
+
+impl AgentWorkspacePrDescriptionCacheKey {
+    pub(crate) fn new(
+        conversation_id: ChatConversationId,
+        review_base: impl Into<String>,
+        branch_head_sha: impl Into<String>,
+        reviewable_commit_count: u32,
+    ) -> Option<Self> {
+        if conversation_id.as_uuid().is_nil() {
+            return None;
+        }
+        let review_base = review_base.into();
+        let branch_head_sha = branch_head_sha.into();
+        if review_base.trim().is_empty() || branch_head_sha.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            conversation_id,
+            review_base,
+            branch_head_sha,
+            reviewable_commit_count,
+        })
+    }
+
+    fn cache_key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.conversation_id,
+            self.review_base,
+            self.branch_head_sha,
+            self.reviewable_commit_count
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentWorkspacePrDescriptionCacheStatus {
+    Hit,
+    Coalesced,
+    Miss,
+    Disabled,
+}
+
+impl AgentWorkspacePrDescriptionCacheStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hit => "hit",
+            Self::Coalesced => "coalesced",
+            Self::Miss => "miss",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentWorkspacePrDescriptionDraftOutcome {
+    pub(crate) description: AgentWorkspacePrDescription,
+    pub(crate) cache_status: AgentWorkspacePrDescriptionCacheStatus,
+    pub(crate) cache_age_ms: Option<u128>,
+    pub(crate) cache_wait_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkspacePrDescriptionCacheEntry {
+    inserted_at: Instant,
+    description: AgentWorkspacePrDescription,
+}
+
+fn agent_workspace_pr_description_cache_ttl() -> Duration {
+    Duration::from_millis(git_runtime_config().workspace_pr_description_cache_ttl_ms)
+}
+
+fn agent_workspace_pr_description_cache(
+) -> &'static DashMap<String, AgentWorkspacePrDescriptionCacheEntry> {
+    static CACHE: OnceLock<DashMap<String, AgentWorkspacePrDescriptionCacheEntry>> =
+        OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
+}
+
+fn agent_workspace_pr_description_locks() -> &'static DashMap<String, Arc<tokio::sync::Mutex<()>>> {
+    static LOCKS: OnceLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = OnceLock::new();
+    LOCKS.get_or_init(DashMap::new)
+}
+
+fn cached_agent_workspace_pr_description(
+    key: &AgentWorkspacePrDescriptionCacheKey,
+) -> Option<(AgentWorkspacePrDescription, u128)> {
+    let ttl = agent_workspace_pr_description_cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let cache_key = key.cache_key();
+    let entry = agent_workspace_pr_description_cache().get(&cache_key)?;
+    let age = entry.inserted_at.elapsed();
+    if age <= ttl {
+        return Some((entry.description.clone(), age.as_millis()));
+    }
+    drop(entry);
+    agent_workspace_pr_description_cache().remove(&cache_key);
+    None
+}
+
+fn store_agent_workspace_pr_description(
+    key: &AgentWorkspacePrDescriptionCacheKey,
+    description: &AgentWorkspacePrDescription,
+) {
+    if agent_workspace_pr_description_cache_ttl().is_zero() {
+        return;
+    }
+    agent_workspace_pr_description_cache().insert(
+        key.cache_key(),
+        AgentWorkspacePrDescriptionCacheEntry {
+            inserted_at: Instant::now(),
+            description: description.clone(),
+        },
+    );
+}
+
+pub(crate) fn invalidate_agent_workspace_pr_description_cache(
+    conversation_id: &ChatConversationId,
+) {
+    if conversation_id.as_uuid().is_nil() {
+        return;
+    }
+    let prefix = format!("{conversation_id}:");
+    let keys = agent_workspace_pr_description_cache()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .key()
+                .starts_with(&prefix)
+                .then(|| entry.key().clone())
+        })
+        .collect::<Vec<_>>();
+    for key in keys {
+        agent_workspace_pr_description_cache().remove(&key);
+    }
 }
 
 pub fn validate_agent_workspace_pr_description_body(body: &str) -> AppResult<()> {
@@ -55,47 +207,77 @@ pub async fn draft_agent_workspace_pr_description(
     workspace_path: &Path,
     review_base: &str,
 ) -> AppResult<AgentWorkspacePrDescription> {
+    let total_started = Instant::now();
     state
         .agent_conversation_workspace_repo
         .clear_pr_description(&workspace.conversation_id)
         .await?;
 
-    let template = read_pull_request_template_context(project, workspace_path).await;
-    let diff_stats =
-        GitService::get_diff_stats_between(workspace_path, review_base, "HEAD").await?;
-    let commits = GitService::get_commits_between(workspace_path, review_base, "HEAD").await?;
-    let name_status = run_git_text(
+    let context_started = Instant::now();
+    let review_range = format!("{review_base}..HEAD");
+    let template_fut = async {
+        Ok::<_, AppError>(read_pull_request_template_context(project, workspace_path).await)
+    };
+    let diff_stats_fut = GitService::get_diff_stats_between(workspace_path, review_base, "HEAD");
+    let commits_fut = GitService::get_commits_between(workspace_path, review_base, "HEAD");
+    let name_status_fut = run_git_text_owned(
         workspace_path,
-        &[
-            "diff",
-            "--find-renames",
-            "--name-status",
-            &format!("{review_base}..HEAD"),
+        vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--name-status".to_string(),
+            review_range.clone(),
         ],
-    )
-    .await?;
-    let diff_stat = run_git_text(
+    );
+    let diff_stat_fut = run_git_text_owned(
         workspace_path,
-        &[
-            "diff",
-            "--find-renames",
-            "--stat",
-            &format!("{review_base}..HEAD"),
+        vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--stat".to_string(),
+            review_range.clone(),
         ],
-    )
-    .await?;
-    let patch_excerpt = run_git_text(
+    );
+    let patch_excerpt_fut = run_git_text_owned(
         workspace_path,
-        &[
-            "diff",
-            "--find-renames",
-            "--minimal",
-            "--no-ext-diff",
-            &format!("{review_base}..HEAD"),
+        vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--minimal".to_string(),
+            "--no-ext-diff".to_string(),
+            review_range,
         ],
-    )
-    .await?;
-    let conversation_context = build_conversation_context(state, conversation).await?;
+    );
+    let conversation_context_fut = build_conversation_context(state, conversation);
+    let (
+        template,
+        diff_stats,
+        commits,
+        name_status,
+        diff_stat,
+        patch_excerpt,
+        conversation_context,
+    ) = tokio::try_join!(
+        template_fut,
+        diff_stats_fut,
+        commits_fut,
+        name_status_fut,
+        diff_stat_fut,
+        patch_excerpt_fut,
+        conversation_context_fut
+    )?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        review_base,
+        elapsed_ms = context_started.elapsed().as_millis(),
+        commits = commits.len(),
+        files_changed = diff_stats.files_changed,
+        patch_excerpt_chars = patch_excerpt.chars().count(),
+        "Collected agent workspace PR description context"
+    );
     let prompt = build_pr_describer_prompt(PrDescriberPromptContext {
         conversation,
         project,
@@ -119,7 +301,9 @@ pub async fn draft_agent_workspace_pr_description(
         agent_names::AGENT_PR_DESCRIBER,
         PathBuf::from(&project.working_directory),
     );
+    ensure_pr_describer_submit_tool_available(helper_harness, &bootstrap.plugin_dir)?;
 
+    let spawn_started = Instant::now();
     let output = agent_client
         .spawn_agent(AgentConfig {
             role: AgentRole::Custom(bootstrap.agent_role.clone()),
@@ -140,11 +324,31 @@ pub async fn draft_agent_workspace_pr_description(
         .map_err(|error| {
             AppError::Infrastructure(format!("failed to spawn PR describer agent: {error}"))
         })?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        harness = %helper_harness,
+        elapsed_ms = spawn_started.elapsed().as_millis(),
+        "Spawned agent workspace PR describer helper"
+    );
 
+    let wait_started = Instant::now();
     let output = agent_client
         .wait_for_completion(&output)
         .await
         .map_err(|error| AppError::Infrastructure(format!("PR describer agent failed: {error}")))?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        harness = %helper_harness,
+        elapsed_ms = wait_started.elapsed().as_millis(),
+        success = output.success,
+        "Agent workspace PR describer helper completed"
+    );
     if !output.success {
         return Err(AppError::Infrastructure(format!(
             "PR describer agent exited unsuccessfully: {}",
@@ -157,16 +361,218 @@ pub async fn draft_agent_workspace_pr_description(
         .get_pr_description(&workspace.conversation_id)
         .await?
     else {
-        return Err(AppError::Infrastructure(
-            "PR describer agent completed without submitting a PR description".to_string(),
-        ));
+        return Err(pr_describer_missing_submission_error(&output));
     };
 
     validate_agent_workspace_pr_description_body(&description.body_markdown)?;
+    info!(
+        target: "ralphx_lib::application::agent_workspace_pr_description",
+        conversation_id = %workspace.conversation_id,
+        project_id = %project.id,
+        branch = %workspace.branch_name,
+        review_base,
+        elapsed_ms = total_started.elapsed().as_millis(),
+        body_chars = description.body_markdown.chars().count(),
+        has_title = description.title.is_some(),
+        "Drafted agent workspace PR description"
+    );
     Ok(AgentWorkspacePrDescription::new(
         description.title,
         description.body_markdown,
     ))
+}
+
+pub(crate) async fn get_or_draft_agent_workspace_pr_description(
+    state: &AppState,
+    conversation: &ChatConversation,
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    workspace_path: &Path,
+    review_base: &str,
+    key: AgentWorkspacePrDescriptionCacheKey,
+) -> AppResult<AgentWorkspacePrDescriptionDraftOutcome> {
+    if agent_workspace_pr_description_cache_ttl().is_zero() {
+        let description = draft_agent_workspace_pr_description(
+            state,
+            conversation,
+            project,
+            workspace,
+            workspace_path,
+            review_base,
+        )
+        .await?;
+        return Ok(AgentWorkspacePrDescriptionDraftOutcome {
+            description,
+            cache_status: AgentWorkspacePrDescriptionCacheStatus::Disabled,
+            cache_age_ms: None,
+            cache_wait_ms: 0,
+        });
+    }
+
+    if let Some((description, age_ms)) = cached_agent_workspace_pr_description(&key) {
+        return Ok(AgentWorkspacePrDescriptionDraftOutcome {
+            description,
+            cache_status: AgentWorkspacePrDescriptionCacheStatus::Hit,
+            cache_age_ms: Some(age_ms),
+            cache_wait_ms: 0,
+        });
+    }
+
+    let lock = agent_workspace_pr_description_locks()
+        .entry(key.cache_key())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let wait_started = Instant::now();
+    let _guard = lock.lock().await;
+    let wait_ms = wait_started.elapsed().as_millis();
+
+    if let Some((description, age_ms)) = cached_agent_workspace_pr_description(&key) {
+        return Ok(AgentWorkspacePrDescriptionDraftOutcome {
+            description,
+            cache_status: AgentWorkspacePrDescriptionCacheStatus::Coalesced,
+            cache_age_ms: Some(age_ms),
+            cache_wait_ms: wait_ms,
+        });
+    }
+
+    let description = draft_agent_workspace_pr_description(
+        state,
+        conversation,
+        project,
+        workspace,
+        workspace_path,
+        review_base,
+    )
+    .await?;
+    store_agent_workspace_pr_description(&key, &description);
+
+    Ok(AgentWorkspacePrDescriptionDraftOutcome {
+        description,
+        cache_status: AgentWorkspacePrDescriptionCacheStatus::Miss,
+        cache_age_ms: None,
+        cache_wait_ms: wait_ms,
+    })
+}
+
+fn ensure_pr_describer_submit_tool_available(
+    harness: AgentHarnessKind,
+    plugin_dir: &Path,
+) -> AppResult<()> {
+    if harness != AgentHarnessKind::Codex {
+        return Ok(());
+    }
+
+    ensure_codex_pr_describer_prompt_contract(plugin_dir)?;
+    let overrides = crate::infrastructure::agents::codex::build_codex_mcp_overrides(
+        plugin_dir,
+        agent_names::AGENT_PR_DESCRIBER,
+        false,
+        None,
+    )
+    .map_err(|error| {
+        AppError::Infrastructure(format!(
+            "PR describer Codex MCP preflight failed for {}: {error}",
+            plugin_dir.display()
+        ))
+    })?;
+
+    if codex_pr_describer_overrides_expose_submit_tool(&overrides) {
+        return Ok(());
+    }
+
+    Err(AppError::Infrastructure(format!(
+        "PR describer Codex MCP preflight failed: required tool `{PR_DESCRIBER_SUBMIT_TOOL}` is not exposed for plugin dir {}",
+        plugin_dir.display()
+    )))
+}
+
+fn ensure_codex_pr_describer_prompt_contract(plugin_dir: &Path) -> AppResult<()> {
+    let project_root =
+        crate::infrastructure::agents::harness_agent_catalog::resolve_project_root_from_plugin_dir(
+            plugin_dir,
+        );
+    let prompt = crate::infrastructure::agents::harness_agent_catalog::load_harness_agent_prompt(
+        &project_root,
+        agent_names::SHORT_PR_DESCRIBER,
+        crate::infrastructure::agents::harness_agent_catalog::AgentPromptHarness::Codex,
+    )
+    .ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "PR describer Codex prompt contract is missing for plugin dir {}",
+            plugin_dir.display()
+        ))
+    })?;
+
+    if prompt.contains(PR_DESCRIBER_SUBMIT_TOOL) {
+        return Ok(());
+    }
+
+    Err(AppError::Infrastructure(format!(
+        "PR describer Codex prompt contract does not mention required tool `{PR_DESCRIBER_SUBMIT_TOOL}` for plugin dir {}",
+        plugin_dir.display()
+    )))
+}
+
+fn codex_pr_describer_overrides_expose_submit_tool(overrides: &[String]) -> bool {
+    let enabled_tools_ok = overrides.iter().any(|entry| {
+        override_json_value(entry, ".enabled_tools")
+            .is_some_and(|value| json_string_array_contains(value, PR_DESCRIBER_SUBMIT_TOOL))
+    });
+    let args_override = overrides
+        .iter()
+        .find_map(|entry| override_json_value(entry, ".args"));
+    let stdio_args_ok = args_override
+        .is_none_or(|value| codex_stdio_args_allow_required_tool(value, PR_DESCRIBER_SUBMIT_TOOL));
+
+    enabled_tools_ok && stdio_args_ok
+}
+
+fn override_json_value<'a>(entry: &'a str, key_suffix: &str) -> Option<&'a str> {
+    let (key, value) = entry.split_once('=')?;
+    key.ends_with(key_suffix).then_some(value)
+}
+
+fn json_string_array_contains(value: &str, needle: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(value)
+        .map(|values| values.iter().any(|value| value == needle))
+        .unwrap_or(false)
+}
+
+fn codex_stdio_args_allow_required_tool(args_json: &str, required_tool: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(args_json)
+        .map(|args| {
+            args.iter().any(|arg| {
+                arg.strip_prefix("--allowed-tools=")
+                    .is_some_and(|tools| tools.split(',').any(|tool| tool == required_tool))
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn pr_describer_missing_submission_error(output: &crate::domain::agents::AgentOutput) -> AppError {
+    let raw_output = output.content.trim();
+    let base = if pr_describer_output_reports_missing_submit_tool(raw_output) {
+        format!(
+            "PR describer infrastructure error: required tool `{PR_DESCRIBER_SUBMIT_TOOL}` was unavailable to the agent"
+        )
+    } else {
+        "PR describer agent completed without submitting a PR description".to_string()
+    };
+
+    if raw_output.is_empty() {
+        return AppError::Infrastructure(base);
+    }
+
+    AppError::Infrastructure(format!("{base}. Raw output: {raw_output}"))
+}
+
+fn pr_describer_output_reports_missing_submit_tool(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains(PR_DESCRIBER_SUBMIT_TOOL)
+        && (lower.contains("not available")
+            || lower.contains("unavailable")
+            || lower.contains("cannot submit")
+            || lower.contains("can't submit"))
 }
 
 async fn read_pull_request_template_context(
@@ -214,6 +620,11 @@ async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn run_git_text_owned(repo: &Path, args: Vec<String>) -> AppResult<String> {
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_git_text(repo, &arg_refs).await
 }
 
 async fn build_conversation_context(
@@ -361,6 +772,7 @@ fn escape_xml_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::pin::Pin;
     use std::process::Command;
 
@@ -371,7 +783,7 @@ mod tests {
 
     use crate::domain::agents::{
         AgentConfig, AgentHandle, AgentHarnessKind, AgentOutput, AgentResponse, AgentResult,
-        AgentRole, AgenticClient, ClientCapabilities, ResponseChunk,
+        AgentRole, AgenticClient, ClientCapabilities, LogicalEffort, ResponseChunk,
     };
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, ChatMessage, IdeationAnalysisBaseRefKind, MessageRole,
@@ -384,6 +796,7 @@ mod tests {
         title: Option<String>,
         body_markdown: String,
         output: AgentOutput,
+        submit_on_success: bool,
         capabilities: ClientCapabilities,
         spawned_configs: tokio::sync::Mutex<Vec<AgentConfig>>,
     }
@@ -401,6 +814,24 @@ mod tests {
                 title,
                 body_markdown: body_markdown.into(),
                 output: AgentOutput::success("submitted"),
+                submit_on_success: true,
+                capabilities: ClientCapabilities::mock(),
+                spawned_configs: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn success_without_submission(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: crate::domain::entities::ChatConversationId,
+            output: impl Into<String>,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+                title: None,
+                body_markdown: String::new(),
+                output: AgentOutput::success(output),
+                submit_on_success: false,
                 capabilities: ClientCapabilities::mock(),
                 spawned_configs: tokio::sync::Mutex::new(Vec::new()),
             }
@@ -416,6 +847,7 @@ mod tests {
                 title: None,
                 body_markdown: String::new(),
                 output: AgentOutput::failed("agent failed", 1),
+                submit_on_success: false,
                 capabilities: ClientCapabilities::mock(),
                 spawned_configs: tokio::sync::Mutex::new(Vec::new()),
             }
@@ -438,7 +870,7 @@ mod tests {
         }
 
         async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
-            if self.output.success {
+            if self.output.success && self.submit_on_success {
                 self.repo
                     .save_pr_description(
                         &self.conversation_id,
@@ -491,6 +923,16 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn test_cache_key() -> AgentWorkspacePrDescriptionCacheKey {
+        AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
+            "base-sha",
+            "head-sha",
+            2,
+        )
+        .expect("test key should be cacheable")
     }
 
     fn create_reviewable_repo() -> (TempDir, PathBuf, String) {
@@ -572,6 +1014,160 @@ mod tests {
     fn validation_rejects_empty_body() {
         let error = validate_agent_workspace_pr_description_body("  ").unwrap_err();
         assert!(error.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn pr_description_cache_rejects_uncacheable_keys() {
+        assert!(AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::nil().to_string()),
+            "base",
+            "head",
+            1,
+        )
+        .is_none());
+        assert!(AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
+            "",
+            "head",
+            1,
+        )
+        .is_none());
+        assert!(AgentWorkspacePrDescriptionCacheKey::new(
+            ChatConversationId::from_string(uuid::Uuid::new_v4().to_string()),
+            "base",
+            " ",
+            1,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn pr_description_cache_status_labels_are_stable() {
+        assert_eq!(AgentWorkspacePrDescriptionCacheStatus::Hit.as_str(), "hit");
+        assert_eq!(
+            AgentWorkspacePrDescriptionCacheStatus::Coalesced.as_str(),
+            "coalesced"
+        );
+        assert_eq!(AgentWorkspacePrDescriptionCacheStatus::Miss.as_str(), "miss");
+        assert_eq!(
+            AgentWorkspacePrDescriptionCacheStatus::Disabled.as_str(),
+            "disabled"
+        );
+    }
+
+    #[test]
+    fn pr_description_cache_hits_and_invalidates_by_conversation() {
+        let key = test_cache_key();
+        invalidate_agent_workspace_pr_description_cache(&key.conversation_id);
+        let description = AgentWorkspacePrDescription::new(
+            Some("Draft title".to_string()),
+            "## Summary\n\nCached body".to_string(),
+        );
+
+        store_agent_workspace_pr_description(&key, &description);
+
+        let (cached, age_ms) =
+            cached_agent_workspace_pr_description(&key).expect("cached description should hit");
+        assert_eq!(cached, description);
+        assert!(age_ms < 1_000);
+
+        invalidate_agent_workspace_pr_description_cache(&key.conversation_id);
+        assert!(cached_agent_workspace_pr_description(&key).is_none());
+    }
+
+    #[test]
+    fn pr_description_cache_invalidation_is_conversation_scoped() {
+        let first_key = test_cache_key();
+        let second_key = test_cache_key();
+        invalidate_agent_workspace_pr_description_cache(&first_key.conversation_id);
+        invalidate_agent_workspace_pr_description_cache(&second_key.conversation_id);
+
+        let first_description = AgentWorkspacePrDescription::new(
+            Some("First title".to_string()),
+            "## Summary\n\nFirst body".to_string(),
+        );
+        let second_description = AgentWorkspacePrDescription::new(
+            Some("Second title".to_string()),
+            "## Summary\n\nSecond body".to_string(),
+        );
+
+        store_agent_workspace_pr_description(&first_key, &first_description);
+        store_agent_workspace_pr_description(&second_key, &second_description);
+        invalidate_agent_workspace_pr_description_cache(&first_key.conversation_id);
+
+        assert!(cached_agent_workspace_pr_description(&first_key).is_none());
+        let (cached_second, _) = cached_agent_workspace_pr_description(&second_key)
+            .expect("other conversation cache entry should remain");
+        assert_eq!(cached_second, second_description);
+
+        invalidate_agent_workspace_pr_description_cache(&second_key.conversation_id);
+    }
+
+    #[tokio::test]
+    async fn get_or_draft_pr_description_caches_miss_then_hit() {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let conversation = conversation_for(&project);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let head = run_git(&repo, &["rev-parse", "HEAD"]);
+        let key = AgentWorkspacePrDescriptionCacheKey::new(
+            conversation.id.clone(),
+            base.clone(),
+            head,
+            1,
+        )
+        .expect("cache key should be valid");
+        invalidate_agent_workspace_pr_description_cache(&conversation.id);
+
+        let state = AppState::new_test();
+        let client = Arc::new(SubmittingPrDescriptionClient::success(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            Some("Cached draft title".to_string()),
+            "## Summary\n\nCached draft body.",
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let first = get_or_draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+            key.clone(),
+        )
+        .await
+        .expect("first draft should succeed");
+
+        assert_eq!(first.cache_status, AgentWorkspacePrDescriptionCacheStatus::Miss);
+        assert!(first.cache_age_ms.is_none());
+        assert_eq!(first.description.title.as_deref(), Some("Cached draft title"));
+        assert_eq!(client.spawned_configs().await.len(), 1);
+
+        let second = get_or_draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+            key,
+        )
+        .await
+        .expect("second draft should hit cache");
+
+        assert_eq!(second.cache_status, AgentWorkspacePrDescriptionCacheStatus::Hit);
+        assert!(second.cache_age_ms.is_some());
+        assert_eq!(second.cache_wait_ms, 0);
+        assert_eq!(second.description.body_markdown, "## Summary\n\nCached draft body.");
+        assert_eq!(
+            client.spawned_configs().await.len(),
+            1,
+            "cache hit should not spawn another PR describer"
+        );
+
+        invalidate_agent_workspace_pr_description_cache(&conversation.id);
     }
 
     #[test]
@@ -782,6 +1378,123 @@ mod tests {
         );
     }
 
+    #[test]
+    fn codex_pr_describer_submit_tool_preflight_requires_enabled_tool_and_allowed_arg() {
+        let missing_enabled_tools = vec![format!(
+            "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools={PR_DESCRIBER_SUBMIT_TOOL}\"]"
+        )];
+        assert!(!codex_pr_describer_overrides_expose_submit_tool(
+            &missing_enabled_tools
+        ));
+
+        let missing_allowed_arg = vec![
+            format!("mcp_servers.ralphx.enabled_tools=[\"{PR_DESCRIBER_SUBMIT_TOOL}\"]"),
+            "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools=other_tool\"]".to_string(),
+        ];
+        assert!(!codex_pr_describer_overrides_expose_submit_tool(
+            &missing_allowed_arg
+        ));
+
+        let complete_surface = vec![
+            format!("mcp_servers.ralphx.enabled_tools=[\"{PR_DESCRIBER_SUBMIT_TOOL}\"]"),
+            format!(
+                "mcp_servers.ralphx.args=[\"server\",\"--allowed-tools={PR_DESCRIBER_SUBMIT_TOOL}\"]"
+            ),
+        ];
+        assert!(codex_pr_describer_overrides_expose_submit_tool(
+            &complete_surface
+        ));
+    }
+
+    #[test]
+    fn pr_describer_submit_tool_preflight_skips_non_codex_harnesses() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+
+        ensure_pr_describer_submit_tool_available(AgentHarnessKind::Claude, dir.path())
+            .expect("Claude PR describer should not require Codex submit-tool preflight");
+    }
+
+    #[test]
+    fn codex_pr_describer_prompt_contract_rejects_missing_or_invalid_prompt() {
+        let dir = tempfile::TempDir::new().expect("create temp dir");
+        let root = dir.path();
+        let plugin_dir = root.join("plugins/app");
+        let agent_root = root.join("agents").join(agent_names::SHORT_PR_DESCRIBER);
+        let shared_prompt_dir = agent_root.join("shared");
+        fs::create_dir_all(&plugin_dir).expect("create plugin dir");
+        fs::create_dir_all(&shared_prompt_dir).expect("create shared prompt dir");
+        fs::write(
+            agent_root.join("agent.yaml"),
+            format!("name: {}\nrole: utility\n", agent_names::SHORT_PR_DESCRIBER),
+        )
+        .expect("write agent definition");
+
+        let error = ensure_codex_pr_describer_prompt_contract(&plugin_dir)
+            .expect_err("missing prompt should fail preflight")
+            .to_string();
+        assert!(error.contains("prompt contract is missing"));
+
+        fs::write(
+            shared_prompt_dir.join("prompt.md"),
+            "Draft a reviewer-focused PR description.",
+        )
+        .expect("write prompt without submit tool");
+        let error = ensure_codex_pr_describer_prompt_contract(&plugin_dir)
+            .expect_err("prompt without submit tool should fail preflight")
+            .to_string();
+        assert!(error.contains("does not mention required tool"));
+
+        fs::write(
+            shared_prompt_dir.join("prompt.md"),
+            format!("Call `{PR_DESCRIBER_SUBMIT_TOOL}` with the final PR body."),
+        )
+        .expect("write prompt with submit tool");
+        ensure_codex_pr_describer_prompt_contract(&plugin_dir)
+            .expect("prompt with submit tool should satisfy preflight");
+        ensure_pr_describer_submit_tool_available(AgentHarnessKind::Codex, &plugin_dir)
+            .expect("valid Codex PR describer surface should satisfy full preflight");
+    }
+
+    #[test]
+    fn pr_describer_missing_submission_error_preserves_raw_output_without_tool_hint() {
+        let output = AgentOutput::success("Generated a body but did not call the submit tool.");
+
+        let error = pr_describer_missing_submission_error(&output).to_string();
+
+        assert!(error.contains("completed without submitting a PR description"));
+        assert!(error.contains("Raw output: Generated a body"));
+    }
+
+    #[test]
+    fn pr_describer_missing_submission_error_omits_raw_section_for_empty_output() {
+        let output = AgentOutput::success("   \n");
+
+        let error = pr_describer_missing_submission_error(&output).to_string();
+
+        assert!(error.contains("completed without submitting a PR description"));
+        assert!(!error.contains("Raw output:"));
+    }
+
+    #[test]
+    fn pr_describer_tool_unavailable_detector_accepts_observed_wording() {
+        for output in [
+            format!(
+                "I can't submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` is not available in this session's tools."
+            ),
+            format!(
+                "I cannot submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` was unavailable."
+            ),
+            format!("I cannot submit because `{PR_DESCRIBER_SUBMIT_TOOL}` was missing."),
+            format!("I can't submit because `{PR_DESCRIBER_SUBMIT_TOOL}` was missing."),
+        ] {
+            assert!(pr_describer_output_reports_missing_submit_tool(&output));
+        }
+
+        assert!(!pr_describer_output_reports_missing_submit_tool(
+            "I drafted the PR description but forgot to submit it."
+        ));
+    }
+
     #[tokio::test]
     async fn draft_pr_description_collects_git_context_and_uses_submitted_body() {
         let (_temp_dir, repo, base) = create_reviewable_repo();
@@ -852,6 +1565,8 @@ mod tests {
             config.agent.as_deref(),
             Some(agent_names::AGENT_PR_DESCRIBER)
         );
+        assert_eq!(config.model.as_deref(), Some("haiku"));
+        assert_eq!(config.logical_effort, Some(LogicalEffort::Medium));
         assert_eq!(config.timeout_secs, Some(120));
         assert!(config
             .prompt
@@ -917,6 +1632,8 @@ mod tests {
         let configs = codex_client.spawned_configs().await;
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].harness, Some(AgentHarnessKind::Codex));
+        assert_eq!(configs[0].model.as_deref(), Some("gpt-5.4-mini"));
+        assert_eq!(configs[0].logical_effort, Some(LogicalEffort::Medium));
         assert_eq!(configs[0].approval_policy.as_deref(), Some("never"));
         assert_eq!(
             configs[0].sandbox_mode.as_deref(),
@@ -955,5 +1672,43 @@ mod tests {
         assert!(error
             .to_string()
             .contains("PR describer agent exited unsuccessfully"));
+    }
+
+    #[tokio::test]
+    async fn draft_pr_description_surfaces_raw_tool_unavailable_output_when_agent_submits_nothing()
+    {
+        let (_temp_dir, repo, base) = create_reviewable_repo();
+        let project = project_for(&repo);
+        let mut conversation = conversation_for(&project);
+        conversation.provider_harness = Some(AgentHarnessKind::Codex);
+        let workspace = workspace_for(&conversation, &project, &repo, &base);
+        let state = AppState::new_test();
+        let raw_output = format!(
+            "I cannot submit this because `{PR_DESCRIBER_SUBMIT_TOOL}` is not available in this session's tools."
+        );
+        let codex_client = Arc::new(SubmittingPrDescriptionClient::success_without_submission(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation.id.clone(),
+            raw_output.clone(),
+        ));
+        let state = state.with_harness_agent_client(AgentHarnessKind::Codex, codex_client);
+
+        let error = draft_agent_workspace_pr_description(
+            &state,
+            &conversation,
+            &project,
+            &workspace,
+            &repo,
+            &base,
+        )
+        .await
+        .unwrap_err();
+        let error = error.to_string();
+
+        assert!(error.contains("PR describer infrastructure error"));
+        assert!(
+            error.contains(&raw_output),
+            "raw model output should be surfaced for publish failure diagnostics: {error}"
+        );
     }
 }

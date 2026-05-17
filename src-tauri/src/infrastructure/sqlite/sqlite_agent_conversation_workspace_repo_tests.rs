@@ -95,6 +95,15 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     published.publication_pr_status = Some("open".to_string());
     repo.create_or_update(published.clone()).await.unwrap();
 
+    let refreshed_id =
+        ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    seed_conversation(&db, &refreshed_id);
+    let mut refreshed = make_workspace(refreshed_id);
+    refreshed.publication_pr_number = Some(78);
+    refreshed.publication_pr_status = Some("open".to_string());
+    refreshed.publication_push_status = Some("refreshed".to_string());
+    repo.create_or_update(refreshed.clone()).await.unwrap();
+
     let archived_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     seed_conversation(&db, &archived_id);
     let mut archived = make_workspace(archived_id);
@@ -139,7 +148,55 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
         .await
         .unwrap();
 
+    assert_eq!(workspaces.len(), 2);
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == published.conversation_id)
+    );
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshed.conversation_id)
+    );
+}
+
+#[tokio::test]
+async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_edit_workspaces() {
+    let (db, repo, conversation_id) = setup_repo();
+    let candidate = make_workspace(conversation_id);
+    repo.create_or_update(candidate.clone()).await.unwrap();
+
+    let linked_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &linked_id);
+    let mut linked = make_workspace(linked_id);
+    linked.publication_pr_number = Some(72);
+    linked.publication_pr_status = Some("open".to_string());
+    repo.create_or_update(linked).await.unwrap();
+
+    let needs_agent_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+    seed_conversation(&db, &needs_agent_id);
+    let mut needs_agent = make_workspace(needs_agent_id);
+    needs_agent.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(needs_agent).await.unwrap();
+
+    let ideation_id = ChatConversationId::from_string("44444444-4444-4444-4444-444444444444");
+    seed_conversation(&db, &ideation_id);
+    let mut ideation = make_workspace(ideation_id);
+    ideation.mode = AgentConversationWorkspaceMode::Ideation;
+    repo.create_or_update(ideation).await.unwrap();
+
+    let workspaces = repo
+        .list_active_direct_external_pr_reconciliation_candidates(10)
+        .await
+        .unwrap();
+
     assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, published.conversation_id);
-    assert_eq!(workspaces[0].publication_pr_number, Some(72));
+    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+
+    let limited = repo
+        .list_active_direct_external_pr_reconciliation_candidates(0)
+        .await
+        .unwrap();
+    assert!(limited.is_empty());
 }

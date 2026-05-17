@@ -17,6 +17,7 @@ const baseRef = {
 const editConversationId = "conv-agent-edit-visual";
 const ideationConversationId = "conv-agent-ideation-visual";
 const archivedConversationId = "conv-agent-archived-visual";
+const stablePublishEventCreatedAt = "2026-05-13T05:20:00";
 
 function makeConversation({
   id,
@@ -285,7 +286,10 @@ async function seedAgentsScenario(page: Page) {
     if (!queryClient) {
       throw new Error("Expected query client to be available");
     }
-    const { mockListConversationsPage } = await import("/src/api-mock/chat");
+    const {
+      mockListAgentSidebarConversations,
+      mockListConversationsPage,
+    } = await import("/src/api-mock/chat");
     const activePage = await mockListConversationsPage(
       "project",
       "project-mock-1",
@@ -358,6 +362,84 @@ async function seedAgentsScenario(page: Page) {
         conversations: archivedPage.conversations.slice(0, 1),
       },
     );
+
+    const publicationStates = [
+      "active",
+      "draft",
+      "merged",
+      "closed",
+      "uncommitted",
+      "unpushed",
+    ];
+    const activeSidebarResponse = await mockListAgentSidebarConversations({
+      projectIds: ["project-mock-1"],
+      includeArchived: false,
+      archivedOnly: false,
+      publicationStates,
+      groupBy: "project",
+      limitPerGroup: 6,
+      offsets: { "project-mock-1": 0 },
+      pinnedConversationIds: [],
+    });
+    const archivedSidebarResponse = await mockListAgentSidebarConversations({
+      projectIds: ["project-mock-1"],
+      includeArchived: true,
+      archivedOnly: true,
+      publicationStates,
+      groupBy: "project",
+      limitPerGroup: 6,
+      offsets: { "project-mock-1": 0 },
+      pinnedConversationIds: [],
+    });
+    const activeSidebarGroup = activeSidebarResponse.groups.find(
+      (group) => group.key === "project-mock-1",
+    );
+    const archivedSidebarGroup = archivedSidebarResponse.groups.find(
+      (group) => group.key === "project-mock-1",
+    );
+    if (!activeSidebarGroup || !archivedSidebarGroup) {
+      throw new Error("Expected seeded sidebar groups");
+    }
+    queryClient.setQueryData(
+      [
+        "agents",
+        "sidebar-conversations",
+        "project",
+        "project-mock-1",
+        "archived",
+        false,
+        "search",
+        "",
+        "states",
+        publicationStates,
+        "pinned",
+        [],
+      ],
+      {
+        pages: [activeSidebarGroup],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData(
+      [
+        "agents",
+        "sidebar-conversations",
+        "project",
+        "project-mock-1",
+        "archived",
+        true,
+        "search",
+        "",
+        "states",
+        publicationStates,
+        "pinned",
+        [],
+      ],
+      {
+        pages: [archivedSidebarGroup],
+        pageParams: [0],
+      },
+    );
   });
 }
 
@@ -400,6 +482,8 @@ test.describe("Agents View", () => {
 
     await seedPublishHistory(page, editConversationId);
     await expect(page.getByTestId("agents-publish-event-published")).toBeVisible();
+    await stabilizePublishHistoryTimestamps(page, editConversationId);
+    await expect(page.getByText("Published / May 13, 5:20 AM")).toBeVisible();
 
     await expect(page).toHaveScreenshot("agents-edit-publish-pane.png", {
       fullPage: false,

@@ -60,6 +60,8 @@ interface ChatState {
   isLoading: boolean;
   /** Active conversation IDs scoped per context key (e.g., "session:abc-123") */
   activeConversationIds: Record<string, string | null>;
+  /** Active agent run IDs scoped per context key. Used to ignore stale terminal events. */
+  activeAgentRunIds: Record<string, string>;
   /** Messages queued to send when agent finishes, keyed by context key (e.g., "task:id", "task_execution:id", "review:id") */
   queuedMessages: Record<string, QueuedMessage[]>;
   /** Agent status keyed by context key. Absent = "idle". Values: "generating" | "waiting_for_input" */
@@ -97,6 +99,10 @@ interface ChatActions {
   setLoading: (isLoading: boolean) => void;
   /** Set the active conversation ID for a specific context key */
   setActiveConversation: (storeKey: string, conversationId: string | null) => void;
+  /** Set the active agent run ID for a specific context key */
+  setActiveAgentRun: (storeKey: string, runId: string) => void;
+  /** Clear the active agent run ID, optionally only if it matches the expected run ID */
+  clearActiveAgentRun: (storeKey: string, expectedRunId?: string | null) => void;
   /** Set agent status for a context (tri-state: "idle" | "generating" | "waiting_for_input") */
   setAgentStatus: (contextKey: string, status: AgentStatus) => void;
   /** Backward-compat wrapper: true → "generating", false → "idle" */
@@ -148,6 +154,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     context: null,
     isLoading: false,
     activeConversationIds: {},
+    activeAgentRunIds: {},
     queuedMessages: {},
     agentStatus: {},
     isSending: {},
@@ -193,11 +200,28 @@ export const useChatStore = create<ChatState & ChatActions>()(
         state.activeConversationIds[storeKey] = conversationId;
       }),
 
+    setActiveAgentRun: (storeKey, runId) =>
+      set((state) => {
+        if (state.activeAgentRunIds[storeKey] === runId) return;
+        state.activeAgentRunIds[storeKey] = runId;
+      }),
+
+    clearActiveAgentRun: (storeKey, expectedRunId) =>
+      set((state) => {
+        const activeRunId = state.activeAgentRunIds[storeKey];
+        if (activeRunId == null) return;
+        if (expectedRunId != null && activeRunId !== expectedRunId) return;
+        delete state.activeAgentRunIds[storeKey];
+      }),
+
     setAgentStatus: (contextKey, status) =>
       set((state) => {
         if (status === "idle") {
-          if (!(contextKey in state.agentStatus)) return; // already absent — no-op
+          if (!(contextKey in state.agentStatus) && !(contextKey in state.activeAgentRunIds)) {
+            return; // already absent — no-op
+          }
           delete state.agentStatus[contextKey];
+          delete state.activeAgentRunIds[contextKey];
         } else {
           if (state.agentStatus[contextKey] === status) return; // already set — no-op
           state.agentStatus[contextKey] = status;
@@ -210,8 +234,11 @@ export const useChatStore = create<ChatState & ChatActions>()(
           if (state.agentStatus[contextKey] === "generating") return; // already generating — no-op
           state.agentStatus[contextKey] = "generating";
         } else {
-          if (!(contextKey in state.agentStatus)) return; // already absent — no-op
+          if (!(contextKey in state.agentStatus) && !(contextKey in state.activeAgentRunIds)) {
+            return; // already absent — no-op
+          }
           delete state.agentStatus[contextKey];
+          delete state.activeAgentRunIds[contextKey];
         }
       }),
 
@@ -232,6 +259,11 @@ export const useChatStore = create<ChatState & ChatActions>()(
         Object.keys(state.agentStatus).forEach((key) => {
           if (key.endsWith(`:${taskId}`)) {
             delete state.agentStatus[key];
+          }
+        });
+        Object.keys(state.activeAgentRunIds).forEach((key) => {
+          if (key.endsWith(`:${taskId}`)) {
+            delete state.activeAgentRunIds[key];
           }
         });
       }),
@@ -481,6 +513,16 @@ export const selectActiveConversationId =
   (storeKey: string) =>
   (state: ChatState): string | null | undefined =>
     state.activeConversationIds[storeKey];
+
+/**
+ * Select active agent run ID for a specific context key.
+ * @param storeKey - The context key (e.g., "session:abc-123")
+ * @returns Selector function returning scoped active agent run ID or undefined
+ */
+export const selectActiveAgentRunId =
+  (storeKey: string) =>
+  (state: ChatState): string | undefined =>
+    state.activeAgentRunIds[storeKey];
 
 /**
  * Select whether a team is active for a context

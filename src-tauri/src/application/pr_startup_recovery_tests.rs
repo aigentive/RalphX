@@ -19,7 +19,9 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, PlanBranchRepository, ProjectRepository,
 };
-use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::{
+    github_service::GithubServiceTrait, MemoryRunningAgentRegistry, RunningAgentRegistry,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryPlanBranchRepository, MemoryProjectRepository,
@@ -35,6 +37,10 @@ fn init_tracing() {
         .with_max_level(tracing::Level::TRACE)
         .with_test_writer()
         .try_init();
+}
+
+fn empty_running_agent_registry() -> Arc<dyn RunningAgentRegistry> {
+    Arc::new(MemoryRunningAgentRegistry::new())
 }
 
 fn cleanup_project() -> Project {
@@ -97,6 +103,7 @@ async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
         Arc::clone(&project_repo),
         None,
         Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
     )
     .await;
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
@@ -104,6 +111,7 @@ async fn startup_terminal_cleanup_returns_when_project_listing_fails() {
         project_repo,
         None,
         Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
     )
     .await;
 }
@@ -122,6 +130,7 @@ async fn startup_terminal_plan_cleanup_continues_when_plan_branch_load_fails() {
         project_repo,
         None,
         Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
     )
     .await;
 }
@@ -141,6 +150,7 @@ async fn startup_terminal_workspace_cleanup_continues_when_workspace_load_fails(
         project_repo,
         None,
         Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
     )
     .await;
 }
@@ -159,19 +169,17 @@ async fn startup_terminal_plan_cleanup_records_safety_skip_reports() {
         .await
         .expect("create plan branch");
     let github = Arc::new(MockGithubService::new());
-    github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
-        "forced fetch failure".to_string(),
-    )));
 
     cleanup_terminal_plan_branch_local_artifacts_on_startup(
         plan_branch_repo,
         project_repo,
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
     )
     .await;
 
-    assert_eq!(github.state().fetch_remote_calls, 1);
+    assert_eq!(github.state().fetch_remote_calls, 0);
 }
 
 #[tokio::test]
@@ -208,19 +216,17 @@ async fn startup_terminal_workspace_cleanup_records_safety_skip_reports() {
         .iter()
         .any(|workspace| workspace.publication_pr_status.as_deref() == Some("merged")));
     let github = Arc::new(MockGithubService::new());
-    github.state().fetch_remote_result = Some(Err(AppError::GitOperation(
-        "forced fetch failure".to_string(),
-    )));
 
     cleanup_terminal_agent_workspace_local_artifacts_on_startup(
         workspace_repo,
         project_repo,
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
         Arc::new(HashSet::new()),
+        empty_running_agent_registry(),
     )
     .await;
 
-    assert_eq!(github.state().fetch_remote_calls, 1);
+    assert_eq!(github.state().fetch_remote_calls, 0);
 }
 
 struct ProjectListErrorRepository;

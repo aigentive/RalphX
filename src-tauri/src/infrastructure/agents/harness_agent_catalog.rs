@@ -13,6 +13,9 @@ const GENERATED_PLUGIN_RUNTIME_ENTRY_NAMES: &[&str] = &["ralphx-mcp-server", "ra
 const PRIMARY_PLUGIN_DIR_COMPONENTS: &[&str] = &["plugins", "app"];
 const LEGACY_PLUGIN_DIR_COMPONENTS: &[&str] = &["ralphx-plugin"];
 const GENERATED_PLUGIN_DIR_COMPONENTS: &[&str] = &["generated", "claude-plugin"];
+const RELEASE_GENERATED_PLUGIN_DIR_COMPONENTS: &[&str] = &["generated", "release", "claude-plugin"];
+const DEBUG_PROFILE_GENERATED_PLUGIN_DIR_COMPONENTS: &[&str] =
+    &["generated", "debug", "claude-plugin"];
 const DEBUG_GENERATED_PLUGIN_DIR_COMPONENTS: &[&str] =
     &[".artifacts", "generated", "claude-plugin"];
 
@@ -208,6 +211,8 @@ fn trusted_runtime_plugin_dir(plugin_dir: &Path) -> Option<&Path> {
     let has_expected_shape = path_has_component_suffix(plugin_dir, PRIMARY_PLUGIN_DIR_COMPONENTS)
         || path_has_component_suffix(plugin_dir, LEGACY_PLUGIN_DIR_COMPONENTS)
         || path_has_component_suffix(plugin_dir, GENERATED_PLUGIN_DIR_COMPONENTS)
+        || path_has_component_suffix(plugin_dir, RELEASE_GENERATED_PLUGIN_DIR_COMPONENTS)
+        || path_has_component_suffix(plugin_dir, DEBUG_PROFILE_GENERATED_PLUGIN_DIR_COMPONENTS)
         || path_has_component_suffix(plugin_dir, DEBUG_GENERATED_PLUGIN_DIR_COMPONENTS);
 
     if !has_expected_shape {

@@ -1,6 +1,5 @@
 import {
   CheckCircle2,
-  Code,
   FileText,
   GitPullRequestArrow,
   GitBranch,
@@ -15,6 +14,7 @@ import { diffApi } from "@/api/diff";
 import {
   chatApi,
   type AgentConversationWorkspace,
+  type AgentConversationWorkspacePublicationEvent,
 } from "@/api/chat";
 import type {
   Commit as DiffViewerCommit,
@@ -27,18 +27,65 @@ import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
 import { PublishFact } from "./AgentsPublishFact";
 import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
+import {
+  PublishWorkspaceDialog,
+  type PublishWorkspaceDialogPhase,
+} from "./AgentsPublishWorkspaceDialog";
+import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import { isAgentWorkspacePublishCurrent } from "./agentWorkspacePublishState";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
 );
+
+const PUBLISH_EVENT_START_SKEW_MS = 5_000;
+const PUBLISH_PIPELINE_EVENT_STEPS = new Set([
+  "checking",
+  "committing",
+  "refreshing",
+  "refreshed",
+  "describing",
+  "description_failed",
+  "pushing",
+  "pushed",
+  "published",
+]);
+
+function latestPublicationEventForActivePublish(
+  events: AgentConversationWorkspacePublicationEvent[],
+  publishStartedAtMs: number | null,
+): AgentConversationWorkspacePublicationEvent | null {
+  const candidates =
+    publishStartedAtMs === null
+      ? events
+      : events.filter((event) => {
+          const createdAtMs = new Date(event.createdAt).getTime();
+          return (
+            Number.isNaN(createdAtMs) ||
+            createdAtMs >= publishStartedAtMs - PUBLISH_EVENT_START_SKEW_MS
+          );
+        });
+  return candidates.length > 0 ? candidates[candidates.length - 1] ?? null : null;
+}
+
+function pipelineStatusFromPublicationEvent(
+  event: AgentConversationWorkspacePublicationEvent | null,
+): string | null {
+  if (!event || !PUBLISH_PIPELINE_EVENT_STEPS.has(event.step)) {
+    return null;
+  }
+  return event.step === "published" ? "pushed" : event.step;
+}
+
 export function AgentPublishPanel({
   workspace,
+  projectBaseBranch,
   onPublishWorkspace,
   isPublishingWorkspace,
 }: {
   workspace: AgentConversationWorkspace | null;
+  projectBaseBranch?: string | null;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
 }) {
@@ -48,10 +95,15 @@ export function AgentPublishPanel({
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
   const conversationId = workspace?.conversationId ?? null;
   const canHydratePublishFacts = useDeferredAgentHydration(conversationId);
-  const changesQuery = useQuery({
-    queryKey: ["agents", "workspace-diff", conversationId],
-    queryFn: () => diffApi.getAgentConversationWorkspaceFileChanges(conversationId!),
-    enabled: canHydratePublishFacts && !!conversationId,
+  // Workspace-only flag computed early so reviewQuery can decide whether the
+  // inline diff view will be visible.
+  const inlineDiffsCandidate = workspace?.mode === "edit" && workspace.status !== "missing";
+  const hasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const reviewQuery = useQuery({
+    queryKey: agentWorkspaceKeys.review(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
+    enabled:
+      canHydratePublishFacts && !!conversationId && (reviewOpen || inlineDiffsCandidate),
     staleTime: 2_000,
   });
   const publicationEventsQuery = useQuery({
@@ -60,26 +112,14 @@ export function AgentPublishPanel({
       chatApi.listAgentConversationWorkspacePublicationEvents(conversationId!),
     enabled: canHydratePublishFacts && !!conversationId,
     staleTime: 0,
-    refetchInterval: isPublishingWorkspace ? 1_500 : false,
+    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 1_500 : false,
   });
-  const commitsQuery = useQuery({
-    queryKey: ["agents", "workspace-commits", conversationId],
-    queryFn: async (): Promise<DiffViewerCommit[]> => {
-      const commits = await diffApi.getAgentConversationWorkspaceCommits(
-        conversationId!,
-      );
-      return commits
-        .map((commit) => ({
-          sha: commit.sha,
-          shortSha: commit.shortSha,
-          message: commit.message,
-          author: commit.author,
-          date: commit.date,
-        }))
-        .reverse();
-    },
-    enabled: canHydratePublishFacts && !!conversationId && reviewOpen,
-    staleTime: 2_000,
+  const prAnnotationsQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
+    queryFn: () => diffApi.getAgentConversationWorkspacePrAnnotations(conversationId!),
+    enabled: canHydratePublishFacts && !!conversationId && hasPublishedPr,
+    staleTime: 30_000,
+    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
   });
   const freshnessQuery = useQuery({
     queryKey: ["agents", "conversation-workspace-freshness", conversationId],
@@ -143,8 +183,19 @@ export function AgentPublishPanel({
   const changes = changesQuery.data ?? [];
   const commits = commitsQuery.data ?? [];
   const publicationEvents = publicationEventsQuery.data ?? [];
+  const prAnnotations = prAnnotationsQuery.data?.annotations ?? [];
+  const prAnnotationSourcesUnavailable =
+    prAnnotationsQuery.data?.sourcesUnavailable ?? [];
+  const prAnnotationSummary =
+    prAnnotations.length > 0
+      ? `${prAnnotations.length} GitHub annotation${prAnnotations.length === 1 ? "" : "s"} synced`
+      : prAnnotationSourcesUnavailable.length > 0
+        ? "GitHub annotations partially unavailable"
+        : prAnnotationsQuery.isLoading && hasPublishedPr
+          ? "Checking GitHub annotations..."
+          : null;
   const isChangesLoading =
-    Boolean(conversationId) && (!canHydratePublishFacts || changesQuery.isLoading);
+    Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
     Boolean(conversationId) &&
     (!canHydratePublishFacts || publicationEventsQuery.isLoading);
@@ -167,7 +218,8 @@ export function AgentPublishPanel({
   const isBranchUpdateNeeded = Boolean(freshness?.isBaseAhead);
   const isPublishCurrent = isAgentWorkspacePublishCurrent(workspace, freshness);
   const isUpdatingFromBase = updateFromBaseMutation.isPending;
-  const effectivePublishing = isPublishingWorkspace || isUpdatingFromBase;
+  const isPublishingThisWorkspace = isPublishingWorkspace || localPublishInFlight;
+  const effectivePublishing = isPublishingThisWorkspace || isUpdatingFromBase;
   const isRepairPending = workspace.publicationPushStatus === "needs_agent";
   const pipelineStatus = isUpdatingFromBase
     ? "refreshing"
@@ -197,8 +249,203 @@ export function AgentPublishPanel({
           : "No changed files detected yet.";
 
   return (
-    <div className="min-h-full p-4" data-testid="agents-publish-pane">
-      <div className="mx-auto flex max-w-3xl flex-col gap-4">
+    <div className="flex h-full flex-col p-4" data-testid="agents-publish-pane">
+      <div className="@container flex w-full min-h-0 flex-1 flex-col gap-4">
+        <section
+          className="sticky top-0 z-20 -mx-4 border-b px-4 py-4"
+          data-testid="agents-publish-actionbar"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-subtle)",
+          }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              {terminalPublicationLabel && (
+                <div className="text-sm font-semibold text-[var(--text-primary)]">
+                  Pull Request {terminalPublicationLabel}
+                </div>
+              )}
+              <div
+                className={`text-xs leading-relaxed text-[var(--text-muted)]${
+                  terminalPublicationLabel ? " mt-1" : ""
+                }`}
+              >
+                {publishSummary}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-9"
+                      onClick={() => setReviewOpen(true)}
+                      disabled={baseBlocked}
+                      data-testid="agents-review-changes"
+                      aria-label="Open changes in full diff dialog"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    <p>Open in full dialog</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              {isBranchUpdateNeeded ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={confirmUpdateFromBase}
+                  disabled={
+                    baseBlocked ||
+                    effectivePublishing ||
+                    (isRepairPending && !isPipelineOwnedWorkspace)
+                  }
+                  data-testid="agents-update-from-base"
+                >
+                  {isUpdatingFromBase ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <GitBranch className="h-3.5 w-3.5" />
+                  )}
+                  Update from {baseActionLabel}
+                </Button>
+              ) : baseBlocked ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={() => setRebaseDialogOpen(true)}
+                  disabled={effectivePublishing}
+                  data-testid="agents-rebase-from-base"
+                >
+                  {isUpdatingFromBase ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <GitBranch className="h-3.5 w-3.5" />
+                  )}
+                  Rebase branch
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={confirmPublishWorkspace}
+                  disabled={publishDisabled}
+                  data-testid="agents-publish-confirm"
+                >
+                  {isPublishingThisWorkspace ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : isPublishCurrent || terminalPublicationStatus ? (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <GitPullRequestArrow className="h-3.5 w-3.5" />
+                  )}
+                  {baseBlocked
+                    ? "Base unavailable"
+                    : publishButtonLabel}
+                </Button>
+              )}
+              {canClosePr && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-9 w-7 p-0 border-0 bg-transparent hover:bg-[var(--bg-hover)]"
+                      disabled={isClosingPr || effectivePublishing}
+                      aria-label="Publish actions"
+                      data-testid="agents-publish-actions-menu"
+                    >
+                      {isClosingPr ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <MoreVertical className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[160px]">
+                    <DropdownMenuItem
+                      data-testid="agents-close-pr"
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        confirmClosePr();
+                      }}
+                      disabled={isClosingPr || effectivePublishing}
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      Close PR
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
+          </div>
+          {isBranchUpdateNeeded && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-stale"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                data-testid="agents-base-stale-icon"
+                style={{ color: "var(--status-warning)" }}
+              />
+              <span>
+                Base branch {freshness?.baseRef ?? baseActionLabel} has new commits.
+              </span>
+            </div>
+          )}
+          {baseRetargeted && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-retargeted"
+            >
+              <GitBranch
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--accent-primary)" }}
+              />
+              <span>Base branch retargeted to {base}.</span>
+            </div>
+          )}
+          {baseBlocked && (
+            <div
+              className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+              style={{
+                background: "var(--bg-subtle)",
+                borderColor: "var(--status-warning-border)",
+                color: "var(--text-secondary)",
+              }}
+              data-testid="agents-base-blocked"
+            >
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--status-warning)" }}
+              />
+              <span>
+                {freshness?.baseBlockReason ??
+                  "This workspace base branch cannot be resolved safely."}
+              </span>
+            </div>
+          )}
+        </section>
         <section
           className="rounded-lg border p-4"
           style={{
@@ -226,7 +473,7 @@ export function AgentPublishPanel({
             </span>
           </div>
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="mt-4 grid gap-3 @md:grid-cols-2">
             <PublishFact icon={GitBranch} label="Branch" value={branch} />
             <PublishFact icon={FileText} label="Base" value={base} />
             <PublishFact
@@ -372,6 +619,7 @@ export function AgentPublishPanel({
                 changes={changes}
                 commits={commits}
                 commitFiles={commitFiles}
+                annotations={prAnnotations}
                 onFetchDiff={async (filePath, commitSha) => {
                   if (!conversationId) {
                     return null;
@@ -388,9 +636,10 @@ export function AgentPublishPanel({
                       );
                   return {
                     filePath: diff.filePath,
-                    oldContent: diff.oldContent,
-                    newContent: diff.newContent,
-                    hunks: [],
+                    hunks: diff.hunks,
+                    oldTotalLines: diff.oldTotalLines,
+                    newTotalLines: diff.newTotalLines,
+                    isBinary: diff.isBinary,
                     language: diff.language,
                   };
                 }}
@@ -414,12 +663,16 @@ export function AgentPublishPanel({
                     setIsLoadingCommitFiles(false);
                   }
                 }}
-                isLoadingChanges={changesQuery.isLoading}
-                isLoadingHistory={commitsQuery.isLoading}
+                isLoadingChanges={reviewQuery.isLoading}
+                isLoadingHistory={reviewQuery.isLoading}
                 isLoadingCommitFiles={isLoadingCommitFiles}
                 changesLabel="Workspace Changes"
                 changesEmptyTitle="No workspace changes"
                 changesEmptySubtitle="There are no changed files to review for this agent branch."
+                {...(conversationId != null && {
+                  conversationId,
+                  changesRefKind: { kind: "head" as const },
+                })}
               />
             </Suspense>
           )}

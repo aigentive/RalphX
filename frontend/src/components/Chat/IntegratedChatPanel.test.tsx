@@ -113,10 +113,24 @@ vi.mock("@/hooks/useChat", () => ({
     fetchOlderMessages: vi.fn(),
     };
   },
+  useConversationTimelineWindow: (...args: unknown[]) => {
+    historyWindowCalls.push(args);
+    return {
+    data: useChatMockState.historyData,
+    isLoading: false,
+    isFetchingOlderMessages: false,
+    hasOlderMessages: false,
+    loadedStartIndex: useChatMockState.historyData?.loadedStartIndex ?? 0,
+    fetchOlderMessages: vi.fn(),
+    };
+  },
+  getCachedConversationMessages: () =>
+    useChatMockState.historyData?.messages ?? useChatMockState.messages,
   chatKeys: {
     all: ["chat"],
     conversationList: (type: string, id: string) => ["chat", "conversations", type, id],
     conversation: (id: string) => ["chat", "conversation", id],
+    conversationTimeline: (id: string) => ["chat", "conversation", id, "timeline"],
     agentRun: (id: string) => ["chat", "agentRun", id],
   },
 }));

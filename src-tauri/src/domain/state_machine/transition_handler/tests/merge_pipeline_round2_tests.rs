@@ -83,6 +83,12 @@ cmd_timeout_secs: 60
 max_retries: 3
 retry_backoff_secs: [1, 2, 4]
 index_lock_stale_secs: 5
+workspace_freshness_cache_ttl_ms: 2000
+workspace_review_cache_ttl_ms: 2000
+workspace_pr_description_cache_ttl_ms: 300000
+workspace_pr_annotations_cache_ttl_ms: 30000
+workspace_pr_annotations_check_run_fetch_limit: 10
+orphan_worktree_cleanup_marker_retry_secs: 86400
 agent_kill_settle_secs: 1
 agent_stop_timeout_secs: 10
 cleanup_worktree_timeout_secs: 10
@@ -113,7 +119,13 @@ async fn test_merge_completion_aborts_on_stale_task_state() {
 
     // Merge the task branch into main to get a real commit SHA
     let merge_output = std::process::Command::new("git")
-        .args(["merge", "--no-ff", &git_repo.task_branch, "-m", "merge feature"])
+        .args([
+            "merge",
+            "--no-ff",
+            &git_repo.task_branch,
+            "-m",
+            "merge feature",
+        ])
         .current_dir(repo_path)
         .output()
         .expect("git merge");
@@ -129,7 +141,9 @@ async fn test_merge_completion_aborts_on_stale_task_state() {
         .current_dir(repo_path)
         .output()
         .expect("git rev-parse");
-    let commit_sha = String::from_utf8_lossy(&rev_output.stdout).trim().to_string();
+    let commit_sha = String::from_utf8_lossy(&rev_output.stdout)
+        .trim()
+        .to_string();
 
     // Set up task and project in memory repos
     let task_repo = Arc::new(MemoryTaskRepository::new());
@@ -170,7 +184,11 @@ async fn test_merge_completion_aborts_on_stale_task_state() {
     .await;
 
     // Should return Ok(()) — not an error
-    assert!(result.is_ok(), "complete_merge_internal should return Ok on stale state, got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "complete_merge_internal should return Ok on stale state, got: {:?}",
+        result
+    );
 
     // The task in DB should still be MergeIncomplete — NOT overwritten to Merged
     let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
@@ -191,7 +209,13 @@ async fn test_merge_completion_proceeds_on_pending_merge() {
 
     // Merge the task branch into main
     let merge_output = std::process::Command::new("git")
-        .args(["merge", "--no-ff", &git_repo.task_branch, "-m", "merge feature"])
+        .args([
+            "merge",
+            "--no-ff",
+            &git_repo.task_branch,
+            "-m",
+            "merge feature",
+        ])
         .current_dir(repo_path)
         .output()
         .expect("git merge");
@@ -202,7 +226,9 @@ async fn test_merge_completion_proceeds_on_pending_merge() {
         .current_dir(repo_path)
         .output()
         .expect("git rev-parse");
-    let commit_sha = String::from_utf8_lossy(&rev_output.stdout).trim().to_string();
+    let commit_sha = String::from_utf8_lossy(&rev_output.stdout)
+        .trim()
+        .to_string();
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_id = ProjectId::from_string("proj-1".to_string());
@@ -232,7 +258,11 @@ async fn test_merge_completion_proceeds_on_pending_merge() {
     )
     .await;
 
-    assert!(result.is_ok(), "complete_merge_internal should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "complete_merge_internal should succeed: {:?}",
+        result
+    );
 
     let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(
@@ -254,7 +284,13 @@ async fn test_merge_completion_proceeds_on_merging() {
     let repo_path = git_repo.path();
 
     let merge_output = std::process::Command::new("git")
-        .args(["merge", "--no-ff", &git_repo.task_branch, "-m", "merge feature"])
+        .args([
+            "merge",
+            "--no-ff",
+            &git_repo.task_branch,
+            "-m",
+            "merge feature",
+        ])
         .current_dir(repo_path)
         .output()
         .expect("git merge");
@@ -265,7 +301,9 @@ async fn test_merge_completion_proceeds_on_merging() {
         .current_dir(repo_path)
         .output()
         .expect("git rev-parse");
-    let commit_sha = String::from_utf8_lossy(&rev_output.stdout).trim().to_string();
+    let commit_sha = String::from_utf8_lossy(&rev_output.stdout)
+        .trim()
+        .to_string();
 
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_id = ProjectId::from_string("proj-1".to_string());
@@ -295,7 +333,11 @@ async fn test_merge_completion_proceeds_on_merging() {
     )
     .await;
 
-    assert!(result.is_ok(), "complete_merge_internal should succeed from Merging state: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "complete_merge_internal should succeed from Merging state: {:?}",
+        result
+    );
 
     let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     assert_eq!(

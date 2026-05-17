@@ -141,11 +141,12 @@ describe("agent conversations", () => {
     expect(result).toBe("session:session-42");
   });
 
-  it("formats recent sidebar timestamps as human-diff labels", () => {
+  it("formats recent sidebar timestamps as compact labels", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 25, 16, 33, 0));
 
-    expect(formatAgentConversationCreatedAt(new Date(2026, 3, 25, 14, 33, 0))).toBe("2 hours ago");
+    expect(formatAgentConversationCreatedAt(new Date(2026, 3, 25, 14, 33, 0))).toBe("2h");
+    expect(formatAgentConversationCreatedAt(new Date(2026, 3, 23, 16, 33, 0))).toBe("2d");
   });
 
   it("formats old sidebar timestamps as time then date", () => {

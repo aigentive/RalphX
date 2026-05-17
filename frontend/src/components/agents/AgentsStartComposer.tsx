@@ -6,6 +6,7 @@ import type {
   AgentConversationWorkspaceMode,
 } from "@/api/chat";
 import type { Project } from "@/types/project";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
   AgentProvider,
@@ -30,6 +31,13 @@ import {
   defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
+import {
+  buildAgentProviderAvailabilityOptions,
+  getProviderAvailabilityMessage,
+  normalizeRuntimeForSelectableProvider,
+  supportedEffortsForProvider,
+} from "./agentProviderAvailability";
+import { useUiStore } from "@/stores/uiStore";
 
 interface PendingAttachment {
   id: string;
@@ -115,6 +123,47 @@ export function AgentsStartComposer({
     () => normalizeRuntimeSelection(defaultRuntime ?? DEFAULT_AGENT_RUNTIME),
     [defaultRuntime]
   );
+  const normalizedRuntime = useMemo(() => {
+    const runtime = normalizeRuntimeSelection(
+      defaultRuntime ?? DEFAULT_AGENT_RUNTIME,
+      modelRegistry
+    );
+    return normalizeRuntimeSelection(
+      runtime,
+      modelRegistry,
+      supportedEffortsForProvider(providerOptions, runtime.provider)
+    );
+  }, [defaultRuntime, modelRegistry, providerOptions]);
+  const selectedProviderSupportedEfforts = useMemo(
+    () => supportedEffortsForProvider(providerOptions, provider),
+    [provider, providerOptions]
+  );
+  const selectableRuntime = useMemo(
+    () =>
+      normalizeRuntimeForSelectableProvider({
+        runtime: { provider, modelId, effort },
+        providerOptions,
+        defaultProvider: toAgentProvider(providerSettings.defaultProvider),
+        modelRegistry,
+      }),
+    [
+      effort,
+      modelId,
+      modelRegistry,
+      provider,
+      providerOptions,
+      providerSettings.defaultProvider,
+    ]
+  );
+  const providerStatusMessage = getProviderAvailabilityMessage({
+    provider,
+    providerOptions,
+    isReady: providerSettingsReady,
+  });
+  const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
+  const openProviderSettings = useCallback(() => {
+    openModal("settings", { section: "providers" });
+  }, [openModal]);
 
   useEffect(() => {
     setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
@@ -256,6 +305,11 @@ export function AgentsStartComposer({
       setError("Prompt is required");
       return;
     }
+    /* c8 ignore next 3 -- submit is disabled for this state; keep this guard for direct calls. */
+    if (!hasSelectableProvider || providerStatusMessage) {
+      setError(providerStatusMessage ?? "Enable a provider with a validated CLI in Settings.");
+      return;
+    }
 
     setError(null);
     try {
@@ -386,7 +440,13 @@ export function AgentsStartComposer({
             provider={{
               value: provider,
               onValueChange: handleProviderChange,
-              options: AGENT_PROVIDER_OPTIONS,
+              options: providerOptions.length > 0 ? providerOptions : AGENT_PROVIDER_OPTIONS,
+              footerAction: (
+                <AgentProviderSettingsButton
+                  onClick={openProviderSettings}
+                  testId="agents-start-provider-settings"
+                />
+              ),
               testId: "agents-start-provider",
               className: "max-w-[172px] flex-none",
             }}
@@ -398,6 +458,32 @@ export function AgentsStartComposer({
               className: "max-w-[188px] flex-none",
             }}
           />
+
+          {providerStatusMessage && (
+            <div
+              className="mx-auto mt-3 flex max-w-[620px] flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-[0.8125rem]"
+              style={{
+                color: "var(--text-secondary)",
+                background: "var(--bg-surface)",
+                borderColor: "var(--border-subtle)",
+              }}
+              data-testid="agents-start-provider-status"
+            >
+              <span>{providerStatusMessage}</span>
+              <button
+                type="button"
+                className="rounded-md px-2 py-1 text-[0.75rem] font-medium"
+                style={{
+                  color: "var(--accent-primary)",
+                  background: "var(--accent-muted)",
+                }}
+                onClick={openProviderSettings}
+                data-testid="agents-start-provider-status-settings"
+              >
+                Open Settings
+              </button>
+            </div>
+          )}
 
           <div className="mt-3 flex w-full flex-wrap items-center justify-between gap-2 px-2">
             <AgentComposerProjectLine

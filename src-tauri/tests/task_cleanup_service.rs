@@ -696,6 +696,13 @@ impl RunningAgentRegistry for AlwaysErrStopRegistry {
         self.0.stop_all().await
     }
 
+    async fn stop_all_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<RunningAgentKey> {
+        self.0.stop_all_started_before(cutoff).await
+    }
+
     async fn update_heartbeat(
         &self,
         key: &RunningAgentKey,

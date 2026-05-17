@@ -32,7 +32,7 @@ interface UseStartAgentConversationArgs {
   invalidateProjectConversations: (targetProjectId: string) => Promise<unknown>;
   queryClient: QueryClient;
   selectConversation: (projectId: string, conversationId: string) => void;
-  setActiveConversation: (contextKey: string, conversationId: string) => void;
+  setActiveConversation: (contextKey: string, conversationId: string | null) => void;
   setFocusedProject: (projectId: string | null) => void;
   setOptimisticConversationsById: Dispatch<SetStateAction<Record<string, AgentConversation>>>;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;

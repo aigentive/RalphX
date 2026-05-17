@@ -11,10 +11,12 @@ import { AgentsArtifactPane } from "./AgentsArtifactPane";
 
 const {
   getWorkspaceChangesMock,
+  getWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
+  getWorkspacePrAnnotationsMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -24,12 +26,16 @@ const {
   useDependencyGraphMock,
   useVerificationStatusMock,
   openUrlMock,
+  toastErrorMock,
+  toastSuccessMock,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
+  getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
+  getWorkspacePrAnnotationsMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -39,6 +45,8 @@ const {
   useDependencyGraphMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
   openUrlMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+  toastSuccessMock: vi.fn(),
 }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -61,6 +69,8 @@ vi.mock("@/api/diff", () => ({
   diffApi: {
     getAgentConversationWorkspaceFileChanges: (...args: unknown[]) =>
       getWorkspaceChangesMock(...args),
+    getAgentConversationWorkspaceReview: (...args: unknown[]) =>
+      getWorkspaceReviewMock(...args),
     getAgentConversationWorkspaceFileDiff: (...args: unknown[]) =>
       getWorkspaceDiffMock(...args),
     getAgentConversationWorkspaceCommits: (...args: unknown[]) =>
@@ -69,6 +79,8 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitChangesMock(...args),
     getAgentConversationWorkspaceCommitFileDiff: (...args: unknown[]) =>
       getWorkspaceCommitDiffMock(...args),
+    getAgentConversationWorkspacePrAnnotations: (...args: unknown[]) =>
+      getWorkspacePrAnnotationsMock(...args),
   },
 }));
 
@@ -117,6 +129,13 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
 }));
 
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => toastErrorMock(...args),
+    success: (...args: unknown[]) => toastSuccessMock(...args),
+  },
+}));
+
 const workspace = (
   overrides: Partial<AgentConversationWorkspace> = {}
 ): AgentConversationWorkspace => ({
@@ -159,6 +178,16 @@ const conversation = () => ({
   archivedAt: null,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function renderPane(
   activeTab: AgentArtifactTab = "tasks",
   paneWorkspace = workspace(),
@@ -194,11 +223,38 @@ describe("AgentsArtifactPane", () => {
     getWorkspaceChangesMock.mockResolvedValue([
       { path: "frontend/src/App.tsx", status: "modified", additions: 4, deletions: 1 },
     ]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "frontend/src/App.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
     getWorkspaceDiffMock.mockResolvedValue({
       filePath: "frontend/src/App.tsx",
-      oldContent: "old",
-      newContent: "new",
       language: "typescript",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,1 +1,1 @@",
+          lines: [
+            { kind: "deletion", content: "old", oldLineNum: 1, newLineNum: null },
+            { kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 },
+          ],
+        },
+      ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
     });
     getWorkspaceCommitsMock.mockResolvedValue([]);
     getWorkspaceCommitChangesMock.mockResolvedValue([
@@ -206,13 +262,34 @@ describe("AgentsArtifactPane", () => {
     ]);
     getWorkspaceCommitDiffMock.mockResolvedValue({
       filePath: "frontend/src/App.tsx",
-      oldContent: "old",
-      newContent: "new",
       language: "typescript",
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,1 +1,1 @@",
+          lines: [
+            { kind: "deletion", content: "old", oldLineNum: 1, newLineNum: null },
+            { kind: "addition", content: "new", oldLineNum: null, newLineNum: 1 },
+          ],
+        },
+      ],
+      oldTotalLines: 1,
+      newTotalLines: 1,
+      isBinary: false,
+    });
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [],
+      sourcesUnavailable: [],
     });
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
+      freshnessScope: "full",
       baseRef: "main",
       baseDisplayName: "Project default (main)",
       targetRef: "origin/main",
@@ -221,6 +298,8 @@ describe("AgentsArtifactPane", () => {
       isBaseAhead: false,
       hasUncommittedChanges: false,
       unpublishedCommitCount: null,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
     });
     updateWorkspaceFromBaseMock.mockResolvedValue({
       workspace: workspace({ mode: "edit", baseCommit: "base-sha" }),
@@ -243,6 +322,8 @@ describe("AgentsArtifactPane", () => {
       isLoading: false,
     });
     openUrlMock.mockResolvedValue(undefined);
+    toastErrorMock.mockClear();
+    toastSuccessMock.mockClear();
   });
 
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
@@ -312,15 +393,17 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    expect(screen.getByText("Loading changed files...")).toBeInTheDocument();
+    expect(screen.getByText("Review changes before publishing.")).toBeInTheDocument();
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(getWorkspaceChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceFreshnessMock).not.toHaveBeenCalled();
     expect(listPublicationEventsMock).not.toHaveBeenCalled();
 
     await waitFor(() =>
-      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1")
+      expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
+        scope: "full",
+      })
     );
-    expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1");
     expect(listPublicationEventsMock).toHaveBeenCalledWith("conversation-1");
   });
 
@@ -334,9 +417,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    await waitFor(() =>
-      expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1")
-    );
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
     expect(useConversationMock).toHaveBeenCalledWith("conversation-1", {
       enabled: false,
       pageSize: 40,
@@ -516,7 +597,7 @@ describe("AgentsArtifactPane", () => {
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() => expect(publishButton).toHaveTextContent("Published"));
     expect(publishButton).toBeDisabled();
-    expect(screen.getByText("1 changed file published for review.")).toBeInTheDocument();
+    await screen.findByText("1 changed file published for review.");
 
     fireEvent.click(publishButton);
 
@@ -681,26 +762,55 @@ describe("AgentsArtifactPane", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     await waitFor(() => expect(screen.getByTestId("agents-review-changes")).toBeEnabled());
-    expect(getWorkspaceChangesMock).toHaveBeenCalledWith("conversation-1");
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("agents-review-changes"));
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
+    );
+  });
+
+  it("precomputes the PR description after review changes load", async () => {
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    fireEvent.click(await screen.findByTestId("agents-review-changes"));
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await waitFor(() =>
+      expect(precomputePrDescriptionMock).toHaveBeenCalledWith("conversation-1"),
+    );
   });
 
   it("shows workspace branch commits in the review dialog history tab", async () => {
     const user = userEvent.setup();
-    getWorkspaceCommitsMock.mockResolvedValue([
-      {
-        sha: "abc123def456",
-        shortSha: "abc123d",
-        message: "Update Codex model catalog",
-        author: "Agent",
-        date: new Date("2026-04-26T09:00:00Z"),
-      },
-    ]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "frontend/src/App.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+        },
+      ],
+      commits: [
+        {
+          sha: "abc123def456",
+          shortSha: "abc123d",
+          message: "Update Codex model catalog",
+          author: "Agent",
+          date: new Date("2026-04-26T09:00:00Z"),
+        },
+      ],
+      baseRef: "main",
+      headRef: "HEAD",
+    });
     renderPane("publish", workspace({ mode: "edit" }));
 
     await waitFor(() => expect(screen.getByTestId("agents-review-changes")).toBeEnabled());
     fireEvent.click(screen.getByTestId("agents-review-changes"));
     await waitFor(() =>
-      expect(getWorkspaceCommitsMock).toHaveBeenCalledWith("conversation-1")
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1")
     );
     await user.click(await screen.findByTestId("tab-history"));
 

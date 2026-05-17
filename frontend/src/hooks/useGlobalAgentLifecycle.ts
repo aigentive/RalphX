@@ -35,6 +35,11 @@ import type {
 } from "@/types/events";
 import { logger } from "@/lib/logger";
 
+type TerminalLifecyclePayload = {
+  run_id?: string | null;
+  agent_run_id?: string | null;
+};
+
 export function useGlobalAgentLifecycle() {
   const bus = useEventBus();
   const queryClient = useQueryClient();
@@ -67,15 +72,16 @@ export function useGlobalAgentLifecycle() {
       }
     }
 
-    // Guard: if the parent session has an active verification child, re-assert `generating`
-    // instead of clearing to `idle`. Parent's generating state is synthetic — reflects
-    // the child session running. Normal termination events must not clear it prematurely.
-    function guardedTermination(
+    function lifecycleRunId(payload: TerminalLifecyclePayload): string | null {
+      return payload.run_id ?? payload.agent_run_id ?? null;
+    }
+
+    function shouldIgnoreLifecycleEvent(
       storeKey: string,
-      eventContextId: string,
-      contextType: string,
-      conversationId: string
-    ) {
+      conversationId: string,
+      eventRunId: string | null,
+      eventName: string
+    ): boolean {
       // Stale conversation check (matches useAgentEvents.ts:101-107).
       // Fail-open when activeConvId is null/undefined — prevents stuck generating
       // for sessions never visited by a per-panel hook.
@@ -84,7 +90,33 @@ export function useGlobalAgentLifecycle() {
         logger.warn(
           `[GlobalAgentLifecycle] Ignoring stale termination: conv=${conversationId} != active=${activeConvId} for key=${storeKey}`
         );
-        return;
+        return true;
+      }
+
+      const activeRunId = useChatStore.getState().activeAgentRunIds[storeKey];
+      if (eventRunId != null && activeRunId != null && eventRunId !== activeRunId) {
+        logger.warn(
+          `[GlobalAgentLifecycle] Ignoring stale ${eventName}: run=${eventRunId} != active=${activeRunId} for key=${storeKey}`
+        );
+        return true;
+      }
+
+      return false;
+    }
+
+    // Guard: if the parent session has an active verification child, re-assert `generating`
+    // instead of clearing to `idle`. Parent's generating state is synthetic — reflects
+    // the child session running. Normal termination events must not clear it prematurely.
+    function guardedTermination(
+      storeKey: string,
+      eventContextId: string,
+      contextType: string,
+      conversationId: string,
+      eventRunId: string | null,
+      eventName: string
+    ): boolean {
+      if (shouldIgnoreLifecycleEvent(storeKey, conversationId, eventRunId, eventName)) {
+        return false;
       }
 
       const parsed = parseStoreKey(storeKey);
@@ -93,10 +125,11 @@ export function useGlobalAgentLifecycle() {
           useIdeationStore.getState().activeVerificationChildId[parsed.contextId];
         if (activeChildId) {
           useChatStore.getState().setAgentStatus(storeKey, "generating");
-          return;
+          return true;
         }
       }
 
+      useChatStore.getState().clearActiveAgentRun(storeKey, eventRunId);
       useChatStore.getState().setAgentStatus(storeKey, "idle");
 
       // Scope guards for cleanup calls:
@@ -110,6 +143,8 @@ export function useGlobalAgentLifecycle() {
       if (chatState.isTeamActive?.[storeKey]) {
         useTeamStore.getState().clearPendingPlan(storeKey);
       }
+
+      return true;
     }
 
     // agent:run_started → setAgentStatus generating
@@ -134,6 +169,7 @@ export function useGlobalAgentLifecycle() {
         }
 
         useChatStore.getState().setAgentStatus(eventContextKey, "generating");
+        useChatStore.getState().setActiveAgentRun(eventContextKey, payload.run_id);
         // Track the active conversation for this context so the stale guard can function
         // for ALL sessions, not just those with mounted per-panel hooks.
         useChatStore.getState().setActiveConversation(eventContextKey, payload.conversation_id);
@@ -165,11 +201,20 @@ export function useGlobalAgentLifecycle() {
           payload.conversation_id
         );
 
-        // Final heartbeat before transitioning to idle
-        useChatStore.getState().updateLastAgentEvent(eventContextKey);
-
-        guardedTermination(eventContextKey, eventContextId, context_type, payload.conversation_id);
-        handleChildTerminationReverseLink(eventContextId);
+        if (
+          guardedTermination(
+            eventContextKey,
+            eventContextId,
+            context_type,
+            payload.conversation_id,
+            lifecycleRunId(payload),
+            "run_completed"
+          )
+        ) {
+          // Final heartbeat for accepted terminal events.
+          useChatStore.getState().updateLastAgentEvent(eventContextKey);
+          handleChildTerminationReverseLink(eventContextId);
+        }
       })
     );
 
@@ -186,19 +231,19 @@ export function useGlobalAgentLifecycle() {
           payload.conversation_id
         );
 
-        // Heartbeat: agent alive between turns
-        useChatStore.getState().updateLastAgentEvent(eventContextKey);
-
-        // Stale conversation check MUST run before verification child guard.
-        // A stale turn_completed from an old conversation must not trigger the
-        // re-assert generating path for a session that should be idle.
-        const activeConvIdForTurn = useChatStore.getState().activeConversationIds[eventContextKey];
-        if (activeConvIdForTurn != null && payload.conversation_id !== activeConvIdForTurn) {
-          logger.warn(
-            `[GlobalAgentLifecycle] Ignoring stale turn_completed: conv=${payload.conversation_id} != active=${activeConvIdForTurn} for key=${eventContextKey}`
-          );
+        if (
+          shouldIgnoreLifecycleEvent(
+            eventContextKey,
+            payload.conversation_id,
+            lifecycleRunId(payload),
+            "turn_completed"
+          )
+        ) {
           return;
         }
+
+        // Heartbeat: agent alive between turns
+        useChatStore.getState().updateLastAgentEvent(eventContextKey);
 
         // Guard: if parent ideation session has active verification child, maintain
         // generating instead of transitioning to waiting_for_input
@@ -236,8 +281,18 @@ export function useGlobalAgentLifecycle() {
           payload.conversation_id
         );
 
-        guardedTermination(eventContextKey, eventContextId, context_type, payload.conversation_id);
-        handleChildTerminationReverseLink(eventContextId);
+        if (
+          guardedTermination(
+            eventContextKey,
+            eventContextId,
+            context_type,
+            payload.conversation_id,
+            lifecycleRunId(payload),
+            "stopped"
+          )
+        ) {
+          handleChildTerminationReverseLink(eventContextId);
+        }
       })
     );
 
@@ -248,6 +303,7 @@ export function useGlobalAgentLifecycle() {
         context_type: string;
         context_id: string;
         conversation_id: string;
+        agent_run_id?: string | null;
         error: string;
         teammate_name?: string | null;
       }>("agent:error", (payload) => {
@@ -260,7 +316,18 @@ export function useGlobalAgentLifecycle() {
           payload.conversation_id
         );
 
-        guardedTermination(eventContextKey, eventContextId, context_type, payload.conversation_id);
+        if (
+          !guardedTermination(
+            eventContextKey,
+            eventContextId,
+            context_type,
+            payload.conversation_id,
+            lifecycleRunId(payload),
+            "error"
+          )
+        ) {
+          return;
+        }
         handleChildTerminationReverseLink(eventContextId);
 
         // Error toast for execution contexts with deterministic id for deduplication.

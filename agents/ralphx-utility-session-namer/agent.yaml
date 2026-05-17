@@ -6,7 +6,7 @@ capabilities:
     - update_session_title
 harnesses:
   claude:
-    model: sonnet
+    model: haiku
     tools:
       mcp_only: true
     preapproved_cli_tools: []

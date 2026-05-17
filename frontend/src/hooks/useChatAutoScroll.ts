@@ -24,7 +24,7 @@ import { shouldUseWebkitSafeScrollBehavior } from "@/lib/platform-quirks";
 // ============================================================================
 
 export interface UseChatAutoScrollProps {
-  /** Number of messages - used for scrollToIndex target in Virtuoso mode */
+  /** Number of rendered scroll items - used for scrollToIndex target in Virtuoso mode */
   messageCount: number;
   /** Absolute index offset of the first loaded item (for paged/prepended history) */
   indexOffset?: number;
@@ -111,7 +111,7 @@ export function useChatAutoScroll({
   );
 
   // Stable ref for messageCount — keeps scrollToBottom identity stable across
-  // messageCount changes. Without this, every new message creates a new
+  // rendered item count changes. Without this, every new item creates a new
   // scrollToBottom → busts virtuosoComponents useMemo → Virtuoso re-mounts.
   const messageCountRef = useRef(messageCount);
   useEffect(() => {

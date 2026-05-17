@@ -13,7 +13,8 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } fr
 import { type VirtuosoHandle } from "react-virtuoso";
 import {
   useChat,
-  useConversationHistoryWindow,
+  useConversationTimelineWindow,
+  getCachedConversationMessages,
   chatKeys,
 } from "@/hooks/useChat";
 import {
@@ -589,14 +590,14 @@ export function IntegratedChatPanel({
 
   // Load active transcript windows through the shared tail-window query. The
   // backend returns each newest window oldest-to-newest; older pages prepend.
-  const teammateConversationHistory = useConversationHistoryWindow(
+  const teammateConversationHistory = useConversationTimelineWindow(
     isTeammateTab ? teammateConversationId : null,
     {
       enabled: !!teammateConversationId && isTeammateTab,
       pageSize: 40,
     }
   );
-  const primaryConversationHistory = useConversationHistoryWindow(
+  const primaryConversationHistory = useConversationTimelineWindow(
     !isTeammateTab ? activeConversationId : null,
     {
       enabled: !!activeConversationId && !isTeammateTab,
@@ -660,6 +661,7 @@ export function IntegratedChatPanel({
     isGenerating: agentStatus === "generating",
     isConversationInCurrentContext,
     agentRunStatus: agentRunQuery.data?.status ?? undefined,
+    isVisible,
     setStreamingTasks,
     setAgentRunning,
     selectedTaskId: selectedTaskId ?? undefined,
@@ -1025,6 +1027,9 @@ export function IntegratedChatPanel({
         return true;
       })
       .sort((a, b) => {
+        if (a.timelineSequence != null && b.timelineSequence != null) {
+          return a.timelineSequence - b.timelineSequence;
+        }
         const timeDiff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
         if (timeDiff !== 0) return timeDiff;
         return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -1120,7 +1125,7 @@ export function IntegratedChatPanel({
                   upstreamProvider={activeConversationMeta?.upstreamProvider ?? null}
                   providerProfile={activeConversationMeta?.providerProfile ?? null}
                   fallbackConversation={activeConversationMeta}
-                  fallbackMessages={sortedMessages}
+                  fallbackMessages={statsFallbackMessages}
                   {...(effectiveModel !== undefined ? { modelDisplay: effectiveModel } : {})}
                 />
 
@@ -1169,7 +1174,7 @@ export function IntegratedChatPanel({
               upstreamProvider={activeConversationMeta?.upstreamProvider ?? null}
               providerProfile={activeConversationMeta?.providerProfile ?? null}
               fallbackConversation={activeConversationMeta}
-              fallbackMessages={sortedMessages}
+              fallbackMessages={statsFallbackMessages}
               hideProviderContext
               {...(toolbarBackAction !== undefined ? { backAction: toolbarBackAction } : {})}
               {...(effectiveModel !== undefined ? { modelDisplay: effectiveModel } : {})}
@@ -1236,9 +1241,13 @@ export function IntegratedChatPanel({
               onDismissFailedRun={setDismissedErrorId}
               isSending={isSending}
               isAgentRunning={agentStatus === "generating"}
-              streamingToolCalls={streamingToolCalls}
-              streamingTasks={streamingTasks}
-              streamingContentBlocks={streamingContentBlocks}
+              streamingToolCalls={
+                hasPersistedStreamingTimelineItems ? [] : streamingToolCalls
+              }
+              streamingTasks={hasPersistedStreamingTimelineItems ? new Map() : streamingTasks}
+              streamingContentBlocks={
+                hasPersistedStreamingTimelineItems ? [] : streamingContentBlocks
+              }
               scrollToTimestamp={isHistoryMode ? taskHistoryState?.timestamp : null}
               isFinalizing={isFinalizing}
               teamFilter={showTeamUi && activeTeam ? teamFilter : undefined}

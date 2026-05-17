@@ -6,6 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 SRC_TAURI_DIR="$PROJECT_ROOT/src-tauri"
+PLUGIN_DIR="$PROJECT_ROOT/plugins/app"
+INTERNAL_MCP_DIR="$PLUGIN_DIR/ralphx-mcp-server"
+EXTERNAL_MCP_DIR="$PLUGIN_DIR/ralphx-external-mcp"
+SEEDED_DB_MARKER="$SRC_TAURI_DIR/.ralphx-dev-fresh-db-snapshot"
+SEEDED_DB_CLEANUP_ENABLED=0
 VITE_PORT=1420
 TAURI_BACKEND_PORT="${RALPHX_BACKEND_PORT:-3857}"
 EXTERNAL_MCP_PORT="${RALPHX_EXTERNAL_MCP_PORT:-3858}"
@@ -16,15 +21,23 @@ Usage: ./dev-fresh
 
 From repo root:
 1. verifies Tauri JS/Rust packages are on the same major/minor release
-2. repairs a missing or invalid frontend install with `npm ci` when safe
-3. cleans the Rust build artifacts under src-tauri/
-4. clears Vite optimized dependency cache under frontend/
-5. verifies no stale Tauri/Vite dev server is already occupying the dev ports
-6. starts the native Tauri dev app from frontend/
+2. repairs missing or invalid frontend/MCP runtime installs with `npm ci` when safe
+3. when run from a linked git worktree, refreshes src-tauri/ralphx.db from the primary checkout
+4. sanitizes copied runtime process ownership and disables startup recovery for the seeded snapshot
+5. rebuilds MCP runtime TypeScript outputs
+6. cleans the Rust build artifacts under src-tauri/
+7. clears Vite optimized dependency cache under frontend/
+8. verifies no stale Tauri/Vite dev server is already occupying the dev ports
+9. starts the native Tauri dev app from frontend/
 
 Equivalent to:
   verify frontend/package-lock.json vs src-tauri/Cargo.lock Tauri major/minor versions
   cd frontend && npm ci   # only when node_modules is missing or invalid
+  cd plugins/app/ralphx-mcp-server && npm ci   # only when node_modules is missing or invalid
+  cd plugins/app/ralphx-external-mcp && npm ci # only when node_modules is missing or invalid
+  copy the primary checkout's src-tauri/ralphx.db into this worktree when applicable
+  clear copied running-agent/process ownership from the worktree snapshot
+  rebuild both MCP runtime packages
   cd src-tauri && cargo clean
   rm -rf frontend/node_modules/.vite
   export RALPHX_BACKEND_PORT=3857
@@ -45,6 +58,19 @@ repair_frontend_install() {
   echo "dev-fresh: running npm ci in frontend/ to rebuild node_modules..."
   (
     cd "$FRONTEND_DIR"
+    npm ci
+  )
+}
+
+repair_package_install() {
+  local package_dir="$1"
+  local label="$2"
+  local reason="$3"
+
+  echo "dev-fresh: $reason"
+  echo "dev-fresh: running npm ci in $label to rebuild node_modules..."
+  (
+    cd "$package_dir"
     npm ci
   )
 }
@@ -93,6 +119,51 @@ EOF
   fi
 }
 
+ensure_package_install() {
+  local package_dir="$1"
+  local label="$2"
+
+  if [[ ! -d "$package_dir" ]]; then
+    echo "dev-fresh: $label runtime dir not found: $package_dir" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$package_dir/node_modules" ]]; then
+    repair_package_install "$package_dir" "$label" "$label/node_modules is missing."
+    return
+  fi
+
+  local npm_ls_output
+  if ! npm_ls_output="$(
+    cd "$package_dir" &&
+      npm ls --depth=0 2>&1
+  )"; then
+    cat <<EOF
+dev-fresh: $label install check failed. Rebuilding node_modules with npm ci.
+$npm_ls_output
+EOF
+    repair_package_install "$package_dir" "$label" "$label/node_modules is out of sync with package-lock.json."
+  fi
+}
+
+ensure_mcp_runtime_package() {
+  local package_dir="$1"
+  local label="$2"
+
+  ensure_package_install "$package_dir" "$label"
+
+  echo "dev-fresh: rebuilding $label runtime..."
+  (
+    cd "$package_dir"
+    npm run build
+  )
+}
+
+ensure_mcp_runtime_packages() {
+  ensure_mcp_runtime_package "$INTERNAL_MCP_DIR" "plugins/app/ralphx-mcp-server"
+  ensure_mcp_runtime_package "$EXTERNAL_MCP_DIR" "plugins/app/ralphx-external-mcp"
+}
+
 failure_looks_like_broken_frontend_install() {
   local log_file="$1"
 
@@ -104,6 +175,44 @@ failure_looks_like_broken_frontend_install() {
 port_has_listener() {
   local port="$1"
   lsof -ti tcp:"$port" >/dev/null 2>&1
+}
+
+# Count TIME_WAIT sockets touching the given port (either local or remote side).
+# A pileup on ::1:PORT can make a fresh bind() return EADDRINUSE even when no
+# LISTENER is present. macOS holds each TIME_WAIT for ~2*MSL (~30s by default),
+# but a crashed Vite + Tauri's 1Hz probe loop can stack hundreds of them.
+port_time_wait_count() {
+  local port="$1"
+  netstat -an 2>/dev/null \
+    | awk -v port="$port" '$NF == "TIME_WAIT" && ($4 ~ ("[:.]" port "$") || $5 ~ ("[:.]" port "$")) { count++ } END { print count + 0 }'
+}
+
+# Heuristic threshold above which we should warn the user rather than try to bind.
+# Empirically, anything > ~20 from a single crashed session means the IPv6 LISTEN
+# socket will refuse to bind for the next 30-60 seconds.
+DEV_FRESH_TIME_WAIT_WARN_THRESHOLD=20
+
+warn_on_stuck_time_waits() {
+  local port="$1"
+  local label="$2"
+  local count
+  count="$(port_time_wait_count "$port")"
+  if [[ "$count" -gt "$DEV_FRESH_TIME_WAIT_WARN_THRESHOLD" ]]; then
+    cat >&2 <<EOF
+dev-fresh: WARNING — found $count TIME_WAIT sockets on the $label port ($port).
+A prior dev session likely crashed mid-bind, leaving the IPv6 ::1:$port
+half-released. macOS holds each TIME_WAIT for ~30s; the next dev launch may
+fail with "Port $port is already in use" even though no process is listening.
+
+If Vite reports "Port $port is already in use" within the next ~60s,
+wait for the TIME_WAITs to drain and retry, or run:
+  netstat -an | awk -v p=$port '\$NF == "TIME_WAIT" && (\$4 ~ ("[:.]" p "\$") || \$5 ~ ("[:.]" p "\$"))'
+to inspect them.
+
+This is harmless if the next launch succeeds — vite.config.ts now binds
+IPv4 only, which sidesteps the IPv6 pileup.
+EOF
+  fi
 }
 
 wait_for_pid_exit() {
@@ -160,6 +269,167 @@ cleanup_stale_dev_external_mcp() {
   done <<<"$pids"
 }
 
+cleanup_seeded_worktree_db() {
+  if [[ "$SEEDED_DB_CLEANUP_ENABLED" != "1" ]]; then
+    return
+  fi
+
+  local target_db="$SRC_TAURI_DIR/ralphx.db"
+  if [[ ! -f "$SEEDED_DB_MARKER" ]]; then
+    return
+  fi
+
+  local marker_pid
+  marker_pid="$(cat "$SEEDED_DB_MARKER" 2>/dev/null || true)"
+  if [[ "$marker_pid" != "$$" ]]; then
+    echo "dev-fresh: seeded DB marker does not belong to this process; leaving worktree DB in place."
+    return
+  fi
+
+  echo "dev-fresh: removing seeded worktree DB snapshot: $target_db"
+  rm -f "$target_db" "$target_db-wal" "$target_db-shm" "$SEEDED_DB_MARKER"
+}
+
+git_path_absolute() {
+  local path="$1"
+
+  if [[ "$path" == /* ]]; then
+    printf '%s\n' "$path"
+    return
+  fi
+
+  (
+    cd "$PROJECT_ROOT"
+    cd "$path"
+    pwd -P
+  )
+}
+
+primary_worktree_root() {
+  local git_dir
+  local common_dir
+
+  git_dir="$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null)" || return 1
+  common_dir="$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null)" || return 1
+
+  git_dir="$(git_path_absolute "$git_dir")" || return 1
+  common_dir="$(git_path_absolute "$common_dir")" || return 1
+
+  if [[ "$git_dir" == "$common_dir" ]]; then
+    return 1
+  fi
+
+  local candidate
+  candidate="$(cd "$common_dir/.." && pwd -P)" || return 1
+
+  if [[ ! -d "$candidate/.git" ||
+    ! -f "$candidate/src-tauri/Cargo.toml" ||
+    ! -d "$candidate/frontend" ||
+    ! -d "$candidate/plugins/app" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$candidate"
+}
+
+sqlite_single_quote_path() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+sqlite_table_exists() {
+  local db_path="$1"
+  local table_name="$2"
+
+  sqlite3 "$db_path" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$table_name' LIMIT 1;" |
+    grep -qx "1"
+}
+
+sanitize_seeded_worktree_db() {
+  local db_path="$1"
+
+  if sqlite_table_exists "$db_path" "running_agents"; then
+    sqlite3 "$db_path" "DELETE FROM running_agents;"
+  fi
+
+  if sqlite_table_exists "$db_path" "agent_runs"; then
+    sqlite3 "$db_path" \
+      "UPDATE agent_runs
+       SET status = 'cancelled',
+           completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+           error_message = COALESCE(error_message, 'Cancelled in dev-fresh worktree DB snapshot')
+       WHERE status = 'running';"
+  fi
+
+  if sqlite_table_exists "$db_path" "team_sessions"; then
+    sqlite3 "$db_path" \
+      "UPDATE team_sessions
+       SET phase = 'disbanded',
+           disbanded_at = COALESCE(disbanded_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE disbanded_at IS NULL;"
+  fi
+
+  if sqlite_table_exists "$db_path" "processes"; then
+    sqlite3 "$db_path" \
+      "UPDATE processes
+       SET status = 'failed',
+           completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+       WHERE status NOT IN ('completed', 'failed', 'cancelled');"
+  fi
+}
+
+seed_worktree_db_from_primary() {
+  local primary_root
+  primary_root="$(primary_worktree_root)" || return 0
+
+  local source_db="$primary_root/src-tauri/ralphx.db"
+  local target_db="$SRC_TAURI_DIR/ralphx.db"
+
+  if [[ ! -f "$source_db" ]]; then
+    echo "dev-fresh: primary checkout dev DB not found; worktree will use its local DB path: $target_db"
+    return
+  fi
+
+  if [[ -e "$target_db" && "$source_db" -ef "$target_db" ]]; then
+    return
+  fi
+
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    cat >&2 <<EOF
+dev-fresh: sqlite3 is required to copy a consistent primary dev DB snapshot into this worktree.
+Primary DB: $source_db
+Worktree DB: $target_db
+EOF
+    exit 1
+  fi
+
+  local tmp_db="$target_db.tmp.$$"
+  rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm"
+
+  echo "dev-fresh: refreshing worktree dev DB from primary checkout:"
+  echo "  source: $source_db"
+  echo "  target: $target_db"
+
+  if ! sqlite3 "$source_db" ".timeout 30000" ".backup '$(sqlite_single_quote_path "$tmp_db")'"; then
+    rm -f "$tmp_db" "$tmp_db-wal" "$tmp_db-shm"
+    echo "dev-fresh: failed to copy primary dev DB snapshot into this worktree." >&2
+    exit 1
+  fi
+  rm -f "$target_db" "$target_db-wal" "$target_db-shm"
+  mv "$tmp_db" "$target_db"
+  rm -f "$tmp_db-wal" "$tmp_db-shm"
+
+  if ! sanitize_seeded_worktree_db "$target_db"; then
+    rm -f "$target_db" "$target_db-wal" "$target_db-shm"
+    echo "dev-fresh: failed to sanitize copied worktree DB snapshot." >&2
+    exit 1
+  fi
+  printf '%s\n' "$$" >"$SEEDED_DB_MARKER"
+  SEEDED_DB_CLEANUP_ENABLED=1
+  export RALPHX_DISABLE_STARTUP_RECOVERY=1
+  echo "dev-fresh: sanitized copied runtime process state and disabled startup recovery for this worktree snapshot."
+}
+
 start_tauri_dev() {
   local repair_attempted="${1:-0}"
   local launch_log
@@ -196,6 +466,8 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+trap cleanup_seeded_worktree_db EXIT
+
 cleanup_stale_dev_external_mcp
 
 if port_has_listener "$VITE_PORT" ||
@@ -213,6 +485,13 @@ EOF
   exit 1
 fi
 
+# Warn about lingering TIME_WAIT sockets from a previously-crashed dev session.
+# These do not block dev-fresh on their own, but they can make the next Vite
+# bind fail with EADDRINUSE on IPv6 ::1 even though no LISTEN socket exists.
+warn_on_stuck_time_waits "$VITE_PORT" "Vite dev server"
+warn_on_stuck_time_waits "$TAURI_BACKEND_PORT" "Tauri backend"
+warn_on_stuck_time_waits "$EXTERNAL_MCP_PORT" "external MCP"
+
 export RALPHX_BACKEND_PORT="$TAURI_BACKEND_PORT"
 export TAURI_API_URL="http://127.0.0.1:$TAURI_BACKEND_PORT"
 export VITE_RALPHX_BACKEND_URL="http://localhost:$TAURI_BACKEND_PORT"
@@ -220,6 +499,8 @@ export RALPHX_EXTERNAL_MCP_PORT="$EXTERNAL_MCP_PORT"
 
 verify_tauri_package_alignment
 ensure_frontend_install
+ensure_mcp_runtime_packages
+seed_worktree_db_from_primary
 
 (
   cd "$SRC_TAURI_DIR"

@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::ideation::SessionPurpose;
@@ -49,6 +50,22 @@ pub const SESSION_HISTORY_ARTIFACT_THRESHOLD_BYTES: usize = 2000;
 
 /// Preview budget for long history messages that have a full artifact reference.
 pub const SESSION_HISTORY_PREVIEW_BYTES: usize = 500;
+
+/// Whether to inject `<session_history>` into the bootstrap prompt for this context.
+///
+/// Ideation has always had it. Project and Task chat join the list because their
+/// interactive Claude process can exit silently between turns; the IPR-based "keep
+/// the process alive" assumption is best-effort, so respawned processes must receive
+/// prior conversation context or follow-up turns lose all memory of the chat.
+///
+/// Execution/review/merge contexts intentionally opt out — they are fresh-session by
+/// design and reload their context from task state on every spawn.
+pub fn context_type_supports_history_injection(context_type: ChatContextType) -> bool {
+    matches!(
+        context_type,
+        ChatContextType::Ideation | ChatContextType::Project | ChatContextType::Task
+    )
+}
 
 pub struct ProviderSpawnableCommand {
     pub spawnable: SpawnableCommand,
@@ -442,6 +459,7 @@ impl ResolvedChatHarnessCli {
                     request.session_messages,
                     request.total_available,
                     request.is_external_mcp,
+                    request.stored_session_id,
                     request.resolved_spawn_settings,
                 )
                 .await?;
@@ -1076,6 +1094,11 @@ fn build_initial_prompt_with_history(
             )
         }
         ChatContextType::Task => {
+            let history_block = if history.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", history)
+            };
             format!(
                 "<instructions>\n\
                  RalphX Task Chat. You are helping the user with questions about this specific task.\n\
@@ -1083,12 +1106,17 @@ fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <task_id>{}</task_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, history_block, user_message
             )
         }
         ChatContextType::Project => {
+            let history_block = if history.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", history)
+            };
             format!(
                 "<instructions>\n\
                  RalphX Project Chat. You are helping the user with project-level questions and suggestions.\n\
@@ -1096,9 +1124,9 @@ fn build_initial_prompt_with_history(
                  </instructions>\n\
                  <data>\n\
                  <project_id>{}</project_id>\n\
-                 <user_message>{}</user_message>\n\
+                 {}<user_message>{}</user_message>\n\
                  </data>",
-                context_id, user_message
+                context_id, history_block, user_message
             )
         }
         ChatContextType::TaskExecution => {
@@ -1156,7 +1184,7 @@ async fn build_initial_prompt_with_session_artifacts(
     ideation_harness: Option<AgentHarnessKind>,
     ideation_bootstrap_mode: IdeationBootstrapMode,
 ) -> Result<String, String> {
-    let history = if context_type == ChatContextType::Ideation {
+    let history = if context_type_supports_history_injection(context_type) {
         format_session_history_with_artifacts(session_messages, total_available, artifact_repo)
             .await?
     } else {
@@ -1447,7 +1475,7 @@ pub fn build_initial_prompt(
     session_messages: &[ChatMessage],
     total_available: usize,
 ) -> String {
-    let history = if context_type == ChatContextType::Ideation {
+    let history = if context_type_supports_history_injection(context_type) {
         format_session_history(session_messages, total_available)
     } else {
         String::new()
@@ -1974,6 +2002,7 @@ pub async fn build_codex_command(
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
 ) -> Result<SpawnableCommand, String> {
+    let total_started = Instant::now();
     let codex_team_mode = false;
     let agent_name = agent_name_override.unwrap_or_else(|| {
         resolve_agent_with_team_mode(&conversation.context_type, entity_status, codex_team_mode)
@@ -1986,6 +2015,7 @@ pub async fn build_codex_command(
                 .unwrap_or_else(|| resolved_spawn_settings.model.clone())
         });
 
+    let attachments_started = Instant::now();
     let attachments = chat_attachment_repo
         .find_by_conversation_id(&conversation.id)
         .await
@@ -1993,8 +2023,29 @@ pub async fn build_codex_command(
         .into_iter()
         .filter(|a| a.message_id.is_none())
         .collect::<Vec<_>>();
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "fetch_attachments",
+        attachment_count = attachments.len(),
+        elapsed_ms = attachments_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
+    let attachment_context_started = Instant::now();
     let attachment_context = format_attachments_for_agent(&attachments).await?;
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "format_attachments",
+        elapsed_ms = attachment_context_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let prompt_build_started = Instant::now();
     let initial_prompt = build_initial_prompt_with_session_artifacts(
         conversation.context_type,
         &conversation.context_id,
@@ -2011,12 +2062,34 @@ pub async fn build_codex_command(
         },
     )
     .await?;
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "build_initial_prompt",
+        prompt_len = initial_prompt.len(),
+        elapsed_ms = prompt_build_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
+    let prompt_compose_started = Instant::now();
     let prompt = compose_codex_prompt(
         &format!("{}{}", initial_prompt, attachment_context),
         Some(plugin_dir),
         Some(agent_name),
     );
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "compose_codex_prompt",
+        prompt_len = prompt.len(),
+        elapsed_ms = prompt_compose_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let mcp_config_started = Instant::now();
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -2037,10 +2110,31 @@ pub async fn build_codex_command(
     )?;
     let codex_config =
         build_codex_cli_config(working_directory, resolved_spawn_settings, config_overrides);
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "build_mcp_and_cli_config",
+        override_count = codex_config.config_overrides.len(),
+        elapsed_ms = mcp_config_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let spawnable_build_started = Instant::now();
     let mut spawnable =
         build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "build_spawnable_command",
+        elapsed_ms = spawnable_build_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
+    );
 
+    let env_apply_started = Instant::now();
     apply_ralphx_env_vars(
         &mut spawnable,
         agent_name,
@@ -2051,6 +2145,16 @@ pub async fn build_codex_command(
         codex_team_mode,
         None,
         ideation_subagent_model_cap.as_deref(),
+    );
+    tracing::info!(
+        context_type = %conversation.context_type,
+        context_id = %conversation.context_id,
+        conversation_id = %conversation.id,
+        agent_name,
+        phase = "apply_env_vars",
+        total_elapsed_ms = total_started.elapsed().as_millis() as u64,
+        elapsed_ms = env_apply_started.elapsed().as_millis() as u64,
+        "chat_service.build_codex_command phase completed"
     );
 
     Ok(spawnable)
@@ -2224,8 +2328,10 @@ pub async fn build_interactive_command(
     session_messages: &[ChatMessage],
     total_available: usize,
     is_external_mcp: bool,
+    stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
 ) -> Result<SpawnableCommand, String> {
+    let agent_started = Instant::now();
     let agent_name = agent_name_override.unwrap_or_else(|| {
         resolve_agent_with_team_mode(&conversation.context_type, entity_status, team_mode)
     });
@@ -2236,13 +2342,17 @@ pub async fn build_interactive_command(
                 .clone()
                 .unwrap_or_else(|| resolved_spawn_settings.model.clone())
         });
+    log_claude_launch_plan_phase(conversation, "resolve_agent", agent_started);
 
-    // Interactive mode: never resume with --resume session_id because the process stays
-    // alive. Resume is only needed when re-spawning after a process death. For the first
-    // spawn, the persisted provider session ref is set after the stream reports it.
-    let resume_session: Option<&str> = None;
+    let resume_session = stored_session_id.and_then(|session_id| {
+        match provider_resume_mode_for_session(AgentHarnessKind::Claude, session_id) {
+            ProviderResumeMode::Resume => Some(session_id),
+            ProviderResumeMode::Recovery => None,
+        }
+    });
 
     // Fetch pending attachments
+    let attachments_started = Instant::now();
     let attachments = chat_attachment_repo
         .find_by_conversation_id(&conversation.id)
         .await
@@ -2250,27 +2360,52 @@ pub async fn build_interactive_command(
         .into_iter()
         .filter(|a| a.message_id.is_none())
         .collect::<Vec<_>>();
+    log_claude_launch_plan_phase(
+        conversation,
+        "load_pending_attachments",
+        attachments_started,
+    );
 
+    let attachment_context_started = Instant::now();
     let attachment_context = format_attachments_for_agent(&attachments).await?;
+    log_claude_launch_plan_phase(
+        conversation,
+        "format_pending_attachments",
+        attachment_context_started,
+    );
 
-    let initial_prompt = build_initial_prompt_with_session_artifacts(
-        conversation.context_type,
-        &conversation.context_id,
-        user_message,
-        session_messages,
-        total_available,
-        artifact_repo,
-        ideation_subagent_model_cap.as_deref(),
-        Some(AgentHarnessKind::Claude),
-        if session_messages.is_empty() {
-            IdeationBootstrapMode::Fresh
-        } else {
-            IdeationBootstrapMode::Continuation
-        },
-    )
-    .await?;
+    let prompt_started = Instant::now();
+    let initial_prompt = match resume_session {
+        Some(_) => build_resume_initial_prompt(
+            conversation.context_type,
+            &conversation.context_id,
+            user_message,
+            session_messages,
+            total_available,
+        ),
+        None => {
+            build_initial_prompt_with_session_artifacts(
+                conversation.context_type,
+                &conversation.context_id,
+                user_message,
+                session_messages,
+                total_available,
+                artifact_repo,
+                ideation_subagent_model_cap.as_deref(),
+                Some(AgentHarnessKind::Claude),
+                if session_messages.is_empty() {
+                    IdeationBootstrapMode::Fresh
+                } else {
+                    IdeationBootstrapMode::Continuation
+                },
+            )
+            .await?
+        }
+    };
     let prompt = format!("{}{}", initial_prompt, attachment_context);
+    log_claude_launch_plan_phase(conversation, "build_initial_prompt", prompt_started);
 
+    let mcp_context_started = Instant::now();
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
@@ -2283,6 +2418,13 @@ pub async fn build_interactive_command(
             None
         },
     );
+    log_claude_launch_plan_phase(
+        conversation,
+        "build_mcp_runtime_context",
+        mcp_context_started,
+    );
+
+    let spawnable_started = Instant::now();
     let mut spawnable = build_claude_spawnable_interactive_command(
         cli_path,
         plugin_dir,
@@ -2295,7 +2437,9 @@ pub async fn build_interactive_command(
         Some(resolved_spawn_settings.model.as_str()),
         Some(&mcp_runtime_context),
     )?;
+    log_claude_launch_plan_phase(conversation, "build_spawnable_command", spawnable_started);
 
+    let env_started = Instant::now();
     apply_ralphx_env_vars(
         &mut spawnable,
         agent_name,
@@ -2304,11 +2448,28 @@ pub async fn build_interactive_command(
         working_directory,
         project_id,
         team_mode,
-        claude_resume_session_id(conversation).as_deref(),
+        resume_session,
         ideation_subagent_model_cap.as_deref(),
     );
+    log_claude_launch_plan_phase(conversation, "apply_ralphx_env_vars", env_started);
 
     Ok(spawnable)
+}
+
+fn log_claude_launch_plan_phase(
+    conversation: &ChatConversation,
+    phase: &'static str,
+    started: Instant,
+) {
+    tracing::info!(
+        conversation_id = conversation.id.as_str(),
+        context_type = %conversation.context_type,
+        context_id = conversation.context_id.as_str(),
+        harness = %AgentHarnessKind::Claude,
+        phase,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "chat_service.send_message Claude launch plan phase completed"
+    );
 }
 
 /// Fetch entity status for resume command context.
@@ -2933,10 +3094,33 @@ mod tests {
         MemoryArtifactRepository, MemoryChatAttachmentRepository, MemoryDelegatedSessionRepository,
         MemoryIdeationSessionRepository, MemoryTaskRepository,
     };
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
     use tokio::process::Command;
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn write_test_file(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {
@@ -3348,6 +3532,120 @@ exit 0
     }
 
     #[test]
+    fn build_initial_prompt_injects_session_history_for_project_respawn() {
+        // Regression: when a project-chat Claude process exits silently between turns and
+        // RalphX re-spawns it, the new process must receive prior conversation history in
+        // the bootstrap prompt — otherwise it answers follow-ups as a fresh session.
+        let project_id = ProjectId::new();
+        let prior_user = ChatMessage::user_in_project(project_id.clone(), "what is in this repo?");
+        let prior_assistant = {
+            let mut msg = ChatMessage::user_in_project(
+                project_id.clone(),
+                "It is a Tauri desktop app called RalphX.",
+            );
+            msg.role = MessageRole::Orchestrator;
+            msg
+        };
+        let messages = vec![prior_user, prior_assistant];
+
+        let prompt = build_initial_prompt(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "ok and what language is it written in?",
+            &messages,
+            messages.len(),
+        );
+
+        assert!(
+            prompt.contains("<session_history"),
+            "Project re-spawn must inject prior conversation as <session_history>: {}",
+            prompt
+        );
+        assert!(
+            prompt.contains("what is in this repo?"),
+            "Project history must include the prior user message"
+        );
+        assert!(
+            prompt.contains("Tauri desktop app called RalphX"),
+            "Project history must include the prior orchestrator/assistant reply"
+        );
+        assert!(
+            prompt.contains("<user_message>ok and what language is it written in?</user_message>"),
+            "The current turn user_message must still be present alongside the history block"
+        );
+    }
+
+    #[test]
+    fn build_initial_prompt_injects_session_history_for_task_respawn() {
+        let task_id = TaskId::from_string("task-history-respawn".to_string());
+        let prior = ChatMessage::user_about_task(task_id.clone(), "explain the task plan");
+        let messages = vec![prior];
+
+        let prompt = build_initial_prompt(
+            ChatContextType::Task,
+            task_id.as_str(),
+            "what about edge cases?",
+            &messages,
+            messages.len(),
+        );
+
+        assert!(
+            prompt.contains("<session_history"),
+            "Task re-spawn must inject prior conversation as <session_history>"
+        );
+        assert!(
+            prompt.contains("explain the task plan"),
+            "Task history must include the prior user message"
+        );
+    }
+
+    #[test]
+    fn build_initial_prompt_omits_session_history_for_project_when_no_prior_messages() {
+        // First spawn: no prior messages, no history block needed.
+        let project_id = ProjectId::new();
+        let prompt =
+            build_initial_prompt(ChatContextType::Project, project_id.as_str(), "hi", &[], 0);
+        assert!(
+            !prompt.contains("<session_history"),
+            "First-turn project prompt must not synthesize an empty history block"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_initial_prompt_with_session_artifacts_injects_history_for_project_respawn() {
+        let project_id = ProjectId::new();
+        let prior_user = ChatMessage::user_in_project(project_id.clone(), "ping?");
+        let prior_assistant = {
+            let mut msg = ChatMessage::user_in_project(project_id.clone(), "pong.");
+            msg.role = MessageRole::Orchestrator;
+            msg
+        };
+        let messages = vec![prior_user, prior_assistant];
+
+        let prompt = build_initial_prompt_with_session_artifacts(
+            ChatContextType::Project,
+            project_id.as_str(),
+            "and now?",
+            &messages,
+            messages.len(),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            IdeationBootstrapMode::Continuation,
+        )
+        .await
+        .expect("project prompt should build");
+
+        assert!(
+            prompt.contains("<session_history"),
+            "Project respawn prompt must inject <session_history> from persisted DB messages"
+        );
+        assert!(prompt.contains("ping?"));
+        assert!(prompt.contains("pong."));
+        assert!(prompt.contains("<user_message>and now?</user_message>"));
+    }
+
+    #[test]
     fn build_resume_initial_prompt_marks_provider_resume_explicitly() {
         let session_id = IdeationSessionId::new();
 
@@ -3412,6 +3710,107 @@ exit 0
         assert!(
             prompt.contains("<user_message>hello from fresh ideation</user_message>"),
             "fresh Claude ideation launch plans must carry only the new user message in stdin bootstrap"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_project_launch_plan_resumes_stored_provider_session() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let provider_session_id = "session-to-resume";
+        write_test_file(
+            &provider_home
+                .join(".claude")
+                .join("projects")
+                .join("project")
+                .join(format!("{provider_session_id}.jsonl")),
+            "{}\n",
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let cli_path = make_fake_claude_cli(&temp);
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("claude-project-resume".to_string());
+        let agent_name = agent_names::AGENT_GENERAL_WORKER;
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Claude,
+            provider_session_id: provider_session_id.to_string(),
+        });
+        let prior_user = ChatMessage::user_in_project(
+            project_id.clone(),
+            "prior message should stay in the provider transcript",
+        );
+        let prior_assistant = {
+            let mut msg = ChatMessage::user_in_project(project_id.clone(), "prior answer");
+            msg.role = MessageRole::Orchestrator;
+            msg
+        };
+        let messages = vec![prior_user, prior_assistant];
+        let resolved_spawn_settings =
+            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                agent_name,
+                Some(project_id.as_str()),
+                ChatContextType::Project,
+                None,
+                Some(AgentHarnessKind::Claude),
+                None,
+                None,
+            )
+            .await;
+
+        let launch_plan = build_launch_plan_for_harness(
+            AgentHarnessKind::Claude,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "continue from the same Claude session",
+            Some(agent_name),
+            ChatContextType::Project,
+            project_id.as_str(),
+            temp.path(),
+            None,
+            Some(project_id.as_str()),
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &messages,
+            messages.len(),
+            false,
+            Some(provider_session_id),
+            &resolved_spawn_settings,
+        )
+        .await
+        .expect("Claude project launch plan should build");
+
+        let spawnable = launch_spawnable(&launch_plan);
+        let args = spawnable.get_args_for_test();
+        assert!(
+            args.windows(2)
+                .any(|window| window[0] == "--resume" && window[1] == provider_session_id),
+            "Claude launch args must include --resume for stored provider session: {args:?}"
+        );
+        assert_eq!(
+            spawnable_env_value(spawnable, "RALPHX_LEAD_SESSION_ID").as_deref(),
+            Some(provider_session_id)
+        );
+
+        let prompt = spawnable
+            .get_stdin_prompt_for_test()
+            .expect("interactive prompt should be stored on stdin");
+        assert!(
+            prompt.contains("<user_message>continue from the same Claude session</user_message>")
+        );
+        assert!(
+            !prompt.contains("prior message should stay in the provider transcript")
+                && !prompt.contains("<session_history"),
+            "provider resume prompts should not replay RalphX DB history into stdin: {prompt}"
         );
     }
 
@@ -3636,5 +4035,13 @@ exit 0
             background.launch_mode(),
             ResolvedChatHarnessLaunchMode::Background
         );
+    }
+
+    #[test]
+    fn claude_launch_plan_phase_telemetry_smoke() {
+        let conversation =
+            ChatConversation::new_project(ProjectId::from_string("project-telemetry".to_string()));
+
+        log_claude_launch_plan_phase(&conversation, "build_claude_launch_plan", Instant::now());
     }
 }

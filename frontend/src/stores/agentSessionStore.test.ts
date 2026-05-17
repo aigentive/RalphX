@@ -10,6 +10,15 @@ import {
 describe("agentSessionStore", () => {
   it("defaults the Agents sidebar to all projects", () => {
     expect(useAgentSessionStore.getInitialState().showAllProjects).toBe(true);
+    expect(useAgentSessionStore.getInitialState().sidebarGroupBy).toBe("project");
+    expect(useAgentSessionStore.getInitialState().sidebarPublicationStateFilters).toEqual([
+      "active",
+      "draft",
+      "merged",
+      "closed",
+      "uncommitted",
+      "unpushed",
+    ]);
   });
 
   it("migrates older persisted sidebar filter state to all projects", () => {
@@ -108,6 +117,30 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("migrates older persisted sidebar metadata filters and pin state", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          showAllProjects: true,
+          projectSort: "latest",
+        },
+        3,
+      ),
+    ).toMatchObject({
+      sidebarGroupBy: "project",
+      sidebarProjectFilterIds: [],
+      sidebarPublicationStateFilters: [
+        "active",
+        "draft",
+        "merged",
+        "closed",
+        "uncommitted",
+        "unpushed",
+      ],
+      pinnedConversationIds: {},
+    });
+  });
+
   it("passes through non-object persistedState", () => {
     expect(migrateAgentSessionStore(null, 0)).toBeNull();
     expect(migrateAgentSessionStore("nope", 0)).toBe("nope");
@@ -189,6 +222,61 @@ describe("agentSessionStore", () => {
       const s = useAgentSessionStore.getState();
       expect(s.showAllProjects).toBe(false);
       expect(s.projectSort).toBe("za");
+    });
+
+    it("persists sidebar filters and pinned conversation ids", () => {
+      const {
+        setSidebarGroupBy,
+        setSidebarProjectFilterIds,
+        setSidebarPublicationStateFilters,
+        togglePinnedConversation,
+      } = useAgentSessionStore.getState();
+
+      setSidebarGroupBy("publication");
+      setSidebarProjectFilterIds(["project-2"]);
+      setSidebarPublicationStateFilters(["merged", "closed"]);
+      togglePinnedConversation("conversation-1");
+
+      let s = useAgentSessionStore.getState();
+      expect(s.sidebarGroupBy).toBe("publication");
+      expect(s.sidebarProjectFilterIds).toEqual(["project-2"]);
+      expect(s.sidebarPublicationStateFilters).toEqual(["merged", "closed"]);
+      expect(s.pinnedConversationIds["conversation-1"]).toBe(true);
+
+      togglePinnedConversation("conversation-1");
+      s = useAgentSessionStore.getState();
+      expect(s.pinnedConversationIds["conversation-1"]).toBeUndefined();
+    });
+
+    it("toggles individual sidebar project and publication-state filters", () => {
+      const {
+        setSidebarProjectFilterIds,
+        setSidebarPublicationStateFilters,
+        toggleSidebarProjectFilter,
+        toggleSidebarPublicationStateFilter,
+      } = useAgentSessionStore.getState();
+
+      setSidebarProjectFilterIds(["project-1"]);
+      toggleSidebarProjectFilter("project-2");
+      expect(useAgentSessionStore.getState()).toMatchObject({
+        showAllProjects: false,
+        sidebarProjectFilterIds: ["project-1", "project-2"],
+      });
+      toggleSidebarProjectFilter("project-1");
+      expect(useAgentSessionStore.getState().sidebarProjectFilterIds).toEqual([
+        "project-2",
+      ]);
+
+      setSidebarPublicationStateFilters(["merged"]);
+      toggleSidebarPublicationStateFilter("closed");
+      expect(useAgentSessionStore.getState().sidebarPublicationStateFilters).toEqual([
+        "merged",
+        "closed",
+      ]);
+      toggleSidebarPublicationStateFilter("merged");
+      expect(useAgentSessionStore.getState().sidebarPublicationStateFilters).toEqual([
+        "closed",
+      ]);
     });
 
     it("artifact actions: open/tab/state/taskMode flow", () => {

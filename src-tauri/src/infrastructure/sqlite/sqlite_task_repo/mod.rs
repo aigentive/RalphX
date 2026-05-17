@@ -5,7 +5,7 @@ mod helpers;
 mod queries;
 mod query_builder;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -13,7 +13,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use rusqlite::Connection;
 
-use crate::domain::entities::{IdeationSessionId, InternalStatus, ProjectId, Task, TaskId};
+use crate::domain::entities::{
+    ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+};
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition, TaskRepository};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
@@ -83,9 +85,33 @@ impl TaskRepository for SqliteTaskRepository {
         let id = id.as_str().to_string();
         self.db
             .query_optional(move |conn| {
-                conn.query_row(queries::GET_BY_ID, [id.as_str()], |row| {
-                    Task::from_row(row)
-                })
+                conn.query_row(queries::GET_BY_ID, [id.as_str()], |row| Task::from_row(row))
+            })
+            .await
+    }
+
+    async fn get_by_ids(&self, ids: &[TaskId]) -> AppResult<Vec<Task>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let ids: Vec<String> = ids.iter().map(|id| id.as_str().to_string()).collect();
+        self.db
+            .run(move |conn| {
+                let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                let sql = format!(
+                    "SELECT {} FROM tasks WHERE id IN ({})",
+                    queries::TASK_COLUMNS,
+                    placeholders
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let tasks = stmt
+                    .query_map(
+                        rusqlite::params_from_iter(ids.iter().map(|id| id.as_str())),
+                        Task::from_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(tasks)
             })
             .await
     }
@@ -242,6 +268,107 @@ impl TaskRepository for SqliteTaskRepository {
             .await
     }
 
+    async fn get_by_status_with_metadata_bool(
+        &self,
+        project_id: &ProjectId,
+        status: InternalStatus,
+        metadata_key: &str,
+    ) -> AppResult<Vec<Task>> {
+        let project_id = project_id.as_str().to_string();
+        let metadata_path = format!("$.{}", metadata_key);
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, project_id, category, title, description, priority, internal_status, needs_review_point, source_proposal_id, plan_artifact_id, ideation_session_id, execution_plan_id, created_at, updated_at, started_at, completed_at, archived_at, blocked_reason, task_branch, worktree_path, merge_commit_sha, metadata, merge_pipeline_active
+                     FROM tasks
+                     WHERE project_id = ?1
+                       AND internal_status = ?2
+                       AND archived_at IS NULL
+                       AND metadata IS NOT NULL
+                       AND json_valid(metadata)
+                       AND json_extract(metadata, ?3) = 1
+                     ORDER BY priority DESC, created_at ASC",
+                )?;
+                let tasks = stmt
+                    .query_map(
+                        rusqlite::params![project_id.as_str(), status.as_str(), metadata_path],
+                        Task::from_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(tasks)
+            })
+            .await
+    }
+
+    async fn find_merged_regular_plan_keys(
+        &self,
+        project_id: &ProjectId,
+        plan_keys: &[(IdeationSessionId, ExecutionPlanId)],
+    ) -> AppResult<HashSet<(IdeationSessionId, ExecutionPlanId)>> {
+        if plan_keys.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let project_id = project_id.as_str().to_string();
+        let plan_keys: Vec<(String, String)> = plan_keys
+            .iter()
+            .map(|(session_id, execution_plan_id)| {
+                (
+                    session_id.as_str().to_string(),
+                    execution_plan_id.as_str().to_string(),
+                )
+            })
+            .collect();
+        self.db
+            .run(move |conn| {
+                let pair_filters = plan_keys
+                    .iter()
+                    .map(|_| "(ideation_session_id = ? AND execution_plan_id = ?)")
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                let sql = format!(
+                    "SELECT DISTINCT ideation_session_id, execution_plan_id
+                     FROM tasks
+                     WHERE project_id = ?
+                       AND internal_status = ?
+                       AND category = ?
+                       AND archived_at IS NULL
+                       AND ideation_session_id IS NOT NULL
+                       AND execution_plan_id IS NOT NULL
+                       AND ({pair_filters})"
+                );
+
+                let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                    Box::new(project_id),
+                    Box::new(InternalStatus::Merged.as_str().to_string()),
+                    Box::new(TaskCategory::Regular.to_string()),
+                ];
+                for (session_id, execution_plan_id) in plan_keys {
+                    params.push(Box::new(session_id));
+                    params.push(Box::new(execution_plan_id));
+                }
+
+                let params_ref: Vec<&dyn rusqlite::ToSql> =
+                    params.iter().map(|param| param.as_ref()).collect();
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(params_ref.as_slice(), |row| {
+                    let session_id: String = row.get(0)?;
+                    let execution_plan_id: String = row.get(1)?;
+                    Ok((
+                        IdeationSessionId::from_string(session_id),
+                        ExecutionPlanId::from_string(execution_plan_id),
+                    ))
+                })?;
+
+                let mut result = HashSet::new();
+                for row in rows {
+                    result.insert(row?);
+                }
+                Ok(result)
+            })
+            .await
+    }
+
     async fn persist_status_change(
         &self,
         id: &TaskId,
@@ -281,9 +408,7 @@ impl TaskRepository for SqliteTaskRepository {
                         let timestamp = Task::parse_datetime(created_at_str);
 
                         let (conversation_id, agent_run_id) = metadata_json
-                            .and_then(|json| {
-                                serde_json::from_str::<serde_json::Value>(&json).ok()
-                            })
+                            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
                             .map(|v| {
                                 let conv_id = v
                                     .get("conversation_id")
@@ -339,7 +464,14 @@ impl TaskRepository for SqliteTaskRepository {
                         let trigger: String = row.get(3)?;
                         let created_at_str: String = row.get(4)?;
                         let metadata_json: Option<String> = row.get(5)?;
-                        Ok((task_id_str, from_str, to_str, trigger, created_at_str, metadata_json))
+                        Ok((
+                            task_id_str,
+                            from_str,
+                            to_str,
+                            trigger,
+                            created_at_str,
+                            metadata_json,
+                        ))
                     },
                 )?;
                 for row in rows {
@@ -349,9 +481,7 @@ impl TaskRepository for SqliteTaskRepository {
                     let to = to_str.parse().unwrap_or(InternalStatus::Backlog);
                     let timestamp = Task::parse_datetime(created_at_str);
                     let (conversation_id, agent_run_id) = metadata_json
-                        .and_then(|json| {
-                            serde_json::from_str::<serde_json::Value>(&json).ok()
-                        })
+                        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
                         .map(|v| {
                             let conv_id = v
                                 .get("conversation_id")
@@ -372,7 +502,10 @@ impl TaskRepository for SqliteTaskRepository {
                         conversation_id,
                         agent_run_id,
                     );
-                    result.entry(TaskId(task_id_str)).or_default().push(transition);
+                    result
+                        .entry(TaskId(task_id_str))
+                        .or_default()
+                        .push(transition);
                 }
                 Ok(result)
             })
@@ -623,8 +756,7 @@ impl TaskRepository for SqliteTaskRepository {
                 );
                 let params_ref: Vec<&dyn rusqlite::ToSql> =
                     params.iter().map(|p| p.as_ref()).collect();
-                let count: i64 =
-                    conn.query_row(&query, params_ref.as_slice(), |row| row.get(0))?;
+                let count: i64 = conn.query_row(&query, params_ref.as_slice(), |row| row.get(0))?;
                 Ok(count as u32)
             })
             .await
@@ -715,10 +847,7 @@ impl TaskRepository for SqliteTaskRepository {
         }
 
         let project_id = project_id.as_str().to_string();
-        let statuses: Vec<String> = statuses
-            .iter()
-            .map(|s| s.as_str().to_string())
-            .collect();
+        let statuses: Vec<String> = statuses.iter().map(|s| s.as_str().to_string()).collect();
         self.db
             .run(move |conn| {
                 let placeholders: Vec<String> = (2..=statuses.len() + 1)

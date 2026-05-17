@@ -1,7 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { chatApi } from "@/api/chat";
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshnessScope,
+} from "@/api/chat";
 
 import {
   getAgentWorkspaceTerminalPublicationLabel,
@@ -9,7 +12,7 @@ import {
 } from "./agentWorkspacePublishState";
 
 export const AGENT_WORKSPACE_STALE_MS = 5_000;
-export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 5_000;
+export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 60_000;
 
 export const agentWorkspaceKeys = {
   workspace: (conversationId: string | null | undefined) => [
@@ -22,9 +25,28 @@ export const agentWorkspaceKeys = {
     "conversation-workspace-freshness",
     conversationId,
   ] as const,
+  scopedFreshness: (
+    conversationId: string | null | undefined,
+    scope: AgentConversationWorkspaceFreshnessScope,
+  ) => [
+    "agents",
+    "conversation-workspace-freshness",
+    conversationId,
+    scope,
+  ] as const,
   publicationEvents: (conversationId: string | null | undefined) => [
     "agents",
     "conversation-workspace-publication-events",
+    conversationId,
+  ] as const,
+  review: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-review",
+    conversationId,
+  ] as const,
+  prAnnotations: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-pr-annotations",
     conversationId,
   ] as const,
   diff: (conversationId: string | null | undefined) => [
@@ -76,8 +98,11 @@ export async function preflightAgentWorkspaceFreshness(
     }
 
     await queryClient.prefetchQuery({
-      queryKey: agentWorkspaceKeys.freshness(conversationId),
-      queryFn: () => chatApi.getAgentConversationWorkspaceFreshness(conversationId),
+      queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "local"),
+      queryFn: () =>
+        chatApi.getAgentConversationWorkspaceFreshness(conversationId, {
+          scope: "local",
+        }),
       staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
     });
   } catch {
@@ -100,6 +125,12 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.publicationEvents(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.review(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.diff(conversationId),

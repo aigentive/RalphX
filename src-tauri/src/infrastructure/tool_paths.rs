@@ -1,7 +1,9 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 #[cfg(test)]
 pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -121,15 +123,21 @@ pub(crate) fn resolve_tasklist_cli_path() -> PathBuf {
 }
 
 pub(crate) fn find_claude_cli_path() -> Option<PathBuf> {
-    find_cli_path_with_candidates(
+    let extra_candidates = javascript_tool_env_candidates("claude");
+    let user_candidates = home_local_tool_candidates("claude");
+
+    find_cli_path_with_candidate_groups(
         "claude",
         &[
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
             "/usr/bin/claude",
         ],
-        &javascript_tool_env_candidates("claude"),
+        &extra_candidates,
+        &user_candidates,
     )
+    .into_iter()
+    .next()
 }
 
 pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
@@ -137,15 +145,88 @@ pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn find_codex_cli_candidates() -> Vec<PathBuf> {
-    find_cli_path_candidates_with_candidates(
+    let extra_candidates = javascript_tool_env_candidates("codex");
+    let user_candidates = home_local_tool_candidates("codex");
+
+    find_cli_path_with_candidate_groups(
         "codex",
         &[
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex",
             "/usr/bin/codex",
         ],
-        &javascript_tool_env_candidates("codex"),
+        &extra_candidates,
+        &user_candidates,
     )
+}
+
+pub(crate) fn find_launchable_cli_path(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+) -> Option<PathBuf> {
+    let extra_candidates = javascript_tool_env_candidates(tool_name);
+    let user_candidates = home_local_tool_candidates(tool_name);
+
+    find_cli_path_with_candidate_groups(
+        tool_name,
+        fixed_candidates,
+        &extra_candidates,
+        &user_candidates,
+    )
+    .into_iter()
+    .next()
+}
+
+pub(crate) fn find_launchable_cli_path_without_shell(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+) -> Option<PathBuf> {
+    let extra_candidates = javascript_tool_env_candidates(tool_name);
+    let user_candidates = home_local_tool_candidates(tool_name);
+
+    find_cli_path_with_candidate_groups_and_shell(
+        tool_name,
+        fixed_candidates,
+        &extra_candidates,
+        &user_candidates,
+        |_| None,
+    )
+    .into_iter()
+    .next()
+}
+
+pub(crate) fn find_launchable_cli_paths_with_login_shell(
+    tool_names: &[&'static str],
+) -> HashMap<&'static str, PathBuf> {
+    if tool_names.is_empty() || tool_names.iter().any(|name| !is_safe_tool_name(name)) {
+        return HashMap::new();
+    }
+
+    let command = format!(
+        "for tool in {}; do path=$(command -v \"$tool\" 2>/dev/null) && printf '%s\\t%s\\n' \"$tool\" \"$path\"; done",
+        tool_names.join(" ")
+    );
+    let shell_started_at = Instant::now();
+    let output = Command::new("/bin/zsh")
+        .args(["-ilc", command.as_str()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let paths = match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8(output.stdout).unwrap_or_default();
+            launchable_cli_paths_from_shell_output(tool_names, &stdout)
+        }
+        _ => HashMap::new(),
+    };
+
+    tracing::info!(
+        requested = tool_names.len(),
+        resolved = paths.len(),
+        elapsed_ms = shell_started_at.elapsed().as_millis() as u64,
+        "CLI login-shell batch fallback resolution completed"
+    );
+    paths
 }
 
 pub(crate) fn prepend_resolved_node_bin_to_path(cmd: &mut std::process::Command) {
@@ -206,6 +287,31 @@ fn find_cli_path_candidates_with_candidates(
     fixed_candidates: &[&'static str],
     extra_candidates: &[PathBuf],
 ) -> Vec<PathBuf> {
+    find_cli_path_with_candidate_groups(tool_name, fixed_candidates, extra_candidates, &[])
+}
+
+fn find_cli_path_with_candidate_groups(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+    user_candidates: &[PathBuf],
+) -> Vec<PathBuf> {
+    find_cli_path_with_candidate_groups_and_shell(
+        tool_name,
+        fixed_candidates,
+        extra_candidates,
+        user_candidates,
+        find_login_shell_cli,
+    )
+}
+
+fn find_cli_path_with_candidate_groups_and_shell(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+    user_candidates: &[PathBuf],
+    find_login_shell: impl FnOnce(&'static str) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(path) = which::which(tool_name) {
@@ -223,6 +329,14 @@ fn find_cli_path_candidates_with_candidates(
         }
     }
 
+    for candidate in user_candidates {
+        // User candidates are built from fixed tool locations under a shape-validated home dir.
+        // codeql[rust/path-injection]
+        if is_launchable_tool_path(tool_name, candidate) {
+            push_unique_path(&mut candidates, candidate.clone());
+        }
+    }
+
     for candidate in fixed_candidates {
         let path = PathBuf::from(candidate);
         // Fixed, app-owned candidate list for GUI launches with stripped PATH.
@@ -232,11 +346,38 @@ fn find_cli_path_candidates_with_candidates(
         }
     }
 
-    if let Some(path) = find_login_shell_cli(tool_name) {
-        push_unique_path(&mut candidates, path);
+    if candidates.is_empty() {
+        let shell_started_at = Instant::now();
+        let shell_path = find_login_shell(tool_name);
+        tracing::info!(
+            tool = tool_name,
+            success = shell_path.is_some(),
+            elapsed_ms = shell_started_at.elapsed().as_millis() as u64,
+            "CLI login-shell fallback resolution completed"
+        );
+        if let Some(path) = shell_path {
+            push_unique_path(&mut candidates, path);
+        }
     }
 
     candidates
+}
+
+#[cfg(test)]
+fn find_cli_path_with_candidate_groups_for_test(
+    tool_name: &'static str,
+    fixed_candidates: &[&'static str],
+    extra_candidates: &[PathBuf],
+    user_candidates: &[PathBuf],
+    find_login_shell: impl FnOnce(&'static str) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    find_cli_path_with_candidate_groups_and_shell(
+        tool_name,
+        fixed_candidates,
+        extra_candidates,
+        user_candidates,
+        find_login_shell,
+    )
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
@@ -269,12 +410,37 @@ fn javascript_tool_env_candidates(tool_name: &'static str) -> Vec<PathBuf> {
     candidates
 }
 
+fn home_local_tool_candidates(tool_name: &'static str) -> Vec<PathBuf> {
+    let Some(home_dir) = tool_path_home_dir() else {
+        return Vec::new();
+    };
+
+    let candidate = home_dir.join(".local").join("bin").join(tool_name);
+    matches_tool_path(tool_name, &candidate)
+        .then_some(candidate)
+        .into_iter()
+        .collect()
+}
+
 fn nvm_versioned_tool_candidates(tool_name: &'static str) -> Vec<PathBuf> {
-    let Some(home_dir) = dirs::home_dir().filter(|path| has_safe_absolute_shape(path)) else {
+    let Some(home_dir) = tool_path_home_dir() else {
         return Vec::new();
     };
 
     nvm_versioned_tool_candidates_from_home(tool_name, &home_dir)
+}
+
+#[cfg(test)]
+fn tool_path_home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .filter(|path| has_safe_absolute_shape(path))
+}
+
+#[cfg(not(test))]
+fn tool_path_home_dir() -> Option<PathBuf> {
+    dirs::home_dir().filter(|path| has_safe_absolute_shape(path))
 }
 
 fn nvm_versioned_tool_candidates_from_home(
@@ -342,7 +508,7 @@ fn parse_nvm_node_version_dir(name: &str) -> Option<(u64, u64, u64)> {
 fn find_login_shell_cli(tool_name: &'static str) -> Option<PathBuf> {
     let command = format!("command -v {tool_name}");
     let output = Command::new("/bin/zsh")
-        .args(["-lc", command.as_str()])
+        .args(["-ilc", command.as_str()])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -352,9 +518,41 @@ fn find_login_shell_cli(tool_name: &'static str) -> Option<PathBuf> {
     }
 
     let stdout = String::from_utf8(output.stdout).ok()?;
-    safe_cli_path_from_shell_output(tool_name, &stdout)
+    launchable_cli_path_from_shell_output(tool_name, &stdout)
 }
 
+pub(crate) fn launchable_cli_path_from_shell_output(
+    tool_name: &str,
+    output: &str,
+) -> Option<PathBuf> {
+    output.lines().rev().find_map(|line| {
+        let candidate = PathBuf::from(line.trim());
+        is_launchable_tool_path(tool_name, &candidate).then_some(candidate)
+    })
+}
+
+fn launchable_cli_paths_from_shell_output(
+    tool_names: &[&'static str],
+    output: &str,
+) -> HashMap<&'static str, PathBuf> {
+    let requested = tool_names.iter().copied().collect::<HashSet<_>>();
+    let mut paths = HashMap::new();
+    for line in output.lines() {
+        let Some((name, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let Some(tool_name) = requested.get(name).copied() else {
+            continue;
+        };
+        let candidate = PathBuf::from(path.trim());
+        if is_launchable_tool_path(tool_name, &candidate) {
+            paths.entry(tool_name).or_insert(candidate);
+        }
+    }
+    paths
+}
+
+#[cfg(test)]
 fn safe_cli_path_from_shell_output(tool_name: &str, output: &str) -> Option<PathBuf> {
     output.lines().rev().find_map(|line| {
         let candidate = PathBuf::from(line.trim());
@@ -376,6 +574,13 @@ fn command_env_var(cmd: &std::process::Command, key: &str) -> Option<OsString> {
 
 fn matches_tool_path(tool_name: &str, path: &Path) -> bool {
     has_safe_absolute_shape(path) && path.file_name() == Some(OsStr::new(tool_name))
+}
+
+fn is_safe_tool_name(tool_name: &str) -> bool {
+    !tool_name.is_empty()
+        && tool_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn is_launchable_tool_path(tool_name: &str, path: &Path) -> bool {
@@ -435,13 +640,17 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, find_claude_cli_path, find_codex_cli_candidates,
-        find_codex_cli_path, nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
-        prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
+        agent_subprocess_env_path_from_parts, find_claude_cli_path,
+        find_cli_path_with_candidate_groups_for_test, find_codex_cli_candidates,
+        find_codex_cli_path, find_launchable_cli_path, find_launchable_cli_path_without_shell,
+        find_launchable_cli_paths_with_login_shell, is_safe_tool_name,
+        launchable_cli_paths_from_shell_output, nvm_versioned_tool_candidates_from_home,
+        parse_nvm_node_version_dir, prepend_resolved_node_bin_to_path, resolve_node_cli_path,
+        safe_cli_path_from_shell_output, TEST_ENV_MUTEX,
     };
+    use std::cell::Cell;
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
 
     fn write_fake_tool(path: &Path) {
         std::fs::write(path, "").expect("write fake tool");
@@ -455,8 +664,6 @@ mod tests {
             std::fs::set_permissions(path, permissions).expect("mark fake tool executable");
         }
     }
-
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     struct EnvGuard {
         key: &'static str,
@@ -506,6 +713,145 @@ mod tests {
     }
 
     #[test]
+    fn shell_batch_output_accepts_only_requested_safe_launchable_tools() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cursor = temp_dir.path().join("cursor");
+        let code = temp_dir.path().join("code");
+        write_fake_tool(&cursor);
+        write_fake_tool(&code);
+        let output = format!(
+            "cursor\t{}\ncode\t{}\nother\t{}\n",
+            cursor.display(),
+            code.display(),
+            temp_dir.path().join("other").display()
+        );
+
+        let paths = launchable_cli_paths_from_shell_output(&["cursor", "code"], &output);
+
+        assert_eq!(paths.get("cursor"), Some(&cursor));
+        assert_eq!(paths.get("code"), Some(&code));
+        assert!(!paths.contains_key("other"));
+    }
+
+    #[test]
+    fn shell_batch_output_ignores_malformed_lines() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cursor = temp_dir.path().join("cursor");
+        write_fake_tool(&cursor);
+        let output = format!(
+            "malformed\ncursor\t{}\ncode\t{}\n",
+            cursor.display(),
+            temp_dir.path().join("missing-code").display()
+        );
+
+        let paths = launchable_cli_paths_from_shell_output(&["cursor", "code"], &output);
+
+        assert_eq!(paths.get("cursor"), Some(&cursor));
+        assert!(!paths.contains_key("code"));
+    }
+
+    #[test]
+    fn safe_tool_name_rejects_shell_metacharacters() {
+        assert!(is_safe_tool_name("code-insiders"));
+        assert!(is_safe_tool_name("explorer.exe"));
+        assert!(!is_safe_tool_name("code;rm"));
+        assert!(!is_safe_tool_name("bad tool"));
+    }
+
+    #[test]
+    fn find_launchable_cli_path_uses_nvm_bin_candidate() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let nvm_bin = temp_dir.path().join("nvm-bin");
+        std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
+        let launcher = nvm_bin.join("fake-launcher");
+        write_fake_tool(&launcher);
+
+        let _path = EnvGuard::set_os("PATH", "");
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _nvm_bin = EnvGuard::set_os("NVM_BIN", &nvm_bin);
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(
+            find_launchable_cli_path("fake-launcher", &[]),
+            Some(launcher)
+        );
+    }
+
+    #[test]
+    fn find_launchable_cli_path_without_shell_uses_fixed_candidate() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let launcher = temp_dir.path().join("fake-launcher");
+        write_fake_tool(&launcher);
+        let fixed_candidate: &'static str =
+            Box::leak(launcher.to_string_lossy().into_owned().into_boxed_str());
+
+        let _path = EnvGuard::set_os("PATH", "");
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+        let _nvm_bin = EnvGuard::unset("NVM_BIN");
+        let _volta_home = EnvGuard::unset("VOLTA_HOME");
+
+        assert_eq!(
+            find_launchable_cli_path_without_shell("fake-launcher", &[fixed_candidate]),
+            Some(launcher)
+        );
+    }
+
+    #[test]
+    fn login_shell_batch_rejects_empty_or_unsafe_tool_names() {
+        assert!(find_launchable_cli_paths_with_login_shell(&[]).is_empty());
+        assert!(find_launchable_cli_paths_with_login_shell(&["code;rm"]).is_empty());
+    }
+
+    #[test]
+    fn login_shell_batch_returns_empty_for_missing_tool() {
+        let paths = find_launchable_cli_paths_with_login_shell(&["definitely-missing-ralphx-tool"]);
+
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn cli_resolution_skips_login_shell_when_candidate_exists() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let candidate = temp_dir.path().join("fake-ralphx-cli");
+        write_fake_tool(&candidate);
+        let shell_called = Cell::new(false);
+
+        let paths = find_cli_path_with_candidate_groups_for_test(
+            "fake-ralphx-cli",
+            &[],
+            std::slice::from_ref(&candidate),
+            &[],
+            |_| {
+                shell_called.set(true);
+                None
+            },
+        );
+
+        assert_eq!(paths, vec![candidate]);
+        assert!(
+            !shell_called.get(),
+            "login shell fallback must be last-resort only"
+        );
+    }
+
+    #[test]
+    fn cli_resolution_uses_login_shell_when_no_candidate_exists() {
+        let shell_candidate = PathBuf::from("/tmp/fake-ralphx-cli");
+        let shell_called = Cell::new(false);
+
+        let paths =
+            find_cli_path_with_candidate_groups_for_test("fake-ralphx-cli", &[], &[], &[], |_| {
+                shell_called.set(true);
+                Some(shell_candidate.clone())
+            });
+
+        assert!(shell_called.get());
+        assert_eq!(paths, vec![shell_candidate]);
+    }
+
+    #[test]
     fn agent_subprocess_path_preserves_existing_path_and_adds_common_dev_bins() {
         let path = agent_subprocess_env_path_from_parts(
             Some(OsStr::new("/existing/bin:/usr/bin")),
@@ -522,7 +868,7 @@ mod tests {
 
     #[test]
     fn resolve_node_cli_path_uses_nvm_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let nvm_bin = temp_dir.path().join("nvm-bin");
         std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
@@ -538,7 +884,7 @@ mod tests {
 
     #[test]
     fn resolve_node_cli_path_uses_volta_home_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let volta_home = temp_dir.path().join("volta-home");
         let volta_bin = volta_home.join("bin");
@@ -555,7 +901,7 @@ mod tests {
 
     #[test]
     fn resolve_node_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let nvm_node_bin = temp_dir
             .path()
@@ -578,7 +924,7 @@ mod tests {
 
     #[test]
     fn find_codex_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let older_codex_bin = temp_dir
             .path()
@@ -616,7 +962,7 @@ mod tests {
 
     #[test]
     fn find_claude_cli_path_uses_nvm_versioned_bin_when_path_is_stripped() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let claude_bin = temp_dir
             .path()
@@ -680,7 +1026,7 @@ mod tests {
 
     #[test]
     fn prepend_resolved_node_bin_to_path_preserves_existing_path() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let mut cmd = std::process::Command::new("/usr/bin/env");
         cmd.env("PATH", "/usr/bin:/bin");
@@ -710,7 +1056,7 @@ mod tests {
     }
     #[test]
     fn prepend_resolved_node_bin_to_path_is_noop_when_node_bin_is_already_first() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let mut cmd = std::process::Command::new("/usr/bin/env");
         cmd.env("PATH", "/tmp/fake-node-bin:/usr/bin:/bin");
@@ -735,7 +1081,7 @@ mod tests {
 
     #[test]
     fn prepend_resolved_node_bin_to_path_uses_inherited_path_when_command_path_is_unset() {
-        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
         let _node_override = EnvGuard::set_os("RALPHX_NODE_PATH", "/tmp/fake-node-bin/node");
         let _path = EnvGuard::set_os("PATH", "/usr/bin:/bin");
         let mut cmd = std::process::Command::new("/usr/bin/env");

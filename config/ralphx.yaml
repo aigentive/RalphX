@@ -70,7 +70,7 @@ timeouts:
     team_line_read_secs: 3600 # Env: RALPHX_STREAM_TEAM_LINE_READ_SECS
     # chat_service_streaming.rs — team lead stream stall limit (generous: 1 hour)
     team_parse_stall_secs: 3600 # Env: RALPHX_STREAM_TEAM_PARSE_STALL_SECS
-    # chat_service_streaming.rs — absolute wall-clock cap for any agent stream (prevents runaway processes)
+    # chat_service_streaming.rs — max idle time (no meaningful activity) before killing agent stream
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
 
 reconciliation:
@@ -149,6 +149,20 @@ git:
   retry_backoff_secs: [1, 2, 4]
   # side_effects.rs — age threshold for removing a stale .git/index.lock file
   index_lock_stale_secs: 5 # Env: RALPHX_GIT_INDEX_LOCK_STALE_SECS
+  # unified_chat_commands.rs — short backend TTL for repeated workspace freshness checks
+  workspace_freshness_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_FRESHNESS_CACHE_TTL_MS
+  # diff_commands.rs — short backend TTL for workspace review context/payload reuse
+  workspace_review_cache_ttl_ms: 2000 # Env: RALPHX_GIT_WORKSPACE_REVIEW_CACHE_TTL_MS
+  # agent_workspace_pr_description.rs — short backend TTL for precomputed publish PR descriptions
+  workspace_pr_description_cache_ttl_ms: 300000 # Env: RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS
+  # diff_commands.rs — short backend TTL for live GitHub PR annotation payload reuse
+  workspace_pr_annotations_cache_ttl_ms: 30000 # Env: RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS
+  # gh_cli_github_service.rs — max annotated check runs queried for per-run annotations per PR payload
+  workspace_pr_annotations_check_run_fetch_limit: 10 # Env: RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT
+  # agent_workspace_external_pr_reconciliation.rs — TTL for external PR lookup attempts on unlinked agent workspaces
+  agent_workspace_pr_reconciliation_cache_ttl_ms: 30000 # Env: RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS
+  # orphan_worktree_cleanup.rs — retry window for unchanged dirty/unsafe orphan agent-worktree cleanup markers
+  orphan_worktree_cleanup_marker_retry_secs: 86400 # Env: RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS
   # merge_coordination.rs — settle time after SIGTERM before worktree deletion
   agent_kill_settle_secs: 0 # Env: RALPHX_GIT_AGENT_KILL_SETTLE_SECS
   # merge_coordination.rs — timeout for each stop_agent() call in pre-merge cleanup step 0

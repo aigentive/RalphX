@@ -28,6 +28,12 @@ import {
   AGENT_MODEL_OPTIONS,
   AGENT_PROVIDER_OPTIONS,
 } from "./agentOptions";
+import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
+import {
+  buildAgentProviderAvailabilityOptions,
+  getProviderAvailabilityMessage,
+  supportedEffortsForProvider,
+} from "./agentProviderAvailability";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 
@@ -37,6 +43,8 @@ interface AgentComposerOption {
   id: string;
   label: string;
   description?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }
 
 interface AgentsActiveConversationPanelProps {

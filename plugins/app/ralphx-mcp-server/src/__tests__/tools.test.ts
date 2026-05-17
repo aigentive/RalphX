@@ -20,8 +20,14 @@ import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import {
+  callAgentWorkspaceTool,
+  callCheckAgentWorkspacePublishReadinessTool,
   callCompleteAgentWorkspaceRepairTool,
+  callGetAgentWorkspacePublishStatusTool,
+  callPublishAgentWorkspaceTool,
   callSubmitAgentWorkspacePrDescriptionTool,
+  callUpdateAgentWorkspaceFromBaseTool,
+  isAgentWorkspaceToolName,
 } from '../agent-workspace-tools.js';
 import {
   IDEATION_TEAM_LEAD,
@@ -45,6 +51,7 @@ import {
   PLAN_CRITIC_COMPLETENESS,
   PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
   REVIEWER,
+  GENERAL_WORKER,
   WORKER,
   MERGER,
   CHAT_PROJECT,

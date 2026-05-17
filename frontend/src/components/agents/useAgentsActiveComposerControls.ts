@@ -17,7 +17,6 @@ import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
 
 interface UseAgentsActiveComposerControlsArgs {
   activeConversation: AgentConversation | null;
-  activeConversationModeLocked: boolean;
   activeProjectId: string | null;
   activeWorkspace: AgentConversationWorkspace | null;
   defaultProjectId: string | null;
@@ -37,7 +36,6 @@ interface UseAgentsActiveComposerControlsArgs {
 
 export function useAgentsActiveComposerControls({
   activeConversation,
-  activeConversationModeLocked,
   activeProjectId,
   activeWorkspace,
   defaultProjectId,
@@ -71,7 +69,7 @@ export function useAgentsActiveComposerControls({
   );
 
   const handleActiveModelChange = useCallback(
-    (modelId: string) => {
+    (modelId: string, providerSupportedEfforts?: readonly string[] | null) => {
       if (!selectedConversationId || !activeProjectId) {
         return;
       }
@@ -94,8 +92,7 @@ export function useAgentsActiveComposerControls({
         !selectedConversationId ||
         !activeProjectId ||
         !activeConversation ||
-        activeConversation.contextType !== "project" ||
-        activeConversationModeLocked
+        activeConversation.contextType !== "project"
       ) {
         return;
       }
@@ -126,7 +123,6 @@ export function useAgentsActiveComposerControls({
     },
     [
       activeConversation,
-      activeConversationModeLocked,
       activeProjectId,
       activeWorkspace,
       invalidateProjectConversations,
@@ -134,6 +130,16 @@ export function useAgentsActiveComposerControls({
       selectedConversationId,
     ]
   );
+
+  const handleActiveConversationModeMenuOpen = useCallback(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+    void queryClient.refetchQueries({
+      queryKey: agentWorkspaceKeys.workspace(selectedConversationId),
+      exact: true,
+    });
+  }, [queryClient, selectedConversationId]);
 
   return {
     activeProjectOptions,

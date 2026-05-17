@@ -23,5 +23,11 @@ export function resolveConversationAgentMode(
 }
 
 export function isWorkspaceModeLocked(workspace: AgentConversationWorkspace | null): boolean {
-  return Boolean(workspace?.linkedIdeationSessionId || workspace?.linkedPlanBranchId);
+  if (!workspace) {
+    return false;
+  }
+  if (workspace.modeSwitchLocked !== undefined) {
+    return workspace.modeSwitchLocked;
+  }
+  return Boolean(workspace.linkedIdeationSessionId || workspace.linkedPlanBranchId);
 }

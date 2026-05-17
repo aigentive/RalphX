@@ -8,8 +8,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
     pub(super) async fn retry_deferred_merges_impl(&self, project_id: &str) {
         use crate::domain::state_machine::transition_handler::{
             clear_merge_deferred_metadata, has_merge_deferred_metadata,
-            is_merge_deferred_timed_out, DEFERRED_MERGE_TIMEOUT_SECONDS,
-            set_trigger_origin,
+            is_merge_deferred_timed_out, set_trigger_origin, DEFERRED_MERGE_TIMEOUT_SECONDS,
         };
 
         let pid = ProjectId::from_string(project_id.to_string());
@@ -175,11 +174,13 @@ impl<R: Runtime> TaskSchedulerService<R> {
     pub(super) async fn retry_main_merges_impl(&self) {
         use crate::domain::state_machine::transition_handler::{
             clear_main_merge_deferred_metadata, has_main_merge_deferred_metadata,
-            is_main_merge_deferred_timed_out, set_trigger_origin,
-            DEFERRED_MERGE_TIMEOUT_SECONDS,
+            is_main_merge_deferred_timed_out, set_trigger_origin, DEFERRED_MERGE_TIMEOUT_SECONDS,
         };
 
+        let started_at = std::time::Instant::now();
+
         // Query all projects for main-merge-deferred tasks
+        let projects_started_at = std::time::Instant::now();
         let projects = match self.project_repo.get_all().await {
             Ok(p) => p,
             Err(e) => {
@@ -190,35 +191,50 @@ impl<R: Runtime> TaskSchedulerService<R> {
                 return;
             }
         };
+        let projects_elapsed_ms = projects_started_at.elapsed().as_millis();
 
         let mut deferred_tasks: Vec<Task> = Vec::new();
+        let mut pending_merge_tasks_seen = 0usize;
+        let task_scan_started_at = std::time::Instant::now();
 
         for project in &projects {
-            let tasks = match self.task_repo.get_by_project(&project.id).await {
+            let tasks = match self
+                .task_repo
+                .get_by_status(&project.id, InternalStatus::PendingMerge)
+                .await
+            {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         project_id = project.id.as_str(),
-                        "Failed to fetch tasks for main merge retry"
+                        "Failed to fetch PendingMerge tasks for main merge retry"
                     );
                     continue;
                 }
             };
+            pending_merge_tasks_seen += tasks.len();
 
             for task in tasks {
-                if task.internal_status == InternalStatus::PendingMerge
-                    && has_main_merge_deferred_metadata(&task)
-                {
+                if has_main_merge_deferred_metadata(&task) {
                     deferred_tasks.push(task);
                 }
             }
         }
+        let task_scan_elapsed_ms = task_scan_started_at.elapsed().as_millis();
 
         let deferred_count = deferred_tasks.len();
 
         if deferred_count == 0 {
-            tracing::debug!("No main-merge-deferred tasks to retry");
+            tracing::info!(
+                projects_seen = projects.len(),
+                pending_merge_tasks_seen,
+                deferred_count,
+                projects_elapsed_ms,
+                task_scan_elapsed_ms,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Main merge retry scan completed with no deferred tasks"
+            );
             return;
         }
 
@@ -227,6 +243,8 @@ impl<R: Runtime> TaskSchedulerService<R> {
             "Found main-merge-deferred tasks to retry (all agents now idle)"
         );
 
+        let mut skipped_sibling_guard = 0usize;
+        let mut retry_attempted = false;
         for task in deferred_tasks {
             // Check if this deferred merge has exceeded the configured timeout.
             // If so, bypass the sibling guard and force a retry with a warning.
@@ -244,6 +262,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
                                     || t.is_terminal()
                             });
                             if !all_siblings_terminal {
+                                skipped_sibling_guard += 1;
                                 tracing::info!(
                                     task_id = task.id.as_str(),
                                     session_id = %session_id,
@@ -381,9 +400,22 @@ impl<R: Runtime> TaskSchedulerService<R> {
             transition_service
                 .execute_entry_actions(&task.id, &updated, InternalStatus::PendingMerge)
                 .await;
+            retry_attempted = true;
 
             // Only retry one main merge at a time to serialize them properly
             break;
         }
+
+        tracing::info!(
+            projects_seen = projects.len(),
+            pending_merge_tasks_seen,
+            deferred_count,
+            skipped_sibling_guard,
+            retry_attempted,
+            projects_elapsed_ms,
+            task_scan_elapsed_ms,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "Main merge retry completed"
+        );
     }
 }

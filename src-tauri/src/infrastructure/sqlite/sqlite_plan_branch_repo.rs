@@ -8,11 +8,11 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 
 use super::DbConnection;
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     ArtifactId, ExecutionPlanId, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
     ProjectId, TaskId,
 };
-use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::{AppError, AppResult};
 
@@ -257,6 +257,128 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                         AppError::Database(format!("Failed to collect plan branches: {}", e))
                     })?;
                 Ok(branches)
+            })
+            .await
+    }
+
+    async fn get_startup_pr_recovery_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PlanBranch>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT * FROM plan_branches
+                         WHERE project_id = ?1
+                           AND status = 'active'
+                           AND pr_eligible = 1
+                           AND merge_task_id IS NOT NULL
+                         ORDER BY created_at DESC",
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to prepare startup PR recovery query: {}",
+                            e
+                        ))
+                    })?;
+                let branches = stmt
+                    .query_map(rusqlite::params![project_id.as_str()], |row| {
+                        PlanBranch::from_row(row)
+                    })
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to query startup PR recovery branches: {}",
+                            e
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to collect startup PR recovery branches: {}",
+                            e
+                        ))
+                    })?;
+                Ok(branches)
+            })
+            .await
+    }
+
+    async fn get_terminal_local_cleanup_candidates_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PlanBranch>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT * FROM plan_branches
+                         WHERE project_id = ?1
+                           AND (status = 'merged' OR pr_status = 'Merged')
+                           AND (
+                             local_cleanup_status IS NULL
+                             OR (
+                               local_cleanup_status IN ('unsafe', 'target_ref_missing')
+                               AND local_cleanup_checked_at IS NOT NULL
+                               AND local_cleanup_checked_at < strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now', '-24 hours')
+                             )
+                           )
+                         ORDER BY created_at DESC",
+                    )
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to prepare terminal cleanup query: {}",
+                            e
+                        ))
+                    })?;
+                let branches = stmt
+                    .query_map(rusqlite::params![project_id.as_str()], |row| {
+                        PlanBranch::from_row(row)
+                    })
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to query terminal cleanup plan branches: {}",
+                            e
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        AppError::Database(format!(
+                            "Failed to collect terminal cleanup plan branches: {}",
+                            e
+                        ))
+                    })?;
+                Ok(branches)
+            })
+            .await
+    }
+
+    async fn mark_local_cleanup_status(
+        &self,
+        id: &PlanBranchId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let id = id.as_str().to_string();
+        let status = status.to_string();
+        let checked_at = checked_at.to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE plan_branches
+                     SET local_cleanup_status = ?1, local_cleanup_checked_at = ?2
+                     WHERE id = ?3",
+                    rusqlite::params![status, checked_at, id.as_str()],
+                )
+                .map_err(|e| {
+                    AppError::Database(format!(
+                        "Failed to mark plan branch local cleanup status: {}",
+                        e
+                    ))
+                })?;
+                Ok(())
             })
             .await
     }

@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
 
@@ -23,8 +24,9 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
-    default_approval_policy_for_harness, default_sandbox_mode_for_harness, AgentHarnessKind,
-    AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness,
+    lightweight_model_for_provider, AgentHarnessKind, AgenticClient, LogicalEffort,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
@@ -38,11 +40,12 @@ use crate::domain::repositories::{
     ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
     IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
     MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
-    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, ReviewRepository, ReviewSettingsRepository,
-    SessionLinkRepository, TaskDependencyRepository, TaskProposalRepository, TaskQARepository,
-    TaskRepository, TaskStepRepository, TeamMessageRepository, TeamSessionRepository,
-    WebhookRegistrationRepository, WorkflowRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, ReviewRepository,
+    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
+    TeamMessageRepository, TeamSessionRepository, WebhookRegistrationRepository,
+    WorkflowRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -78,19 +81,20 @@ use crate::infrastructure::sqlite::{
     SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteApiKeyRepository,
     SqliteAppStateRepository, SqliteArtifactBucketRepository, SqliteArtifactFlowRepository,
     SqliteArtifactRepository, SqliteChatAttachmentRepository, SqliteChatConversationRepository,
-    SqliteChatMessageRepository, SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
-    SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
-    SqliteGlobalExecutionSettingsRepository, SqliteIdeationEffortSettingsRepository,
-    SqliteIdeationModelSettingsRepository, SqliteIdeationSessionRepository,
-    SqliteIdeationSettingsRepository, SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository,
-    SqliteMemoryEventRepository, SqliteMethodologyRepository, SqlitePermissionRepository,
-    SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository, SqliteProcessRepository,
-    SqliteProjectRepository, SqliteProposalDependencyRepository, SqliteQuestionRepository,
-    SqliteReviewIssueRepository, SqliteReviewRepository, SqliteReviewSettingsRepository,
-    SqliteRunningAgentRegistry, SqliteSessionLinkRepository, SqliteTaskDependencyRepository,
-    SqliteTaskProposalRepository, SqliteTaskQARepository, SqliteTaskRepository,
-    SqliteTaskStepRepository, SqliteTeamMessageRepository, SqliteTeamSessionRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteChatMessageRepository, SqliteChatTimelineRepository, SqliteDelegatedSessionRepository,
+    SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
+    SqliteExternalEventsRepository, SqliteGlobalExecutionSettingsRepository,
+    SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
+    SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
+    SqliteMemoryArchiveRepository, SqliteMemoryEntryRepository, SqliteMemoryEventRepository,
+    SqliteMethodologyRepository, SqliteOrphanWorktreeCleanupMarkerRepository,
+    SqlitePermissionRepository, SqlitePlanBranchRepository, SqlitePlanSelectionStatsRepository,
+    SqliteProcessRepository, SqliteProjectRepository, SqliteProposalDependencyRepository,
+    SqliteQuestionRepository, SqliteReviewIssueRepository, SqliteReviewRepository,
+    SqliteReviewSettingsRepository, SqliteRunningAgentRegistry, SqliteSessionLinkRepository,
+    SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
+    SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
+    SqliteTeamSessionRepository, SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
 
@@ -157,10 +161,14 @@ pub struct AppState {
     pub proposal_dependency_repo: Arc<dyn ProposalDependencyRepository>,
     /// Chat message repository
     pub chat_message_repo: Arc<dyn ChatMessageRepository>,
+    /// Normalized visible chat timeline repository
+    pub chat_timeline_repo: Arc<dyn ChatTimelineRepository>,
     /// Chat conversation repository (for context-aware chat)
     pub chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     /// Conversation-owned branch/worktree repository for Agents starter workspaces
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    /// Startup orphan agent-worktree cleanup backoff markers
+    pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
     pub agent_terminal_service: Arc<AgentTerminalService>,
     /// Agent run repository (for tracking Claude agent executions)
@@ -282,6 +290,17 @@ impl AppState {
         }
     }
 
+    fn lock_utility_agent_runtime_model(
+        runtime: ResolvedBackgroundAgentRuntime,
+    ) -> ResolvedBackgroundAgentRuntime {
+        let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        ResolvedBackgroundAgentRuntime {
+            model: Some(lightweight_model_for_provider(harness).to_string()),
+            logical_effort: Some(LogicalEffort::Medium),
+            ..runtime
+        }
+    }
+
     async fn resolve_background_agent_runtime_for_harness(
         &self,
         harness: AgentHarnessKind,
@@ -319,16 +338,14 @@ impl AppState {
             .explicit_available_harness_client(harness)
             .await
         {
-            return Ok(
-                self.background_agent_runtime_for_harness(
-                    client,
-                    harness,
-                    provider_settings.model,
-                    provider_settings.effort,
-                    provider_settings.approval_policy,
-                    provider_settings.sandbox_mode,
-                )
-            );
+            return Ok(self.background_agent_runtime_for_harness(
+                client,
+                harness,
+                provider_settings.model,
+                provider_settings.effort,
+                provider_settings.approval_policy,
+                provider_settings.sandbox_mode,
+            ));
         }
 
         Err(AppError::Infrastructure(format!(
@@ -369,9 +386,20 @@ impl AppState {
         execution_state: Arc<ExecutionState>,
         app_handle: Option<AppHandle<R>>,
     ) -> TaskTransitionService<R> {
+        let started_at = Instant::now();
         let deps = RuntimeFactoryDeps::from_app_state(self);
+        tracing::info!(
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "AppState transition service deps built"
+        );
 
-        build_transition_service_from_deps(app_handle, execution_state, &deps)
+        let started_at = Instant::now();
+        let service = build_transition_service_from_deps(app_handle, execution_state, &deps);
+        tracing::info!(
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "AppState transition service built"
+        );
+        service
     }
 
     pub fn build_task_scheduler_for_runtime<R: Runtime>(
@@ -458,8 +486,20 @@ impl AppState {
         &self,
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        self.resolve_ideation_background_agent_runtime(project_id)
-            .await
+        let runtime = self
+            .resolve_ideation_background_agent_runtime(project_id)
+            .await?;
+        Ok(Self::lock_utility_agent_runtime_model(runtime))
+    }
+
+    pub(crate) async fn resolve_project_analyzer_runtime_for_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let runtime = self
+            .resolve_ideation_background_agent_runtime(project_id)
+            .await?;
+        Ok(Self::lock_utility_agent_runtime_model(runtime))
     }
 
     pub(crate) async fn resolve_session_namer_runtime_for_session(
@@ -489,12 +529,13 @@ impl AppState {
         project_id: Option<&str>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if let Some(harness) = conversation.provider_harness {
-            return self
+            let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "session namer owning conversation",
                 )
-                .await;
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
         }
 
         self.resolve_session_namer_runtime_for_project(project_id)
@@ -506,12 +547,13 @@ impl AppState {
         conversation: &ChatConversation,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if let Some(harness) = conversation.provider_harness {
-            return self
+            let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "PR describer owning conversation",
                 )
-                .await;
+                .await?;
+            return Ok(Self::lock_utility_agent_runtime_model(runtime));
         }
 
         let default_provider = crate::application::resolve_enabled_default_provider(
@@ -520,11 +562,13 @@ impl AppState {
         )
         .await
         .map_err(AppError::Infrastructure)?;
-        self.resolve_background_agent_runtime_for_harness(
-            default_provider.provider,
-            "PR describer default provider",
-        )
-        .await
+        let runtime = self
+            .resolve_background_agent_runtime_for_harness(
+                default_provider.provider,
+                "PR describer default provider",
+            )
+            .await?;
+        Ok(Self::lock_utility_agent_runtime_model(runtime))
     }
 
     /// Create AppState for production use with SQLite repositories.
@@ -649,11 +693,17 @@ impl AppState {
             chat_message_repo: Arc::new(SqliteChatMessageRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            chat_timeline_repo: Arc::new(SqliteChatTimelineRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             chat_conversation_repo: Arc::new(SqliteChatConversationRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
@@ -830,9 +880,13 @@ impl AppState {
             ))),
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
+            chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -945,9 +999,13 @@ impl AppState {
             ))),
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
+            chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -1072,9 +1130,13 @@ impl AppState {
                 Arc::clone(&shared_conn),
             )),
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
+            chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 SqliteAgentConversationWorkspaceRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
@@ -1183,9 +1245,13 @@ impl AppState {
             task_proposal_repo: Arc::clone(&task_proposal_repo),
             proposal_dependency_repo: Arc::new(MemoryProposalDependencyRepository::new()),
             chat_message_repo: Arc::new(MemoryChatMessageRepository::new()),
+            chat_timeline_repo: Arc::new(MemoryChatTimelineRepository::new()),
             chat_conversation_repo: Arc::new(MemoryChatConversationRepository::new()),
             agent_conversation_workspace_repo: Arc::new(
                 MemoryAgentConversationWorkspaceRepository::new(),
+            ),
+            orphan_worktree_cleanup_marker_repo: Arc::new(
+                MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),

@@ -166,9 +166,10 @@ export function useGitDiff({
         // Convert API response to DiffData format
         const diffData: DiffData = {
           filePath: fileDiff.filePath,
-          oldContent: fileDiff.oldContent,
-          newContent: fileDiff.newContent,
-          hunks: [], // SimpleDiffView computes hunks from content
+          hunks: fileDiff.hunks,
+          oldTotalLines: fileDiff.oldTotalLines,
+          newTotalLines: fileDiff.newTotalLines,
+          isBinary: fileDiff.isBinary,
           language: fileDiff.language || getLanguageFromPath(filePath),
         };
 

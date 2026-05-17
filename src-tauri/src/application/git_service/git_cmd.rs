@@ -9,11 +9,56 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::apply_git_subprocess_env;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
+use std::panic::Location;
 use std::path::Path;
 use std::process::{Output, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use tokio::process::Command;
+use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::timeout;
+
+const SLOW_GIT_COMMAND_MS: u64 = 500;
+const GIT_PROCESS_CONCURRENCY: usize = 4;
+const GIT_BACKGROUND_CONCURRENCY: usize = 1;
+const GIT_ADMISSION_WAIT_LOG_MS: u128 = 50;
+
+static GIT_PROCESS_PERMITS: Semaphore = Semaphore::const_new(GIT_PROCESS_CONCURRENCY);
+static GIT_BACKGROUND_PERMITS: Semaphore = Semaphore::const_new(GIT_BACKGROUND_CONCURRENCY);
+static GIT_FOREGROUND_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+tokio::task_local! {
+    static GIT_COMMAND_LANE_OVERRIDE: GitCommandLane;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitCommandLane {
+    Foreground,
+    Background,
+}
+
+impl GitCommandLane {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Foreground => "foreground",
+            Self::Background => "background",
+        }
+    }
+}
+
+struct GitAdmissionGuard {
+    lane: GitCommandLane,
+    _global: SemaphorePermit<'static>,
+    _background: Option<SemaphorePermit<'static>>,
+}
+
+impl Drop for GitAdmissionGuard {
+    fn drop(&mut self) {
+        if self.lane == GitCommandLane::Foreground {
+            GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
 
 // ── Transient error pattern constants ────────────────────────────────────────
 // Source: git stderr output on Linux/macOS. These are transient errors caused by
@@ -157,69 +202,398 @@ async fn exec_with_retry_async(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+pub(crate) async fn with_git_command_lane<F, T>(lane: GitCommandLane, future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    GIT_COMMAND_LANE_OVERRIDE.scope(lane, future).await
+}
+
 /// Run a git command asynchronously, returning full Output.
 ///
 /// Uses `tokio::process::Command` with `kill_on_drop(true)` — when the timeout
 /// fires, the future is dropped, which kills the git process immediately.
 /// Applies a configurable timeout and retries for transient errors.
-pub(crate) async fn run(args: &[&str], cwd: &Path) -> AppResult<Output> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let timeout_secs = git_runtime_config().cmd_timeout_secs;
+#[track_caller]
+pub(crate) fn run<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    run_in_lane(args, cwd, GitCommandLane::Foreground)
+}
 
-    timeout(
-        Duration::from_secs(timeout_secs),
-        exec_with_retry_async(&args, &cwd, None),
-    )
-    .await
-    .map_err(|_| AppError::GitOperation(format!("git command timed out after {timeout_secs}s")))?
+/// Run a git command in the background lane.
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn run_background<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    run_in_lane(args, cwd, GitCommandLane::Background)
+}
+
+#[track_caller]
+pub(crate) fn run_in_lane<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+    default_lane: GitCommandLane,
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    let caller = Location::caller();
+    async move {
+        let lane = current_git_command_lane(default_lane);
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let timeout_secs = git_runtime_config().cmd_timeout_secs;
+        let _admission = acquire_git_admission(lane, "run", &args, &cwd).await?;
+        let started = Instant::now();
+
+        match timeout(
+            Duration::from_secs(timeout_secs),
+            exec_with_retry_async(&args, &cwd, None),
+        )
+        .await
+        {
+            Ok(result) => {
+                log_git_command_result("run", lane, &args, &cwd, started, caller, result.as_ref());
+                result
+            }
+            Err(_) => {
+                log_git_command_timeout("run", lane, &args, &cwd, started, caller, timeout_secs);
+                Err(AppError::GitOperation(format!(
+                    "git command timed out after {timeout_secs}s"
+                )))
+            }
+        }
+    }
 }
 
 /// Run a git command with additional environment variables.
 ///
 /// Uses `tokio::process::Command` with `kill_on_drop(true)`.
 /// Applies a configurable timeout and retries for transient errors.
-pub(crate) async fn run_with_env(
-    args: &[&str],
-    cwd: &Path,
-    env: &[(&str, &str)],
-) -> AppResult<Output> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let env: Vec<(String, String)> = env
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    let timeout_secs = git_runtime_config().cmd_timeout_secs;
+#[track_caller]
+pub(crate) fn run_with_env<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+    env: &'a [(&'a str, &'a str)],
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    run_with_env_in_lane(args, cwd, env, GitCommandLane::Foreground)
+}
 
-    timeout(
-        Duration::from_secs(timeout_secs),
-        exec_with_retry_async(&args, &cwd, Some(&env)),
-    )
-    .await
-    .map_err(|_| AppError::GitOperation(format!("git command timed out after {timeout_secs}s")))?
+#[track_caller]
+pub(crate) fn run_with_env_in_lane<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+    env: &'a [(&'a str, &'a str)],
+    default_lane: GitCommandLane,
+) -> impl std::future::Future<Output = AppResult<Output>> + 'a {
+    let caller = Location::caller();
+    async move {
+        let lane = current_git_command_lane(default_lane);
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let timeout_secs = git_runtime_config().cmd_timeout_secs;
+        let _admission = acquire_git_admission(lane, "run_with_env", &args, &cwd).await?;
+        let started = Instant::now();
+
+        match timeout(
+            Duration::from_secs(timeout_secs),
+            exec_with_retry_async(&args, &cwd, Some(&env)),
+        )
+        .await
+        {
+            Ok(result) => {
+                log_git_command_result(
+                    "run_with_env",
+                    lane,
+                    &args,
+                    &cwd,
+                    started,
+                    caller,
+                    result.as_ref(),
+                );
+                result
+            }
+            Err(_) => {
+                log_git_command_timeout(
+                    "run_with_env",
+                    lane,
+                    &args,
+                    &cwd,
+                    started,
+                    caller,
+                    timeout_secs,
+                );
+                Err(AppError::GitOperation(format!(
+                    "git command timed out after {timeout_secs}s"
+                )))
+            }
+        }
+    }
 }
 
 /// Run a git command returning just success/failure (for existence checks).
 ///
 /// Uses `tokio::process::Command` with `kill_on_drop(true)`.
 /// Status checks are not retried (they should be fast and idempotent).
-pub(crate) async fn run_status(args: &[&str], cwd: &Path) -> AppResult<bool> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let cwd = cwd.to_path_buf();
-    let timeout_secs = git_runtime_config().cmd_timeout_secs;
+#[track_caller]
+pub(crate) fn run_status<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+) -> impl std::future::Future<Output = AppResult<bool>> + 'a {
+    run_status_in_lane(args, cwd, GitCommandLane::Foreground)
+}
 
-    let result = timeout(Duration::from_secs(timeout_secs), async {
-        let mut cmd = build_git_command(&args, &cwd, &[]);
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        cmd.status().await.map(|s| s.success()).unwrap_or(false)
-    })
-    .await
-    .map_err(|_| {
-        AppError::GitOperation(format!("git status check timed out after {timeout_secs}s"))
-    })?;
+/// Run a git status-style command in the background lane.
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn run_status_background<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+) -> impl std::future::Future<Output = AppResult<bool>> + 'a {
+    run_status_in_lane(args, cwd, GitCommandLane::Background)
+}
 
-    Ok(result)
+#[track_caller]
+pub(crate) fn run_status_in_lane<'a>(
+    args: &'a [&'a str],
+    cwd: &'a Path,
+    default_lane: GitCommandLane,
+) -> impl std::future::Future<Output = AppResult<bool>> + 'a {
+    let caller = Location::caller();
+    async move {
+        let lane = current_git_command_lane(default_lane);
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let cwd = cwd.to_path_buf();
+        let timeout_secs = git_runtime_config().cmd_timeout_secs;
+        let _admission = acquire_git_admission(lane, "run_status", &args, &cwd).await?;
+        let started = Instant::now();
+
+        let result = match timeout(Duration::from_secs(timeout_secs), async {
+            let mut cmd = build_git_command(&args, &cwd, &[]);
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+            cmd.status().await.map(|s| s.success()).unwrap_or(false)
+        })
+        .await
+        {
+            Ok(result) => {
+                log_git_status_result("run_status", lane, &args, &cwd, started, caller, result);
+                result
+            }
+            Err(_) => {
+                log_git_command_timeout(
+                    "run_status",
+                    lane,
+                    &args,
+                    &cwd,
+                    started,
+                    caller,
+                    timeout_secs,
+                );
+                return Err(AppError::GitOperation(format!(
+                    "git status check timed out after {timeout_secs}s"
+                )));
+            }
+        };
+
+        Ok(result)
+    }
+}
+
+fn current_git_command_lane(default_lane: GitCommandLane) -> GitCommandLane {
+    GIT_COMMAND_LANE_OVERRIDE
+        .try_with(|lane| *lane)
+        .unwrap_or(default_lane)
+}
+
+async fn acquire_git_admission(
+    lane: GitCommandLane,
+    operation: &'static str,
+    args: &[String],
+    cwd: &Path,
+) -> AppResult<GitAdmissionGuard> {
+    let started = Instant::now();
+    match lane {
+        GitCommandLane::Foreground => {
+            GIT_FOREGROUND_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+            let global = match GIT_PROCESS_PERMITS.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    GIT_FOREGROUND_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+                    return Err(AppError::GitOperation(
+                        "git foreground admission closed".to_string(),
+                    ));
+                }
+            };
+            log_git_admission_wait(operation, lane, args, cwd, started);
+            Ok(GitAdmissionGuard {
+                lane,
+                _global: global,
+                _background: None,
+            })
+        }
+        GitCommandLane::Background => {
+            let background = GIT_BACKGROUND_PERMITS.acquire().await.map_err(|_| {
+                AppError::GitOperation("git background admission closed".to_string())
+            })?;
+            while GIT_FOREGROUND_IN_FLIGHT.load(Ordering::SeqCst) > 0 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            let global = GIT_PROCESS_PERMITS
+                .acquire()
+                .await
+                .map_err(|_| AppError::GitOperation("git global admission closed".to_string()))?;
+            log_git_admission_wait(operation, lane, args, cwd, started);
+            Ok(GitAdmissionGuard {
+                lane,
+                _global: global,
+                _background: Some(background),
+            })
+        }
+    }
+}
+
+fn log_git_admission_wait(
+    operation: &'static str,
+    lane: GitCommandLane,
+    args: &[String],
+    cwd: &Path,
+    started: Instant,
+) {
+    let elapsed_ms = started.elapsed().as_millis();
+    if elapsed_ms >= GIT_ADMISSION_WAIT_LOG_MS {
+        tracing::info!(
+            operation,
+            lane = lane.as_str(),
+            command = %args.join(" "),
+            cwd = %cwd.display(),
+            admission_wait_ms = elapsed_ms as u64,
+            "Git command admission waited"
+        );
+    }
+}
+
+fn log_git_command_result(
+    operation: &'static str,
+    lane: GitCommandLane,
+    args: &[String],
+    cwd: &Path,
+    started: Instant,
+    caller: &'static Location<'static>,
+    result: Result<&Output, &AppError>,
+) {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let command = args.join(" ");
+    match result {
+        Ok(output) => {
+            let success = output.status.success();
+            let exit_code = output.status.code();
+            if elapsed_ms >= SLOW_GIT_COMMAND_MS {
+                tracing::warn!(
+                    operation,
+                    lane = lane.as_str(),
+                    command = %command,
+                    cwd = %cwd.display(),
+                    caller_file = caller.file(),
+                    caller_line = caller.line(),
+                    elapsed_ms,
+                    success,
+                    exit_code,
+                    "Slow git command completed"
+                );
+            } else {
+                tracing::debug!(
+                    operation,
+                    lane = lane.as_str(),
+                    command = %command,
+                    cwd = %cwd.display(),
+                    caller_file = caller.file(),
+                    caller_line = caller.line(),
+                    elapsed_ms,
+                    success,
+                    exit_code,
+                    "Git command completed"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                operation,
+                lane = lane.as_str(),
+                command = %command,
+                cwd = %cwd.display(),
+                caller_file = caller.file(),
+                caller_line = caller.line(),
+                elapsed_ms,
+                error = %error,
+                "Git command failed"
+            );
+        }
+    }
+}
+
+fn log_git_status_result(
+    operation: &'static str,
+    lane: GitCommandLane,
+    args: &[String],
+    cwd: &Path,
+    started: Instant,
+    caller: &'static Location<'static>,
+    success: bool,
+) {
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let command = args.join(" ");
+    if elapsed_ms >= SLOW_GIT_COMMAND_MS {
+        tracing::warn!(
+            operation,
+            lane = lane.as_str(),
+            command = %command,
+            cwd = %cwd.display(),
+            caller_file = caller.file(),
+            caller_line = caller.line(),
+            elapsed_ms,
+            success,
+            "Slow git status command completed"
+        );
+    } else {
+        tracing::debug!(
+            operation,
+            lane = lane.as_str(),
+            command = %command,
+            cwd = %cwd.display(),
+            caller_file = caller.file(),
+            caller_line = caller.line(),
+            elapsed_ms,
+            success,
+            "Git status command completed"
+        );
+    }
+}
+
+fn log_git_command_timeout(
+    operation: &'static str,
+    lane: GitCommandLane,
+    args: &[String],
+    cwd: &Path,
+    started: Instant,
+    caller: &'static Location<'static>,
+    timeout_secs: u64,
+) {
+    tracing::warn!(
+        operation,
+        lane = lane.as_str(),
+        command = %args.join(" "),
+        cwd = %cwd.display(),
+        caller_file = caller.file(),
+        caller_line = caller.line(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        timeout_secs,
+        "Git command timed out"
+    );
 }
 
 #[cfg(test)]

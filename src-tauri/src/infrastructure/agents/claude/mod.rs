@@ -2,6 +2,7 @@
 // Uses the claude CLI for agent interactions
 
 mod agent_config;
+pub mod cli_capabilities;
 pub mod agent_names;
 mod claude_code_client;
 pub mod effort_resolver;
@@ -36,6 +37,11 @@ pub use claude_code_client::ClaudeCodeClient;
 pub use claude_code_client::{
     StreamEvent as ClientStreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig,
     TeammateSpawnResult,
+};
+pub use cli_capabilities::{
+    clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
+    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
+    probe_claude_cli_cached, ClaudeCliCapabilities,
 };
 
 // Re-export stream processor types for use by services
@@ -223,6 +229,11 @@ pub fn apply_common_spawn_env(cmd: &mut Command) {
 }
 
 fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
+    // Inject the user's login-shell env FIRST so things like `ANTHROPIC_API_KEY`
+    // and other auth exports the user set in `~/.zshrc` / `~/.zprofile` reach
+    // the spawned CLI. The RalphX-managed overrides below stay authoritative
+    // because they apply after — see `login_shell_env::should_forward`.
+    crate::infrastructure::login_shell_env::apply_to_std(cmd);
     cmd.env(
         "PATH",
         crate::infrastructure::tool_paths::agent_subprocess_env_path(),
@@ -233,6 +244,10 @@ fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
     cmd.env(
         "TAURI_API_URL",
         crate::utils::backend_endpoint::backend_http_base_url(),
+    );
+    cmd.env(
+        "RALPHX_AGENT_SCREENSHOT_DIR",
+        crate::utils::runtime_log_paths::agent_screenshot_dir(),
     );
     crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
 }
@@ -573,11 +588,7 @@ fn build_base_cli_command_inner_with_runtime_context(
 
     // Capture Claude's internal debug log per spawn for post-mortem analysis.
     // This is critical when the process exits 0 with no stdout/stderr.
-    let debug_path = std::env::temp_dir().join(format!(
-        "ralphx-claude-debug-{}-{}.log",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
+    let debug_path = crate::utils::runtime_log_paths::claude_debug_log_file();
     if let Some(path_str) = debug_path.to_str() {
         cmd.args(["--debug-file", path_str]);
         tracing::debug!(path = %debug_path.display(), "Enabled Claude debug file");
@@ -602,7 +613,16 @@ fn build_base_cli_command_inner_with_runtime_context(
             &effort_resolved
         }
     };
-    cmd.args(["--effort", effort]);
+    let normalized_effort = normalize_claude_effort_for_cli_path(cli_path, effort);
+    if normalized_effort != effort {
+        tracing::warn!(
+            requested_effort = effort,
+            effective_effort = %normalized_effort,
+            cli_path = %cli_path.display(),
+            "Normalized Claude CLI effort for installed CLI capability"
+        );
+    }
+    cmd.args(["--effort", normalized_effort.as_str()]);
 
     // Model for this agent — use explicit override when provided, otherwise resolve from agent config.
     let model_resolved;
@@ -949,6 +969,12 @@ pub(crate) fn build_mcp_config_with_runtime_context(
         }
         args_vec.push("--tauri-api-url".to_string());
         args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
+        args_vec.push("--trace-dir".to_string());
+        args_vec.push(
+            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         // Inject --allowed-tools from agent's mcp_tools config (Wave 3).
         // - Agent not in config (None) → skip arg entirely (MCP server resolves canonical metadata,
@@ -1696,7 +1722,11 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
     let mcp_config = serde_json::json!({
         "type": "stdio",
         "command": "node",
-        "args": [mcp_server_path_str]
+        "args": [
+            mcp_server_path_str,
+            "--trace-dir",
+            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir().to_string_lossy()
+        ]
     });
 
     let config_json = serde_json::to_string(&mcp_config)
@@ -1974,6 +2004,16 @@ mod tests {
 
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
+
+        let screenshot_dir = command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "RALPHX_AGENT_SCREENSHOT_DIR")
+                    .then(|| value.map(|path| path.to_string_lossy().into_owned()))?
+            })
+            .expect("RALPHX_AGENT_SCREENSHOT_DIR should be explicitly set");
+        assert!(screenshot_dir.contains("screenshots"));
     }
 
     #[test]
@@ -2002,6 +2042,7 @@ mod tests {
         assert_eq!(path_entries.first(), Some(&expected_node_bin));
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn register_mcp_server_prepends_resolved_node_for_env_shim() {
         let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
@@ -2020,19 +2061,25 @@ mod tests {
         std::fs::create_dir_all(&nvm_bin).expect("create nvm bin");
         let node_path = nvm_bin.join("node");
         let claude_path = nvm_bin.join("claude");
+        let captured_add_json_path = temp_dir.path().join("captured-add-json.txt");
         write_executable(
             &node_path,
-            r#"#!/bin/sh
+            &format!(
+                r#"#!/bin/sh
+capture='{}'
 shift
 if [ "$1" = "mcp" ] && [ "$2" = "remove" ]; then
   exit 0
 elif [ "$1" = "mcp" ] && [ "$2" = "add-json" ]; then
+  printf '%s' "$6" > "$capture"
   exit 0
 else
-  printf 'unexpected args: %s\n' "$*" >&2
+  printf 'unexpected args\n' >&2
   exit 64
 fi
 "#,
+                captured_add_json_path.to_string_lossy()
+            ),
         );
         write_executable(&claude_path, "#!/usr/bin/env node\n");
 
@@ -2045,6 +2092,17 @@ fi
         register_mcp_server(&claude_path, temp_dir.path())
             .await
             .expect("Claude MCP registration should run npm shim with resolved node");
+
+        let captured_add_json =
+            std::fs::read_to_string(captured_add_json_path).expect("read captured add-json");
+        assert!(
+            captured_add_json.contains("--trace-dir"),
+            "registered MCP config should include trace-dir arg"
+        );
+        assert!(
+            captured_add_json.contains("mcp-proxy"),
+            "registered MCP config should point traces at MCP proxy log root"
+        );
     }
 
     /// build_base_cli_command with is_external_mcp=true is also blocked in tests by the

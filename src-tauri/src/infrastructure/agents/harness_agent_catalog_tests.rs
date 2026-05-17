@@ -390,13 +390,13 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-general-explorer", "sonnet"),
     ("ralphx-general-worker", "sonnet"),
     ("ralphx-agent-workspace-repair", "opus"),
-    ("ralphx-utility-session-namer", "sonnet"),
+    ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-chat-task", "sonnet"),
     ("ralphx-chat-project", "sonnet"),
     ("ralphx-review-chat", "sonnet"),
     ("ralphx-review-history", "sonnet"),
     ("ralphx-execution-orchestrator", "opus"),
-    ("ralphx-project-analyzer", "sonnet"),
+    ("ralphx-project-analyzer", "haiku"),
     ("ralphx-execution-worker", "sonnet"),
     ("ralphx-execution-coder", "sonnet"),
     ("ralphx-execution-reviewer", "sonnet"),
@@ -1742,6 +1742,24 @@ fn resolve_project_root_from_external_generated_plugin_dir_follows_runtime_symli
         resolve_project_root_from_plugin_dir(&generated_plugin_dir),
         root,
         "external generated plugin dirs should resolve through symlinked runtime entries back to the RalphX repo root"
+    );
+}
+
+#[test]
+fn resolve_project_root_from_profiled_generated_plugin_dir_follows_runtime_symlinks() {
+    let root = project_root();
+    let temp = tempdir().expect("tempdir");
+    let generated_plugin_dir = temp.path().join("generated/release/claude-plugin");
+    fs::create_dir_all(&generated_plugin_dir).expect("create profiled generated plugin dir");
+    symlink_dir(
+        root.join("plugins/app/ralphx-mcp-server"),
+        generated_plugin_dir.join("ralphx-mcp-server"),
+    );
+
+    assert_eq!(
+        resolve_project_root_from_plugin_dir(&generated_plugin_dir),
+        root,
+        "profile-scoped generated plugin dirs should resolve through symlinked runtime entries back to the RalphX app resource root"
     );
 }
 

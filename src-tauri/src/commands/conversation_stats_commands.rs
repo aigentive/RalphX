@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
+use chrono::{DateTime, Utc};
 use tauri::State;
 
 use crate::application::AppState;
+use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentRun, AgentRunUsage, ChatConversation, ChatMessage, MessageRole,
 };
@@ -155,12 +157,7 @@ fn build_usage_aggregates(
 ) -> UsageAggregateResult {
     let conversation_contexts: HashMap<_, _> = conversations
         .iter()
-        .map(|conversation| {
-            (
-                conversation.id,
-                conversation.context_type.to_string(),
-            )
-        })
+        .map(|conversation| (conversation.id, conversation.context_type.to_string()))
         .collect();
 
     let provider_messages: Vec<&ChatMessage> = messages
@@ -191,63 +188,62 @@ fn build_usage_aggregates(
         "none"
     };
 
-    let (by_context_type, by_harness, by_upstream_provider, by_model, by_effort, effective_usage_totals) =
-        match effective_usage_source {
-            "messages" => (
-                aggregate_message_buckets(
-                    &provider_messages_with_usage,
-                    |message| {
-                        message.conversation_id.and_then(|conversation_id| {
-                            conversation_contexts.get(&conversation_id).cloned()
-                        })
-                    },
-                ),
-                aggregate_message_buckets(
-                    &provider_messages_with_usage,
-                    |message| message.provider_harness.map(|value| value.to_string()),
-                ),
-                aggregate_message_buckets(
-                    &provider_messages_with_usage,
-                    |message| message.upstream_provider.clone(),
-                ),
-                aggregate_message_buckets(
-                    &provider_messages_with_usage,
-                    |message| message.effective_model_id.clone(),
-                ),
-                aggregate_message_buckets(
-                    &provider_messages_with_usage,
-                    |message| {
-                        message
-                            .effective_effort
-                            .clone()
-                            .or_else(|| message.logical_effort.map(|value| value.to_string()))
-                    },
-                ),
-                message_usage_totals.clone(),
-            ),
-            "runs" => (
-                aggregate_run_buckets(&runs_with_usage, |run| {
-                    conversation_contexts.get(&run.conversation_id).cloned()
-                }),
-                aggregate_run_buckets(&runs_with_usage, |run| run.harness.map(|value| value.to_string())),
-                aggregate_run_buckets(&runs_with_usage, |run| run.upstream_provider.clone()),
-                aggregate_run_buckets(&runs_with_usage, |run| run.effective_model_id.clone()),
-                aggregate_run_buckets(&runs_with_usage, |run| {
-                    run.effective_effort
-                        .clone()
-                        .or_else(|| run.logical_effort.map(|value| value.to_string()))
-                }),
-                run_usage_totals.clone(),
-            ),
-            _ => (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                UsageTotalsResponse::default(),
-            ),
-        };
+    let (
+        by_context_type,
+        by_harness,
+        by_upstream_provider,
+        by_model,
+        by_effort,
+        effective_usage_totals,
+    ) = match effective_usage_source {
+        "messages" => (
+            aggregate_message_buckets(&provider_messages_with_usage, |message| {
+                message.conversation_id.and_then(|conversation_id| {
+                    conversation_contexts.get(&conversation_id).cloned()
+                })
+            }),
+            aggregate_message_buckets(&provider_messages_with_usage, |message| {
+                message.provider_harness.map(|value| value.to_string())
+            }),
+            aggregate_message_buckets(&provider_messages_with_usage, |message| {
+                message.upstream_provider.clone()
+            }),
+            aggregate_message_buckets(&provider_messages_with_usage, |message| {
+                message.effective_model_id.clone()
+            }),
+            aggregate_message_buckets(&provider_messages_with_usage, |message| {
+                message
+                    .effective_effort
+                    .clone()
+                    .or_else(|| message.logical_effort.map(|value| value.to_string()))
+            }),
+            message_usage_totals.clone(),
+        ),
+        "runs" => (
+            aggregate_run_buckets(&runs_with_usage, |run| {
+                conversation_contexts.get(&run.conversation_id).cloned()
+            }),
+            aggregate_run_buckets(&runs_with_usage, |run| {
+                run.harness.map(|value| value.to_string())
+            }),
+            aggregate_run_buckets(&runs_with_usage, |run| run.upstream_provider.clone()),
+            aggregate_run_buckets(&runs_with_usage, |run| run.effective_model_id.clone()),
+            aggregate_run_buckets(&runs_with_usage, |run| {
+                run.effective_effort
+                    .clone()
+                    .or_else(|| run.logical_effort.map(|value| value.to_string()))
+            }),
+            run_usage_totals.clone(),
+        ),
+        _ => (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            UsageTotalsResponse::default(),
+        ),
+    };
 
     UsageAggregateResult {
         message_usage_totals,
@@ -279,8 +275,7 @@ pub async fn get_agent_conversation_stats(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<ConversationStatsResponse>, String> {
-    let conversation_id =
-        crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
     let Some(conversation) = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
@@ -402,7 +397,8 @@ async fn collect_task_contexts(
         crate::domain::entities::ChatContextType::Review,
         crate::domain::entities::ChatContextType::Merge,
     ] {
-        collect_context_conversations(state, conversation_map, context_type, task_id.as_str()).await?;
+        collect_context_conversations(state, conversation_map, context_type, task_id.as_str())
+            .await?;
     }
     Ok(())
 }
@@ -458,6 +454,21 @@ struct UsageAccumulator {
     cache_creation_tokens: u64,
     cache_read_tokens: u64,
     estimated_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct UsageSeriesKey {
+    conversation_id: Option<String>,
+    provider_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UsageSample {
+    conversation_id: Option<String>,
+    harness: Option<AgentHarnessKind>,
+    provider_session_id: Option<String>,
+    occurred_at: DateTime<Utc>,
+    usage: AgentRunUsage,
 }
 
 impl UsageAccumulator {
@@ -533,58 +544,181 @@ fn run_has_attribution(run: &AgentRun) -> bool {
 }
 
 fn sum_message_usage(messages: &[&ChatMessage]) -> UsageTotalsResponse {
-    let mut total = UsageAccumulator::default();
-    for message in messages {
-        total.add_usage(&AgentRunUsage {
+    sum_usage_samples(messages.iter().map(|message| UsageSample {
+        conversation_id: message.conversation_id.map(|id| id.as_str()),
+        harness: message.provider_harness,
+        provider_session_id: message.provider_session_id.clone(),
+        occurred_at: message.created_at,
+        usage: AgentRunUsage {
             input_tokens: message.input_tokens,
             output_tokens: message.output_tokens,
             cache_creation_tokens: message.cache_creation_tokens,
             cache_read_tokens: message.cache_read_tokens,
             estimated_usd: message.estimated_usd,
-        });
-    }
-    total.to_response()
+        },
+    }))
 }
 
 fn sum_run_usage(runs: &[&AgentRun]) -> UsageTotalsResponse {
-    let mut total = UsageAccumulator::default();
-    for run in runs {
-        total.add_usage(&AgentRunUsage {
+    sum_usage_samples(runs.iter().map(|run| UsageSample {
+        conversation_id: Some(run.conversation_id.as_str()),
+        harness: run.harness,
+        provider_session_id: run.provider_session_id.clone(),
+        occurred_at: run.started_at,
+        usage: AgentRunUsage {
             input_tokens: run.input_tokens,
             output_tokens: run.output_tokens,
             cache_creation_tokens: run.cache_creation_tokens,
             cache_read_tokens: run.cache_read_tokens,
             estimated_usd: run.estimated_usd,
-        });
+        },
+    }))
+}
+
+fn sum_usage_samples(samples: impl IntoIterator<Item = UsageSample>) -> UsageTotalsResponse {
+    let mut total = UsageAccumulator::default();
+    let mut codex_groups: HashMap<UsageSeriesKey, Vec<UsageSample>> = HashMap::new();
+
+    for sample in samples {
+        if sample.harness == Some(AgentHarnessKind::Codex) && sample.provider_session_id.is_some() {
+            codex_groups
+                .entry(UsageSeriesKey {
+                    conversation_id: sample.conversation_id.clone(),
+                    provider_session_id: sample.provider_session_id.clone(),
+                })
+                .or_default()
+                .push(sample);
+        } else {
+            total.add_usage(&sample.usage);
+        }
     }
+
+    for mut samples in codex_groups.into_values() {
+        samples.sort_by_key(|sample| sample.occurred_at);
+        total.add_usage(&normalize_codex_stats_usage_series(&samples));
+    }
+
     total.to_response()
+}
+
+fn normalize_codex_stats_usage_series(samples: &[UsageSample]) -> AgentRunUsage {
+    let cumulative = looks_like_cumulative_token_series(
+        &samples
+            .iter()
+            .map(|sample| sample.usage.input_tokens)
+            .collect::<Vec<_>>(),
+    ) || looks_like_cumulative_token_series(
+        &samples
+            .iter()
+            .map(|sample| sample.usage.output_tokens)
+            .collect::<Vec<_>>(),
+    ) || looks_like_cumulative_token_series(
+        &samples
+            .iter()
+            .map(|sample| sample.usage.cache_creation_tokens)
+            .collect::<Vec<_>>(),
+    ) || looks_like_cumulative_token_series(
+        &samples
+            .iter()
+            .map(|sample| sample.usage.cache_read_tokens)
+            .collect::<Vec<_>>(),
+    );
+
+    AgentRunUsage {
+        input_tokens: normalize_token_series(
+            &samples
+                .iter()
+                .map(|sample| sample.usage.input_tokens)
+                .collect::<Vec<_>>(),
+            cumulative,
+        ),
+        output_tokens: normalize_token_series(
+            &samples
+                .iter()
+                .map(|sample| sample.usage.output_tokens)
+                .collect::<Vec<_>>(),
+            cumulative,
+        ),
+        cache_creation_tokens: normalize_token_series(
+            &samples
+                .iter()
+                .map(|sample| sample.usage.cache_creation_tokens)
+                .collect::<Vec<_>>(),
+            cumulative,
+        ),
+        cache_read_tokens: normalize_token_series(
+            &samples
+                .iter()
+                .map(|sample| sample.usage.cache_read_tokens)
+                .collect::<Vec<_>>(),
+            cumulative,
+        ),
+        estimated_usd: normalize_cost_series(
+            &samples
+                .iter()
+                .map(|sample| sample.usage.estimated_usd)
+                .collect::<Vec<_>>(),
+            cumulative,
+        ),
+    }
+}
+
+fn looks_like_cumulative_token_series(values: &[Option<u64>]) -> bool {
+    let values: Vec<u64> = values.iter().copied().flatten().collect();
+    if values.len() < 3 {
+        return false;
+    }
+    if !values.windows(2).all(|window| window[1] >= window[0]) {
+        return false;
+    }
+
+    let Some(last) = values.last().copied() else {
+        return false;
+    };
+    let raw_sum = values.iter().copied().sum::<u64>();
+    let large_enough = last >= 1_000_000 || raw_sum >= 10_000_000;
+    large_enough && raw_sum >= last.saturating_mul(2)
+}
+
+fn normalize_token_series(values: &[Option<u64>], cumulative: bool) -> Option<u64> {
+    let values: Vec<u64> = values.iter().copied().flatten().collect();
+    if values.is_empty() {
+        return None;
+    }
+    if cumulative && values.windows(2).all(|window| window[1] >= window[0]) {
+        return values.last().copied();
+    }
+    Some(values.iter().copied().sum())
+}
+
+fn normalize_cost_series(values: &[Option<f64>], cumulative: bool) -> Option<f64> {
+    let values: Vec<f64> = values.iter().copied().flatten().collect();
+    if values.is_empty() {
+        return None;
+    }
+    if cumulative && values.windows(2).all(|window| window[1] >= window[0]) {
+        return values.last().copied();
+    }
+    Some(values.iter().copied().sum())
 }
 
 fn aggregate_message_buckets(
     messages: &[&ChatMessage],
     key_fn: impl Fn(&ChatMessage) -> Option<String>,
 ) -> Vec<UsageBucketResponse> {
-    let mut buckets: BTreeMap<String, (u64, UsageAccumulator)> = BTreeMap::new();
+    let mut buckets: BTreeMap<String, (u64, Vec<&ChatMessage>)> = BTreeMap::new();
     for message in messages {
         let key = key_fn(message).unwrap_or_else(|| "unknown".to_string());
-        let entry = buckets
-            .entry(key)
-            .or_insert_with(|| (0, UsageAccumulator::default()));
+        let entry = buckets.entry(key).or_insert_with(|| (0, Vec::new()));
         entry.0 += 1;
-        entry.1.add_usage(&AgentRunUsage {
-            input_tokens: message.input_tokens,
-            output_tokens: message.output_tokens,
-            cache_creation_tokens: message.cache_creation_tokens,
-            cache_read_tokens: message.cache_read_tokens,
-            estimated_usd: message.estimated_usd,
-        });
+        entry.1.push(*message);
     }
     buckets
         .into_iter()
-        .map(|(key, (count, usage))| UsageBucketResponse {
+        .map(|(key, (count, messages))| UsageBucketResponse {
             key,
             count,
-            usage: usage.to_response(),
+            usage: sum_message_usage(&messages),
         })
         .collect()
 }
@@ -593,27 +727,193 @@ fn aggregate_run_buckets(
     runs: &[&AgentRun],
     key_fn: impl Fn(&AgentRun) -> Option<String>,
 ) -> Vec<UsageBucketResponse> {
-    let mut buckets: BTreeMap<String, (u64, UsageAccumulator)> = BTreeMap::new();
+    let mut buckets: BTreeMap<String, (u64, Vec<&AgentRun>)> = BTreeMap::new();
     for run in runs {
         let key = key_fn(run).unwrap_or_else(|| "unknown".to_string());
-        let entry = buckets
-            .entry(key)
-            .or_insert_with(|| (0, UsageAccumulator::default()));
+        let entry = buckets.entry(key).or_insert_with(|| (0, Vec::new()));
         entry.0 += 1;
-        entry.1.add_usage(&AgentRunUsage {
-            input_tokens: run.input_tokens,
-            output_tokens: run.output_tokens,
-            cache_creation_tokens: run.cache_creation_tokens,
-            cache_read_tokens: run.cache_read_tokens,
-            estimated_usd: run.estimated_usd,
-        });
+        entry.1.push(*run);
     }
     buckets
         .into_iter()
-        .map(|(key, (count, usage))| UsageBucketResponse {
+        .map(|(key, (count, runs))| UsageBucketResponse {
             key,
             count,
-            usage: usage.to_response(),
+            usage: sum_run_usage(&runs),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    use crate::domain::agents::ProviderSessionRef;
+    use crate::domain::entities::IdeationSessionId;
+
+    #[test]
+    fn codex_cumulative_message_usage_uses_latest_sample_across_totals_and_buckets() {
+        let session_id = IdeationSessionId::new();
+        let mut conversation = ChatConversation::new_ideation(session_id.clone());
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: "thread-cumulative".to_string(),
+        });
+        let messages = codex_messages(
+            &conversation,
+            &session_id,
+            "thread-cumulative",
+            &[1_000_000, 2_000_000, 3_000_000],
+        );
+
+        let response = build_conversation_stats_response(&conversation, &messages, &[]);
+
+        assert_eq!(response.usage_coverage.effective_totals_source, "messages");
+        assert_eq!(response.message_usage_totals.input_tokens, 3_000_000);
+        assert_eq!(response.message_usage_totals.output_tokens, 30_000);
+        assert_eq!(response.message_usage_totals.cache_read_tokens, 2_999_000);
+        assert_eq!(response.effective_usage_totals.input_tokens, 3_000_000);
+        assert_eq!(response.by_harness[0].usage.input_tokens, 3_000_000);
+        assert_eq!(response.by_model[0].usage.input_tokens, 3_000_000);
+        assert_eq!(response.by_effort[0].usage.input_tokens, 3_000_000);
+    }
+
+    #[test]
+    fn codex_small_message_usage_keeps_per_turn_sum() {
+        let session_id = IdeationSessionId::new();
+        let conversation = ChatConversation::new_ideation(session_id.clone());
+        let messages = codex_messages(&conversation, &session_id, "thread-small", &[100, 200, 300]);
+
+        let response = build_conversation_stats_response(&conversation, &messages, &[]);
+
+        assert_eq!(response.message_usage_totals.input_tokens, 600);
+        assert_eq!(response.message_usage_totals.output_tokens, 6);
+        assert_eq!(response.message_usage_totals.cache_read_tokens, 0);
+    }
+
+    #[test]
+    fn codex_non_monotonic_message_usage_keeps_per_turn_sum() {
+        let session_id = IdeationSessionId::new();
+        let conversation = ChatConversation::new_ideation(session_id.clone());
+        let messages = codex_messages(
+            &conversation,
+            &session_id,
+            "thread-nonmonotonic",
+            &[2_000_000, 1_000_000, 3_000_000],
+        );
+
+        let response = build_conversation_stats_response(&conversation, &messages, &[]);
+
+        assert_eq!(response.message_usage_totals.input_tokens, 6_000_000);
+        assert_eq!(response.message_usage_totals.output_tokens, 60_000);
+    }
+
+    #[test]
+    fn codex_cumulative_run_usage_uses_latest_sample_when_messages_lack_usage() {
+        let session_id = IdeationSessionId::new();
+        let conversation = ChatConversation::new_ideation(session_id);
+        let runs = codex_runs(
+            &conversation,
+            "thread-cumulative",
+            &[1_000_000, 2_000_000, 3_000_000],
+        );
+
+        let response = build_conversation_stats_response(&conversation, &[], &runs);
+
+        assert_eq!(response.usage_coverage.effective_totals_source, "runs");
+        assert_eq!(response.run_usage_totals.input_tokens, 3_000_000);
+        assert_eq!(response.run_usage_totals.output_tokens, 30_000);
+        assert_eq!(response.effective_usage_totals.input_tokens, 3_000_000);
+        assert_eq!(response.by_harness[0].usage.input_tokens, 3_000_000);
+    }
+
+    #[test]
+    fn usage_series_helpers_handle_empty_small_cumulative_and_non_monotonic_values() {
+        assert!(!looks_like_cumulative_token_series(&[]));
+        assert!(!looks_like_cumulative_token_series(&[Some(10), Some(20)]));
+        assert!(!looks_like_cumulative_token_series(&[
+            Some(2_000_000),
+            Some(1_000_000),
+            Some(3_000_000),
+        ]));
+        assert!(looks_like_cumulative_token_series(&[
+            Some(1_000_000),
+            Some(2_000_000),
+            Some(3_000_000),
+        ]));
+
+        assert_eq!(normalize_token_series(&[], true), None);
+        assert_eq!(
+            normalize_token_series(&[Some(10), Some(20)], false),
+            Some(30)
+        );
+        assert_eq!(
+            normalize_token_series(&[Some(1_000_000), Some(2_000_000)], true),
+            Some(2_000_000)
+        );
+        assert_eq!(normalize_cost_series(&[], true), None);
+        assert_eq!(
+            normalize_cost_series(&[Some(1.0), Some(2.0)], true),
+            Some(2.0)
+        );
+        assert_eq!(
+            normalize_cost_series(&[Some(2.0), Some(1.0)], true),
+            Some(3.0)
+        );
+    }
+
+    fn codex_messages(
+        conversation: &ChatConversation,
+        session_id: &IdeationSessionId,
+        provider_session_id: &str,
+        input_tokens: &[u64],
+    ) -> Vec<ChatMessage> {
+        let now = Utc::now();
+        input_tokens
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, tokens)| {
+                let mut message = ChatMessage::orchestrator_in_session(session_id.clone(), "done");
+                message.conversation_id = Some(conversation.id);
+                message.provider_harness = Some(AgentHarnessKind::Codex);
+                message.provider_session_id = Some(provider_session_id.to_string());
+                message.upstream_provider = Some("openai".to_string());
+                message.effective_model_id = Some("gpt-5.5".to_string());
+                message.effective_effort = Some("xhigh".to_string());
+                message.input_tokens = Some(tokens);
+                message.output_tokens = Some(tokens / 100);
+                message.cache_read_tokens = tokens.checked_sub(1_000);
+                message.created_at = now + Duration::seconds(index as i64);
+                message
+            })
+            .collect()
+    }
+
+    fn codex_runs(
+        conversation: &ChatConversation,
+        provider_session_id: &str,
+        input_tokens: &[u64],
+    ) -> Vec<AgentRun> {
+        let now = Utc::now();
+        input_tokens
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, tokens)| {
+                let mut run = AgentRun::new(conversation.id);
+                run.harness = Some(AgentHarnessKind::Codex);
+                run.provider_session_id = Some(provider_session_id.to_string());
+                run.upstream_provider = Some("openai".to_string());
+                run.effective_model_id = Some("gpt-5.5".to_string());
+                run.effective_effort = Some("xhigh".to_string());
+                run.input_tokens = Some(tokens);
+                run.output_tokens = Some(tokens / 100);
+                run.cache_read_tokens = tokens.checked_sub(1_000);
+                run.started_at = now + Duration::seconds(index as i64);
+                run
+            })
+            .collect()
+    }
 }

@@ -31,6 +31,38 @@ function hasAttribution(message: ChatMessageResponse): boolean {
   );
 }
 
+function providerMessageIdentity(message: ChatMessageResponse): string {
+  if (message.timelineSequence != null && message.parentMessageId) {
+    return message.parentMessageId;
+  }
+  return message.id;
+}
+
+function collapseProviderMessageBlocks(
+  messages: ChatMessageResponse[],
+): ChatMessageResponse[] {
+  const byMessage = new Map<string, ChatMessageResponse>();
+
+  for (const message of messages) {
+    const key = providerMessageIdentity(message);
+    const existing = byMessage.get(key);
+    if (!existing) {
+      byMessage.set(key, message);
+      continue;
+    }
+
+    const existingScore =
+      (hasUsage(existing) ? 2 : 0) + (hasAttribution(existing) ? 1 : 0);
+    const candidateScore =
+      (hasUsage(message) ? 2 : 0) + (hasAttribution(message) ? 1 : 0);
+    if (candidateScore > existingScore) {
+      byMessage.set(key, message);
+    }
+  }
+
+  return Array.from(byMessage.values());
+}
+
 function buildUsageTotals(messages: ChatMessageResponse[]) {
   return messages.reduce(
     (totals, message) => ({
@@ -115,7 +147,9 @@ export function buildFallbackConversationStats(
     return null;
   }
 
-  const providerMessages = (messages ?? []).filter(isProviderMessage);
+  const providerMessages = collapseProviderMessageBlocks(
+    (messages ?? []).filter(isProviderMessage),
+  );
   const providerMessagesWithUsage = providerMessages.filter(hasUsage);
   const providerMessagesWithAttribution = providerMessages.filter(hasAttribution);
   const effectiveUsageTotals = buildUsageTotals(providerMessagesWithUsage);

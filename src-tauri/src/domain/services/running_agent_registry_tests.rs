@@ -437,6 +437,49 @@ async fn test_try_register_blocks_concurrent_claim() {
 }
 
 #[tokio::test]
+async fn test_stop_all_started_before_preserves_current_boot_entries() {
+    let state = FakeProcessState::with_alive(&[4101, 4102]);
+    let registry = MemoryRunningAgentRegistry::with_process_ops(state.process_ops());
+    let old_key = RunningAgentKey::new("project", "old-conversation");
+    let current_key = RunningAgentKey::new("project", "current-conversation");
+    let old_token = CancellationToken::new();
+    let current_token = CancellationToken::new();
+
+    registry
+        .register(
+            old_key.clone(),
+            4101,
+            "conv-old".to_string(),
+            "run-old".to_string(),
+            None,
+            Some(old_token.clone()),
+        )
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let boot_cutoff = chrono::Utc::now();
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    registry
+        .register(
+            current_key.clone(),
+            4102,
+            "conv-current".to_string(),
+            "run-current".to_string(),
+            None,
+            Some(current_token.clone()),
+        )
+        .await;
+
+    let stopped = registry.stop_all_started_before(boot_cutoff).await;
+
+    assert_eq!(stopped, vec![old_key.clone()]);
+    assert_eq!(state.kills(), vec![4101]);
+    assert!(old_token.is_cancelled());
+    assert!(!current_token.is_cancelled());
+    assert!(!registry.is_running(&old_key).await);
+    assert!(registry.is_running(&current_key).await);
+}
+
+#[tokio::test]
 #[ignore = "requires lsof process-enumeration capability"]
 async fn test_kill_worktree_processes_async_completes_within_timeout() {
     // Use a temp dir that exists but has no processes — lsof should return quickly

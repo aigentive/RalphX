@@ -309,6 +309,31 @@ fn test_create_mcp_config_injects_agent_type_alongside_allowed_tools() {
 }
 
 #[test]
+fn test_create_mcp_config_injects_app_owned_trace_dir() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+    let config_path = create_mcp_config(&plugin_dir, "ralphx-ideation", false)
+        .expect("should create config file");
+    let args = get_json_args(&config_path);
+
+    let trace_dir_index = args
+        .iter()
+        .position(|arg| arg == "--trace-dir")
+        .expect("--trace-dir should be present in MCP args");
+    let trace_dir = args
+        .get(trace_dir_index + 1)
+        .expect("--trace-dir should have a value");
+
+    assert!(
+        trace_dir.contains("mcp-proxy"),
+        "trace dir should point at the MCP proxy log root: {trace_dir}"
+    );
+    assert!(
+        !trace_dir.starts_with(plugin_dir.to_string_lossy().as_ref()),
+        "trace dir must not be rooted under the generated plugin dir: {trace_dir}"
+    );
+}
+
+#[test]
 fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // Unknown agent has no config → mcp_tools absent → no --allowed-tools injected
@@ -680,7 +705,7 @@ description: Generates concise ideation session titles from user or plan context
             .expect("read generated session namer prompt");
 
     assert!(
-        generated_prompt.contains("model: sonnet"),
+        generated_prompt.contains("model: haiku"),
         "expected runtime-derived model in generated frontmatter"
     );
     assert!(
@@ -817,6 +842,60 @@ description: Generates concise ideation session titles from user or plan context
     assert!(
         !reused_prompt.contains("Updated prompt that should require an app restart"),
         "later materialize calls must not rewrite generated prompts mid-process"
+    );
+}
+
+#[test]
+fn test_materialize_generated_plugin_dir_repairs_cached_runtime_entries_after_external_mutation() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-utility-session-namer");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        "name: ralphx-utility-session-namer\nrole: session_namer\n",
+    )
+    .expect("write shared definition");
+    std::fs::write(
+        agent_root.join("shared/prompt.md"),
+        "Prompt before runtime contamination",
+    )
+    .expect("write shared prompt");
+
+    let generated_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("first generated plugin dir");
+    let expected_mcp_source = std::fs::read_link(generated_dir.join("ralphx-mcp-server"))
+        .expect("read initial mcp symlink");
+    let stale_runtime = tempfile::TempDir::new().expect("create stale runtime dir");
+    let stale_mcp_dir = stale_runtime.path().join("plugins/app/ralphx-mcp-server");
+    std::fs::create_dir_all(&stale_mcp_dir).expect("create stale mcp dir");
+    let generated_mcp_dir = generated_dir.join("ralphx-mcp-server");
+    // codeql[rust/path-injection]
+    if std::fs::remove_file(&generated_mcp_dir).is_err() {
+        // codeql[rust/path-injection]
+        std::fs::remove_dir(&generated_mcp_dir).expect("remove generated mcp dir symlink");
+    }
+    symlink_dir(&stale_mcp_dir, &generated_mcp_dir);
+    symlink_dir(&stale_mcp_dir, generated_dir.join(".cache"));
+
+    let repaired_dir =
+        materialize_generated_plugin_dir(&plugin_dir).expect("repair generated plugin dir");
+
+    assert_eq!(repaired_dir, generated_dir);
+    assert_eq!(
+        std::fs::read_link(repaired_dir.join("ralphx-mcp-server"))
+            .expect("read repaired mcp symlink"),
+        expected_mcp_source,
+        "cached materialization should repair externally mutated managed runtime symlinks"
+    );
+    assert!(
+        std::fs::symlink_metadata(repaired_dir.join(".cache")).is_err(),
+        "cached materialization should remove unmanaged top-level entries"
+    );
+    assert!(
+        std::fs::read_to_string(repaired_dir.join("agents/ralphx-utility-session-namer.md"))
+            .expect("read repaired generated prompt")
+            .contains("Prompt before runtime contamination"),
+        "repair should preserve generated canonical prompt materialization"
     );
 }
 

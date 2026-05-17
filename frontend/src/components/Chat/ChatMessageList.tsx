@@ -67,6 +67,9 @@ export const AT_BOTTOM_THRESHOLD = 150;
  *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
 export const TEXT_LENGTH_BUCKET_SIZE = 150;
 
+/** Keep the live streaming row bounded while preserving recent Codex block boundaries. */
+export const STREAMING_TEXT_BLOCK_TAIL_LIMIT = 40;
+
 const INITIAL_TRANSCRIPT_PAINT_MAX_FRAMES = 240;
 
 /** Shared styles for content containers to handle long text */
@@ -91,6 +94,64 @@ function ContentShell({
       {children}
     </div>
   );
+}
+
+function compactStreamingTextRun(
+  run: Extract<StreamingContentBlock, { type: "text" }>[]
+): StreamingContentBlock[] {
+  if (run.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
+    return run;
+  }
+
+  const compactedBlocks = run.slice(0, -STREAMING_TEXT_BLOCK_TAIL_LIMIT);
+  const recentBlocks = run.slice(-STREAMING_TEXT_BLOCK_TAIL_LIMIT);
+  const compactedText = compactedBlocks
+    .map((block) => block.text.trimEnd())
+    .filter((text) => text.length > 0)
+    .join("\n\n");
+
+  if (compactedText.length === 0) {
+    return recentBlocks;
+  }
+
+  const firstBlock = compactedBlocks[0];
+  const compactedBlock: Extract<StreamingContentBlock, { type: "text" }> =
+    firstBlock?.seq != null
+      ? { type: "text", text: compactedText, seq: firstBlock.seq }
+      : { type: "text", text: compactedText };
+
+  return [compactedBlock, ...recentBlocks];
+}
+
+function compactStreamingTextBlocks(
+  contentBlocks: StreamingContentBlock[]
+): StreamingContentBlock[] {
+  if (contentBlocks.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
+    return contentBlocks;
+  }
+
+  const compacted: StreamingContentBlock[] = [];
+  let textRun: Extract<StreamingContentBlock, { type: "text" }>[] = [];
+
+  const flushTextRun = () => {
+    if (textRun.length === 0) {
+      return;
+    }
+    compacted.push(...compactStreamingTextRun(textRun));
+    textRun = [];
+  };
+
+  for (const block of contentBlocks) {
+    if (block.type === "text") {
+      textRun.push(block);
+      continue;
+    }
+    flushTextRun();
+    compacted.push(block);
+  }
+
+  flushTextRun();
+  return compacted;
 }
 
 function ScrollToBottomControl({
@@ -164,6 +225,7 @@ export interface ChatMessageData {
   role: string;
   content: string;
   createdAt: string;
+  parentMessageId?: string | null;
   toolCalls?: ToolCall[] | null;
   contentBlocks?: ContentBlockItem[] | null;
   attachments?: MessageAttachment[];
@@ -182,6 +244,7 @@ export interface ChatMessageData {
   cacheCreationTokens?: number | null;
   cacheReadTokens?: number | null;
   estimatedUsd?: number | null;
+  timelineSequence?: number | null;
 }
 
 /** Discriminated union for timeline items when hook events are interleaved */
@@ -554,6 +617,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
       [streamingContentBlocks],
     );
+    const renderedStreamingContentBlocks = useMemo(
+      () => compactStreamingTextBlocks(normalizedStreamingContentBlocks),
+      [normalizedStreamingContentBlocks],
+    );
 
     // Footer content hash — drives the streaming auto-scroll useEffect below.
     // NOTE: Virtuoso's followOutput does NOT react to context/Footer changes,
@@ -588,7 +655,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
 
     const hasRenderableStreamingBlocks = useMemo(
       () =>
-        normalizedStreamingContentBlocks.some((block) => {
+        renderedStreamingContentBlocks.some((block) => {
           if (block.type === "text") {
             return block.text.trim().length > 0;
           }
@@ -597,11 +664,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           }
           return true;
         }),
-      [normalizedStreamingContentBlocks, streamingTasks],
+      [renderedStreamingContentBlocks, streamingTasks],
     );
     const hasRenderableStreamingWidgets = useMemo(
       () =>
-        normalizedStreamingContentBlocks.some((block) => {
+        renderedStreamingContentBlocks.some((block) => {
           if (block.type === "text") {
             return false;
           }
@@ -610,7 +677,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           }
           return !shouldHideCompletedProjectOrchestrationToolCall(block.toolCall);
         }),
-      [normalizedStreamingContentBlocks, streamingTasks],
+      [renderedStreamingContentBlocks, streamingTasks],
     );
 
     const shouldShowActiveTypingIndicator = isSending || isAgentRunning;
@@ -622,7 +689,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const shouldShowStreamingAssistantIcon =
       hasRenderableStreamingWidgets || hasVisiblePendingToolFallback;
     const hasRenderableStreamingText =
-      normalizedStreamingContentBlocks.some(
+      renderedStreamingContentBlocks.some(
         (block) => block.type === "text" && block.text.trim().length > 0
       );
     const shouldRenderStreamingContentGroup =
@@ -646,8 +713,125 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       textLengthBucket: Math.floor(cumulativeTextLength / TEXT_LENGTH_BUCKET_SIZE),
     }), [streamingToolCalls, totalChildCalls, streamingTasks?.size, normalizedStreamingContentBlocks.length, cumulativeTextLength]);
 
-    // Unified auto-scroll hook — Virtuoso followOutput handles new-message scroll,
-    // while the useEffect above handles streaming footer growth.
+    // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
+    // for consistent typing. When hook events exist, they're interleaved and sorted.
+    const hasHookEvents = hookEvents.length > 0 || activeHooks.length > 0;
+
+    // Filter logic: during active streaming OR when conversation is finalizing (between
+    // message_created clearing state and query refetch completing), exclude only the
+    // provider snapshot for the current turn to prevent duplication with live content.
+    //
+    // isFinalizing is set to true (in the same React batch as clearing streaming state)
+    // by useChatEvents on agent:message_created, and reset to false after 500ms. This
+    // keeps the filter active through the timing window where streaming state is cleared
+    // but the query refetch hasn't completed yet.
+    //
+    // Additionally, when isAgentRunning but no streaming content exists yet (the window
+    // between DB empty-message creation and the first streaming event), filter the last
+    // assistant message if its content is empty/whitespace — prevents the empty "pill" flash.
+    const hasActiveStreaming = normalizedStreamingContentBlocks.length > 0 ||
+                              Boolean(streamingTasks && streamingTasks.size > 0);
+    const suppressedProviderMessageId = useMemo(
+      () => getCurrentTurnProviderMessageId(messages, {
+        hasActiveStreaming,
+        isAgentRunning,
+        isFinalizing,
+      }),
+      [hasActiveStreaming, isAgentRunning, isFinalizing, messages],
+    );
+    const shouldFilterCurrentProviderMessage = suppressedProviderMessageId !== null;
+
+    const timeline = useMemo((): TimelineItem[] => {
+      const items: TimelineItem[] = [];
+
+      const suppressedProviderMessage = suppressedProviderMessageId
+        ? messages.find((msg) => msg.id === suppressedProviderMessageId)
+        : null;
+      const suppressedTimelineParentId =
+        suppressedProviderMessage?.timelineSequence != null
+          ? suppressedProviderMessage.parentMessageId
+          : null;
+      const filteredMessages = suppressedProviderMessageId
+        ? messages.filter((msg) => {
+          if (msg.id === suppressedProviderMessageId) {
+            return false;
+          }
+          return !(
+            suppressedTimelineParentId &&
+            msg.timelineSequence != null &&
+            msg.parentMessageId === suppressedTimelineParentId
+          );
+        })
+        : messages;
+
+      // Team filter: each tab (lead/teammate) loads its own conversation's messages via
+      // useConversation, so all messages in the data set belong to that conversation.
+      // No per-message filtering needed — the conversation switch handles the scoping.
+      const teamFilteredMessages = filteredMessages;
+
+      for (const msg of teamFilteredMessages) {
+        // Enrich message with attachments if available
+        const attachments = attachmentsMap?.get(msg.id);
+        const enrichedMsg = attachments
+          ? { ...msg, attachments }
+          : msg;
+
+        items.push({
+          kind: "message",
+          data: enrichedMsg,
+          sortTime: new Date(msg.createdAt).getTime(),
+        });
+      }
+
+      if (hasHookEvents) {
+        for (const ev of hookEvents) {
+          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
+        }
+        for (const ev of activeHooks) {
+          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
+        }
+      }
+
+      // Interleave team system messages (filtered by teammate tab)
+      if (teamMessages.length > 0) {
+        const filteredTeamMsgs = teamFilter
+          ? teamMessages.filter((msg) => {
+              if (teamFilter === "lead") {
+                // Lead sees ALL team messages (lead is the orchestrator)
+                return true;
+              }
+              return msg.from === teamFilter || msg.to === teamFilter || msg.to === "*";
+            })
+          : teamMessages;
+
+        for (const msg of filteredTeamMsgs) {
+          items.push({
+            kind: "team_event",
+            data: msg,
+            sortTime: new Date(msg.timestamp).getTime(),
+          });
+        }
+      }
+
+      if (hasFooterStreamingContent) {
+        items.push({
+          kind: "streaming",
+          sortTime: Number.MAX_SAFE_INTEGER,
+        });
+      }
+
+      // Sort if we interleaved any non-message items
+      if (hasHookEvents || teamMessages.length > 0 || hasFooterStreamingContent) {
+        items.sort((a, b) => a.sortTime - b.sortTime);
+      }
+
+      return items;
+    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
+
+    const lastItemIndex = firstItemIndex + timeline.length - 1;
+
+    // Unified auto-scroll hook — Virtuoso followOutput handles new-message scroll;
+    // the true-bottom pinning paths below handle streaming row growth.
     const {
       messagesEndRef,
       isAtBottom,
@@ -656,7 +840,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       handleAtBottomStateChange,
       handleFollowOutput,
     } = useChatAutoScroll({
-      messageCount: messages.length,
+      messageCount: timeline.length,
       disabled: !!scrollToTimestamp, // Disable auto-scroll in history mode
       virtuosoRef, // Route scrollToBottom through Virtuoso scrollToIndex
       indexOffset: firstItemIndex,
@@ -999,34 +1183,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       return undefined;
     }, [scrollToTimestamp, messages, firstItemIndex, preferredScrollBehavior]);
 
-    // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
-    // for consistent typing. When hook events exist, they're interleaved and sorted.
-    const hasHookEvents = hookEvents.length > 0 || activeHooks.length > 0;
-
-    // Filter logic: during active streaming OR when conversation is finalizing (between
-    // message_created clearing state and query refetch completing), exclude only the
-    // provider snapshot for the current turn to prevent duplication with live content.
-    //
-    // isFinalizing is set to true (in the same React batch as clearing streaming state)
-    // by useChatEvents on agent:message_created, and reset to false after 500ms. This
-    // keeps the filter active through the timing window where streaming state is cleared
-    // but the query refetch hasn't completed yet.
-    //
-    // Additionally, when isAgentRunning but no streaming content exists yet (the window
-    // between DB empty-message creation and the first streaming event), filter the last
-    // assistant message if its content is empty/whitespace — prevents the empty "pill" flash.
-    const hasActiveStreaming = normalizedStreamingContentBlocks.length > 0 ||
-                              Boolean(streamingTasks && streamingTasks.size > 0);
-    const suppressedProviderMessageId = useMemo(
-      () => getCurrentTurnProviderMessageId(messages, {
-        hasActiveStreaming,
-        isAgentRunning,
-        isFinalizing,
-      }),
-      [hasActiveStreaming, isAgentRunning, isFinalizing, messages],
-    );
-    const shouldFilterCurrentProviderMessage = suppressedProviderMessageId !== null;
-
     // When filter clears (streaming/finalizing ends), scroll to bottom so the newly
     // revealed finalized assistant message is visible.
     useEffect(() => {
@@ -1037,78 +1193,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       prevShouldFilterRef.current = shouldFilterLastProviderMessage;
     }, [scheduleBottomPin, shouldFilterLastProviderMessage, scrollToTimestamp]);
 
-    const timeline = useMemo((): TimelineItem[] => {
-      const items: TimelineItem[] = [];
-
-      const filteredMessages = suppressedProviderMessageId
-        ? messages.filter((msg) => msg.id !== suppressedProviderMessageId)
-        : messages;
-
-      // Team filter: each tab (lead/teammate) loads its own conversation's messages via
-      // useConversation, so all messages in the data set belong to that conversation.
-      // No per-message filtering needed — the conversation switch handles the scoping.
-      const teamFilteredMessages = filteredMessages;
-
-      for (const msg of teamFilteredMessages) {
-        // Enrich message with attachments if available
-        const attachments = attachmentsMap?.get(msg.id);
-        const enrichedMsg = attachments
-          ? { ...msg, attachments }
-          : msg;
-
-        items.push({
-          kind: "message",
-          data: enrichedMsg,
-          sortTime: new Date(msg.createdAt).getTime(),
-        });
-      }
-
-      if (hasHookEvents) {
-        for (const ev of hookEvents) {
-          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
-        }
-        for (const ev of activeHooks) {
-          items.push({ kind: "hook", data: ev, sortTime: ev.timestamp });
-        }
-      }
-
-      // Interleave team system messages (filtered by teammate tab)
-      if (teamMessages.length > 0) {
-        const filteredTeamMsgs = teamFilter
-          ? teamMessages.filter((msg) => {
-              if (teamFilter === "lead") {
-                // Lead sees ALL team messages (lead is the orchestrator)
-                return true;
-              }
-              return msg.from === teamFilter || msg.to === teamFilter || msg.to === "*";
-            })
-          : teamMessages;
-
-        for (const msg of filteredTeamMsgs) {
-          items.push({
-            kind: "team_event",
-            data: msg,
-            sortTime: new Date(msg.timestamp).getTime(),
-          });
-        }
-      }
-
-      if (hasFooterStreamingContent) {
-        items.push({
-          kind: "streaming",
-          sortTime: Number.MAX_SAFE_INTEGER,
-        });
-      }
-
-      // Sort if we interleaved any non-message items
-      if (hasHookEvents || teamMessages.length > 0 || hasFooterStreamingContent) {
-        items.sort((a, b) => a.sortTime - b.sortTime);
-      }
-
-      return items;
-    }, [messages, suppressedProviderMessageId, hookEvents, activeHooks, hasHookEvents, attachmentsMap, teamFilter, teamMessages, hasFooterStreamingContent]);
-
-    const lastItemIndex = firstItemIndex + timeline.length - 1;
     const startReachedHandler =
       hasOlderMessages && onLoadOlderMessages
         ? (_index: number) => {
@@ -1342,9 +1426,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       hasFooterStreamingContent,
       shouldRenderStreamingContentGroup,
       shouldShowStreamingAssistantIcon,
-      normalizedStreamingContentBlocks,
+      renderedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
+      isSending,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,
@@ -1552,7 +1637,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             );
             if (systemCard) {
               return (
-                <div key={`${item.kind}-${item.sortTime}-${index}`} className="px-3 w-full" style={contentContainerStyle}>
+                <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
                   <ContentShell className={contentWidthClassName}>{systemCard}</ContentShell>
                 </div>
               );
@@ -1563,7 +1648,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               : { teammateName: null, teammateColor: null };
 
             return (
-              <div key={`${item.kind}-${item.sortTime}-${index}`} className="px-3 w-full" style={contentContainerStyle}>
+              <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
                 <ContentShell className={contentWidthClassName}>
                   <MessageItem
                     role={msg.role}

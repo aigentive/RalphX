@@ -20,8 +20,8 @@ fn dur(secs: u64) -> Duration {
 #[test]
 fn test_pid_alive_resets_timeout() {
     assert!(!should_kill_on_timeout(
-        dur(601),  // elapsed > line_read_timeout (600s) but within wall-clock
-        dur(1800), // max_wall_clock
+        dur(601),  // idle > line_read_timeout (600s) but within max_idle
+        dur(1800), // max_idle
         false,     // no pending question
         false,     // not interactive turn
         true,      // pid_alive
@@ -46,11 +46,11 @@ fn test_dead_process_killed() {
     ));
 }
 
-/// 3. Wall-clock exceeded AND pid alive → still kill (wall-clock overrides everything)
+/// 3. Idle cap exceeded AND pid alive → still kill (idle cap overrides everything)
 #[test]
-fn test_wall_clock_overrides_pid_alive() {
+fn test_idle_cap_overrides_pid_alive() {
     assert!(should_kill_on_timeout(
-        dur(1801), // elapsed > max_wall_clock
+        dur(1801), // idle > max_idle
         dur(1800),
         false, // no pending question
         false, // not interactive turn
@@ -107,11 +107,11 @@ fn test_pending_question_bypass() {
     ));
 }
 
-/// 7. Wall-clock exceeded AND pending question → kill (wall-clock wins)
+/// 7. Idle cap exceeded AND pending question → kill (idle cap wins)
 #[test]
-fn test_wall_clock_overrides_question() {
+fn test_idle_cap_overrides_question() {
     assert!(should_kill_on_timeout(
-        dur(1801), // exceeds wall-clock
+        dur(1801), // exceeds max_idle
         dur(1800),
         true,  // has_pending_question — would bypass normally
         false, // not interactive turn
@@ -127,8 +127,8 @@ fn test_wall_clock_overrides_question() {
 #[test]
 fn test_parse_stall_pid_alive_resets() {
     assert!(!should_kill_on_timeout(
-        dur(181),  // elapsed > parse_stall_timeout (180s) but within wall-clock
-        dur(1800), // max_wall_clock
+        dur(181),  // idle > parse_stall_timeout (180s) but within max_idle
+        dur(1800), // max_idle
         false,     // no pending question
         false,     // parse stall path passes false for is_interactive_turn
         true,      // pid_alive
@@ -153,7 +153,7 @@ fn test_completion_grace_bypasses_timeout() {
 }
 
 #[test]
-fn test_wall_clock_overrides_completion_grace() {
+fn test_idle_cap_overrides_completion_grace() {
     assert!(should_kill_on_timeout(
         dur(1801),
         dur(1800),
@@ -181,6 +181,70 @@ fn test_completion_tracker_grace_expires_and_timeout_kills() {
         true,
         false,
         tracker.is_in_grace_period(dur(30)),
+    ));
+}
+
+/// Activity-aware idle cap: recent activity (idle=5min) keeps a running agent alive.
+/// Under the old absolute wall-clock, a 3600s-old process would be killed even with
+/// recent output. Now only idle time matters.
+#[test]
+fn test_recent_activity_prevents_kill_running_process() {
+    assert!(!should_kill_on_timeout(
+        dur(300),  // idle only 5 minutes (recent activity)
+        dur(1800), // max_idle = 30 minutes
+        false,
+        false,
+        true,  // pid_alive — process is still running
+        false, // child NOT exited
+        false,
+        false,
+    ));
+}
+
+/// Activity-aware idle cap: no activity for longer than max_idle kills the agent.
+#[test]
+fn test_long_idle_kills_agent() {
+    assert!(should_kill_on_timeout(
+        dur(1801), // idle > max_idle
+        dur(1800),
+        false,
+        false,
+        true,  // even with pid alive
+        false,
+        false,
+        false,
+    ));
+}
+
+/// Active tasks bypass even when idle exceeds line_read_timeout.
+/// idle_elapsed is under max_idle so the idle cap doesn't fire,
+/// and active_tasks bypass prevents the default kill.
+#[test]
+fn test_active_tasks_bypass_idle_timeout() {
+    assert!(!should_kill_on_timeout(
+        dur(700),  // idle 11+ minutes — above line_read_timeout but under max_idle
+        dur(1800),
+        false,
+        false,
+        false,
+        true,
+        true, // has_active_tasks
+        false,
+    ));
+}
+
+/// Dead process with recent idle still gets killed (no point keeping a dead process).
+#[test]
+fn test_dead_process_killed_despite_short_idle() {
+    assert!(should_kill_on_timeout(
+        dur(300),  // idle only 5 minutes
+        dur(1800),
+        false,
+        false,
+        false, // pid NOT alive
+        true,  // child exited
+        false,
+        false,
     ));
 }
 
@@ -251,7 +315,10 @@ fn test_completion_tool_detection_accepts_codex_double_colon_names() {
         "ralphx::complete_agent_workspace_repair",
         "ralphx::finalize_proposals",
     ] {
-        assert!(is_completion_tool_name(tool_name), "{tool_name} should mark completion");
+        assert!(
+            is_completion_tool_name(tool_name),
+            "{tool_name} should mark completion"
+        );
     }
 }
 
@@ -687,6 +754,7 @@ fn test_turn_completed_payload_shape_matches_run_completed() {
         claude_session_id: Some("session-abc".to_string()),
         provider_harness: Some("claude".to_string()),
         provider_session_id: Some("session-abc".to_string()),
+        run_id: None,
         run_chain_id: None,
     };
 
@@ -714,6 +782,7 @@ fn test_turn_completed_payload_with_no_session_id() {
         claude_session_id: None,
         provider_harness: Some("codex".to_string()),
         provider_session_id: Some("thread-7".to_string()),
+        run_id: None,
         run_chain_id: None,
     };
 
@@ -741,6 +810,7 @@ fn test_non_interactive_run_completed_includes_run_chain_id() {
         claude_session_id: Some("session-xyz".to_string()),
         provider_harness: Some("claude".to_string()),
         provider_session_id: Some("session-xyz".to_string()),
+        run_id: None,
         run_chain_id: Some("chain-abc".to_string()),
     };
 
@@ -877,13 +947,20 @@ fn test_event_name_selection_decision_tree() {
 
 // --- silent_interactive_exit behavioral contract tests ---
 
-/// Verifies the queue gate: when `silent_interactive_exit` is true, `will_process_queue`
-/// must be false even when there are queued messages and a valid session_id.
-/// This is the PRIMARY fix preventing the resurrection cascade.
+/// Verifies the queue gate: cancellation-driven silent exits must not drain
+/// queued messages through the old process lifecycle.
 #[test]
 fn test_will_process_queue_suppressed_on_silent_exit() {
     // Simulate the decision logic from chat_service_send_background.rs:
-    // let will_process_queue = initial_queue_count > 0 && has_session_for_queue && !outcome.silent_interactive_exit;
+    // let will_process_queue =
+    //     initial_queue_count > 0 && has_session_for_queue && !(silent_interactive_exit && cancellation_requested);
+
+    let initial_queue_count = 2;
+    let will_process_queue = |outcome: &StreamOutcome, cancellation_requested: bool| {
+        initial_queue_count > 0
+            && outcome.session_id.is_some()
+            && !(outcome.silent_interactive_exit && cancellation_requested)
+    };
 
     // Case 1: Normal exit — queue should be processed
     let outcome_normal = StreamOutcome {
@@ -897,16 +974,13 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         silent_interactive_exit: false,
     };
-    let initial_queue_count = 2;
-    let has_session_for_queue = outcome_normal.session_id.is_some();
-    let will_process_queue_normal =
-        initial_queue_count > 0 && has_session_for_queue && !outcome_normal.silent_interactive_exit;
+    let will_process_queue_normal = will_process_queue(&outcome_normal, false);
     assert!(
         will_process_queue_normal,
         "Normal exit with queued messages + session → must process queue"
     );
 
-    // Case 2: Silent interactive exit — queue must NOT be processed regardless of queue/session
+    // Case 2: Cancellation-driven silent interactive exit — queue must NOT be processed.
     let outcome_silent = StreamOutcome {
         response_text: String::new(),
         tool_calls: vec![],
@@ -918,11 +992,17 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         silent_interactive_exit: true,
     };
-    let will_process_queue_silent =
-        initial_queue_count > 0 && has_session_for_queue && !outcome_silent.silent_interactive_exit;
+    let will_process_queue_silent = will_process_queue(&outcome_silent, true);
     assert!(
         !will_process_queue_silent,
-        "Silent exit → must NOT process queue even with queued messages and valid session"
+        "Cancelled silent exit → must NOT process queue even with queued messages and valid session"
+    );
+
+    // Case 2b: Timeout/EOF silent interactive exit — queue should still drain.
+    let will_process_queue_non_cancel_silent = will_process_queue(&outcome_silent, false);
+    assert!(
+        will_process_queue_non_cancel_silent,
+        "Non-cancel silent exit with queued messages + session → must process queue"
     );
 
     // Case 3: No session at all (regardless of silent flag) — no queue
@@ -937,9 +1017,7 @@ fn test_will_process_queue_suppressed_on_silent_exit() {
         execution_slot_held: false,
         silent_interactive_exit: false,
     };
-    let has_session_no_session = outcome_no_session.session_id.is_some();
-    let will_process_queue_no_session =
-        initial_queue_count > 0 && has_session_no_session && !outcome_no_session.silent_interactive_exit;
+    let will_process_queue_no_session = will_process_queue(&outcome_no_session, false);
     assert!(
         !will_process_queue_no_session,
         "No session → queue cannot be processed regardless"
@@ -1127,7 +1205,8 @@ fn test_agent_exit_openrouter_key_redacted() {
 /// when redaction is applied before payload assembly.
 #[test]
 fn test_debug_file_payload_contains_redacted_stderr() {
-    let raw_stderr = "fatal: Bearer sk-ant-api03-XxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXx01234567890 rejected";
+    let raw_stderr =
+        "fatal: Bearer sk-ant-api03-XxXxXxXxXxXxXxXxXxXxXxXxXxXxXxXx01234567890 rejected";
     let redacted_stderr = redact(raw_stderr);
 
     // Simulate how the debug file payload is assembled in process_stream_background
@@ -1156,7 +1235,9 @@ fn test_debug_file_payload_contains_redacted_stderr() {
 /// when redaction is applied before constructing the preview slice.
 #[test]
 fn test_stderr_preview_for_warn_contains_redacted_content() {
-    let raw_stderr = "sk-ant-api03-AAABBBCCC111222333444555666777888999000aabbccddee error in provider call".to_string();
+    let raw_stderr =
+        "sk-ant-api03-AAABBBCCC111222333444555666777888999000aabbccddee error in provider call"
+            .to_string();
     let redacted = redact(&raw_stderr);
     let preview = &redacted[..redacted.len().min(2000)];
 
@@ -1190,8 +1271,14 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: false, // slot released at TurnComplete
         silent_interactive_exit: true,
     };
-    assert!(idle_exit.silent_interactive_exit, "Idle between turns → silent exit");
-    assert!(!idle_exit.execution_slot_held, "Slot released at TurnComplete");
+    assert!(
+        idle_exit.silent_interactive_exit,
+        "Idle between turns → silent exit"
+    );
+    assert!(
+        !idle_exit.execution_slot_held,
+        "Slot released at TurnComplete"
+    );
 
     // Process exits mid-turn (active): silent_interactive_exit = false
     let active_exit = StreamOutcome {
@@ -1205,7 +1292,10 @@ fn test_silent_interactive_exit_flag_semantics() {
         execution_slot_held: true, // slot not yet released
         silent_interactive_exit: false,
     };
-    assert!(!active_exit.silent_interactive_exit, "Mid-turn exit → not silent");
+    assert!(
+        !active_exit.silent_interactive_exit,
+        "Mid-turn exit → not silent"
+    );
     assert!(active_exit.execution_slot_held, "Slot still held mid-turn");
 
     // Crash-while-idle path: Ok(Err(e)) branch with between_interactive_turns=true

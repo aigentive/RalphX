@@ -17,12 +17,13 @@ use crate::domain::agents::{
     standard_harness_behavior, AgentHarnessKind, HarnessStreamMode, ProviderSessionRef,
 };
 use crate::domain::entities::{
-    ActivityEvent, ActivityEventType, AgentRunId, AgentRunUsage, ChatContextType,
-    ChatConversationId, ChatMessageId, TaskId,
+    ActivityEvent, ActivityEventType, AgentRun, AgentRunId, AgentRunUsage, ChatContextType,
+    ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
+    ChatTimelineItemStatus, MessageRole, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ChatConversationRepository, ChatMessageRepository,
-    TaskRepository,
+    ChatTimelineRepository, TaskRepository,
 };
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::infrastructure::agents::claude::stream_timeouts;
@@ -30,10 +31,11 @@ use crate::infrastructure::agents::claude::{
     ContentBlockItem, DiffContext, StreamEvent, StreamProcessor, ToolCall, ToolCallStats,
 };
 use crate::infrastructure::agents::{
-    extract_codex_agent_message, extract_codex_command_execution, extract_codex_error_message,
+    extract_codex_agent_message, extract_codex_command_execution, extract_codex_error,
     extract_codex_file_change_snapshot, extract_codex_thread_id, extract_codex_tool_call_snapshot,
-    extract_codex_usage, parse_codex_event_line, CodexFileChange, CodexFileChangeSnapshot,
-    CodexToolCallPhase, CodexToolCallSnapshot,
+    extract_codex_usage, parse_codex_event_line, CodexErrorSource, CodexFileChange,
+    CodexFileChangeSnapshot, CodexToolCallPhase, CodexToolCallSnapshot, CodexUsage,
+    CodexUsageSource,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -266,6 +268,135 @@ async fn persist_assistant_message_snapshot(
             )
             .await;
     }
+}
+
+pub(super) async fn persist_timeline_snapshot(
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    conversation_id: &str,
+    assistant_message_id: &Option<String>,
+    content_blocks: &[ContentBlockItem],
+    status: ChatTimelineItemStatus,
+) {
+    let (Some(repo), Some(message_id)) =
+        (chat_timeline_repo.as_ref(), assistant_message_id.as_ref())
+    else {
+        return;
+    };
+
+    let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+    let message_id = ChatMessageId::from_string(message_id.clone());
+    let role = MessageRole::Orchestrator;
+
+    for (index, block) in content_blocks.iter().enumerate() {
+        let kind = match block {
+            ContentBlockItem::Text { text } if text.is_empty() => continue,
+            ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
+            ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
+        };
+
+        let mut item = ChatTimelineItem::for_message_block(
+            message_id.clone(),
+            conversation_id,
+            index as i64,
+            role,
+            kind,
+        );
+        item.status = status;
+        item.updated_at = chrono::Utc::now();
+        if status == ChatTimelineItemStatus::Finalized {
+            item.finalized_at = Some(item.updated_at);
+        }
+        item.raw_block_json = serde_json::to_string(block).ok();
+
+        match block {
+            ContentBlockItem::Text { text } => {
+                item.text = Some(text.clone());
+            }
+            ContentBlockItem::ToolUse {
+                id,
+                name,
+                arguments,
+                result,
+                ..
+            } => {
+                item.tool_call_id = id.clone();
+                item.tool_name = Some(name.clone());
+                item.tool_status = Some(
+                    if result.is_some() {
+                        "completed"
+                    } else {
+                        "pending"
+                    }
+                    .to_string(),
+                );
+                item.tool_input_preview = Some(json_preview(arguments));
+                item.input_json = Some(arguments.to_string());
+                if let Some(result) = result {
+                    item.tool_result_preview = Some(json_preview(result));
+                    item.result_json = Some(result.to_string());
+                }
+            }
+        }
+
+        let _ = repo.upsert_item(item).await;
+    }
+
+    if status == ChatTimelineItemStatus::Finalized {
+        let _ = repo.mark_message_items_finalized(&message_id).await;
+    }
+}
+
+pub(super) async fn persist_message_text_timeline_item(
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
+    message: &ChatMessage,
+) {
+    let (Some(repo), Some(conversation_id)) =
+        (chat_timeline_repo.as_ref(), message.conversation_id)
+    else {
+        return;
+    };
+    if message.content.is_empty() {
+        return;
+    }
+    if message
+        .metadata
+        .as_deref()
+        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+        .and_then(|metadata| {
+            metadata
+                .get("recovery_context")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message.id.clone(),
+        conversation_id,
+        0,
+        message.role,
+        ChatTimelineItemKind::Text,
+    );
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.text = Some(message.content.clone());
+    item.metadata = message.metadata.clone();
+    item.provider_harness = message.provider_harness;
+    item.provider_session_id = message.provider_session_id.clone();
+    item.created_at = message.created_at;
+    item.updated_at = message.created_at;
+    item.finalized_at = Some(message.created_at);
+
+    let _ = repo.upsert_item(item).await;
+}
+
+fn json_preview(value: &serde_json::Value) -> String {
+    let raw = value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string());
+    truncate_str(&raw, 1_000).to_string()
 }
 
 fn codex_tool_call_content_block(tool_call: &ToolCall) -> ContentBlockItem {
@@ -549,19 +680,148 @@ fn resolve_codex_file_change_tool_call_snapshots(
         .collect()
 }
 
-fn add_usage_u64(total: &mut Option<u64>, value: Option<u64>) {
-    if let Some(value) = value {
-        *total = Some(total.unwrap_or(0) + value);
+fn agent_run_usage_from_codex_usage(usage: CodexUsage) -> AgentRunUsage {
+    AgentRunUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_creation_tokens: None,
+        cache_read_tokens: usage.cached_input_tokens,
+        estimated_usd: None,
     }
 }
 
-fn accumulate_codex_usage(
-    total: &mut AgentRunUsage,
-    usage: crate::infrastructure::agents::CodexUsage,
-) {
-    add_usage_u64(&mut total.input_tokens, usage.input_tokens);
-    add_usage_u64(&mut total.cache_read_tokens, usage.cached_input_tokens);
-    add_usage_u64(&mut total.output_tokens, usage.output_tokens);
+fn token_baseline_from_prior_runs(
+    current: Option<u64>,
+    prior_values: impl Iterator<Item = Option<u64>>,
+) -> Option<u64> {
+    let current = current?;
+    let values: Vec<u64> = prior_values.flatten().collect();
+    if values.is_empty() {
+        return Some(0);
+    }
+
+    let sum = values.iter().copied().sum::<u64>();
+    if sum <= current {
+        return Some(sum);
+    }
+
+    Some(values.iter().copied().max().unwrap_or(0).min(current))
+}
+
+fn cost_baseline_from_prior_runs(
+    current: Option<f64>,
+    prior_values: impl Iterator<Item = Option<f64>>,
+) -> Option<f64> {
+    let current = current?;
+    let values: Vec<f64> = prior_values.flatten().collect();
+    if values.is_empty() {
+        return Some(0.0);
+    }
+
+    let sum = values.iter().copied().sum::<f64>();
+    if sum <= current {
+        return Some(sum);
+    }
+
+    Some(values.iter().copied().fold(0.0, f64::max).min(current))
+}
+
+#[doc(hidden)]
+pub(crate) fn normalize_codex_cumulative_usage_for_persistence(
+    current: AgentRunUsage,
+    prior_runs: &[AgentRun],
+    current_run_id: Option<&str>,
+    provider_session_id: Option<&str>,
+) -> AgentRunUsage {
+    let matching_prior_runs: Vec<&AgentRun> = prior_runs
+        .iter()
+        .filter(|run| run.harness == Some(AgentHarnessKind::Codex))
+        .filter(|run| {
+            current_run_id
+                .map(|id| run.id.as_str() != id)
+                .unwrap_or(true)
+        })
+        .filter(|run| {
+            provider_session_id
+                .map(|session_id| run.provider_session_id.as_deref() == Some(session_id))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let input_baseline = token_baseline_from_prior_runs(
+        current.input_tokens,
+        matching_prior_runs.iter().map(|run| run.input_tokens),
+    );
+    let output_baseline = token_baseline_from_prior_runs(
+        current.output_tokens,
+        matching_prior_runs.iter().map(|run| run.output_tokens),
+    );
+    let cache_creation_baseline = token_baseline_from_prior_runs(
+        current.cache_creation_tokens,
+        matching_prior_runs
+            .iter()
+            .map(|run| run.cache_creation_tokens),
+    );
+    let cache_read_baseline = token_baseline_from_prior_runs(
+        current.cache_read_tokens,
+        matching_prior_runs.iter().map(|run| run.cache_read_tokens),
+    );
+    let estimated_usd_baseline = cost_baseline_from_prior_runs(
+        current.estimated_usd,
+        matching_prior_runs.iter().map(|run| run.estimated_usd),
+    );
+
+    AgentRunUsage {
+        input_tokens: current
+            .input_tokens
+            .map(|value| value.saturating_sub(input_baseline.unwrap_or(0))),
+        output_tokens: current
+            .output_tokens
+            .map(|value| value.saturating_sub(output_baseline.unwrap_or(0))),
+        cache_creation_tokens: current
+            .cache_creation_tokens
+            .map(|value| value.saturating_sub(cache_creation_baseline.unwrap_or(0))),
+        cache_read_tokens: current
+            .cache_read_tokens
+            .map(|value| value.saturating_sub(cache_read_baseline.unwrap_or(0))),
+        estimated_usd: current
+            .estimated_usd
+            .map(|value| (value - estimated_usd_baseline.unwrap_or(0.0)).max(0.0)),
+    }
+}
+
+async fn normalize_codex_stream_usage_for_persistence(
+    event_usage: AgentRunUsage,
+    source: CodexUsageSource,
+    agent_run_repo: &Option<Arc<dyn AgentRunRepository>>,
+    conversation_id: &ChatConversationId,
+    agent_run_id: Option<&str>,
+    provider_session_id: Option<&str>,
+) -> AgentRunUsage {
+    if source != CodexUsageSource::CumulativeTotal {
+        return event_usage;
+    }
+
+    let Some(repo) = agent_run_repo else {
+        return event_usage;
+    };
+
+    match repo.get_by_conversation(conversation_id).await {
+        Ok(prior_runs) => normalize_codex_cumulative_usage_for_persistence(
+            event_usage,
+            &prior_runs,
+            agent_run_id,
+            provider_session_id,
+        ),
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                error = %error,
+                "Failed to load prior Codex run usage; persisting raw stream usage"
+            );
+            event_usage
+        }
+    }
 }
 
 /// Per-context-type timeout thresholds for stream processing.
@@ -740,6 +1000,7 @@ impl CompletionSignalTracker {
 /// * `activity_event_repo` - Repository for persisting activity events (optional)
 /// * `task_repo` - Task repository for fetching current status (optional)
 /// * `chat_message_repo` - Chat message repository for incremental persistence (optional)
+/// * `chat_timeline_repo` - Normalized timeline repository for live visible block persistence (optional)
 /// * `assistant_message_id` - Pre-created assistant message ID for incremental updates (optional)
 /// * `question_state` - QuestionState for checking pending questions (optional)
 /// * `streaming_state_cache` - Cache for streaming state to hydrate frontend on navigation
@@ -753,6 +1014,7 @@ pub async fn process_stream_background<R: Runtime>(
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
     chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     mut assistant_message_id: Option<String>,
     question_state: Option<Arc<QuestionState>>,
     cancellation_token: CancellationToken,
@@ -777,6 +1039,7 @@ pub async fn process_stream_background<R: Runtime>(
             activity_event_repo,
             task_repo,
             chat_message_repo,
+            chat_timeline_repo,
             assistant_message_id,
             question_state,
             cancellation_token,
@@ -869,9 +1132,10 @@ pub async fn process_stream_background<R: Runtime>(
     let mut lines_parsed: usize = 0;
     let mut stream_seq: u64 = 0;
     let mut last_parsed_at = std::time::Instant::now();
-    // Wall-clock cap: hard kill after max_wall_clock_secs regardless of PID state
+    // Activity-aware idle cap: kill after max_wall_clock_secs of no meaningful activity
     let stream_start = std::time::Instant::now();
     let max_wall_clock = std::time::Duration::from_secs(stream_cfg.max_wall_clock_secs);
+    let mut last_activity_at = std::time::Instant::now();
     let completion_grace_duration =
         std::time::Duration::from_secs(stream_cfg.completion_grace_secs);
 
@@ -935,6 +1199,13 @@ pub async fn process_stream_background<R: Runtime>(
                     &chat_message_repo, &assistant_message_id,
                     &processor.response_text, &processor.tool_calls, &processor.content_blocks,
                 ).await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &processor.content_blocks,
+                    ChatTimelineItemStatus::Error,
+                ).await;
                 return Err(StreamError::Cancelled {
                     turns_finalized,
                     completion_tool_called: completion_signal_tracker.was_called(),
@@ -990,7 +1261,7 @@ pub async fn process_stream_background<R: Runtime>(
                             .is_in_grace_period(completion_grace_duration);
 
                         if should_kill_on_timeout(
-                            stream_start.elapsed(),
+                            last_activity_at.elapsed(),
                             max_wall_clock,
                             has_pending_question,
                             between_interactive_turns,
@@ -999,11 +1270,12 @@ pub async fn process_stream_background<R: Runtime>(
                             active_task_tracker.has_active_tasks(),
                             is_completion_grace_period,
                         ) {
-                            if stream_start.elapsed() > max_wall_clock {
+                            if last_activity_at.elapsed() > max_wall_clock {
                                 tracing::warn!(
                                     conversation_id = %conversation_id_str,
-                                    elapsed_secs = stream_start.elapsed().as_secs(),
-                                    "Wall-clock cap reached — killing agent"
+                                    idle_secs = last_activity_at.elapsed().as_secs(),
+                                    total_secs = stream_start.elapsed().as_secs(),
+                                    "Idle cap reached — killing agent"
                                 );
                             }
                             tracing::warn!(
@@ -1025,6 +1297,13 @@ pub async fn process_stream_background<R: Runtime>(
                             flush_content_before_error(
                                 &chat_message_repo, &assistant_message_id,
                                 &processor.response_text, &processor.tool_calls, &processor.content_blocks,
+                            ).await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Error,
                             ).await;
                             return Err(StreamError::Timeout {
                                 context_type,
@@ -1127,6 +1406,7 @@ pub async fn process_stream_background<R: Runtime>(
         if let Some(parsed) = StreamProcessor::parse_line(&line) {
             lines_parsed += 1;
             last_parsed_at = std::time::Instant::now();
+            last_activity_at = std::time::Instant::now();
 
             // [STREAM_MSG] Log parsed message variant
             tracing::debug!(
@@ -1559,6 +1839,15 @@ pub async fn process_stream_background<R: Runtime>(
                             "TurnComplete: finalizing assistant message for interactive turn"
                         );
 
+                        if processor.result_is_error {
+                            tracing::warn!(
+                                conversation_id = %conversation_id_str,
+                                ?session_id,
+                                "TurnComplete carried a result error; preserving processor state for terminal error handling"
+                            );
+                            continue;
+                        }
+
                         // Finalize the current assistant message with accumulated content
                         if let (Some(ref repo), Some(ref msg_id)) =
                             (&chat_message_repo, &assistant_message_id)
@@ -1578,6 +1867,19 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.tool_calls,
                                 &processor.content_blocks,
                                 split_verification_transcript,
+                            )
+                            .await;
+                            // Mirror the finalize_structured_assistant_message write into the
+                            // timeline-backed chat_message_blocks table. Without this, project
+                            // and task chat turns that end on TurnComplete leave the timeline
+                            // empty and the chat UI shows the response as missing — even though
+                            // chat_messages has the full content.
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Finalized,
                             )
                             .await;
                             let turn_usage = processor.current_turn_usage();
@@ -1643,7 +1945,8 @@ pub async fn process_stream_background<R: Runtime>(
                             let provider_session_id = session_id.clone();
                             let _ = handle.emit(
                                 super::chat_service_types::events::AGENT_TURN_COMPLETED,
-                                super::chat_service_types::AgentRunCompletedPayload::with_provider_session(
+                                super::chat_service_types::AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                    agent_run_id.clone(),
                                     conversation_id_str.clone(),
                                     context_type_str.clone(),
                                     context_id_str.clone(),
@@ -2144,6 +2447,14 @@ pub async fn process_stream_background<R: Runtime>(
                                 &processor.content_blocks,
                             )
                             .await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Streaming,
+                            )
+                            .await;
                         }
 
                         if let Some(ref handle) = app_handle {
@@ -2229,7 +2540,7 @@ pub async fn process_stream_background<R: Runtime>(
                 completion_signal_tracker.is_in_grace_period(completion_grace_duration);
 
             if should_kill_on_timeout(
-                stream_start.elapsed(),
+                last_activity_at.elapsed(),
                 max_wall_clock,
                 has_pending_question,
                 false, // parse stall path has no interactive_turns bypass
@@ -2238,11 +2549,12 @@ pub async fn process_stream_background<R: Runtime>(
                 active_task_tracker.has_active_tasks(),
                 is_completion_grace_period,
             ) {
-                if stream_start.elapsed() > max_wall_clock {
+                if last_activity_at.elapsed() > max_wall_clock {
                     tracing::warn!(
                         conversation_id = %conversation_id_str,
-                        elapsed_secs = stream_start.elapsed().as_secs(),
-                        "Wall-clock cap reached in parse stall path — killing agent"
+                        idle_secs = last_activity_at.elapsed().as_secs(),
+                        total_secs = stream_start.elapsed().as_secs(),
+                        "Idle cap reached in parse stall path — killing agent"
                     );
                 } else {
                     tracing::warn!(
@@ -2268,6 +2580,14 @@ pub async fn process_stream_background<R: Runtime>(
                     &processor.response_text,
                     &processor.tool_calls,
                     &processor.content_blocks,
+                )
+                .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &processor.content_blocks,
+                    ChatTimelineItemStatus::Error,
                 )
                 .await;
                 return Err(StreamError::ParseStall {
@@ -2345,6 +2665,14 @@ pub async fn process_stream_background<R: Runtime>(
                 &processor.response_text,
                 &processor.tool_calls,
                 &processor.content_blocks,
+            )
+            .await;
+            persist_timeline_snapshot(
+                &chat_timeline_repo,
+                &conversation_id_str,
+                &assistant_message_id,
+                &processor.content_blocks,
+                ChatTimelineItemStatus::Streaming,
             )
             .await;
             let current_turn_usage = processor.current_turn_usage();
@@ -2462,6 +2790,14 @@ pub async fn process_stream_background<R: Runtime>(
                 &result.content_blocks,
             )
             .await;
+            persist_timeline_snapshot(
+                &chat_timeline_repo,
+                &conversation_id_str,
+                &assistant_message_id,
+                &result.content_blocks,
+                ChatTimelineItemStatus::Error,
+            )
+            .await;
 
             return Err(StreamError::AgentExit {
                 exit_code: exit_details.exit_code,
@@ -2514,6 +2850,14 @@ pub async fn process_stream_background<R: Runtime>(
         &outcome.content_blocks,
     )
     .await;
+    persist_timeline_snapshot(
+        &chat_timeline_repo,
+        &conversation_id_str,
+        &assistant_message_id,
+        &outcome.content_blocks,
+        ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &outcome.usage)
         .await;
     persist_agent_run_usage(&agent_run_repo, &agent_run_id, &outcome.usage).await;
@@ -2544,7 +2888,9 @@ pub async fn process_stream_background<R: Runtime>(
 
     if outcome.tool_calls.is_empty() {
         if let Some(provider_err) =
-            super::chat_service_errors::classify_provider_error(&outcome.response_text)
+            super::chat_service_errors::classify_provider_error_from_assistant_content(
+                &outcome.response_text,
+            )
         {
             return Err(provider_err);
         }
@@ -2656,6 +3002,7 @@ async fn process_codex_stream_background<R: Runtime>(
     activity_event_repo: Option<Arc<dyn ActivityEventRepository>>,
     task_repo: Option<Arc<dyn TaskRepository>>,
     chat_message_repo: Option<Arc<dyn ChatMessageRepository>>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     assistant_message_id: Option<String>,
     question_state: Option<Arc<QuestionState>>,
     cancellation_token: CancellationToken,
@@ -2715,15 +3062,16 @@ async fn process_codex_stream_background<R: Runtime>(
     let mut response_text = String::new();
     let mut tool_calls = Vec::<ToolCall>::new();
     let mut content_blocks = Vec::<ContentBlockItem>::new();
-    let mut errors = Vec::<String>::new();
+    let mut runtime_errors = Vec::<String>::new();
+    let mut local_tool_errors = Vec::<String>::new();
     let mut session_id: Option<String> = None;
     let mut usage = AgentRunUsage::default();
     let mut lines_seen = 0usize;
     let mut lines_parsed = 0usize;
     let mut stream_seq = 0u64;
     let mut last_parsed_at = std::time::Instant::now();
-    let stream_start = std::time::Instant::now();
     let max_wall_clock = std::time::Duration::from_secs(stream_timeouts().max_wall_clock_secs);
+    let mut last_activity_at = std::time::Instant::now();
     let mut last_flush = std::time::Instant::now();
     const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
     let mut completion_signal_tracker = CompletionSignalTracker::default();
@@ -2776,7 +3124,7 @@ async fn process_codex_stream_background<R: Runtime>(
                         };
 
                         if should_kill_on_timeout(
-                            stream_start.elapsed(),
+                            last_activity_at.elapsed(),
                             max_wall_clock,
                             has_pending_question,
                             false,
@@ -2809,6 +3157,7 @@ async fn process_codex_stream_background<R: Runtime>(
         if let Some(event) = parse_codex_event_line(&line) {
             lines_parsed += 1;
             last_parsed_at = std::time::Instant::now();
+            last_activity_at = std::time::Instant::now();
 
             if let Some(thread_id) = extract_codex_thread_id(&event) {
                 session_id = Some(thread_id.clone());
@@ -2840,6 +3189,14 @@ async fn process_codex_stream_background<R: Runtime>(
                     &response_text,
                     &tool_calls,
                     &content_blocks,
+                )
+                .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &content_blocks,
+                    ChatTimelineItemStatus::Streaming,
                 )
                 .await;
 
@@ -2924,6 +3281,14 @@ async fn process_codex_stream_background<R: Runtime>(
                     &content_blocks,
                 )
                 .await;
+                persist_timeline_snapshot(
+                    &chat_timeline_repo,
+                    &conversation_id_str,
+                    &assistant_message_id,
+                    &content_blocks,
+                    ChatTimelineItemStatus::Streaming,
+                )
+                .await;
 
                 let result_preview = build_live_tool_result_preview_for_tool_call(
                     &conversation_id_str,
@@ -2981,25 +3346,43 @@ async fn process_codex_stream_background<R: Runtime>(
             if let Some(command_execution) = extract_codex_command_execution(&event) {
                 if let Some(exit_code) = command_execution.exit_code {
                     if exit_code != 0 {
-                        errors.push(command_execution.aggregated_output.clone().unwrap_or_else(
-                            || format!("Codex command_execution failed with exit code {exit_code}"),
-                        ));
+                        local_tool_errors.push(
+                            command_execution
+                                .aggregated_output
+                                .clone()
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Codex command_execution failed with exit code {exit_code}"
+                                    )
+                                }),
+                        );
                     }
                 }
             }
 
-            if let Some(error) = extract_codex_error_message(&event) {
+            if let Some(error) = extract_codex_error(&event) {
                 if crate::infrastructure::agents::codex::stream_processor::is_non_fatal_mcp_resource_probe_error(
                     &event,
-                    &error,
+                    &error.message,
                 ) {
                     continue;
                 }
-                errors.push(error);
+                match error.source {
+                    CodexErrorSource::Runtime => runtime_errors.push(error.message),
+                    CodexErrorSource::McpTool => local_tool_errors.push(error.message),
+                }
             }
 
             if let Some(event_usage) = extract_codex_usage(&event) {
-                accumulate_codex_usage(&mut usage, event_usage);
+                usage = normalize_codex_stream_usage_for_persistence(
+                    agent_run_usage_from_codex_usage(event_usage.usage),
+                    event_usage.source,
+                    &agent_run_repo,
+                    conversation_id,
+                    agent_run_id.as_deref(),
+                    session_id.as_deref(),
+                )
+                .await;
                 persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &usage)
                     .await;
                 persist_agent_run_usage(&agent_run_repo, &agent_run_id, &usage).await;
@@ -3038,6 +3421,14 @@ async fn process_codex_stream_background<R: Runtime>(
                 &response_text,
                 &tool_calls,
                 &content_blocks,
+            )
+            .await;
+            persist_timeline_snapshot(
+                &chat_timeline_repo,
+                &conversation_id_str,
+                &assistant_message_id,
+                &content_blocks,
+                ChatTimelineItemStatus::Streaming,
             )
             .await;
             last_flush = std::time::Instant::now();
@@ -3080,21 +3471,28 @@ async fn process_codex_stream_background<R: Runtime>(
         &outcome.content_blocks,
     )
     .await;
+    persist_timeline_snapshot(
+        &chat_timeline_repo,
+        &conversation_id_str,
+        &assistant_message_id,
+        &outcome.content_blocks,
+        if status.success() || outcome.has_meaningful_output() {
+            ChatTimelineItemStatus::Finalized
+        } else {
+            ChatTimelineItemStatus::Error
+        },
+    )
+    .await;
     persist_assistant_message_usage(&chat_message_repo, &assistant_message_id, &outcome.usage)
         .await;
     persist_agent_run_usage(&agent_run_repo, &agent_run_id, &outcome.usage).await;
 
-    if !errors.is_empty() {
-        let error_message = errors.join("; ");
-        if let Some(provider_error) =
-            super::chat_service_errors::classify_provider_error(&error_message)
-        {
-            return Err(provider_error);
-        }
-        return Err(StreamError::AgentExit {
-            exit_code: status.code(),
-            stderr: error_message,
-        });
+    if let Some(stream_error) = super::chat_service_errors::classify_codex_stream_failure(
+        &runtime_errors,
+        &local_tool_errors,
+        status.code(),
+    ) {
+        return Err(stream_error);
     }
 
     if !status.success()
@@ -3115,7 +3513,9 @@ async fn process_codex_stream_background<R: Runtime>(
 
     if outcome.tool_calls.is_empty() {
         if let Some(provider_error) =
-            super::chat_service_errors::classify_provider_error(&outcome.response_text)
+            super::chat_service_errors::classify_provider_error_from_assistant_content(
+                &outcome.response_text,
+            )
         {
             return Err(provider_error);
         }
@@ -3135,15 +3535,20 @@ async fn process_codex_stream_background<R: Runtime>(
 ///
 /// Returns `true` = kill (terminate with error), `false` = reset timeout and continue.
 /// Ordering mirrors the actual `Err(_)` branch in `process_stream_background`:
-/// wall-clock → question_state → interactive_turns → PID-alive → active_tasks
+/// idle-cap → question_state → interactive_turns → PID-alive → active_tasks
 /// → completion_grace → kill
+///
+/// `idle_elapsed` is the duration since the last meaningful activity (parsed
+/// stream event, tool call, interactive turn, or stdin message). Using
+/// idle-based timing instead of absolute process age ensures long-running
+/// interactive/IPR agents are not killed while they are actively working.
 ///
 /// This pure function is extracted for unit testability. Side effects (tracing,
 /// heartbeat emission) remain in the calling code.
 #[doc(hidden)]
 pub fn should_kill_on_timeout(
-    wall_clock_elapsed: std::time::Duration,
-    max_wall_clock: std::time::Duration,
+    idle_elapsed: std::time::Duration,
+    max_idle: std::time::Duration,
     has_pending_question: bool,
     is_interactive_turn: bool,
     pid_alive: bool,
@@ -3151,8 +3556,8 @@ pub fn should_kill_on_timeout(
     has_active_tasks: bool,
     is_completion_grace_period: bool,
 ) -> bool {
-    // 1. Wall-clock cap overrides everything
-    if wall_clock_elapsed > max_wall_clock {
+    // 1. Idle cap: kill only when the agent has been idle longer than max_idle
+    if idle_elapsed > max_idle {
         return true;
     }
     // 2. Pending question bypass (existing)

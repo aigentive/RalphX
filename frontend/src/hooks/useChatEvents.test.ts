@@ -51,9 +51,12 @@ vi.mock("@/providers/EventProvider", () => ({
   }),
 }));
 
+const mockCancelQueries = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({
     invalidateQueries: mockInvalidateQueries,
+    cancelQueries: mockCancelQueries,
     getQueryData: mockGetQueryData,
     getQueryCache: () => ({
       subscribe: (fn: (event: { type: string; query: { queryKey: unknown[] } }) => void) => {
@@ -70,7 +73,9 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     conversation: (id: string) => ["chat", "conversations", id],
+    conversationSummary: (id: string) => ["chat", "conversations", id, "summary"],
     conversationHistory: (id: string) => ["chat", "conversations", id, "history"],
+    conversationTimeline: (id: string) => ["chat", "conversations", id, "timeline"],
   },
   getCachedConversationMessages: () => mockQueryData?.messages ?? [],
   invalidateConversationDataQueries: (_queryClient: unknown, conversationId: string) => {
@@ -166,6 +171,7 @@ describe("useChatEvents", () => {
   beforeEach(() => {
     subscriptions.clear();
     mockInvalidateQueries.mockClear();
+    mockCancelQueries.mockClear();
     mockGetQueryData.mockClear();
     mockQueryData = undefined;
     cacheSubscribers.length = 0;

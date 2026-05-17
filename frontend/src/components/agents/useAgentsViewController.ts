@@ -112,6 +112,10 @@ export function useAgentsViewController({
     runtimeByConversationId,
     selectedConversationId,
   });
+  const activeProjectBaseBranch = useMemo(
+    () => projects.find((project) => project.id === activeProjectId)?.baseBranch ?? null,
+    [activeProjectId, projects],
+  );
   useAgentConversationTitleEvents(activeProjectId);
   useSyncedAgentProjectFocus(projectId, setFocusedProject);
 
@@ -231,7 +235,6 @@ export function useAgentsViewController({
     switchingConversationModeId,
   } = useAgentsActiveComposerControls({
     activeConversation,
-    activeConversationModeLocked,
     activeProjectId,
     activeWorkspace,
     defaultProjectId,
@@ -309,6 +312,7 @@ export function useAgentsViewController({
     },
     sideRegionProps: {
       activeConversation,
+      activeProjectBaseBranch,
       activeWorkspace,
       artifactWidthCss,
       chatDockElement: terminalChatDockElement,

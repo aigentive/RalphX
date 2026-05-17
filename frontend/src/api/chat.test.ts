@@ -6,8 +6,11 @@ import {
   listConversations,
   listConversationsPage,
   getConversation,
+  getConversationSummary,
   getConversationMessagesPage,
+  getConversationTimelinePage,
   getAgentMessageToolCallDetail,
+  getAgentTimelineItemToolCallDetail,
   getConversationStats,
   createConversation,
   updateConversationTitle,
@@ -16,9 +19,12 @@ import {
   restoreConversation,
   getAgentRunStatus,
   getAgentConversationWorkspaceFreshness,
+  openAgentConversationWorkspace,
   listAgentConversationWorkspacePublicationEvents,
   listAgentConversationWorkspacesByProject,
+  listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
+  precomputeAgentConversationWorkspacePrDescription,
   startAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
@@ -27,6 +33,7 @@ import {
   isChatServiceAvailable,
   stopAgent,
   isAgentRunning,
+  getAgentRunningStates,
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
@@ -596,6 +603,168 @@ describe("chat api", () => {
     expect(result.messages[0]?.conversationId).toBe("c-legacy");
   });
 
+  it("gets a lightweight conversation summary", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "c-summary",
+      context_type: "project",
+      context_id: "p1",
+      claude_session_id: null,
+      provider_session_id: "thread-summary",
+      provider_harness: "codex",
+      title: "Breadcrumb title",
+      message_count: 9,
+      last_message_at: "2026-01-24T10:05:00Z",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:05:00Z",
+      archived_at: null,
+    });
+
+    const result = await getConversationSummary("c-summary");
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_conversation_summary", {
+      conversationId: "c-summary",
+    });
+    expect(result).toMatchObject({
+      id: "c-summary",
+      contextType: "project",
+      contextId: "p1",
+      title: "Breadcrumb title",
+      providerHarness: "codex",
+    });
+  });
+
+  it("transforms normalized conversation timeline pages into renderable messages", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation: {
+        id: "c-timeline",
+        context_type: "project",
+        context_id: "p1",
+        claude_session_id: null,
+        provider_session_id: "thread-1",
+        provider_harness: "codex",
+        title: "Timeline",
+        message_count: 1,
+        last_message_at: "2026-01-24T10:00:01Z",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:00:01Z",
+      },
+      items: [
+        {
+          id: "block:msg-1:0",
+          conversation_id: "c-timeline",
+          message_id: "msg-1",
+          run_id: "run-1",
+          sequence: 4,
+          block_index: 0,
+          role: "orchestrator",
+          kind: "text",
+          status: "streaming",
+          content: "Working",
+          content_blocks: [{ type: "text", text: "Working" }],
+          tool_call: null,
+          metadata: null,
+          provider_harness: "codex",
+          provider_session_id: "thread-1",
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_creation_tokens: 1,
+          cache_read_tokens: 2,
+          estimated_usd: 0.01,
+          created_at: "2026-01-24T10:00:01Z",
+          updated_at: "2026-01-24T10:00:02Z",
+          finalized_at: null,
+        },
+        {
+          id: "block:msg-1:1",
+          conversation_id: "c-timeline",
+          message_id: "msg-1",
+          run_id: "run-1",
+          sequence: 5,
+          block_index: 1,
+          role: "orchestrator",
+          kind: "tool_use",
+          status: "finalized",
+          content: "",
+          content_blocks: [
+            {
+              type: "tool_use",
+              id: "tool-1",
+              name: "bash",
+              arguments: { command: "cargo test" },
+              detail_ref: {
+                conversation_id: "c-timeline",
+                message_id: "msg-1",
+                tool_call_id: "tool-1",
+                content_block_index: 1,
+                timeline_item_id: "block:msg-1:1",
+              },
+            },
+          ],
+          tool_call: {
+            id: "tool-1",
+            name: "bash",
+            arguments: { command: "cargo test" },
+            result: "ok",
+            detail_ref: {
+              conversation_id: "c-timeline",
+              message_id: "msg-1",
+              tool_call_id: "tool-1",
+              content_block_index: 1,
+              timeline_item_id: "block:msg-1:1",
+            },
+          },
+          metadata: "{\"kind\":\"tool\"}",
+          provider_harness: "codex",
+          provider_session_id: "thread-1",
+          created_at: "2026-01-24T10:00:03Z",
+          updated_at: "2026-01-24T10:00:04Z",
+          finalized_at: "2026-01-24T10:00:04Z",
+        },
+      ],
+      limit: 40,
+      before_sequence: 6,
+      total_item_count: 8,
+      has_older: true,
+      oldest_loaded_sequence: 4,
+      newest_loaded_sequence: 5,
+    });
+
+    const result = await getConversationTimelinePage("c-timeline", 40, 6);
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_conversation_timeline_page", {
+      conversationId: "c-timeline",
+      limit: 40,
+      beforeSequence: 6,
+    });
+    expect(result).toMatchObject({
+      limit: 40,
+      beforeSequence: 6,
+      totalItemCount: 8,
+      hasOlder: true,
+      oldestLoadedSequence: 4,
+      newestLoadedSequence: 5,
+    });
+    expect(result.messages.map((message) => message.id)).toEqual([
+      "block:msg-1:0",
+      "block:msg-1:1",
+    ]);
+    expect(result.messages[0]).toMatchObject({
+      parentMessageId: "msg-1",
+      timelineStatus: "streaming",
+      timelineKind: "text",
+      timelineSequence: 4,
+      inputTokens: 10,
+      providerHarness: "codex",
+    });
+    expect(result.items[1].toolCall?.detailRef).toMatchObject({
+      conversationId: "c-timeline",
+      messageId: "msg-1",
+      toolCallId: "tool-1",
+      contentBlockIndex: 1,
+      timelineItemId: "block:msg-1:1",
+    });
+  });
+
   it("loads a full tool call detail by preview detail ref", async () => {
     mockInvoke.mockResolvedValue({
       tool_call: {
@@ -623,6 +792,48 @@ describe("chat api", () => {
       name: "bash",
       result: "full output",
     });
+  });
+
+  it("loads a full tool call detail by timeline item detail ref", async () => {
+    mockInvoke.mockResolvedValue({
+      tool_call: {
+        id: "tool-1",
+        name: "bash",
+        arguments: { command: "cargo test" },
+        result: "full output",
+      },
+    });
+
+    const result = await getAgentMessageToolCallDetail({
+      conversationId: "conv-1",
+      messageId: "msg-1",
+      timelineItemId: "block:msg-1:1",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_timeline_item_tool_call_detail", {
+      conversationId: "conv-1",
+      timelineItemId: "block:msg-1:1",
+    });
+    expect(result?.toolCall).toMatchObject({
+      id: "tool-1",
+      name: "bash",
+      result: "full output",
+    });
+  });
+
+  it("returns null when a timeline item detail payload is unavailable", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    const result = await getAgentTimelineItemToolCallDetail(
+      "conv-1",
+      "missing-timeline-item"
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_timeline_item_tool_call_detail", {
+      conversationId: "conv-1",
+      timelineItemId: "missing-timeline-item",
+    });
+    expect(result).toBeNull();
   });
 
   it("returns null when a preview detail ref no longer has a full result", async () => {
@@ -887,6 +1098,110 @@ describe("chat api", () => {
     });
   });
 
+  it("opens an agent conversation workspace when Tauri returns null for Rust unit", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(
+      openAgentConversationWorkspace("conversation-1", "cursor")
+    ).resolves.toBeUndefined();
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "open_agent_conversation_workspace",
+      { conversationId: "conversation-1", targetId: "cursor" }
+    );
+  });
+
+  it("lists grouped agent sidebar conversations", async () => {
+    mockInvoke.mockResolvedValue({
+      groups: [
+        {
+          key: "merged",
+          label: "Merged",
+          total: 1,
+          offset: 0,
+          limit: 20,
+          has_more: false,
+          rows: [
+            {
+              conversation: {
+                id: "conversation-1",
+                context_type: "project",
+                context_id: "project-1",
+                claude_session_id: null,
+                provider_session_id: "thread-1",
+                provider_harness: "codex",
+                title: "Merged sidebar work",
+                message_count: 2,
+                last_message_at: null,
+                created_at: "2026-01-24T10:00:00Z",
+                updated_at: "2026-01-24T10:00:00Z",
+                archived_at: null,
+              },
+              workspace: {
+                conversation_id: "conversation-1",
+                project_id: "project-1",
+                mode: "edit",
+                base_ref_kind: "project_default",
+                base_ref: "main",
+                base_display_name: "Project default (main)",
+                base_commit: null,
+                branch_name: "ralphx/demo/agent-conversation-1",
+                worktree_path: "/tmp/ralphx/conversation-1",
+                linked_ideation_session_id: null,
+                linked_plan_branch_id: null,
+                publication_pr_number: 123,
+                publication_pr_url: "https://github.com/acme/demo/pull/123",
+                publication_pr_status: "merged",
+                publication_push_status: "published",
+                status: "active",
+                created_at: "2026-01-24T10:00:00Z",
+                updated_at: "2026-01-24T10:01:00Z",
+              },
+              ref_kind: "pull_request",
+              ref_label: "PR #123",
+              publication_state: "merged",
+              publication_label: "merged",
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await listAgentSidebarConversations({
+      projectIds: ["project-1"],
+      groupBy: "publication",
+      publicationStates: ["merged", "closed"],
+      limitPerGroup: 20,
+      offsets: { merged: 0 },
+      search: " merged ",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("list_agent_sidebar_conversations", {
+      input: {
+        projectIds: ["project-1"],
+        includeArchived: false,
+        archivedOnly: false,
+        search: "merged",
+        publicationStates: ["merged", "closed"],
+        groupBy: "publication",
+        limitPerGroup: 20,
+        offsets: { merged: 0 },
+      },
+    });
+    expect(result.groups[0]).toMatchObject({
+      key: "merged",
+      hasMore: false,
+      rows: [
+        {
+          refKind: "pull-request",
+          refLabel: "PR #123",
+          publicationState: "merged",
+          publicationLabel: "merged",
+        },
+      ],
+    });
+  });
+
   it("lists agent conversation workspace publication events", async () => {
     mockInvoke.mockResolvedValue([
       {
@@ -917,6 +1232,7 @@ describe("chat api", () => {
   it("gets agent conversation workspace freshness", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "conversation-1",
+      freshness_scope: "full",
       base_ref: "feature/agent-screen",
       base_display_name: "Current branch (feature/agent-screen)",
       target_ref: "origin/feature/agent-screen",
@@ -935,11 +1251,69 @@ describe("chat api", () => {
     );
     expect(result).toMatchObject({
       conversationId: "conversation-1",
+      freshnessScope: "full",
       baseRef: "feature/agent-screen",
       targetRef: "origin/feature/agent-screen",
       isBaseAhead: true,
       hasUncommittedChanges: true,
       unpublishedCommitCount: 2,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
+    });
+  });
+
+  it("requests scoped agent conversation workspace freshness", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      freshness_scope: "local",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      target_ref: "ralphx/test/agent-workspace",
+      captured_base_commit: "base",
+      target_base_commit: "base",
+      is_base_ahead: false,
+      has_uncommitted_changes: false,
+      unpublished_commit_count: null,
+      remote_refreshed: false,
+      worktree_status_checked: false,
+    });
+
+    const result = await getAgentConversationWorkspaceFreshness("conversation-1", {
+      scope: "local",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_workspace_freshness",
+      { conversationId: "conversation-1", freshnessScope: "local" }
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      freshnessScope: "local",
+      remoteRefreshed: false,
+      worktreeStatusChecked: false,
+    });
+  });
+
+  it("precomputes an agent conversation workspace PR description", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      status: "ready",
+      cache_status: "miss",
+      reason: null,
+    });
+
+    const result =
+      await precomputeAgentConversationWorkspacePrDescription("conversation-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "precompute_agent_conversation_workspace_pr_description",
+      { conversationId: "conversation-1" }
+    );
+    expect(result).toEqual({
+      conversationId: "conversation-1",
+      status: "ready",
+      cacheStatus: "miss",
+      reason: null,
     });
   });
 
@@ -1209,9 +1583,17 @@ describe("chat api", () => {
     window.__mockChatApi = {
       reset: vi.fn(),
       seedScenario: vi.fn(),
+      seedConversation: vi.fn(),
+      replaceMessages: vi.fn(),
       listScenarios: vi.fn().mockReturnValue([]),
       listConversations: vi.fn(),
+      listConversationsPage: vi.fn(),
+      listAgentSidebarConversations: vi.fn(),
       getConversation: vi.fn(),
+      getConversationSummary: vi.fn(),
+      getConversationTimelinePage: vi.fn(),
+      getConversationStats: vi.fn(),
+      seedAgentConversationWorkspace: vi.fn(),
       getChildSessionStatus: vi.fn().mockResolvedValue({
         session_id: "child-1",
         title: "Mock child session",
@@ -1306,19 +1688,39 @@ describe("chat api", () => {
     expect(await stopAgent("project", "p1")).toBe(false);
   });
 
+  it("bulk-checks running states", async () => {
+    mockInvoke.mockResolvedValueOnce({ c1: true, c2: false });
+
+    await expect(getAgentRunningStates("project", ["c1", "c2"])).resolves.toEqual({
+      c1: true,
+      c2: false,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("get_agent_running_states", {
+      contextType: "project",
+      contextIds: ["c1", "c2"],
+    });
+  });
+
   it("exports chatApi namespace", () => {
     expect(chatApi.sendAgentMessage).toBe(sendAgentMessage);
     expect(chatApi.listConversations).toBe(listConversations);
     expect(chatApi.listAgentConversationWorkspacesByProject).toBe(
       listAgentConversationWorkspacesByProject
     );
+    expect(chatApi.listAgentSidebarConversations).toBe(
+      listAgentSidebarConversations
+    );
     expect(chatApi.listAgentConversationWorkspacePublicationEvents).toBe(
       listAgentConversationWorkspacePublicationEvents
+    );
+    expect(chatApi.precomputeAgentConversationWorkspacePrDescription).toBe(
+      precomputeAgentConversationWorkspacePrDescription
     );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
     expect(chatApi.archiveConversation).toBe(archiveConversation);
     expect(chatApi.restoreConversation).toBe(restoreConversation);
     expect(chatApi.getConversationActiveState).toBe(getConversationActiveState);
+    expect(chatApi.getAgentRunningStates).toBe(getAgentRunningStates);
   });
 });
 

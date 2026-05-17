@@ -47,6 +47,10 @@ export function useAgentWorkspacePublisher({
       try {
         const result = await chatApi.publishAgentConversationWorkspace(conversationId);
         const prLabel = result.prNumber ? `#${result.prNumber}` : result.prUrl;
+        queryClient.setQueryData(
+          ["agents", "conversation-workspace", conversationId],
+          result.workspace
+        );
         toast.success(prLabel ? `Published ${prLabel}` : "Published branch");
         await Promise.all([
           queryClient.invalidateQueries({
@@ -67,7 +71,7 @@ export function useAgentWorkspacePublisher({
           conversation?.projectId
             ? invalidateProjectConversations(conversation.projectId)
             : Promise.resolve(),
-        ]);
+        ]).catch(() => undefined);
       } catch (err) {
         const errorMessage = getErrorMessage(err, "Failed to publish branch");
         let refreshedWorkspace: AgentConversationWorkspace | null = null;

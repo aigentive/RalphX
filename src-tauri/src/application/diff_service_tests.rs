@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -12,6 +13,66 @@ fn test_get_language_from_path() {
     assert_eq!(get_language_from_path("config.json"), "json");
     assert_eq!(get_language_from_path("README.md"), "markdown");
     assert_eq!(get_language_from_path("unknown"), "plaintext");
+}
+
+#[test]
+fn file_changes_parse_counts_from_single_numstat_output() {
+    let mut counts = HashMap::new();
+    counts.insert("src/a.rs".to_string(), (2, 1));
+    counts.insert("src/b.rs".to_string(), (0, 4));
+
+    let changes = file_changes_from_name_status("M\tsrc/b.rs\nA\tsrc/a.rs\n", &counts);
+
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0].path, "src/a.rs");
+    assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    assert_eq!(changes[0].additions, 2);
+    assert_eq!(changes[0].deletions, 1);
+    assert_eq!(changes[1].path, "src/b.rs");
+    assert!(matches!(changes[1].status, FileChangeStatus::Modified));
+    assert_eq!(changes[1].additions, 0);
+    assert_eq!(changes[1].deletions, 4);
+}
+
+#[test]
+fn numstat_parser_handles_binary_files_renames_and_invalid_lines() {
+    let counts = numstat_map_from_stdout(
+        "-\t-\tassets/logo.png\n12\t3\told/path.rs\tnew/path.rs\ninvalid\n",
+    );
+
+    assert_eq!(counts.get("assets/logo.png"), Some(&(0, 0)));
+    assert_eq!(counts.get("new/path.rs"), Some(&(12, 3)));
+    assert!(!counts.contains_key("old/path.rs"));
+    assert_eq!(counts.len(), 2);
+}
+
+#[test]
+fn file_changes_parse_deleted_renamed_and_skip_empty_paths() {
+    let mut counts = HashMap::new();
+    counts.insert("old.rs".to_string(), (0, 7));
+    counts.insert("new/name.rs".to_string(), (4, 1));
+
+    let changes = file_changes_from_name_status(
+        "D\told.rs\nR100\told/name.rs\tnew/name.rs\nA\t   \n",
+        &counts,
+    );
+
+    assert_eq!(changes.len(), 2);
+    let renamed = changes
+        .iter()
+        .find(|change| change.path == "new/name.rs")
+        .expect("renamed destination should be tracked");
+    assert!(matches!(renamed.status, FileChangeStatus::Modified));
+    assert_eq!(renamed.additions, 4);
+    assert_eq!(renamed.deletions, 1);
+
+    let deleted = changes
+        .iter()
+        .find(|change| change.path == "old.rs")
+        .expect("deleted file should be tracked");
+    assert!(matches!(deleted.status, FileChangeStatus::Deleted));
+    assert_eq!(deleted.additions, 0);
+    assert_eq!(deleted.deletions, 7);
 }
 
 // =========================================================================
@@ -90,6 +151,120 @@ fn create_branch_with_change(repo_path: &Path, branch_name: &str, file_name: &st
         .expect("Failed to checkout master");
 }
 
+fn git_stdout(repo_path: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .expect("Failed to run git command");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn test_get_worktree_file_changes_uses_combined_numstat_counts() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(repo_path.join("README.md"), "# Test Repo\n\nMore detail\n")
+        .expect("Failed to update README");
+    fs::write(
+        repo_path.join("src.rs"),
+        "fn main() {}\nprintln!(\"hi\");\n",
+    )
+    .expect("Failed to write added file");
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to git add");
+
+    let diff_service = DiffService::new();
+    let changes = diff_service
+        .get_worktree_file_changes_from_ref(&repo_path.to_string_lossy(), &base)
+        .unwrap();
+
+    assert_eq!(changes.len(), 2);
+    let readme = changes
+        .iter()
+        .find(|change| change.path == "README.md")
+        .unwrap();
+    assert!(matches!(readme.status, FileChangeStatus::Modified));
+    assert_eq!(readme.additions, 2);
+    assert_eq!(readme.deletions, 0);
+    let added = changes
+        .iter()
+        .find(|change| change.path == "src.rs")
+        .unwrap();
+    assert!(matches!(added.status, FileChangeStatus::Added));
+    assert_eq!(added.additions, 2);
+    assert_eq!(added.deletions, 0);
+}
+
+#[test]
+fn test_get_file_changes_between_refs_uses_combined_numstat_counts() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(
+        repo_path.join("src.rs"),
+        "fn main() {}\nprintln!(\"hi\");\n",
+    )
+    .expect("Failed to write added file");
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to git add");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "Add source"])
+        .current_dir(&repo_path)
+        .output()
+        .expect("Failed to commit");
+
+    let diff_service = DiffService::new();
+    let changes = diff_service
+        .get_file_changes_between_refs(&repo_path.to_string_lossy(), &base, "HEAD")
+        .unwrap();
+
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "src.rs");
+    assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    assert_eq!(changes[0].additions, 2);
+    assert_eq!(changes[0].deletions, 0);
+}
+
+#[test]
+fn test_get_file_diff_for_worktree_uses_current_disk_content() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(repo_path.join("README.md"), "# Test Repo\n\nUncommitted\n")
+        .expect("Failed to update README");
+
+    let diff_service = DiffService::new();
+    let diff = diff_service
+        .get_file_diff("README.md", &repo_path.to_string_lossy(), &base)
+        .unwrap();
+
+    assert_eq!(diff.file_path, "README.md");
+    assert_eq!(diff.language, "markdown");
+    // Hunk-based: the uncommitted addition appears as a hunk addition line
+    assert!(
+        !diff.hunks.is_empty(),
+        "Diff should have at least one hunk for the uncommitted change"
+    );
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("Uncommitted")),
+        "Diff hunks should contain the uncommitted addition"
+    );
+    // old_total_lines = HEAD (1 line), new_total_lines = disk (3 lines)
+    assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
+    assert_eq!(diff.new_total_lines, 3, "Disk has 3 lines after edit");
+}
+
 #[tokio::test]
 async fn test_detect_conflicts_clean_merge() {
     let (_temp_dir, repo_path) = create_git_repo();
@@ -154,4 +329,799 @@ fn test_is_git_238_or_newer() {
     // The actual result depends on the installed Git version
     let _result = DiffService::is_git_238_or_newer();
     // Should not panic
+}
+
+// =========================================================================
+// Staged / Unstaged Change Tests (Extension A)
+// =========================================================================
+
+/// Helper: run git commands in a repo and assert success.
+fn git_cmd(repo_path: &PathBuf, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Creates a git repo with a committed base file and returns (temp_dir, repo_path).
+fn create_staged_unstaged_repo() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let repo = temp_dir.path().to_path_buf();
+    git_cmd(&repo, &["init", "-b", "main"]);
+    git_cmd(&repo, &["config", "user.email", "test@example.com"]);
+    git_cmd(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("base.txt"), "base\n").unwrap();
+    git_cmd(&repo, &["add", "."]);
+    git_cmd(&repo, &["commit", "-m", "Initial"]);
+    (temp_dir, repo)
+}
+
+#[test]
+fn staged_file_changes_returns_only_staged_files() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a new file
+    fs::write(repo.join("staged.txt"), "staged content\n").unwrap();
+    git_cmd(&repo, &["add", "staged.txt"]);
+
+    // Also write an unstaged file (NOT added to index)
+    fs::write(repo.join("unstaged.txt"), "unstaged content\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_staged_file_changes(&repo_str).unwrap();
+
+    assert_eq!(changes.len(), 1, "Only staged file should be listed");
+    assert_eq!(changes[0].path, "staged.txt");
+    assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    assert_eq!(changes[0].additions, 1);
+}
+
+#[test]
+fn unstaged_file_changes_returns_only_unstaged_files() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a file but don't include it in working-tree view
+    fs::write(repo.join("staged_only.txt"), "staged\n").unwrap();
+    git_cmd(&repo, &["add", "staged_only.txt"]);
+
+    // Modify the committed file WITHOUT staging
+    fs::write(repo.join("base.txt"), "base\nmodified\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+
+    // Only base.txt (unstaged modification) should appear
+    assert!(
+        changes.iter().any(|c| c.path == "base.txt"),
+        "Unstaged modification should be listed"
+    );
+    assert!(
+        !changes.iter().any(|c| c.path == "staged_only.txt"),
+        "Staged-only file should not appear in unstaged changes"
+    );
+}
+
+#[test]
+fn staged_file_diff_shows_head_vs_index_content() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a modification to base.txt
+    fs::write(repo.join("base.txt"), "base\nadded line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+
+    // Write a further unstaged change (should NOT appear in staged diff)
+    fs::write(repo.join("base.txt"), "base\nadded line\nfurther unstaged\n").unwrap();
+
+    let svc = DiffService::new();
+    let diff = svc.get_staged_file_diff("base.txt", &repo_str).unwrap();
+
+    assert_eq!(diff.file_path, "base.txt");
+    assert_eq!(diff.language, "plaintext");
+    // Hunk-based: staged diff HEAD→index; "added line" appears as an addition
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("added line")),
+        "Staged diff hunks should contain the staged addition"
+    );
+    // The further unstaged change must NOT appear in the staged diff
+    assert!(
+        !diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("further unstaged")),
+        "Staged diff should not include disk-only change"
+    );
+    assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
+    assert_eq!(diff.new_total_lines, 2, "Index has 2 lines after staging");
+}
+
+#[test]
+fn unstaged_file_diff_shows_index_vs_disk_content() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a modification to base.txt first
+    fs::write(repo.join("base.txt"), "base\nstaged line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+
+    // Then make a further disk change (unstaged)
+    fs::write(repo.join("base.txt"), "base\nstaged line\ndisk change\n").unwrap();
+
+    let svc = DiffService::new();
+    let diff = svc.get_unstaged_file_diff("base.txt", &repo_str).unwrap();
+
+    assert_eq!(diff.file_path, "base.txt");
+    // Hunk-based: unstaged diff index→disk; "disk change" appears as an addition
+    assert!(
+        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("disk change")),
+        "Unstaged diff hunks should contain the disk-only addition"
+    );
+    assert_eq!(diff.old_total_lines, 2, "Index has 2 lines");
+    assert_eq!(diff.new_total_lines, 3, "Disk has 3 lines");
+}
+
+#[test]
+fn staged_file_changes_empty_when_nothing_staged() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Only unstaged change
+    fs::write(repo.join("base.txt"), "base\nmore\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_staged_file_changes(&repo_str).unwrap();
+    assert!(changes.is_empty(), "No staged changes, result should be empty");
+}
+
+#[test]
+fn unstaged_file_changes_empty_when_working_tree_clean() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // Stage a file (no unstaged changes on committed files)
+    fs::write(repo.join("new.txt"), "new\n").unwrap();
+    git_cmd(&repo, &["add", "new.txt"]);
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+    assert!(
+        changes.is_empty(),
+        "No unstaged changes on tracked files, result should be empty"
+    );
+}
+
+// =============================================================================
+// parse_unified_diff unit tests
+// =============================================================================
+
+#[test]
+fn parse_unified_diff_empty_input_returns_no_hunks() {
+    let hunks = parse_unified_diff("");
+    assert!(hunks.is_empty());
+}
+
+#[test]
+fn parse_unified_diff_unchanged_file_returns_no_hunks() {
+    // git diff on unchanged file outputs nothing
+    let raw = "diff --git a/foo.rs b/foo.rs\n";
+    let hunks = parse_unified_diff(raw);
+    assert!(hunks.is_empty());
+}
+
+#[test]
+fn parse_unified_diff_single_hunk_mixed_lines() {
+    let raw = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
+ fn foo() {
+-    let x = 1;
++    let x = 2;
++    let y = 3;
+ }
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    let hunk = &hunks[0];
+    assert_eq!(hunk.old_start, 1);
+    assert_eq!(hunk.old_lines, 4);
+    assert_eq!(hunk.new_start, 1);
+    assert_eq!(hunk.new_lines, 5);
+
+    // Context: "fn foo() {"
+    assert_eq!(hunk.lines[0].kind, DiffLineKind::Context);
+    assert_eq!(hunk.lines[0].old_line_num, Some(1));
+    assert_eq!(hunk.lines[0].new_line_num, Some(1));
+
+    // Deletion: "    let x = 1;"
+    assert_eq!(hunk.lines[1].kind, DiffLineKind::Deletion);
+    assert_eq!(hunk.lines[1].content, "    let x = 1;");
+    assert_eq!(hunk.lines[1].old_line_num, Some(2));
+    assert_eq!(hunk.lines[1].new_line_num, None);
+
+    // Addition: "    let x = 2;"
+    assert_eq!(hunk.lines[2].kind, DiffLineKind::Addition);
+    assert_eq!(hunk.lines[2].content, "    let x = 2;");
+    assert_eq!(hunk.lines[2].old_line_num, None);
+    assert_eq!(hunk.lines[2].new_line_num, Some(2));
+
+    // Addition: "    let y = 3;"
+    assert_eq!(hunk.lines[3].kind, DiffLineKind::Addition);
+    assert_eq!(hunk.lines[3].new_line_num, Some(3));
+
+    // Context: "}"
+    assert_eq!(hunk.lines[4].kind, DiffLineKind::Context);
+    assert_eq!(hunk.lines[4].old_line_num, Some(3));
+    assert_eq!(hunk.lines[4].new_line_num, Some(4));
+}
+
+#[test]
+fn parse_unified_diff_multi_hunk() {
+    let raw = "\
+@@ -1,3 +1,3 @@
+ line1
+-old2
++new2
+ line3
+@@ -10,3 +10,3 @@
+ line10
+-old11
++new11
+ line12
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(hunks[0].old_start, 1);
+    assert_eq!(hunks[1].old_start, 10);
+    assert_eq!(hunks[1].lines[1].old_line_num, Some(11));
+    assert_eq!(hunks[1].lines[2].new_line_num, Some(11));
+}
+
+#[test]
+fn parse_unified_diff_new_file() {
+    // New file: @@ -0,0 +1,2 @@
+    let raw = "\
+diff --git a/new.rs b/new.rs
+new file mode 100644
+--- /dev/null
++++ b/new.rs
+@@ -0,0 +1,2 @@
++fn new() {}
++// end
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    assert_eq!(hunks[0].old_start, 0);
+    assert_eq!(hunks[0].old_lines, 0);
+    assert_eq!(hunks[0].new_start, 1);
+    let first = &hunks[0].lines[0];
+    assert_eq!(first.kind, DiffLineKind::Addition);
+    assert_eq!(first.old_line_num, None);
+    assert_eq!(first.new_line_num, Some(1));
+}
+
+#[test]
+fn parse_unified_diff_deleted_file() {
+    let raw = "\
+diff --git a/gone.rs b/gone.rs
+deleted file mode 100644
+--- a/gone.rs
++++ /dev/null
+@@ -1,2 +0,0 @@
+-fn old() {}
+-// end
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    assert_eq!(hunks[0].new_start, 0);
+    assert_eq!(hunks[0].new_lines, 0);
+    let first = &hunks[0].lines[0];
+    assert_eq!(first.kind, DiffLineKind::Deletion);
+    assert_eq!(first.new_line_num, None);
+    assert_eq!(first.old_line_num, Some(1));
+}
+
+#[test]
+fn parse_unified_diff_no_newline_marker_skipped() {
+    let raw = "\
+@@ -1,1 +1,1 @@
+-old
+\\ No newline at end of file
++new
+\\ No newline at end of file
+";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    // Only Deletion and Addition — the backslash lines are skipped
+    assert_eq!(hunks[0].lines.len(), 2);
+    assert_eq!(hunks[0].lines[0].kind, DiffLineKind::Deletion);
+    assert_eq!(hunks[0].lines[1].kind, DiffLineKind::Addition);
+}
+
+#[test]
+fn parse_unified_diff_hunk_with_optional_trailing_text() {
+    // @@ -10,7 +10,7 @@ fn my_function() {
+    let raw = "@@ -10,7 +10,7 @@ fn my_function() {\n-old\n+new\n";
+    let hunks = parse_unified_diff(raw);
+    assert_eq!(hunks.len(), 1);
+    assert!(hunks[0].header.contains("fn my_function()"));
+    assert_eq!(hunks[0].old_start, 10);
+}
+
+#[test]
+fn parse_unified_diff_binary_file_returns_empty() {
+    // Binary diff output — caller detects "Binary files" and skips parsing;
+    // parse_unified_diff itself receives empty string in that branch.
+    let raw = "Binary files a/img.png and b/img.png differ\n";
+    // Demonstrate: if someone calls it directly, no crash, returns empty
+    let hunks = parse_unified_diff(raw);
+    assert!(hunks.is_empty());
+}
+
+#[test]
+fn file_changes_from_unified_diff_tracks_counts_and_statuses() {
+    let raw = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ pub fn answer() -> u8 {
+-    41
++    42
+ }
++// done
+diff --git a/old.txt b/old.txt
+deleted file mode 100644
+--- a/old.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-old
+";
+
+    let changes = DiffService::new().get_file_changes_from_unified_diff(raw);
+
+    assert_eq!(changes.len(), 2);
+    let deleted = changes
+        .iter()
+        .find(|change| change.path == "old.txt")
+        .expect("deleted file should be listed");
+    assert!(matches!(deleted.status, FileChangeStatus::Deleted));
+    assert_eq!(deleted.additions, 0);
+    assert_eq!(deleted.deletions, 1);
+
+    let modified = changes
+        .iter()
+        .find(|change| change.path == "src/lib.rs")
+        .expect("modified file should be listed");
+    assert!(matches!(modified.status, FileChangeStatus::Modified));
+    assert_eq!(modified.additions, 2);
+    assert_eq!(modified.deletions, 1);
+}
+
+#[test]
+fn file_diff_from_unified_diff_returns_single_file_hunks() {
+    let raw = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ pub fn answer() -> u8 {
+-    41
++    42
+ }
++// done
+";
+
+    let diff = DiffService::new()
+        .get_file_diff_from_unified_diff(raw, "src/lib.rs")
+        .expect("patch-backed file diff should parse");
+
+    assert_eq!(diff.file_path, "src/lib.rs");
+    assert_eq!(diff.language, "rust");
+    assert_eq!(diff.hunks.len(), 1);
+    assert_eq!(diff.old_total_lines, 3);
+    assert_eq!(diff.new_total_lines, 4);
+    assert!(diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .any(|line| line.content.contains("42")));
+}
+
+// =============================================================================
+// validate_diff_file_path unit tests
+// =============================================================================
+
+#[test]
+fn validate_diff_file_path_rejects_absolute() {
+    let err = validate_diff_file_path("/etc/passwd").unwrap_err();
+    assert!(err.to_string().contains("relative"));
+}
+
+#[test]
+fn validate_diff_file_path_rejects_parent_traversal() {
+    let err = validate_diff_file_path("../secret").unwrap_err();
+    assert!(err.to_string().contains("unsafe"));
+}
+
+#[test]
+fn validate_diff_file_path_rejects_embedded_traversal() {
+    let err = validate_diff_file_path("src/../../etc/passwd").unwrap_err();
+    assert!(err.to_string().contains("unsafe"));
+}
+
+#[test]
+fn validate_diff_file_path_accepts_normal_path() {
+    validate_diff_file_path("src/lib.rs").unwrap();
+    validate_diff_file_path("frontend/src/components/App.tsx").unwrap();
+}
+
+// =============================================================================
+// get_file_content_range unit tests
+// =============================================================================
+
+#[test]
+fn get_file_content_range_rejects_oversized_range() {
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 1, 5001)
+        .unwrap_err();
+    assert!(err.to_string().contains("too large") || err.to_string().contains("5000"));
+}
+
+#[test]
+fn get_file_content_range_rejects_from_greater_than_to() {
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 10, 5)
+        .unwrap_err();
+    assert!(err.to_string().contains("from") || err.to_string().contains("to"));
+}
+
+#[test]
+fn get_file_content_range_rejects_traversal_path() {
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "../etc/passwd", &DiffRefKind::Head, 1, 10)
+        .unwrap_err();
+    assert!(err.to_string().contains("unsafe") || err.to_string().contains("relative"));
+}
+
+#[test]
+fn get_file_content_range_reads_working_tree_lines() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    // base.txt already exists with content "base\n" (1 line)
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::New,
+            "base.txt",
+            &DiffRefKind::Unstaged,
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].line_num, 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_rejects_cumulative_base_and_head() {
+    let svc = DiffService::new();
+    let err_base = svc
+        .get_file_content_range(".", &DiffSide::New, "x.rs", &DiffRefKind::CumulativeBase, 1, 5)
+        .unwrap_err();
+    assert!(err_base.to_string().contains("CumulativeBase") || err_base.to_string().contains("resolved"));
+
+    let err_head = svc
+        .get_file_content_range(".", &DiffSide::New, "x.rs", &DiffRefKind::CumulativeHead, 1, 5)
+        .unwrap_err();
+    assert!(err_head.to_string().contains("CumulativeHead") || err_head.to_string().contains("resolved"));
+}
+
+#[test]
+fn get_file_content_range_rejects_from_zero() {
+    // from must be >= 1 (1-indexed)
+    let svc = DiffService::new();
+    let err = svc
+        .get_file_content_range(".", &DiffSide::New, "any.rs", &DiffRefKind::Head, 0, 5)
+        .unwrap_err();
+    assert!(err.to_string().contains("from") || err.to_string().contains("1-indexed"));
+}
+
+#[test]
+fn get_file_content_range_reads_head_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // base.txt committed as "base\n" — HEAD has 1 line
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(&repo_str, &DiffSide::Old, "base.txt", &DiffRefKind::Head, 1, 1)
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].line_num, 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_reads_staged_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Stage a new version of base.txt
+    fs::write(repo.join("base.txt"), "base\nstaged\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    // Staged ref reads from the index — should see "staged" line
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(&repo_str, &DiffSide::New, "base.txt", &DiffRefKind::Staged, 1, 2)
+        .unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].content, "base");
+    assert_eq!(lines[1].content, "staged");
+}
+
+#[test]
+fn get_file_content_range_reads_unstaged_old_side_from_index() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Stage a modification so index differs from HEAD
+    fs::write(repo.join("base.txt"), "base\nindex_line\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    // Then make a further disk change (unstaged)
+    fs::write(repo.join("base.txt"), "base\nindex_line\ndisk_line\n").unwrap();
+    // Side::Old for Unstaged reads from the index — should see 2 lines
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Unstaged,
+            1,
+            2,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1].content, "index_line");
+}
+
+#[test]
+fn get_file_content_range_reads_commit_ref() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Capture the initial commit SHA (base.txt = "base\n")
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
+
+    // Make an additional commit so HEAD is now different
+    fs::write(repo.join("base.txt"), "base\nafter\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["commit", "-m", "second"]);
+
+    let svc = DiffService::new();
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Commit { sha },
+            1,
+            1,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].content, "base");
+}
+
+#[test]
+fn get_file_content_range_returns_only_requested_window() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    // Write a 5-line file and commit it
+    fs::write(repo.join("multi.txt"), "a\nb\nc\nd\ne\n").unwrap();
+    git_cmd(&repo, &["add", "multi.txt"]);
+    git_cmd(&repo, &["commit", "-m", "5 lines"]);
+
+    let svc = DiffService::new();
+    // Request lines 2–4 of the committed file
+    let lines = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "multi.txt",
+            &DiffRefKind::Head,
+            2,
+            4,
+        )
+        .unwrap();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0].line_num, 2);
+    assert_eq!(lines[0].content, "b");
+    assert_eq!(lines[2].line_num, 4);
+    assert_eq!(lines[2].content, "d");
+}
+
+// =============================================================================
+// is_generated_by_heuristic unit tests
+// =============================================================================
+
+#[test]
+fn heuristic_matches_source_maps() {
+    assert!(is_generated_by_heuristic("bundle.js.map"));
+    assert!(is_generated_by_heuristic("src/bundle.js.map"));
+    assert!(is_generated_by_heuristic("foo.map"));
+    // 'map' in a directory name or as a non-extension part is not a match
+    assert!(!is_generated_by_heuristic("src/maputils.rs"));
+    assert!(!is_generated_by_heuristic("sitemap.xml")); // .xml not .map
+}
+
+#[test]
+fn heuristic_matches_minified_bundles() {
+    assert!(is_generated_by_heuristic("app.min.js"));
+    assert!(is_generated_by_heuristic("vendor.min.css"));
+    assert!(!is_generated_by_heuristic("app.min.ts")); // not js or css
+    assert!(!is_generated_by_heuristic("minimal.js")); // does not match .min.js pattern
+    assert!(!is_generated_by_heuristic("app.js")); // plain JS, not minified
+}
+
+#[test]
+fn heuristic_matches_all_known_lockfiles() {
+    assert!(is_generated_by_heuristic("package-lock.json"));
+    assert!(is_generated_by_heuristic("yarn.lock"));
+    assert!(is_generated_by_heuristic("pnpm-lock.yaml"));
+    assert!(is_generated_by_heuristic("Cargo.lock"));
+    assert!(is_generated_by_heuristic("Gemfile.lock"));
+    assert!(is_generated_by_heuristic("composer.lock"));
+    assert!(is_generated_by_heuristic("poetry.lock"));
+    assert!(is_generated_by_heuristic("uv.lock"));
+    // Nested inside a workspace package
+    assert!(is_generated_by_heuristic("packages/app/package-lock.json"));
+    assert!(is_generated_by_heuristic("subdir/yarn.lock"));
+}
+
+#[test]
+fn heuristic_matches_snapshots() {
+    assert!(is_generated_by_heuristic("__snapshots__/App.test.snap"));
+    assert!(is_generated_by_heuristic("tests/ui/button.snap"));
+    assert!(is_generated_by_heuristic("foo.snap"));
+    // 'snap' in a filename but not as the final extension is not a match
+    assert!(!is_generated_by_heuristic("snapshot_utils.rs"));
+    assert!(!is_generated_by_heuristic("snapshots/config.yaml")); // .yaml not .snap
+}
+
+#[test]
+fn heuristic_matches_build_output_directories() {
+    assert!(is_generated_by_heuristic("dist/app.js"));
+    assert!(is_generated_by_heuristic("build/index.html"));
+    assert!(is_generated_by_heuristic("out/bundle.css"));
+    assert!(is_generated_by_heuristic("target/debug/ralphx"));
+    assert!(is_generated_by_heuristic("target/release/libfoo.rlib"));
+    // Must be the leading directory component, not an infix
+    assert!(!is_generated_by_heuristic("src/dist.rs"));
+    assert!(!is_generated_by_heuristic("distribution/app.js"));
+    assert!(!is_generated_by_heuristic("src/build_utils.rs"));
+}
+
+#[test]
+fn heuristic_returns_false_for_normal_source_files() {
+    assert!(!is_generated_by_heuristic("src/app.ts"));
+    assert!(!is_generated_by_heuristic("src/lib.rs"));
+    assert!(!is_generated_by_heuristic("README.md"));
+    assert!(!is_generated_by_heuristic("app.js"));
+    assert!(!is_generated_by_heuristic("config.yaml"));
+    assert!(!is_generated_by_heuristic("frontend/src/index.tsx"));
+    assert!(!is_generated_by_heuristic("Cargo.toml"));
+    assert!(!is_generated_by_heuristic("package.json")); // not a lockfile
+}
+
+// =============================================================================
+// compute_generated_flags integration tests
+// =============================================================================
+
+#[test]
+fn compute_generated_flags_empty_paths_returns_empty_map() {
+    let svc = DiffService::new();
+    let result = svc.compute_generated_flags(Path::new("."), &[]).unwrap();
+    assert!(result.is_empty(), "Empty input must return an empty map");
+}
+
+#[test]
+fn compute_generated_flags_applies_heuristic_when_no_gitattributes_opinion() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let svc = DiffService::new();
+    let paths = ["bundle.js.map", "src/app.ts", "Cargo.lock"];
+    let flags = svc.compute_generated_flags(&repo, &paths).unwrap();
+    assert_eq!(
+        flags.get("bundle.js.map"),
+        Some(&true),
+        ".map files should be flagged as generated"
+    );
+    assert_eq!(
+        flags.get("src/app.ts"),
+        Some(&false),
+        "Normal source files should not be flagged"
+    );
+    assert_eq!(
+        flags.get("Cargo.lock"),
+        Some(&true),
+        "Lockfiles should be flagged as generated"
+    );
+}
+
+#[test]
+fn compute_generated_flags_gitattributes_true_overrides_non_generated_heuristic() {
+    // A .md file is not generated by heuristic, but if .gitattributes says
+    // linguist-generated=true, the flag must be true.
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    fs::write(repo.join(".gitattributes"), "*.md linguist-generated\n").unwrap();
+    git_cmd(&repo, &["add", ".gitattributes"]);
+    git_cmd(&repo, &["commit", "-m", "Mark .md as generated"]);
+
+    let svc = DiffService::new();
+    let flags = svc.compute_generated_flags(&repo, &["README.md"]).unwrap();
+    assert_eq!(
+        flags.get("README.md"),
+        Some(&true),
+        "linguist-generated attribute must override heuristic to true"
+    );
+}
+
+#[test]
+fn compute_generated_flags_gitattributes_false_overrides_generated_heuristic() {
+    // A .map file is generated by heuristic, but if .gitattributes explicitly
+    // unsets linguist-generated, the flag must be false.
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    fs::write(repo.join(".gitattributes"), "*.map -linguist-generated\n").unwrap();
+    git_cmd(&repo, &["add", ".gitattributes"]);
+    git_cmd(&repo, &["commit", "-m", "Mark .map as not generated"]);
+
+    let svc = DiffService::new();
+    let flags = svc
+        .compute_generated_flags(&repo, &["bundle.js.map"])
+        .unwrap();
+    assert_eq!(
+        flags.get("bundle.js.map"),
+        Some(&false),
+        "-linguist-generated must override heuristic to false"
+    );
+}
+
+#[test]
+fn compute_generated_flags_falls_back_to_heuristic_when_git_unavailable() {
+    // A non-git directory causes git check-attr to fail; must not error — must
+    // fall back to heuristic for every requested path.
+    let tmp = TempDir::new().unwrap();
+    let svc = DiffService::new();
+    let paths = ["bundle.js.map", "src/app.ts"];
+    let flags = svc.compute_generated_flags(tmp.path(), &paths).unwrap();
+    assert_eq!(
+        flags.get("bundle.js.map"),
+        Some(&true),
+        "Fallback heuristic must still flag .map files"
+    );
+    assert_eq!(
+        flags.get("src/app.ts"),
+        Some(&false),
+        "Fallback heuristic must leave normal source files unflagged"
+    );
+    // Every requested path must have an entry in the returned map
+    assert_eq!(flags.len(), 2, "All requested paths must appear in the result");
 }

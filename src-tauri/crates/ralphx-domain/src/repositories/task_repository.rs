@@ -3,12 +3,14 @@
 // This trait defines the contract for task persistence.
 // Implementations can use SQLite, PostgreSQL, in-memory, etc.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::domain::entities::{IdeationSessionId, InternalStatus, ProjectId, Task, TaskId};
+use crate::domain::entities::{
+    ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+};
 use crate::domain::repositories::StatusTransition;
 use crate::error::AppResult;
 
@@ -34,6 +36,17 @@ pub trait TaskRepository: Send + Sync {
 
     /// Get task by ID
     async fn get_by_id(&self, id: &TaskId) -> AppResult<Option<Task>>;
+
+    /// Get tasks by ID in a single repository call.
+    async fn get_by_ids(&self, ids: &[TaskId]) -> AppResult<Vec<Task>> {
+        let mut tasks = Vec::new();
+        for id in ids {
+            if let Some(task) = self.get_by_id(id).await? {
+                tasks.push(task);
+            }
+        }
+        Ok(tasks)
+    }
 
     /// Get all tasks for a project
     async fn get_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<Task>>;
@@ -81,6 +94,50 @@ pub trait TaskRepository: Send + Sync {
         project_id: &ProjectId,
         status: InternalStatus,
     ) -> AppResult<Vec<Task>>;
+
+    /// Get tasks in a status whose JSON metadata has a boolean key set to `true`.
+    async fn get_by_status_with_metadata_bool(
+        &self,
+        project_id: &ProjectId,
+        status: InternalStatus,
+        metadata_key: &str,
+    ) -> AppResult<Vec<Task>> {
+        let tasks = self.get_by_status(project_id, status).await?;
+        Ok(tasks
+            .into_iter()
+            .filter(|task| {
+                task.metadata
+                    .as_deref()
+                    .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+                    .and_then(|value| value.get(metadata_key)?.as_bool())
+                    .unwrap_or(false)
+            })
+            .collect())
+    }
+
+    /// Find candidate `(ideation_session_id, execution_plan_id)` pairs that have
+    /// at least one merged, unarchived Regular task in a project.
+    async fn find_merged_regular_plan_keys(
+        &self,
+        project_id: &ProjectId,
+        plan_keys: &[(IdeationSessionId, ExecutionPlanId)],
+    ) -> AppResult<HashSet<(IdeationSessionId, ExecutionPlanId)>> {
+        if plan_keys.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let requested: HashSet<(IdeationSessionId, ExecutionPlanId)> =
+            plan_keys.iter().cloned().collect();
+        let tasks = self
+            .get_by_status(project_id, InternalStatus::Merged)
+            .await?;
+        Ok(tasks
+            .into_iter()
+            .filter(|task| task.category == TaskCategory::Regular && task.archived_at.is_none())
+            .filter_map(|task| Some((task.ideation_session_id?, task.execution_plan_id?)))
+            .filter(|key| requested.contains(key))
+            .collect())
+    }
 
     /// Persist a status change with audit log entry
     async fn persist_status_change(

@@ -7,27 +7,43 @@ use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
-use crate::application::AppState;
 use super::chat_service_context;
 use super::chat_service_helpers::{effective_team_mode_for_harness, get_assistant_role};
-use super::chat_service_streaming::process_stream_background;
+use super::chat_service_streaming::{
+    persist_message_text_timeline_item, process_stream_background,
+};
 use super::chat_service_types::{
     AgentErrorPayload, AgentMessageCreatedPayload, AgentQueueSentPayload, AgentRunStartedPayload,
 };
 use super::has_meaningful_output;
 use crate::application::question_state::QuestionState;
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     ChatContextType, ChatConversationId, InternalStatus, MessageRole, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, ArtifactRepository, ChatMessageRepository,
+    ActivityEventRepository, ArtifactRepository, ChatMessageRepository, ChatTimelineRepository,
     IdeationSessionRepository, TaskRepository,
 };
 use crate::domain::services::MessageQueue;
 use crate::utils::secret_redactor::redact;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct QueueProcessingOutcome {
+    pub total_processed: u32,
+    pub last_run_id: Option<String>,
+}
+
+impl QueueProcessingOutcome {
+    pub(super) fn terminal_run_id(&self, fallback_run_id: &str) -> String {
+        self.last_run_id
+            .clone()
+            .unwrap_or_else(|| fallback_run_id.to_string())
+    }
+}
 
 const HIDDEN_RESUME_IN_PLACE_MARKER_CONTENT: &str =
     "RalphX hidden resume-in-place message was delivered.";
@@ -121,6 +137,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     session_id: &str,
     message_queue: &Arc<MessageQueue>,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: &Arc<dyn crate::domain::repositories::ChatAttachmentRepository>,
     artifact_repo: &Arc<dyn ArtifactRepository>,
     activity_event_repo: &Arc<dyn ActivityEventRepository>,
@@ -138,8 +155,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
     run_chain_id: Option<&str>,
     parent_run_id: Option<&str>,
     streaming_state_cache: super::StreamingStateCache,
-) -> u32 {
+) -> QueueProcessingOutcome {
     let mut total_processed = 0u32;
+    let mut last_run_id: Option<String> = None;
 
     // Outer loop: keep processing until queue is stable-empty
     loop {
@@ -271,6 +289,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
 
             // Emit run_started for the queued message (so frontend shows activity)
             let queued_run_id = uuid::Uuid::new_v4().to_string();
+            last_run_id = Some(queued_run_id.clone());
             tracing::info!(
                 queued_run_id = %queued_run_id,
                 run_chain_id = run_chain_id.unwrap_or("none"),
@@ -322,7 +341,9 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let user_msg_id = user_msg.id.as_str().to_string();
                 let user_msg_created_at = user_msg.created_at.to_rfc3339();
                 let user_msg_metadata = user_msg.metadata.clone();
-                let _ = chat_message_repo.create(user_msg).await;
+                if chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                    persist_message_text_timeline_item(&chat_timeline_repo, &user_msg).await;
+                }
 
                 if context_type == ChatContextType::Ideation {
                     let _ = ideation_session_repo.touch_updated_at(context_id).await;
@@ -435,7 +456,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         harness = %harness,
                         "queue spawn blocked"
                     );
-                    return total_processed;
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
                 }
             };
             let spawnable = provider_spawnable.spawnable;
@@ -483,6 +507,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         Some(Arc::clone(activity_event_repo)),
                         Some(Arc::clone(task_repo)),
                         Some(Arc::clone(chat_message_repo)),
+                        chat_timeline_repo.clone(),
                         Some(queue_assistant_msg_id.clone()),
                         question_state.clone(),
                         cancellation_token.clone(),
@@ -588,6 +613,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                         conversation_id: Some(conversation_id.as_str().to_string()),
                                         context_type: context_type.to_string(),
                                         context_id: context_id.to_string(),
+                                        agent_run_id: Some(queued_run_id.clone()),
                                         error: error_string.clone(),
                                         stderr: Some(error_string),
                                     },
@@ -606,6 +632,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 conversation_id: Some(conversation_id.as_str().to_string()),
                                 context_type: context_type.to_string(),
                                 context_id: context_id.to_string(),
+                                agent_run_id: Some(queued_run_id.clone()),
                                 error: e.to_string(),
                                 stderr: None,
                             },
@@ -617,5 +644,8 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
         // End of inner while loop, outer loop continues to check for more
     }
 
-    total_processed
+    QueueProcessingOutcome {
+        total_processed,
+        last_run_id,
+    }
 }

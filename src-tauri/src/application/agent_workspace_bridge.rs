@@ -170,6 +170,46 @@ pub async fn wake_agent_workspace_for_bridge_events_with_deps<S: ChatService + ?
     else {
         return Ok(None);
     };
+    dispatch_prepared_agent_workspace_bridge_wakeup_with_deps(deps, chat_service, wake_up)
+        .await
+        .map(Some)
+}
+
+pub async fn dispatch_prepared_agent_workspace_bridge_wakeup<S: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &S,
+    wake_up: AgentWorkspaceBridgeWakeUp,
+) -> AppResult<AgentWorkspaceBridgeWakeUpResult> {
+    let deps = AgentWorkspaceBridgeDeps::from_app_state(state);
+    dispatch_prepared_agent_workspace_bridge_wakeup_with_deps(&deps, chat_service, wake_up).await
+}
+
+pub async fn wake_agent_workspace_for_bridge_events_with_service_factory<S, F>(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    service_factory: F,
+) -> AppResult<Option<AgentWorkspaceBridgeWakeUpResult>>
+where
+    S: ChatService,
+    F: FnOnce() -> S,
+{
+    let deps = AgentWorkspaceBridgeDeps::from_app_state(state);
+    let Some(wake_up) =
+        prepare_agent_workspace_bridge_wakeup_with_deps(&deps, conversation_id).await?
+    else {
+        return Ok(None);
+    };
+    let chat_service = service_factory();
+    dispatch_prepared_agent_workspace_bridge_wakeup_with_deps(&deps, &chat_service, wake_up)
+        .await
+        .map(Some)
+}
+
+pub async fn dispatch_prepared_agent_workspace_bridge_wakeup_with_deps<S: ChatService + ?Sized>(
+    deps: &AgentWorkspaceBridgeDeps,
+    chat_service: &S,
+    wake_up: AgentWorkspaceBridgeWakeUp,
+) -> AppResult<AgentWorkspaceBridgeWakeUpResult> {
     let event_count = wake_up.event_keys.len();
     let result = chat_service
         .send_message(
@@ -197,13 +237,13 @@ pub async fn wake_agent_workspace_for_bridge_events_with_deps<S: ChatService + ?
         .await?;
     }
 
-    Ok(Some(AgentWorkspaceBridgeWakeUpResult {
+    Ok(AgentWorkspaceBridgeWakeUpResult {
         conversation_id: result.conversation_id,
         agent_run_id: result.agent_run_id,
         was_queued: result.was_queued,
         queued_message_id: result.queued_message_id,
         event_count,
-    }))
+    })
 }
 
 pub async fn prepare_agent_workspace_bridge_wakeup(
@@ -247,8 +287,6 @@ pub async fn prepare_agent_workspace_bridge_wakeup_with_deps(
     if removed_invalid_count > 0 {
         refresh_conversation_stats(deps, conversation_id).await?;
     }
-    collect_queued_bridge_event_keys(deps, conversation_id, &mut delivered_event_keys);
-
     if !workspace_should_receive_bridge_events(&workspace) {
         return Ok(None);
     }
@@ -256,6 +294,8 @@ pub async fn prepare_agent_workspace_bridge_wakeup_with_deps(
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return Ok(None);
     };
+    collect_queued_bridge_event_keys(deps, conversation_id, &mut delivered_event_keys);
+
     let events = deps
         .external_events_repo
         .get_events_after_cursor(
@@ -841,6 +881,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatches_prepared_wakeup_without_rescanning_events() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        create_project(&state, &project_id).await;
+        let conversation_id = create_workspace(
+            &state,
+            project_id.clone(),
+            "Linked workspace",
+            Some("session-1"),
+        )
+        .await;
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:verified",
+                project_id.as_str(),
+                &json!({ "session_id": "session-1", "gap_score": 1 }).to_string(),
+            )
+            .await
+            .unwrap();
+        let wakeup = prepare_agent_workspace_bridge_wakeup(&state, &conversation_id)
+            .await
+            .unwrap()
+            .expect("wakeup should be prepared");
+        let chat_service = crate::application::MockChatService::new();
+
+        let result = dispatch_prepared_agent_workspace_bridge_wakeup(&state, &chat_service, wakeup)
+            .await
+            .unwrap();
+
+        assert_eq!(result.event_count, 1);
+        assert!(!result.agent_run_id.is_empty());
+        assert_eq!(chat_service.call_count(), 1);
+        let options = chat_service.get_sent_options().await;
+        assert_eq!(options[0].conversation_id_override, Some(conversation_id));
+
+        let messages = state
+            .chat_message_repo
+            .get_by_conversation(&conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, MessageRole::System);
+    }
+
+    #[tokio::test]
+    async fn service_factory_wakeup_skips_service_when_no_events_are_ready() {
+        use std::sync::atomic::Ordering;
+
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        create_project(&state, &project_id).await;
+        let conversation_id =
+            create_workspace(&state, project_id.clone(), "Edit workspace", None).await;
+        let factory_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let factory_called_for_closure = std::sync::Arc::clone(&factory_called);
+
+        let result = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            || {
+                factory_called_for_closure.store(true, Ordering::Relaxed);
+                crate::application::MockChatService::new()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_none());
+        assert!(!factory_called.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn service_factory_wakeup_dispatches_linked_events() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        create_project(&state, &project_id).await;
+        let conversation_id = create_workspace(
+            &state,
+            project_id.clone(),
+            "Linked workspace",
+            Some("session-1"),
+        )
+        .await;
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:verified",
+                project_id.as_str(),
+                &json!({ "session_id": "session-1", "gap_score": 1 }).to_string(),
+            )
+            .await
+            .unwrap();
+
+        let result = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            crate::application::MockChatService::new,
+        )
+        .await
+        .unwrap()
+        .expect("linked event should dispatch");
+
+        assert_eq!(result.event_count, 1);
+        assert!(!result.agent_run_id.is_empty());
+    }
+
+    #[tokio::test]
     async fn does_not_prepare_wakeup_for_unlinked_edit_workspace() {
         let state = AppState::new_test();
         let project_id = ProjectId::from_string("project-1".to_string());
@@ -1080,7 +1228,11 @@ mod tests {
             .get_by_conversation(&conversation_id)
             .await
             .unwrap();
-        assert_eq!(messages.len(), 1, "bridge dispatch records one hidden marker");
+        assert_eq!(
+            messages.len(),
+            1,
+            "bridge dispatch records one hidden marker"
+        );
         assert_eq!(messages[0].role, MessageRole::System);
         assert!(
             !messages[0].content.contains("gap_score"),

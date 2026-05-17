@@ -8,6 +8,8 @@ import {
 
 export const harnessProviderKeys = {
   all: ["agent", "providers"] as const,
+  list: (refreshRuntime: boolean) =>
+    ["agent", "providers", { refreshRuntime }] as const,
 };
 
 const EMPTY_PROVIDER_SETTINGS: AgentProvidersSettingsResponse = {
@@ -16,11 +18,16 @@ const EMPTY_PROVIDER_SETTINGS: AgentProvidersSettingsResponse = {
   requiresOnboarding: true,
 };
 
-export function useHarnessProviders() {
+interface UseHarnessProvidersOptions {
+  refreshRuntime?: boolean;
+}
+
+export function useHarnessProviders(options: UseHarnessProvidersOptions = {}) {
   const queryClient = useQueryClient();
+  const refreshRuntime = options.refreshRuntime ?? false;
   const query = useQuery({
-    queryKey: harnessProviderKeys.all,
-    queryFn: harnessProvidersApi.list,
+    queryKey: harnessProviderKeys.list(refreshRuntime),
+    queryFn: () => harnessProvidersApi.list({ refreshRuntime }),
     staleTime: 1000 * 30,
     gcTime: 1000 * 60 * 5,
     placeholderData: EMPTY_PROVIDER_SETTINGS,

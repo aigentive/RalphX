@@ -173,6 +173,46 @@ async fn test_stop_all_clears_table() {
 }
 
 #[tokio::test]
+async fn test_stop_all_started_before_preserves_current_boot_entry() {
+    let db = setup_conn();
+    let registry = SqliteRunningAgentRegistry::new(db.shared_conn());
+    let old_key = RunningAgentKey::new("project", "old-conversation");
+    let current_key = RunningAgentKey::new("project", "current-conversation");
+    let current_token = CancellationToken::new();
+
+    registry
+        .register(
+            old_key.clone(),
+            999_991,
+            "conv-old".to_string(),
+            "run-old".to_string(),
+            None,
+            None,
+        )
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    let boot_cutoff = chrono::Utc::now();
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    registry
+        .register(
+            current_key.clone(),
+            999_992,
+            "conv-current".to_string(),
+            "run-current".to_string(),
+            None,
+            Some(current_token.clone()),
+        )
+        .await;
+
+    let stopped = registry.stop_all_started_before(boot_cutoff).await;
+
+    assert_eq!(stopped, vec![old_key.clone()]);
+    assert!(!registry.is_running(&old_key).await);
+    assert!(registry.is_running(&current_key).await);
+    assert!(!current_token.is_cancelled());
+}
+
+#[tokio::test]
 async fn test_register_replaces_existing() {
     let db = setup_conn();
     let registry = SqliteRunningAgentRegistry::new(db.shared_conn());

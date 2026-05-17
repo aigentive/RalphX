@@ -1,5 +1,7 @@
 import {
   getAgentsViewTestMocks,
+  mockHarnessProviders,
+  mockAgentSidebarData,
   mockAgentViewData,
   renderAgentsView,
   resetAgentSessionState,
@@ -11,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
+import type { AgentProvidersSettingsResponse } from "@/api/harness-providers";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import {
   agentProjectFixture as project,
@@ -31,6 +34,58 @@ const {
   useProjectAgentConversationsMock,
   useProjectsMock,
 } = getAgentsViewTestMocks();
+
+const providerUpdatedAt = new Date().toISOString();
+
+function agentProviderSettings(
+  overrides: Partial<AgentProvidersSettingsResponse> = {},
+): AgentProvidersSettingsResponse {
+  const settings: AgentProvidersSettingsResponse = {
+    defaultProvider: "codex",
+    requiresOnboarding: false,
+    providers: [
+      {
+        provider: "codex",
+        enabled: true,
+        isDefault: true,
+        model: "gpt-5.5",
+        effort: "xhigh",
+        approvalPolicy: "never",
+        sandboxMode: "danger-full-access",
+        claudePermissionMode: null,
+        claudeDangerouslySkipPermissions: false,
+        claudeAllowDangerouslySkipPermissions: false,
+        available: true,
+        binaryFound: true,
+        binaryPath: "/opt/homebrew/bin/codex",
+        status: "Available codex detected.",
+        error: null,
+        missingCoreExecFeatures: [],
+        updatedAt: providerUpdatedAt,
+      },
+      {
+        provider: "claude",
+        enabled: true,
+        isDefault: false,
+        model: "sonnet",
+        effort: "medium",
+        approvalPolicy: null,
+        sandboxMode: null,
+        claudePermissionMode: "default",
+        claudeDangerouslySkipPermissions: false,
+        claudeAllowDangerouslySkipPermissions: false,
+        available: true,
+        binaryFound: true,
+        binaryPath: "/usr/local/bin/claude",
+        status: "Available claude detected.",
+        error: null,
+        missingCoreExecFeatures: [],
+        updatedAt: providerUpdatedAt,
+      },
+    ],
+  };
+  return { ...settings, ...overrides };
+}
 
 describe("AgentsView start conversation", () => {
   beforeEach(setupAgentsViewTest);
@@ -75,6 +130,7 @@ describe("AgentsView start conversation", () => {
       isFetchingNextPage: false,
       fetchNextPage: vi.fn(),
     });
+    mockAgentSidebarData([restoredConversation]);
     useConversationMock.mockImplementation((conversationId: string | null) => ({
       data:
         conversationId === "conversation-restored"
@@ -308,6 +364,47 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
       "agent-conversation-chat"
     );
+  });
+
+  it("blocks active conversation sends when the conversation provider is not validated", async () => {
+    mockAgentViewData();
+    mockHarnessProviders(
+      agentProviderSettings({
+        providers: [
+          {
+            ...agentProviderSettings().providers[0]!,
+            enabled: true,
+            available: false,
+            binaryFound: false,
+            status: "Codex CLI not found",
+            error: "Codex CLI not found",
+          },
+          agentProviderSettings().providers[1]!,
+        ],
+      }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+    );
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "continue this run" },
+    });
+
+    expect(screen.getByTestId("agents-conversation-submit")).toBeDisabled();
+    expect(screen.getByTestId("agents-conversation-provider-status")).toHaveTextContent(
+      "Codex CLI not found",
+    );
+    fireEvent.click(screen.getByTestId("agents-conversation-provider-status-settings"));
+
+    expect(useUiStore.getState().activeModal).toBe("settings");
+    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
   });
 
   it("archives the selected conversation, clears the active view, and refreshes archived counts", async () => {

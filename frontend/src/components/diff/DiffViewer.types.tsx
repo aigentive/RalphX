@@ -45,12 +45,14 @@ export interface Commit {
 export interface DiffData {
   /** File path */
   filePath: string;
-  /** Old content (before change) */
-  oldContent: string;
-  /** New content (after change) */
-  newContent: string;
-  /** Unified diff hunks (output from git diff) */
-  hunks: string[];
+  /** Parsed diff hunks (from server) */
+  hunks: import("@/api/diff").DiffHunk[];
+  /** Total lines in old version */
+  oldTotalLines: number;
+  /** Total lines in new version */
+  newTotalLines: number;
+  /** Whether this is a binary file */
+  isBinary: boolean;
   /** File language for syntax highlighting */
   language?: string;
 }
@@ -64,6 +66,8 @@ export interface DiffViewerProps {
   commitFiles?: FileChange[];
   /** Callback to fetch diff for a file */
   onFetchDiff: (filePath: string, commitSha?: string) => Promise<DiffData | null>;
+  /** GitHub PR review/check annotations for the current workspace diff. */
+  annotations?: import("@/api/diff").PrDiffAnnotation[];
   /** Callback to fetch files changed in a specific commit */
   onFetchCommitFiles?: (commitSha: string) => Promise<void>;
   /** Callback to open file in IDE */
@@ -90,6 +94,18 @@ export interface DiffViewerProps {
   onTabChange?: (tab: DiffViewTab) => void;
   /** Callback when commit is selected */
   onCommitSelect?: (commit: Commit) => void;
+  /**
+   * Conversation ID for workspace range fetches.
+   * When provided, "Show N unchanged lines" gaps in SimpleDiffView will
+   * lazily fetch context lines from the backend.
+   */
+  conversationId?: string;
+  /**
+   * refKind for the Changes tab. Defaults to `{ kind: "head" }` when absent.
+   * Pass a staged/unstaged/cumulative_head variant if the changes tab is
+   * scoped to a specific ref.
+   */
+  changesRefKind?: import("@/api/diff").DiffRefKind;
 }
 
 // ============================================================================

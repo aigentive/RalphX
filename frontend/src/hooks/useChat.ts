@@ -18,6 +18,7 @@ import {
   chatApi,
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
+  type ConversationTimelinePageResponse,
   type SendAgentMessageResult,
 } from "@/api/chat";
 import {
@@ -43,8 +44,12 @@ export const chatKeys = {
   conversations: () => [...chatKeys.all, "conversations"] as const,
   conversation: (conversationId: string) =>
     [...chatKeys.conversations(), conversationId] as const,
+  conversationSummary: (conversationId: string) =>
+    [...chatKeys.conversation(conversationId), "summary"] as const,
   conversationHistory: (conversationId: string) =>
     [...chatKeys.conversation(conversationId), "history"] as const,
+  conversationTimeline: (conversationId: string) =>
+    [...chatKeys.conversation(conversationId), "timeline"] as const,
   conversationList: (contextType: ContextType, contextId: string) =>
     [...chatKeys.conversations(), contextType, contextId] as const,
   agentRun: (conversationId: string) =>
@@ -75,6 +80,18 @@ type SendMessageMutationContext = {
 };
 
 const DEFAULT_HISTORY_MAX_PAGES = 3;
+export const OPTIMISTIC_CONVERSATION_ID_PREFIX = "optimistic-conversation:";
+
+export function createOptimisticConversationId() {
+  const randomId =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${OPTIMISTIC_CONVERSATION_ID_PREFIX}${randomId}`;
+}
+
+export function isOptimisticConversationId(conversationId: string | null | undefined) {
+  return Boolean(conversationId?.startsWith(OPTIMISTIC_CONVERSATION_ID_PREFIX));
+}
 
 export type ConversationHistoryWindowData = ConversationQueryData & {
   totalMessageCount: number;
@@ -105,6 +122,133 @@ function getConversationMessagesFromHistoryData(
   };
 }
 
+function getConversationMessagesFromTimelineData(
+  data: InfiniteData<ConversationTimelinePageResponse> | undefined
+): ConversationHistoryWindowData | undefined {
+  if (!data || data.pages.length === 0) {
+    return undefined;
+  }
+
+  const [newestPage] = data.pages;
+  if (!newestPage) {
+    return undefined;
+  }
+  const messages = data.pages
+    .slice()
+    .reverse()
+    .flatMap((page) => page.messages);
+
+  return {
+    conversation: newestPage.conversation,
+    messages,
+    totalMessageCount: newestPage.totalItemCount,
+    loadedStartIndex: Math.max(0, newestPage.totalItemCount - messages.length),
+  };
+}
+
+function createOptimisticTimelineItem(
+  message: ChatMessageResponse,
+  sequence: number
+): ConversationTimelinePageResponse["items"][number] {
+  const contentBlocks: NonNullable<ChatMessageResponse["contentBlocks"]> = [
+    { type: "text", text: message.content },
+  ];
+  const asMessage: ChatMessageResponse = {
+    ...message,
+    id: `optimistic-timeline:${message.id}`,
+    parentMessageId: message.id,
+    contentBlocks,
+    timelineStatus: "streaming",
+    timelineKind: "text",
+    timelineSequence: sequence,
+  };
+
+  return {
+    id: asMessage.id,
+    conversationId: message.conversationId ?? "",
+    messageId: message.id,
+    runId: null,
+    sequence,
+    blockIndex: 0,
+    role: message.role,
+    kind: "text",
+    status: "streaming",
+    content: message.content,
+    contentBlocks,
+    toolCall: null,
+    metadata: message.metadata,
+    providerHarness: message.providerHarness ?? null,
+    providerSessionId: message.providerSessionId ?? null,
+    createdAt: message.createdAt,
+    updatedAt: message.createdAt,
+    finalizedAt: null,
+    asMessage,
+  };
+}
+
+function appendMessageToConversationTimeline(
+  oldData: InfiniteData<ConversationTimelinePageResponse> | undefined,
+  message: ChatMessageResponse
+): InfiniteData<ConversationTimelinePageResponse> | undefined {
+  if (!oldData || oldData.pages.length === 0) {
+    return oldData;
+  }
+
+  const [newestPage, ...olderPages] = oldData.pages;
+  if (!newestPage) {
+    return oldData;
+  }
+  const sequence = (newestPage.newestLoadedSequence ?? newestPage.totalItemCount) + 1;
+  const item = createOptimisticTimelineItem(message, sequence);
+  return {
+    ...oldData,
+    pages: [
+      {
+        ...newestPage,
+        items: [...newestPage.items, item],
+        messages: [...newestPage.messages, item.asMessage],
+        totalItemCount: newestPage.totalItemCount + 1,
+        oldestLoadedSequence: newestPage.oldestLoadedSequence ?? item.sequence,
+        newestLoadedSequence: item.sequence,
+      },
+      ...olderPages,
+    ],
+  };
+}
+
+function removeMessageFromConversationTimeline(
+  oldData: InfiniteData<ConversationTimelinePageResponse> | undefined,
+  messageId: string
+): InfiniteData<ConversationTimelinePageResponse> | undefined {
+  if (!oldData) {
+    return oldData;
+  }
+
+  let removed = 0;
+  const pages = oldData.pages.map((page) => {
+    const items = page.items.filter((item) => {
+      const shouldRemove = item.messageId === messageId || item.asMessage.id === messageId;
+      if (shouldRemove) {
+        removed += 1;
+      }
+      return !shouldRemove;
+    });
+    return {
+      ...page,
+      items,
+      messages: items.map((item) => item.asMessage),
+      totalItemCount: Math.max(0, page.totalItemCount - removed),
+      oldestLoadedSequence: items[0]?.sequence ?? null,
+      newestLoadedSequence: items[items.length - 1]?.sequence ?? null,
+    };
+  });
+
+  return {
+    ...oldData,
+    pages,
+  };
+}
+
 export function getCachedConversationMessages(
   queryClient: QueryClient,
   conversationId: string
@@ -117,12 +261,20 @@ export function getCachedConversationMessages(
       chatKeys.conversationHistory(conversationId)
     )
   );
+  const timelineConversation = getConversationMessagesFromTimelineData(
+    queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline(conversationId)
+    )
+  );
 
   const mergedMessages = new Map<string, ChatMessageResponse>();
   for (const message of fullConversation?.messages ?? []) {
     mergedMessages.set(message.id, message);
   }
   for (const message of historyConversation?.messages ?? []) {
+    mergedMessages.set(message.id, message);
+  }
+  for (const message of timelineConversation?.messages ?? []) {
     mergedMessages.set(message.id, message);
   }
 
@@ -138,7 +290,13 @@ export function invalidateConversationDataQueries(
     exact: true,
   });
   queryClient.invalidateQueries({
+    queryKey: chatKeys.conversationSummary(conversationId),
+  });
+  queryClient.invalidateQueries({
     queryKey: chatKeys.conversationHistory(conversationId),
+  });
+  queryClient.invalidateQueries({
+    queryKey: chatKeys.conversationTimeline(conversationId),
   });
 }
 
@@ -162,6 +320,10 @@ export function addOptimisticUserMessageToConversationCache(
     chatKeys.conversationHistory(conversationId),
     (oldData) => appendMessageToConversationHistory(oldData, message, { replaceOptimistic: false })
   );
+  queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+    chatKeys.conversationTimeline(conversationId),
+    (oldData) => appendMessageToConversationTimeline(oldData, message)
+  );
   return message;
 }
 
@@ -183,6 +345,10 @@ export function removeOptimisticMessageFromConversationCache(
   queryClient.setQueryData<ConversationHistoryCacheData>(
     chatKeys.conversationHistory(conversationId),
     (oldData) => removeMessageFromConversationHistory(oldData, messageId)
+  );
+  queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+    chatKeys.conversationTimeline(conversationId),
+    (oldData) => removeMessageFromConversationTimeline(oldData, messageId)
   );
 }
 
@@ -240,6 +406,7 @@ export function useConversation(
   conversationId: string | null,
   options?: { enabled?: boolean }
 ) {
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useQuery<
     ConversationQueryData,
     Error
@@ -251,7 +418,7 @@ export function useConversation(
       }
       return chatApi.getConversation(conversationId);
     },
-    enabled: (options?.enabled ?? true) && !!conversationId,
+    enabled: (options?.enabled ?? true) && canFetchConversation,
   });
 
   return query;
@@ -263,6 +430,7 @@ export function useConversationHistoryWindow(
 ) {
   const pageSize = options?.pageSize ?? 40;
   const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
   const query = useInfiniteQuery<
     ConversationMessagesPageResponse,
     Error,
@@ -281,7 +449,7 @@ export function useConversationHistoryWindow(
         pageParam
       );
     },
-    enabled: (options?.enabled ?? true) && !!conversationId,
+    enabled: (options?.enabled ?? true) && canFetchConversation,
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
       if (!lastPage.hasOlder) {
@@ -317,10 +485,72 @@ export function useConversationHistoryWindow(
   };
 }
 
+export function useConversationTimelineWindow(
+  conversationId: string | null,
+  options?: { enabled?: boolean; pageSize?: number; maxPages?: number }
+) {
+  const pageSize = options?.pageSize ?? 40;
+  const maxPages = Math.max(1, options?.maxPages ?? DEFAULT_HISTORY_MAX_PAGES);
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
+  const query = useInfiniteQuery<
+    ConversationTimelinePageResponse,
+    Error,
+    InfiniteData<ConversationTimelinePageResponse>,
+    ReturnType<typeof chatKeys.conversationTimeline>,
+    number | null
+  >({
+    queryKey: chatKeys.conversationTimeline(conversationId ?? ""),
+    queryFn: ({ pageParam }) => {
+      if (!conversationId) {
+        throw new Error("Conversation ID is required");
+      }
+      return chatApi.getConversationTimelinePage(
+        conversationId,
+        pageSize,
+        pageParam
+      );
+    },
+    enabled: (options?.enabled ?? true) && canFetchConversation,
+    initialPageParam: null,
+    getNextPageParam: (lastPage, allPages) => {
+      if (!lastPage.hasOlder) {
+        return undefined;
+      }
+      if (allPages.length >= maxPages) {
+        return undefined;
+      }
+      return lastPage.oldestLoadedSequence;
+    },
+    staleTime: 5 * 1000,
+  });
+
+  const data = useMemo(
+    () => getConversationMessagesFromTimelineData(query.data),
+    [query.data]
+  );
+
+  const fetchOlderMessages = useCallback(async () => {
+    if (!query.hasNextPage || query.isFetchingNextPage) {
+      return;
+    }
+    await query.fetchNextPage();
+  }, [query]);
+
+  return {
+    ...query,
+    data,
+    loadedStartIndex: data?.loadedStartIndex ?? 0,
+    hasOlderMessages: query.hasNextPage ?? false,
+    isFetchingOlderMessages: query.isFetchingNextPage,
+    fetchOlderMessages,
+  };
+}
+
 /**
  * Hook to fetch agent run status for a conversation
  */
 export function useAgentRunStatus(conversationId: string | null) {
+  const canFetchRunStatus = !!conversationId && !isOptimisticConversationId(conversationId);
   return useQuery<AgentRun | null, Error>({
     queryKey: chatKeys.agentRun(conversationId ?? ""),
     queryFn: () => {
@@ -329,7 +559,7 @@ export function useAgentRunStatus(conversationId: string | null) {
       }
       return chatApi.getAgentRunStatus(conversationId);
     },
-    enabled: !!conversationId,
+    enabled: canFetchRunStatus,
     refetchInterval: (query) => {
       // Poll every 2 seconds if agent is running
       const agentRun = query.state.data;

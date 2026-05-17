@@ -10,6 +10,12 @@ import {
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+  },
+}));
+
 function conversationStats(
   overrides: Partial<ConversationStatsResponse> = {},
 ): ConversationStatsResponse {
@@ -65,6 +71,8 @@ function conversationStats(
 describe("AgentsChatHeader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    window.localStorage.clear();
     useChatStore.setState({ agentStatus: {}, isSending: {} });
   });
 
@@ -213,6 +221,7 @@ describe("AgentsChatHeader", () => {
   it("shows a commit and publish shortcut for editable workspaces", () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     const openPublishPane = vi.fn();
+    const openWorkspaceTarget = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ id: "conversation-1" })}
@@ -241,10 +250,28 @@ describe("AgentsChatHeader", () => {
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onPublishWorkspace={publish}
         onOpenPublishPane={openPublishPane}
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "file-manager", label: "Finder", kind: "fileManager" },
+        ]}
+        onOpenWorkspaceTarget={openWorkspaceTarget}
         onToggleArtifacts={vi.fn()}
         onSelectArtifact={vi.fn()}
       />
     );
+
+    const openWorkspace = screen.getByTestId("agents-open-workspace");
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Cursor"
+    );
+    const publishWorkspace = screen.getByTestId("agents-publish-workspace");
+    expect(
+      openWorkspace.compareDocumentPosition(publishWorkspace) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    fireEvent.click(openWorkspace);
+    expect(openWorkspaceTarget).toHaveBeenCalledWith("cursor");
 
     fireEvent.click(screen.getByTestId("agents-publish-workspace"));
 

@@ -1,0 +1,118 @@
+import { GitPullRequestArrow } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
+
+export type PublishWorkspaceDialogPhase = "confirm" | "publishing";
+
+export function PublishWorkspaceDialog({
+  base,
+  branch,
+  confirmDisabled,
+  isPublishing,
+  onConfirm,
+  onOpenChange,
+  open,
+  phase,
+  status,
+}: {
+  base: string;
+  branch: string;
+  confirmDisabled: boolean;
+  isPublishing: boolean;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  phase: PublishWorkspaceDialogPhase;
+  status: string | null;
+}) {
+  const isProgress = phase === "publishing";
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="w-[min(520px,calc(100vw-2rem))] overflow-hidden p-0"
+        data-testid="agents-publish-workspace-dialog"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        <DialogHeader
+          className={
+            isProgress
+              ? "block border-b-0 px-5 pb-0 pt-5"
+              : "block border-b-0 px-5 pb-3 pt-5"
+          }
+        >
+          <DialogTitle className="pr-8 text-base leading-6 tracking-normal">
+            {isProgress ? "Publishing workspace" : "Commit and publish workspace?"}
+          </DialogTitle>
+          {isProgress ? (
+            <DialogDescription className="sr-only">
+              Workspace publishing is in progress.
+            </DialogDescription>
+          ) : (
+            <DialogDescription className="mt-1.5 max-w-[28rem] text-sm leading-5 text-[var(--text-secondary)]">
+              {`This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`}
+            </DialogDescription>
+          )}
+        </DialogHeader>
+
+        {isProgress && (
+          <div className="px-5 pb-4">
+            <PublishPipelineSteps
+              className="mt-3"
+              status={status}
+              isPublishing={isPublishing}
+              testIdPrefix="agents-publish-dialog"
+            />
+          </div>
+        )}
+
+        <DialogFooter className="gap-2 border-t-0 px-5 pb-5 pt-0 sm:gap-2">
+          {isProgress ? (
+            <Button
+              type="button"
+              variant="secondary"
+              data-testid="agents-publish-dialog-close"
+              onClick={() => onOpenChange(false)}
+            >
+              Close
+            </Button>
+          ) : (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onOpenChange(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="gap-2"
+                onClick={onConfirm}
+                disabled={confirmDisabled}
+              >
+                <GitPullRequestArrow className="h-3.5 w-3.5" />
+                Commit & Publish
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

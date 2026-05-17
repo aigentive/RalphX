@@ -25,6 +25,9 @@ mod sqlite_chat_conversation_repo_tests;
 pub mod sqlite_chat_message_repo;
 #[cfg(test)]
 mod sqlite_chat_message_repo_tests;
+pub mod sqlite_chat_timeline_repo;
+#[cfg(test)]
+mod sqlite_chat_timeline_repo_tests;
 pub mod sqlite_delegated_session_repo;
 #[cfg(test)]
 mod sqlite_delegated_session_repo_tests;
@@ -46,6 +49,7 @@ pub mod sqlite_memory_event_repository;
 #[cfg(test)]
 mod sqlite_memory_event_repository_tests;
 pub mod sqlite_methodology_repo;
+pub mod sqlite_orphan_worktree_cleanup_marker_repo;
 pub mod sqlite_permission_repo;
 pub mod sqlite_plan_branch_repo;
 pub mod sqlite_plan_selection_stats_repo;
@@ -69,6 +73,8 @@ mod sqlite_team_message_repo_tests;
 pub mod sqlite_team_session_repo;
 #[cfg(test)]
 mod sqlite_team_session_repo_tests;
+#[cfg(test)]
+mod sqlite_orphan_worktree_cleanup_marker_repo_tests;
 pub mod sqlite_webhook_registration_repo;
 pub mod sqlite_workflow_repo;
 pub mod state_machine_repository;
@@ -94,6 +100,7 @@ pub use sqlite_artifact_repo::SqliteArtifactRepository;
 pub use sqlite_chat_attachment_repo::SqliteChatAttachmentRepository;
 pub use sqlite_chat_conversation_repo::SqliteChatConversationRepository;
 pub use sqlite_chat_message_repo::SqliteChatMessageRepository;
+pub use sqlite_chat_timeline_repo::SqliteChatTimelineRepository;
 pub use sqlite_delegated_session_repo::SqliteDelegatedSessionRepository;
 pub use sqlite_execution_plan_repo::SqliteExecutionPlanRepository;
 pub use sqlite_external_events_repo::SqliteExternalEventsRepository;
@@ -109,6 +116,7 @@ pub use sqlite_memory_archive_repo::SqliteMemoryArchiveRepository;
 pub use sqlite_memory_entry_repo::SqliteMemoryEntryRepository;
 pub use sqlite_memory_event_repository::SqliteMemoryEventRepository;
 pub use sqlite_methodology_repo::SqliteMethodologyRepository;
+pub use sqlite_orphan_worktree_cleanup_marker_repo::SqliteOrphanWorktreeCleanupMarkerRepository;
 pub use sqlite_permission_repo::SqlitePermissionRepository;
 pub use sqlite_plan_branch_repo::SqlitePlanBranchRepository;
 pub use sqlite_plan_selection_stats_repo::SqlitePlanSelectionStatsRepository;

@@ -1,6 +1,7 @@
 // Repository traits - domain layer abstractions for data persistence
 // These traits define the contract; implementations live in infrastructure layer
 
+pub mod orphan_worktree_cleanup_marker_repository;
 pub mod permission_repository;
 pub mod question_repository;
 
@@ -18,6 +19,10 @@ pub use ralphx_domain::repositories::{
     session_link_repository, status_transition, task_dependency_repository,
     task_proposal_repository, task_qa_repository, task_repository, task_step_repository,
     team_message_repository, team_session_repository, workflow_repository,
+};
+pub use orphan_worktree_cleanup_marker_repository::{
+    OrphanWorktreeCleanupMarker, OrphanWorktreeCleanupMarkerKey,
+    OrphanWorktreeCleanupMarkerRepository,
 };
 pub use permission_repository::PermissionRepository;
 pub use question_repository::QuestionRepository;

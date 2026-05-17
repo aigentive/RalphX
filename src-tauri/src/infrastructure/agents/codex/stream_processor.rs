@@ -9,9 +9,65 @@ pub struct CodexUsage {
     pub output_tokens: Option<u64>,
 }
 
+impl CodexUsage {
+    fn is_empty(&self) -> bool {
+        self.input_tokens.is_none()
+            && self.cached_input_tokens.is_none()
+            && self.output_tokens.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexUsagePayload {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_token_usage: Option<CodexUsage>,
+    #[serde(default)]
+    pub last_token_usage: Option<CodexUsage>,
+}
+
+impl CodexUsagePayload {
+    fn direct_usage(&self) -> CodexUsage {
+        CodexUsage {
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            output_tokens: self.output_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexUsageSource {
+    TurnDelta,
+    CumulativeTotal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexUsageSnapshot {
+    pub usage: CodexUsage,
+    pub source: CodexUsageSource,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexItemError {
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexErrorSource {
+    Runtime,
+    McpTool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexErrorMessage {
+    pub message: String,
+    pub source: CodexErrorSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +122,7 @@ pub struct CodexStreamEvent {
     #[serde(default)]
     pub item: Option<CodexItem>,
     #[serde(default)]
-    pub usage: Option<CodexUsage>,
+    pub usage: Option<CodexUsagePayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,18 +279,31 @@ pub fn extract_codex_file_change_snapshot(
     })
 }
 
-pub fn extract_codex_error_message(event: &CodexStreamEvent) -> Option<String> {
+pub fn extract_codex_error(event: &CodexStreamEvent) -> Option<CodexErrorMessage> {
     let item = event.item.as_ref()?;
 
-    match item.item_type.as_str() {
-        "error" => item
-            .error
-            .as_ref()
-            .and_then(|error| error.message.clone())
-            .or_else(|| item.text.clone()),
-        "mcp_tool_call" => item.error.as_ref().and_then(|error| error.message.clone()),
-        _ => None,
-    }
+    let (source, message) = match item.item_type.as_str() {
+        "error" => (
+            CodexErrorSource::Runtime,
+            item.error
+                .as_ref()
+                .and_then(|error| error.message.clone())
+                .or_else(|| item.text.clone())?,
+        ),
+        "mcp_tool_call" => (
+            CodexErrorSource::McpTool,
+            item.error
+                .as_ref()
+                .and_then(|error| error.message.clone())?,
+        ),
+        _ => return None,
+    };
+
+    Some(CodexErrorMessage { message, source })
+}
+
+pub fn extract_codex_error_message(event: &CodexStreamEvent) -> Option<String> {
+    extract_codex_error(event).map(|error| error.message)
 }
 
 pub fn is_non_fatal_mcp_resource_probe_error(
@@ -258,12 +327,39 @@ pub fn is_non_fatal_mcp_resource_probe_error(
     error_message.contains("Method not found")
 }
 
-pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsage> {
+pub fn extract_codex_usage(event: &CodexStreamEvent) -> Option<CodexUsageSnapshot> {
     if event.event_type != "turn.completed" {
         return None;
     }
 
-    event.usage.clone()
+    let payload = event.usage.as_ref()?;
+    if let Some(usage) = payload
+        .last_token_usage
+        .as_ref()
+        .filter(|usage| !usage.is_empty())
+    {
+        return Some(CodexUsageSnapshot {
+            usage: usage.clone(),
+            source: CodexUsageSource::TurnDelta,
+        });
+    }
+
+    let direct_usage = payload.direct_usage();
+    if !direct_usage.is_empty() {
+        return Some(CodexUsageSnapshot {
+            usage: direct_usage,
+            source: CodexUsageSource::CumulativeTotal,
+        });
+    }
+
+    payload
+        .total_token_usage
+        .as_ref()
+        .filter(|usage| !usage.is_empty())
+        .map(|usage| CodexUsageSnapshot {
+            usage: usage.clone(),
+            source: CodexUsageSource::CumulativeTotal,
+        })
 }
 
 #[cfg(test)]
@@ -298,10 +394,12 @@ mod tests {
             event_type: "item.completed".to_string(),
             thread_id: None,
             item: None,
-            usage: Some(CodexUsage {
+            usage: Some(CodexUsagePayload {
                 input_tokens: Some(10),
                 cached_input_tokens: Some(3),
                 output_tokens: Some(5),
+                total_token_usage: None,
+                last_token_usage: None,
             }),
         };
 
@@ -314,21 +412,95 @@ mod tests {
             event_type: "turn.completed".to_string(),
             thread_id: Some("thread-123".to_string()),
             item: None,
-            usage: Some(CodexUsage {
+            usage: Some(CodexUsagePayload {
                 input_tokens: Some(101),
                 cached_input_tokens: Some(22),
                 output_tokens: Some(33),
+                total_token_usage: None,
+                last_token_usage: None,
             }),
         };
 
         assert_eq!(
             extract_codex_usage(&event),
-            Some(CodexUsage {
-                input_tokens: Some(101),
-                cached_input_tokens: Some(22),
-                output_tokens: Some(33),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(101),
+                    cached_input_tokens: Some(22),
+                    output_tokens: Some(33),
+                },
+                source: CodexUsageSource::CumulativeTotal,
             })
         );
+    }
+
+    #[test]
+    fn extract_codex_usage_prefers_last_token_usage_over_session_total() {
+        let event = parse_codex_event_line(
+            r#"{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":67362753,"cached_input_tokens":65914240,"output_tokens":109831},"last_token_usage":{"input_tokens":202091,"cached_input_tokens":201600,"output_tokens":673}}}"#,
+        )
+        .expect("Codex usage event should parse");
+
+        assert_eq!(
+            extract_codex_usage(&event),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(202091),
+                    cached_input_tokens: Some(201600),
+                    output_tokens: Some(673),
+                },
+                source: CodexUsageSource::TurnDelta,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_codex_usage_returns_total_when_only_total_is_available() {
+        let event = parse_codex_event_line(
+            r#"{"type":"turn.completed","usage":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":800,"output_tokens":70}}}"#,
+        )
+        .expect("Codex total-only usage event should parse");
+
+        assert_eq!(
+            extract_codex_usage(&event),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(900),
+                    cached_input_tokens: Some(800),
+                    output_tokens: Some(70),
+                },
+                source: CodexUsageSource::CumulativeTotal,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_codex_usage_uses_direct_usage_when_last_snapshot_is_empty() {
+        let event = parse_codex_event_line(
+            r#"{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":7,"output_tokens":3,"last_token_usage":{}}}"#,
+        )
+        .expect("Codex direct usage event should parse");
+
+        assert_eq!(
+            extract_codex_usage(&event),
+            Some(CodexUsageSnapshot {
+                usage: CodexUsage {
+                    input_tokens: Some(12),
+                    cached_input_tokens: Some(7),
+                    output_tokens: Some(3),
+                },
+                source: CodexUsageSource::CumulativeTotal,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_codex_usage_ignores_empty_usage_payload() {
+        let event =
+            parse_codex_event_line(r#"{"type":"turn.completed","usage":{"last_token_usage":{}}}"#)
+                .expect("Codex empty usage event should parse");
+
+        assert_eq!(extract_codex_usage(&event), None);
     }
 
     #[test]
@@ -494,5 +666,88 @@ mod tests {
             &event,
             "delegate_start failed",
         ));
+    }
+
+    #[test]
+    fn extract_codex_error_marks_runtime_errors() {
+        let mut item = codex_item("error");
+        item.id = Some("runtime-error".to_string());
+        item.error = Some(CodexItemError {
+            message: Some("Error: rate_limit_exceeded".to_string()),
+        });
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(item),
+            usage: None,
+        };
+
+        let error = extract_codex_error(&event).expect("runtime error");
+        assert_eq!(error.source, CodexErrorSource::Runtime);
+        assert_eq!(error.message, "Error: rate_limit_exceeded");
+    }
+
+    #[test]
+    fn extract_codex_error_uses_runtime_text_fallback() {
+        let mut item = codex_item("error");
+        item.id = Some("runtime-text-error".to_string());
+        item.text = Some("runtime failed before structured error".to_string());
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(item),
+            usage: None,
+        };
+
+        let error = extract_codex_error(&event).expect("runtime text error");
+        assert_eq!(error.source, CodexErrorSource::Runtime);
+        assert_eq!(error.message, "runtime failed before structured error");
+        assert_eq!(
+            extract_codex_error_message(&event).as_deref(),
+            Some("runtime failed before structured error")
+        );
+    }
+
+    #[test]
+    fn extract_codex_error_marks_mcp_tool_errors_as_local_tool_errors() {
+        let mut item = codex_item("mcp_tool_call");
+        item.id = Some("tool-error".to_string());
+        item.server = Some("ralphx".to_string());
+        item.tool = Some("delegate_start".to_string());
+        item.error = Some(CodexItemError {
+            message: Some("delegate_start saw local rate_limit metadata".to_string()),
+        });
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(item),
+            usage: None,
+        };
+
+        let error = extract_codex_error(&event).expect("mcp error");
+        assert_eq!(error.source, CodexErrorSource::McpTool);
+        assert_eq!(
+            error.message,
+            "delegate_start saw local rate_limit metadata"
+        );
+    }
+
+    #[test]
+    fn extract_codex_error_ignores_items_without_errors() {
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(codex_item("command_execution")),
+            usage: None,
+        };
+        assert_eq!(extract_codex_error(&event), None);
+
+        let event = CodexStreamEvent {
+            event_type: "item.completed".to_string(),
+            thread_id: None,
+            item: Some(codex_item("mcp_tool_call")),
+            usage: None,
+        };
+        assert_eq!(extract_codex_error(&event), None);
     }
 }

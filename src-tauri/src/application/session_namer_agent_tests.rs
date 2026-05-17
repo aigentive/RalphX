@@ -132,8 +132,8 @@ async fn session_namer_conversation_spawn_uses_active_project_cwd_and_conversati
 
     assert!(Arc::ptr_eq(&spawn.client, &codex_client));
     assert_eq!(spawn.config.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.5"));
-    assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(spawn.config.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         spawn.config.sandbox_mode.as_deref(),
@@ -185,8 +185,8 @@ async fn session_namer_session_spawn_uses_active_project_cwd_and_project_ideatio
 
     assert!(Arc::ptr_eq(&spawn.client, &codex_client));
     assert_eq!(spawn.config.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::XHigh));
+    assert_eq!(spawn.config.model.as_deref(), Some("gpt-5.4-mini"));
+    assert_eq!(spawn.config.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(spawn.config.approval_policy.as_deref(), Some("never"));
     assert_eq!(
         spawn.config.sandbox_mode.as_deref(),

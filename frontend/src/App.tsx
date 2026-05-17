@@ -60,6 +60,7 @@ import { useAppKeyboardShortcuts } from "@/hooks/useAppKeyboardShortcuts";
 import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
+import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
@@ -261,6 +262,11 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings &&
     providerSettings.requiresOnboarding;
+  const postUpdateAppReady =
+    !isLoadingProjects &&
+    !isLoadingProviderSettings &&
+    !isPlaceholderProviderSettings;
+  const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";
@@ -956,17 +962,17 @@ function AppContent() {
           </div>
         </header>
 
-      {/* Spacer for fixed header */}
-      <div className="h-12 flex-shrink-0" />
+          {/* Spacer for fixed header */}
+          <div className="h-12 flex-shrink-0" />
 
-      {/* App body: left nav rail + main content */}
-      <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
-        <LeftNavRail
-          currentView={currentView}
-          onViewChange={handleViewChange}
-          onOpenSettings={handleOpenSettings}
-          hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
-        />
+          {/* App body: left nav rail + main content */}
+          <div className="flex-1 flex overflow-hidden" style={{ backgroundColor: "var(--app-content-bg)" }}>
+            <LeftNavRail
+              currentView={currentView}
+              onViewChange={handleViewChange}
+              onOpenSettings={handleOpenSettings}
+              hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
+            />
 
       {/* Main content area - shows WelcomeScreen or normal content */}
       {(hasNoProjects || showWelcomeOverlay || providerSetupRequired) ? (
@@ -1200,6 +1206,8 @@ function AppContent() {
         </div>
       )}
       </div>
+        </>
+      )}
 
       {/* Project Creation Wizard */}
       <ProjectCreationWizard

@@ -39,6 +39,8 @@ interface UseChatRecoveryProps {
   isConversationInCurrentContext: boolean;
   /** Backend agent run status */
   agentRunStatus: string | undefined;
+  /** Whether the containing panel is currently visible. */
+  isVisible: boolean;
   setStreamingTasks?: (
     updater: (prev: Map<string, StreamingTask>) => Map<string, StreamingTask>,
   ) => void;
@@ -65,6 +67,7 @@ export function useChatRecovery({
   isGenerating,
   isConversationInCurrentContext,
   agentRunStatus,
+  isVisible,
   setStreamingTasks,
   setAgentRunning,
   selectedTaskId,
@@ -188,40 +191,78 @@ export function useChatRecovery({
     return () => clearInterval(intervalId);
   }, [activeConversationId, currentContextType, ideationSessionId, isAgentRunning, isAgentContext, queryClient, selectedTaskId]);
 
-  // Reconciliation poll: 1.5s safety net while isAgentRunning is true.
-  // Uses is_agent_running(contextType, contextId) rather than getAgentRunStatus(conversationId)
-  // to bypass the activeConversationId mismatch that is the actual root cause of stuck state.
-  // Zero overhead when no agent is running (interval is never created).
-  useEffect(() => {
-    if (!isAgentRunning) return undefined;
+  const shouldPollSelectedConversationLiveness =
+    isVisible &&
+    !isHistoryMode &&
+    !!activeConversationId &&
+    isConversationInCurrentContext;
 
-    const intervalId = setInterval(() => {
+  // Selected-conversation liveness poll: process truth is authoritative for
+  // recovering lost local status and for clearing genuinely stale non-idle UI.
+  // Uses is_agent_running(contextType, contextId) rather than getAgentRunStatus(conversationId)
+  // because interactive turns can leave the latest DB run completed while the
+  // process is still alive between turns.
+  useEffect(() => {
+    if (!shouldPollSelectedConversationLiveness) return undefined;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const reconcile = () => {
+      if (inFlight) return;
+      inFlight = true;
+
       chatApi
         .isAgentRunning(currentContextType, currentContextId)
         .then((running) => {
-          if (!running) {
+          if (cancelled) return;
+          if (running && !isAgentRunning) {
+            setAgentRunning(storeContextKey, true);
+            return;
+          }
+          if (!running && isAgentRunning) {
             setAgentRunning(storeContextKey, false);
           }
         })
         .catch(() => {
           // Silently ignore — primary signal is still Tauri events
+        })
+        .finally(() => {
+          inFlight = false;
         });
-    }, 1500);
+    };
 
-    return () => clearInterval(intervalId);
-  }, [isAgentRunning, currentContextType, currentContextId, storeContextKey, setAgentRunning]);
+    reconcile();
+    const intervalId = setInterval(reconcile, 1500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [
+    shouldPollSelectedConversationLiveness,
+    currentContextType,
+    currentContextId,
+    isAgentRunning,
+    storeContextKey,
+    setAgentRunning,
+  ]);
 
   // Fast path: reconcile immediately when user re-focuses the app.
   // Covers the most common user-facing case: app was backgrounded/suspended during completion.
   useEffect(() => {
-    if (!isAgentRunning) return undefined;
+    if (!shouldPollSelectedConversationLiveness) return undefined;
 
     function handleVisibilityChange() {
       if (document.visibilityState === "visible") {
         chatApi
           .isAgentRunning(currentContextType, currentContextId)
           .then((running) => {
-            if (!running) {
+            if (running && !isAgentRunning) {
+              setAgentRunning(storeContextKey, true);
+              return;
+            }
+            if (!running && isAgentRunning) {
               setAgentRunning(storeContextKey, false);
             }
           })
@@ -233,7 +274,14 @@ export function useChatRecovery({
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [isAgentRunning, currentContextType, currentContextId, storeContextKey, setAgentRunning]);
+  }, [
+    shouldPollSelectedConversationLiveness,
+    currentContextType,
+    currentContextId,
+    isAgentRunning,
+    storeContextKey,
+    setAgentRunning,
+  ]);
 
   // Merge watchdog: keep polling task status while in merge flow
   useEffect(() => {

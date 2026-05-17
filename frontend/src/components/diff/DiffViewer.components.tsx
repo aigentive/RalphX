@@ -21,6 +21,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SimpleDiffView } from "./SimpleDiffView";
+import type { DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 
 import {
   type FileChange,
@@ -296,6 +297,9 @@ interface DiffPanelProps {
   isLoading: boolean;
   filePath: string | null;
   onOpenInIDE?: ((path: string) => void) | undefined;
+  conversationId?: string;
+  refKind?: DiffRefKind;
+  annotations?: PrDiffAnnotation[];
 }
 
 export function DiffPanel({
@@ -303,6 +307,9 @@ export function DiffPanel({
   isLoading,
   filePath,
   onOpenInIDE,
+  conversationId,
+  refKind,
+  annotations = [],
 }: DiffPanelProps) {
   if (isLoading) {
     return (
@@ -390,9 +397,17 @@ export function DiffPanel({
       {/* Diff view - using SimpleDiffView for reliable rendering */}
       <div className="flex-1 overflow-hidden">
         <SimpleDiffView
-          oldContent={diffData.oldContent}
-          newContent={diffData.newContent}
+          hunks={diffData.hunks}
+          oldTotalLines={diffData.oldTotalLines}
+          newTotalLines={diffData.newTotalLines}
+          isBinary={diffData.isBinary}
           language={diffData.language}
+          {...(conversationId !== undefined && refKind !== undefined && {
+            conversationId,
+            filePath,
+            refKind,
+          })}
+          annotations={annotations}
         />
       </div>
     </div>
@@ -414,6 +429,8 @@ interface CommitDiffPanelProps {
   emptyTitle?: string;
   emptySubtitle?: string;
   onOpenInIDE?: ((path: string) => void) | undefined;
+  conversationId?: string;
+  refKind?: DiffRefKind;
 }
 
 export function CommitDiffPanel({
@@ -427,6 +444,8 @@ export function CommitDiffPanel({
   emptyTitle = "No files changed",
   emptySubtitle = "This commit did not report file changes",
   onOpenInIDE,
+  conversationId,
+  refKind,
 }: CommitDiffPanelProps) {
   if (!commit) {
     return (
@@ -482,6 +501,8 @@ export function CommitDiffPanel({
           isLoading={isLoading}
           filePath={selectedFilePath}
           {...(onOpenInIDE !== undefined && { onOpenInIDE })}
+          {...(conversationId !== undefined && { conversationId })}
+          {...(refKind !== undefined && { refKind })}
         />
       </div>
     </div>

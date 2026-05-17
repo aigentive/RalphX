@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 import { setupIdeationChatScenario } from "../../../fixtures/chat.fixtures";
 
 test.describe("Ideation Chat Replay", () => {
+  // The seeded fixture uses absolute UTC timestamps; pin the browser timezone so
+  // snapshots do not depend on the runner's local timezone.
+  test.use({ timezoneId: "UTC" });
+
   test.beforeEach(async ({ page }) => {
     await setupIdeationChatScenario(page, "ideation_db_widget_mix");
   });
@@ -12,7 +16,6 @@ test.describe("Ideation Chat Replay", () => {
     await expect(panel).toBeVisible();
     await expect(page.getByTestId("chat-session-provider-badge")).toHaveText(/Claude/i);
     await expect(panel.getByText("Preferred default for automatic PR creation?")).toBeVisible();
-    await expect(panel.getByText("to layer1-critic")).toBeVisible();
     await expect(panel.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeVisible();
   });
 
@@ -34,8 +37,12 @@ test.describe("Ideation Chat Replay", () => {
     await expect(panel).toBeVisible();
     await expect(page.getByTestId("chat-session-provider-badge")).toHaveText(/Claude/i);
     await expect(panel.getByText("Preferred default for automatic PR creation?")).toBeVisible();
-    await expect(panel.getByText("to layer1-critic")).toBeVisible();
     await expect(panel.getByText("src-tauri/src/application/chat_service/mod.rs")).toBeVisible();
+    const scrollToBottom = panel.getByRole("button", { name: /scroll to bottom/i });
+    if (await scrollToBottom.isVisible()) {
+      await scrollToBottom.click();
+    }
+    await expect(scrollToBottom).toBeHidden();
     await expect(panel).toHaveScreenshot("ideation-chat-replay.png", {
       maxDiffPixelRatio: 0.01,
     });

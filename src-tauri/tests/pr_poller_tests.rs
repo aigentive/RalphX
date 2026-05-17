@@ -370,8 +370,8 @@ async fn recover_agent_workspace_pr_pollers_skips_workspaces_waiting_on_agent() 
 async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let conversation_id = ChatConversationId::from_string("12121212-3434-5656-7878-909090909090");
-    let project_id = ProjectId::from_string("project-1".to_string());
-    let mut workspace = make_agent_workspace(conversation_id, project_id);
+    let project = Project::new("Test Project".to_string(), "/tmp/test-repo".to_string());
+    let mut workspace = make_agent_workspace(conversation_id, project.id.clone());
     workspace.mode = AgentConversationWorkspaceMode::Ideation;
     workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-1"));
     workspace_repo
@@ -389,6 +389,7 @@ async fn agent_workspace_poller_stops_when_workspace_is_ideation_owned() {
     registry.start_agent_workspace_polling(
         workspace.conversation_id,
         72,
+        project,
         std::path::PathBuf::from("/tmp/agent-workspace"),
         Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
         Arc::clone(&chat_service) as Arc<dyn ChatService>,

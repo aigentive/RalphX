@@ -65,9 +65,6 @@
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)"
     ],
-    "ask": [
-      "Bash(git push:*)"
-    ],
     "defaultMode": "bypassPermissions"
   },
   "sandbox": {

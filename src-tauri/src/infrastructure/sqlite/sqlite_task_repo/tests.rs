@@ -1,5 +1,5 @@
 use crate::domain::entities::{
-    IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
+    ExecutionPlanId, IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::TaskRepository;
 use crate::infrastructure::sqlite::SqliteTaskRepository;
@@ -207,6 +207,122 @@ async fn test_get_by_project_only_returns_matching_project() {
     let tasks = result.unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].title, "Task 1");
+}
+
+#[tokio::test]
+async fn test_get_by_ids_returns_only_requested_tasks() {
+    let db = setup_test_db();
+    let repo = SqliteTaskRepository::new(db.new_connection());
+    let task1 = create_test_task("Task 1");
+    let task2 = create_test_task("Task 2");
+    let task3 = create_test_task("Task 3");
+
+    repo.create(task1.clone()).await.unwrap();
+    repo.create(task2.clone()).await.unwrap();
+    repo.create(task3).await.unwrap();
+
+    let tasks = repo
+        .get_by_ids(&[task2.id.clone(), task1.id.clone()])
+        .await
+        .unwrap();
+    let ids = tasks
+        .into_iter()
+        .map(|task| task.id)
+        .collect::<std::collections::HashSet<_>>();
+
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&task1.id));
+    assert!(ids.contains(&task2.id));
+}
+
+#[tokio::test]
+async fn test_get_by_status_with_metadata_bool_filters_in_sql() {
+    let db = setup_test_db();
+    let repo = SqliteTaskRepository::new(db.new_connection());
+    let project_id = ProjectId::from_string("test-project".to_string());
+
+    let mut pending = create_test_task("Pending cleanup");
+    pending.internal_status = InternalStatus::Merged;
+    pending.metadata = Some(r#"{"pending_cleanup":true}"#.to_string());
+    let mut not_pending = create_test_task("Not pending cleanup");
+    not_pending.internal_status = InternalStatus::Merged;
+    not_pending.metadata = Some(r#"{"pending_cleanup":false}"#.to_string());
+    let mut malformed = create_test_task("Malformed metadata");
+    malformed.internal_status = InternalStatus::Merged;
+    malformed.metadata = Some("{pending_cleanup:true".to_string());
+
+    repo.create(pending.clone()).await.unwrap();
+    repo.create(not_pending).await.unwrap();
+    repo.create(malformed).await.unwrap();
+
+    let tasks = repo
+        .get_by_status_with_metadata_bool(&project_id, InternalStatus::Merged, "pending_cleanup")
+        .await
+        .unwrap();
+
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, pending.id);
+}
+
+#[tokio::test]
+async fn test_find_merged_regular_plan_keys_filters_candidates() {
+    let db = setup_test_db();
+    let repo = SqliteTaskRepository::new(db.new_connection());
+    let project_id = ProjectId::from_string("test-project".to_string());
+    let session_id = IdeationSessionId::from_string("session-1".to_string());
+    let execution_plan_id = ExecutionPlanId::from_string("plan-1".to_string());
+    let missing_plan_id = ExecutionPlanId::from_string("plan-missing".to_string());
+
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO ideation_sessions (id, project_id, status, created_at, updated_at)
+             VALUES (?1, ?2, 'accepted', strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'), strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))",
+            rusqlite::params![session_id.as_str(), project_id.as_str()],
+        )
+        .unwrap();
+        for plan_id in [&execution_plan_id, &missing_plan_id] {
+            conn.execute(
+                "INSERT INTO execution_plans (id, session_id, status, created_at)
+                 VALUES (?1, ?2, 'active', strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))",
+                rusqlite::params![plan_id.as_str(), session_id.as_str()],
+            )
+            .unwrap();
+        }
+    });
+
+    let mut merged_regular = create_test_task("Merged regular");
+    merged_regular.internal_status = InternalStatus::Merged;
+    merged_regular.ideation_session_id = Some(session_id.clone());
+    merged_regular.execution_plan_id = Some(execution_plan_id.clone());
+
+    let mut active_regular = create_test_task("Active regular");
+    active_regular.internal_status = InternalStatus::Executing;
+    active_regular.ideation_session_id = Some(session_id.clone());
+    active_regular.execution_plan_id = Some(missing_plan_id.clone());
+
+    let mut merged_plan_task = create_test_task("Merged plan task");
+    merged_plan_task.internal_status = InternalStatus::Merged;
+    merged_plan_task.category = TaskCategory::PlanMerge;
+    merged_plan_task.ideation_session_id = Some(session_id.clone());
+    merged_plan_task.execution_plan_id = Some(missing_plan_id.clone());
+
+    repo.create(merged_regular).await.unwrap();
+    repo.create(active_regular).await.unwrap();
+    repo.create(merged_plan_task).await.unwrap();
+
+    let keys = repo
+        .find_merged_regular_plan_keys(
+            &project_id,
+            &[
+                (session_id.clone(), execution_plan_id.clone()),
+                (session_id.clone(), missing_plan_id.clone()),
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(keys.len(), 1);
+    assert!(keys.contains(&(session_id, execution_plan_id)));
 }
 
 // ==================== STATUS OPERATION TESTS ====================
@@ -1208,7 +1324,16 @@ async fn test_list_paginated_filters_by_category() {
     // Filter for plan_merge only
     let plan_merge_cats = vec!["plan_merge".to_string()];
     let merge_tasks = repo
-        .list_paginated(&project_id, None, 0, 10, false, None, None, Some(&plan_merge_cats))
+        .list_paginated(
+            &project_id,
+            None,
+            0,
+            10,
+            false,
+            None,
+            None,
+            Some(&plan_merge_cats),
+        )
         .await
         .unwrap();
     assert_eq!(merge_tasks.len(), 1);
@@ -1217,7 +1342,16 @@ async fn test_list_paginated_filters_by_category() {
     // Filter for regular only
     let regular_cats = vec!["regular".to_string()];
     let regular_tasks = repo
-        .list_paginated(&project_id, None, 0, 10, false, None, None, Some(&regular_cats))
+        .list_paginated(
+            &project_id,
+            None,
+            0,
+            10,
+            false,
+            None,
+            None,
+            Some(&regular_cats),
+        )
         .await
         .unwrap();
     assert_eq!(regular_tasks.len(), 1);
@@ -1414,7 +1548,10 @@ async fn test_count_tasks_returns_correct_count() {
     repo.create(create_test_task("T2")).await.unwrap();
     repo.create(create_test_task("T3")).await.unwrap();
 
-    let count = repo.count_tasks(&project_id, false, None, None).await.unwrap();
+    let count = repo
+        .count_tasks(&project_id, false, None, None)
+        .await
+        .unwrap();
     assert_eq!(count, 3);
 }
 
@@ -1430,10 +1567,16 @@ async fn test_count_tasks_excludes_archived_by_default() {
     repo.create(to_archive.clone()).await.unwrap();
     repo.archive(&to_archive.id).await.unwrap();
 
-    let active_count = repo.count_tasks(&project_id, false, None, None).await.unwrap();
+    let active_count = repo
+        .count_tasks(&project_id, false, None, None)
+        .await
+        .unwrap();
     assert_eq!(active_count, 1);
 
-    let all_count = repo.count_tasks(&project_id, true, None, None).await.unwrap();
+    let all_count = repo
+        .count_tasks(&project_id, true, None, None)
+        .await
+        .unwrap();
     assert_eq!(all_count, 2);
 }
 
@@ -1443,7 +1586,10 @@ async fn test_count_tasks_returns_zero_for_empty_project() {
     let repo = SqliteTaskRepository::new(db.new_connection());
     let project_id = ProjectId::from_string("test-project".to_string());
 
-    let count = repo.count_tasks(&project_id, false, None, None).await.unwrap();
+    let count = repo
+        .count_tasks(&project_id, false, None, None)
+        .await
+        .unwrap();
     assert_eq!(count, 0);
 }
 
@@ -1465,6 +1611,9 @@ async fn test_count_tasks_filters_by_ideation_session() {
         .unwrap();
     assert_eq!(session_count, 1);
 
-    let total_count = repo.count_tasks(&project_id, false, None, None).await.unwrap();
+    let total_count = repo
+        .count_tasks(&project_id, false, None, None)
+        .await
+        .unwrap();
     assert_eq!(total_count, 2);
 }

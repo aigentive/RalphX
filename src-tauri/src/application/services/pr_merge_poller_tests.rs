@@ -21,9 +21,10 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, Project, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::services::GithubServiceTrait;
@@ -34,10 +35,7 @@ use crate::infrastructure::memory::{
 use crate::tests::mock_github_service::MockGithubService;
 
 fn make_registry_no_github() -> PrPollerRegistry {
-    PrPollerRegistry::new(
-        None,
-        Arc::new(MemoryPlanBranchRepository::new()),
-    )
+    PrPollerRegistry::new(None, Arc::new(MemoryPlanBranchRepository::new()))
 }
 
 fn run_git(repo: &std::path::Path, args: &[&str]) {
@@ -115,6 +113,22 @@ fn cleanup_workspace_with_conversation(
 fn expected_workspace_branch(project: &Project, conversation_id: &str) -> String {
     let conversation_id = ChatConversationId::from_string(conversation_id);
     agent_conversation_branch_name(project, &conversation_id)
+}
+
+#[test]
+fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
+    let repo = init_cleanup_repo();
+    let worktree_parent = repo.path().join("worktrees");
+    let project = cleanup_project(repo.path(), &worktree_parent);
+    let mut workspace = cleanup_workspace_with_conversation(
+        &project,
+        "ralphx/demo/agent-refreshed",
+        "conversation-refreshed-polling",
+    );
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("refreshed".to_string());
+
+    assert!(super::agent_workspace_pr_polling_is_current(&workspace, 101));
 }
 
 fn repo_error() -> AppError {
@@ -634,5 +648,4 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
     async fn delete(&self, _conversation_id: &ChatConversationId) -> AppResult<()> {
         Err(repo_error())
     }
-
 }

@@ -6,16 +6,45 @@ import {
   FileChangesResponseSchema,
   FileDiffSchema,
   TaskCommitsResponseSchema,
+  AgentWorkspaceReviewResponseSchema,
+  PrDiffAnnotationsResponseSchema,
+  RangeFetchResponseSchema,
 } from "./diff.schemas";
 import {
   transformFileChange,
   transformFileDiff,
   transformCommitInfo,
+  transformAgentWorkspaceReview,
+  transformPrDiffAnnotationsResponse,
+  transformRangeLine,
 } from "./diff.transforms";
-import type { FileChange, FileDiff, CommitInfo } from "./diff.types";
+import type {
+  AgentWorkspaceReview,
+  FileChange,
+  FileDiff,
+  CommitInfo,
+  DiffRefKind,
+  PrDiffAnnotationsResponse,
+  RangeLine,
+} from "./diff.types";
+import { backendApiUrl } from "./backend";
 
 // Re-export types for convenience
-export type { FileChange, FileDiff, FileChangeStatus, CommitInfo } from "./diff.types";
+export type {
+  AgentWorkspaceReview,
+  FileChange,
+  FileDiff,
+  FileChangeStatus,
+  CommitInfo,
+  DiffLineKind,
+  DiffLine,
+  DiffHunk,
+  DiffRefKind,
+  PrDiffAnnotation,
+  PrAnnotationSourceUnavailable,
+  PrDiffAnnotationsResponse,
+  RangeLine,
+} from "./diff.types";
 
 // Re-export schemas for consumers that need validation
 export {
@@ -25,10 +54,31 @@ export {
   FileChangesResponseSchema,
   CommitInfoSchema,
   TaskCommitsResponseSchema,
+  AgentWorkspaceReviewResponseSchema,
+  DiffLineKindSchema,
+  DiffLineSchema,
+  DiffHunkSchema,
+  DiffRefKindSchema,
+  PrDiffAnnotationSchema,
+  PrAnnotationSourceUnavailableSchema,
+  PrDiffAnnotationsResponseSchema,
+  RangeLineSchema,
+  RangeFetchResponseSchema,
 } from "./diff.schemas";
 
 // Re-export transforms for consumers that need manual transformation
-export { transformFileChange, transformFileDiff, transformCommitInfo } from "./diff.transforms";
+export {
+  transformAgentWorkspaceReview,
+  transformFileChange,
+  transformFileDiff,
+  transformDiffLine,
+  transformDiffHunk,
+  transformCommitInfo,
+  transformPrDiffAnnotation,
+  transformPrAnnotationSourceUnavailable,
+  transformPrDiffAnnotationsResponse,
+  transformRangeLine,
+} from "./diff.transforms";
 
 // ============================================================================
 // Typed Invoke Helper
@@ -76,7 +126,7 @@ export const diffApi = {
    * Backend determines working path (worktree or local) from task/project
    * @param taskId - The task ID (used to determine working directory)
    * @param filePath - The file path relative to project root
-   * @returns File diff with old and new content
+   * @returns File diff with hunks
    */
   getFileDiff: (taskId: string, filePath: string): Promise<FileDiff> =>
     typedInvokeWithTransform(
@@ -118,7 +168,7 @@ export const diffApi = {
    * @param taskId - The task ID (used to determine working directory)
    * @param commitSha - The commit SHA to get the diff from
    * @param filePath - The file path relative to project root
-   * @returns File diff with old (parent) and new (commit) content
+   * @returns File diff with hunks
    */
   getCommitFileDiff: (taskId: string, commitSha: string, filePath: string): Promise<FileDiff> =>
     typedInvokeWithTransform(
@@ -134,6 +184,26 @@ export const diffApi = {
       { conversationId },
       FileChangesResponseSchema,
       (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceReview: (
+    conversationId: string
+  ): Promise<AgentWorkspaceReview> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_review",
+      { conversationId },
+      AgentWorkspaceReviewResponseSchema,
+      transformAgentWorkspaceReview
+    ),
+
+  getAgentConversationWorkspacePrAnnotations: (
+    conversationId: string
+  ): Promise<PrDiffAnnotationsResponse> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_pr_annotations",
+      { conversationId },
+      PrDiffAnnotationsResponseSchema,
+      transformPrDiffAnnotationsResponse
     ),
 
   getAgentConversationWorkspaceFileDiff: (
@@ -179,4 +249,113 @@ export const diffApi = {
       FileDiffSchema,
       transformFileDiff
     ),
+
+  getAgentConversationWorkspaceStagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_staged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceUnstagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_unstaged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceStagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_staged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceUnstagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_unstaged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceCumulativeFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_cumulative_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceCumulativeFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_cumulative_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  /**
+   * Fetch a range of lines from a file in the agent workspace.
+   * Used by SimpleDiffView to lazy-load "Show N unchanged lines" gaps.
+   *
+   * HTTP GET /api/agent-workspaces/{conversationId}/file-content-range
+   *
+   * @param args.conversationId - Workspace conversation ID
+   * @param args.side - "old" or "new" side of the diff
+   * @param args.path - File path relative to project root
+   * @param args.refKind - Which ref to read the file from
+   * @param args.from - First line number (1-indexed, inclusive)
+   * @param args.to - Last line number (1-indexed, inclusive)
+   */
+  getAgentConversationWorkspaceFileContentRange: async (args: {
+    conversationId: string;
+    side: "old" | "new";
+    path: string;
+    refKind: DiffRefKind;
+    from: number;
+    to: number;
+  }): Promise<RangeLine[]> => {
+    const { conversationId, side, path, refKind, from, to } = args;
+    const url = backendApiUrl(
+      `agent-workspaces/${encodeURIComponent(conversationId)}/file-content-range`
+    );
+    const params = new URLSearchParams({
+      side,
+      path,
+      ref_kind: refKind.kind,
+      from: String(from),
+      to: String(to),
+    });
+    if (refKind.kind === "commit") {
+      params.set("sha", refKind.sha);
+    }
+    const response = await fetch(`${url}?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(
+        `File content range fetch failed: ${response.status} ${response.statusText}`
+      );
+    }
+    const data: unknown = await response.json();
+    const validated = RangeFetchResponseSchema.parse(data);
+    return validated.map(transformRangeLine);
+  },
 } as const;

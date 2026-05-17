@@ -712,6 +712,25 @@ fn test_lane_settings_repo_can_be_applied_after_execution_settings_repo() {
     assert!(service.execution_settings_repo.is_some());
 }
 
+#[test]
+fn test_runtime_resolution_context_applies_all_runtime_dependencies() {
+    let app_state = AppState::new_test();
+    let service = build_test_service(&app_state).with_runtime_resolution_context(
+        Some(app_state.agent_client_bundle()),
+        Some(Arc::clone(&app_state.execution_settings_repo)),
+        Some(Arc::clone(&app_state.agent_lane_settings_repo)),
+        Some(Arc::clone(&app_state.agent_provider_settings_repo)),
+        Some(Arc::clone(&app_state.plan_branch_repo)),
+        Some(Arc::clone(&app_state.interactive_process_registry)),
+    );
+
+    assert!(service.execution_settings_repo.is_some());
+    assert!(service.agent_lane_settings_repo.is_some());
+    assert!(service.agent_provider_settings_repo.is_some());
+    assert!(service.plan_branch_repo.is_some());
+    assert!(service.interactive_process_registry.is_some());
+}
+
 // ============================================================================
 // Hard-block dependents when a blocker fails
 // ============================================================================

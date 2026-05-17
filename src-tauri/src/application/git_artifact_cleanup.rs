@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::application::agent_conversation_workspace::{
@@ -21,6 +22,15 @@ pub(crate) async fn cleanup_merged_plan_branch_local_artifacts(
     project: &Project,
     plan_branch: &PlanBranch,
 ) -> AppResult<LocalGitArtifactCleanupReport> {
+    cleanup_merged_plan_branch_local_artifacts_with_known_local_branches(project, plan_branch, None)
+        .await
+}
+
+pub(crate) async fn cleanup_merged_plan_branch_local_artifacts_with_known_local_branches(
+    project: &Project,
+    plan_branch: &PlanBranch,
+    known_local_branches: Option<&HashSet<String>>,
+) -> AppResult<LocalGitArtifactCleanupReport> {
     if plan_branch.status != PlanBranchStatus::Merged
         && !matches!(plan_branch.pr_status, Some(PrStatus::Merged))
     {
@@ -39,13 +49,34 @@ pub(crate) async fn cleanup_merged_plan_branch_local_artifacts(
     }
 
     let target_ref = resolve_plan_branch_pr_base(project, plan_branch);
-    delete_branch_when_merged_or_equivalent(repo_path, &plan_branch.branch_name, &target_ref).await
+    delete_branch_when_merged_or_equivalent(
+        repo_path,
+        &plan_branch.branch_name,
+        &target_ref,
+        known_local_branches,
+    )
+    .await
 }
 
 pub(crate) async fn cleanup_terminal_agent_workspace_local_artifacts(
     project: &Project,
     workspace: &AgentConversationWorkspace,
     delete_branch_if_merged: bool,
+) -> AppResult<LocalGitArtifactCleanupReport> {
+    cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches(
+        project,
+        workspace,
+        delete_branch_if_merged,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn cleanup_terminal_agent_workspace_local_artifacts_with_known_local_branches(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    delete_branch_if_merged: bool,
+    known_local_branches: Option<&HashSet<String>>,
 ) -> AppResult<LocalGitArtifactCleanupReport> {
     let repo_path = Path::new(&project.working_directory);
     let expected_path =
@@ -79,6 +110,7 @@ pub(crate) async fn cleanup_terminal_agent_workspace_local_artifacts(
             repo_path,
             &workspace.branch_name,
             &workspace.base_ref,
+            known_local_branches,
         )
         .await?;
         report.branch_deleted = branch_report.branch_deleted;
@@ -100,7 +132,6 @@ async fn remove_clean_agent_worktree(
         "agent workspace cleanup",
     )?;
     if !safe_path.exists() {
-        GitService::delete_worktree(repo_path, &safe_path).await?;
         return Ok(());
     }
 
@@ -114,7 +145,24 @@ async fn remove_clean_agent_worktree(
         return Ok(());
     }
 
-    GitService::delete_worktree(repo_path, &safe_path).await?;
+    let safe_path_for_compare = safe_path
+        .canonicalize()
+        .unwrap_or_else(|_| safe_path.clone());
+    let is_registered_worktree = GitService::list_worktrees(repo_path)
+        .await
+        .map(|worktrees| {
+            worktrees.iter().any(|worktree| {
+                let worktree_path = PathBuf::from(&worktree.path);
+                worktree_path.canonicalize().unwrap_or(worktree_path) == safe_path_for_compare
+            })
+        })
+        .unwrap_or(true);
+
+    if is_registered_worktree {
+        GitService::delete_worktree(repo_path, &safe_path).await?;
+    } else {
+        crate::utils::path_safety::checked_remove_dir_all(&safe_path, "agent workspace").await?;
+    }
     report.worktree_removed = true;
     Ok(())
 }
@@ -123,10 +171,16 @@ async fn delete_branch_when_merged_or_equivalent(
     repo_path: &Path,
     branch: &str,
     target_ref: &str,
+    known_local_branches: Option<&HashSet<String>>,
 ) -> AppResult<LocalGitArtifactCleanupReport> {
     let mut report = LocalGitArtifactCleanupReport::default();
 
-    if !GitService::branch_exists(repo_path, branch).await? {
+    let branch_exists = match known_local_branches {
+        Some(local_branches) => local_branches.contains(branch),
+        None => GitService::branch_exists(repo_path, branch).await?,
+    };
+
+    if !branch_exists {
         report.skipped_reason = Some("branch_missing".to_string());
         return Ok(report);
     }

@@ -46,7 +46,7 @@ Update test commands to match actual implementation:
         "agent-browser open http://localhost:1420",
         "agent-browser wait --load",
         "agent-browser is visible [data-testid='actual-element']",
-        "agent-browser screenshot .artifacts/screenshots/qa1.png"
+        "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/qa1.png\""
       ],
       "expected": "Updated expectation"
     }
@@ -86,7 +86,7 @@ For each step:
       {
         "step_id": "QA1",
         "status": "passed",
-        "screenshot": ".artifacts/screenshots/qa1-result.png",
+        "screenshot": "$RALPHX_AGENT_SCREENSHOT_DIR/qa1-result.png",
         "actual": null,
         "expected": null,
         "error": null
@@ -126,7 +126,7 @@ For each step:
 {
   "step_id": "QA2",
   "status": "failed",
-  "screenshot": ".artifacts/screenshots/qa2-failure.png",
+  "screenshot": "$RALPHX_AGENT_SCREENSHOT_DIR/qa2-failure.png",
   "actual": "Button text is 'Submit' instead of 'Save'",
   "expected": "Button should display 'Save'",
   "error": "Text content mismatch"

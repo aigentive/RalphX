@@ -421,6 +421,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         plugin_dir: plugin_dir.to_path_buf(),
         repos: BackgroundRunRepos {
             chat_message_repo: Arc::clone(chat_message_repo),
+            chat_timeline_repo: None,
             chat_attachment_repo: Arc::clone(chat_attachment_repo),
             artifact_repo: Arc::clone(artifact_repo),
             conversation_repo: Arc::clone(conversation_repo),
@@ -1473,7 +1474,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(agent_run_id.to_string()),
                         conversation_id.as_str().to_string(),
                         context_type.to_string(),
                         context_id.to_string(),
@@ -1543,7 +1545,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             if let Some(ref handle) = app_handle {
                 let _ = handle.emit(
                     "agent:run_completed",
-                    AgentRunCompletedPayload::with_provider_session(
+                    AgentRunCompletedPayload::with_provider_session_and_run_id(
+                        Some(agent_run_id.to_string()),
                         conversation_id.as_str().to_string(),
                         context_type.to_string(),
                         context_id.to_string(),
@@ -2729,6 +2732,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 conversation_id: Some(conversation_id.as_str().to_string()),
                 context_type: context_type.to_string(),
                 context_id: context_id.to_string(),
+                agent_run_id: Some(agent_run_id.to_string()),
                 error: redacted_error.clone(),
                 stderr: Some(redacted_error.clone()),
             },

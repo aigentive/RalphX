@@ -20,6 +20,7 @@ export const AgentProviderSettingsResponseSchema = z.object({
   status: z.string(),
   error: z.string().nullable().optional(),
   missingCoreExecFeatures: z.array(z.string()),
+  supportedEfforts: z.array(z.string().min(1)).nullable().optional(),
   updatedAt: z.string(),
 });
 
@@ -52,11 +53,17 @@ export interface UpdateAgentProviderSettingsInput {
   applyToAllLanes?: boolean;
 }
 
+export interface ListAgentProviderSettingsOptions {
+  refreshRuntime?: boolean;
+}
+
 export const harnessProvidersApi = {
-  list(): Promise<AgentProvidersSettingsResponse> {
+  list(
+    options: ListAgentProviderSettingsOptions = {},
+  ): Promise<AgentProvidersSettingsResponse> {
     return typedInvoke(
       "get_agent_provider_settings",
-      {},
+      { input: { refreshRuntime: options.refreshRuntime ?? false } },
       AgentProvidersSettingsResponseSchema,
     );
   },

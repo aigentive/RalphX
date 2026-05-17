@@ -4,11 +4,13 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::{
-    harness_runtime_registry::HarnessRuntimeProbe, probe_supported_harnesses, AppState, AGENT_LANES,
+    harness_runtime_registry::{refresh_harness_runtime_probe, HarnessRuntimeProbe},
+    probe_supported_harnesses, AppState, AGENT_LANES,
 };
 use crate::domain::agents::{
     generic_harness_lane_defaults, AgentHarnessKind, AgentLaneSettings, AgentProviderSettings,
     LogicalEffort, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+    STANDARD_AGENT_HARNESSES,
 };
 use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
 
@@ -34,6 +36,7 @@ pub struct AgentProviderSettingsResponse {
     pub status: String,
     pub error: Option<String>,
     pub missing_core_exec_features: Vec<String>,
+    pub supported_efforts: Option<Vec<String>>,
     pub updated_at: String,
 }
 
@@ -43,6 +46,13 @@ pub struct AgentProvidersSettingsResponse {
     pub providers: Vec<AgentProviderSettingsResponse>,
     pub default_provider: Option<String>,
     pub requires_onboarding: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GetAgentProviderSettingsInput {
+    #[serde(default)]
+    pub refresh_runtime: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -189,10 +199,14 @@ fn to_lane_settings(
 fn provider_status(
     provider: AgentHarnessKind,
     available: bool,
+    probe_succeeded: bool,
     binary_path: Option<&str>,
     error: Option<&str>,
 ) -> String {
     if available {
+        if !probe_succeeded {
+            return format!("{provider} is enabled in Settings.");
+        }
         if let Some(path) = binary_path {
             return format!("Available {provider} detected at {path}.");
         }
@@ -210,6 +224,7 @@ fn to_response(
     let status = provider_status(
         settings.provider,
         probe.available,
+        probe.probe_succeeded,
         probe.binary_path.as_deref(),
         probe.error.as_deref(),
     );
@@ -231,15 +246,82 @@ fn to_response(
         status,
         error: probe.error,
         missing_core_exec_features: probe.missing_core_exec_features,
+        supported_efforts: probe.supported_efforts,
         updated_at: settings.updated_at.to_rfc3339(),
     }
 }
 
+pub(crate) fn provider_settings_snapshot_probe(
+    settings: &AgentProviderSettings,
+) -> HarnessRuntimeProbe {
+    if settings.enabled {
+        return HarnessRuntimeProbe {
+            binary_path: None,
+            binary_found: true,
+            probe_succeeded: false,
+            available: true,
+            missing_core_exec_features: Vec::new(),
+            supported_efforts: None,
+            error: None,
+        };
+    }
+
+    HarnessRuntimeProbe {
+        binary_path: None,
+        binary_found: false,
+        probe_succeeded: false,
+        available: false,
+        missing_core_exec_features: Vec::new(),
+        supported_efforts: None,
+        error: Some(format!(
+            "{} is disabled. Enable and validate it in Settings before use.",
+            settings.provider
+        )),
+    }
+}
+
+fn disabled_provider_snapshot_probe(provider: AgentHarnessKind) -> HarnessRuntimeProbe {
+    provider_settings_snapshot_probe(&AgentProviderSettings::disabled_defaults(provider))
+}
+
+pub(crate) fn snapshot_probes_from_provider_settings(
+    stored: &[AgentProviderSettings],
+) -> HashMap<AgentHarnessKind, HarnessRuntimeProbe> {
+    STANDARD_AGENT_HARNESSES
+        .into_iter()
+        .map(|provider| {
+            let probe = stored
+                .iter()
+                .find(|row| row.provider == provider)
+                .map(provider_settings_snapshot_probe)
+                .unwrap_or_else(|| disabled_provider_snapshot_probe(provider));
+            (provider, probe)
+        })
+        .collect()
+}
+
 async fn read_provider_settings(
     state: &AppState,
+    refresh_runtime: bool,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    let probes = probe_supported_harnesses();
-    read_provider_settings_with_probes(state, &probes).await
+    let started_at = std::time::Instant::now();
+    let stored = state
+        .agent_provider_settings_repo
+        .list()
+        .await
+        .map_err(|err| err.to_string())?;
+    let probes = if refresh_runtime {
+        probe_supported_harnesses()
+    } else {
+        snapshot_probes_from_provider_settings(&stored)
+    };
+    tracing::info!(
+        refresh_runtime,
+        provider_rows = stored.len(),
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "Agent provider settings loaded"
+    );
+    read_provider_settings_with_stored_and_probes(stored, &probes).await
 }
 
 async fn read_provider_settings_with_probes(
@@ -251,6 +333,13 @@ async fn read_provider_settings_with_probes(
         .list()
         .await
         .map_err(|err| err.to_string())?;
+    read_provider_settings_with_stored_and_probes(stored, probes).await
+}
+
+async fn read_provider_settings_with_stored_and_probes(
+    stored: Vec<AgentProviderSettings>,
+    probes: &HashMap<AgentHarnessKind, HarnessRuntimeProbe>,
+) -> Result<AgentProvidersSettingsResponse, String> {
     let default_provider = stored
         .iter()
         .find(|row| row.enabled && row.is_default)
@@ -272,6 +361,7 @@ async fn read_provider_settings_with_probes(
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
                     error: Some(format!("{provider} probe unavailable")),
                 });
             to_response(settings, probe)
@@ -302,9 +392,10 @@ async fn apply_provider_to_global_lanes(
 
 #[tauri::command]
 pub async fn get_agent_provider_settings(
+    input: Option<GetAgentProviderSettingsInput>,
     state: State<'_, AppState>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    read_provider_settings(&state).await
+    read_provider_settings(&state, input.unwrap_or_default().refresh_runtime).await
 }
 
 #[tauri::command]
@@ -312,7 +403,16 @@ pub async fn update_agent_provider_settings(
     input: UpdateAgentProviderSettingsInput,
     state: State<'_, AppState>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
-    let probes = probe_supported_harnesses();
+    let provider = parse_provider(&input.provider)?;
+    let stored = state
+        .agent_provider_settings_repo
+        .list()
+        .await
+        .map_err(|err| err.to_string())?;
+    let mut probes = snapshot_probes_from_provider_settings(&stored);
+    if input.enabled == Some(true) {
+        probes.insert(provider, refresh_harness_runtime_probe(provider));
+    }
     update_provider_settings_with_probes(input, &state, &probes).await
 }
 
@@ -353,7 +453,7 @@ async fn update_provider_settings_with_probes(
     }
 
     if saved.is_default && apply_to_all_lanes {
-        apply_provider_to_global_lanes(&state, &saved).await?;
+        apply_provider_to_global_lanes(state, &saved).await?;
     }
 
     read_provider_settings_with_probes(state, probes).await

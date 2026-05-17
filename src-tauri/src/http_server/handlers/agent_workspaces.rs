@@ -136,6 +136,13 @@ pub async fn complete_agent_workspace_repair(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let publication_events = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
 
     let auto_publish = publish_agent_conversation_workspace_for_app_state(
         state.app_state.as_ref(),

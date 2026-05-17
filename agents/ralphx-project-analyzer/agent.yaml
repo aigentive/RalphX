@@ -7,7 +7,7 @@ capabilities:
     - get_project_analysis
 harnesses:
   claude:
-    model: sonnet
+    model: haiku
     tools:
       extends: base_tools
     preapproved_cli_tools:

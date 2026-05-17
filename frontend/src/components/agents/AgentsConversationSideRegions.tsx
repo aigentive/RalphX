@@ -12,6 +12,7 @@ import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 
 interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
+  activeProjectBaseBranch: string | null;
   activeWorkspace: AgentConversationWorkspace | null;
   artifactWidthCss: string;
   chatDockElement: HTMLDivElement | null;
@@ -33,6 +34,7 @@ interface AgentsConversationSideRegionsProps {
 
 export function AgentsConversationSideRegions({
   activeConversation,
+  activeProjectBaseBranch,
   activeWorkspace,
   artifactWidthCss,
   chatDockElement,

@@ -1,5 +1,7 @@
 import { CheckCircle2, Loader2, X } from "lucide-react";
 
+import { cn } from "@/lib/utils";
+
 const PUBLISH_STEPS = [
   { id: "checking", label: "Check workspace" },
   { id: "committing", label: "Commit changes" },
@@ -9,11 +11,15 @@ const PUBLISH_STEPS = [
 ] as const;
 
 export function PublishPipelineSteps({
+  className,
   status,
   isPublishing,
+  testIdPrefix = "agents-publish",
 }: {
+  className?: string;
   status: string | null;
   isPublishing: boolean;
+  testIdPrefix?: string;
 }) {
   const normalizedStatus = status ?? "idle";
   const activeIndex = (() => {
@@ -39,12 +45,14 @@ export function PublishPipelineSteps({
 
   return (
     <div
-      className="mt-4 rounded-md border p-3"
+      className={cn("mt-4 rounded-md border p-3", className)}
       style={{
-        background: "var(--bg-subtle)",
+        backgroundColor: "var(--bg-subtle)",
         borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
       }}
-      data-testid="agents-publish-pipeline"
+      data-testid={`${testIdPrefix}-pipeline`}
     >
       <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
         Publish pipeline
@@ -57,8 +65,8 @@ export function PublishPipelineSteps({
           return (
             <div
               key={step.id}
-              className="flex items-center gap-2 text-xs"
-              data-testid={`agents-publish-step-${step.id}`}
+              className="grid min-w-0 grid-cols-[1.25rem_minmax(0,1fr)] items-center gap-2 text-xs"
+              data-testid={`${testIdPrefix}-step-${step.id}`}
               style={{
                 color:
                   isDone || isActive || isFailed
@@ -67,7 +75,7 @@ export function PublishPipelineSteps({
               }}
             >
               <span
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border"
+                className="flex h-5 w-5 items-center justify-center rounded-full border"
                 style={{
                   borderColor: isFailed
                     ? "var(--status-danger)"
@@ -95,7 +103,7 @@ export function PublishPipelineSteps({
                   index + 1
                 )}
               </span>
-              <span>{step.label}</span>
+              <span className="min-w-0 leading-snug">{step.label}</span>
             </div>
           );
         })}

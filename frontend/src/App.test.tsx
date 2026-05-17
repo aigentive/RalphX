@@ -4,8 +4,10 @@ import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { chatApi } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
 import { chatKeys } from "@/hooks/useChat";
 import { getQueryClient } from "@/lib/queryClient";
+import { markPostUpdatePreparing } from "@/lib/postUpdatePreparing";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -301,6 +303,8 @@ vi.mock("@/hooks/useAskUserQuestion", () => ({
 
 // Reset stores before each test
 function resetStores() {
+  localStorage.clear();
+
   useUiStore.setState({
     sidebarOpen: true,
     reviewsPanelOpen: false,
@@ -408,6 +412,17 @@ describe("App", () => {
     expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
   });
 
+  it("shows the post-update preparing screen instead of the normal shell", () => {
+    markPostUpdatePreparing("0.12.3");
+
+    render(<App />);
+
+    expect(screen.getByTestId("post-update-preparing")).toHaveTextContent(
+      "Preparing RalphX",
+    );
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+  });
+
   it("renders the v27 mini rail logo and flat active highlight", () => {
     render(<App />);
 
@@ -420,16 +435,16 @@ describe("App", () => {
     expect(activeButton.className).toContain(
       "focus-visible:[outline:2px_solid_var(--border-focus)]"
     );
+    expect(activeButton.className).toContain("bg-[var(--bg-hover)]");
+    expect(activeButton.className).toContain("text-[var(--nav-rail-active-color)]");
     expect(activeButton).toHaveStyle({
-      backgroundColor: "var(--bg-hover)",
-      color: "var(--nav-rail-active-color)",
       boxShadow: "var(--nav-rail-active-shadow)",
     });
     expect(activeButton.querySelector(".left-nav-rail__active-border")).toBeInTheDocument();
 
-    expect(screen.getByTestId("nav-kanban")).toHaveStyle({
-      color: "var(--nav-rail-inactive-color)",
-    });
+    expect(screen.getByTestId("nav-kanban").className).toContain(
+      "text-[var(--nav-rail-inactive-color)]"
+    );
   });
 
   it("should display theme selector", () => {

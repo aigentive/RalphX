@@ -4,6 +4,7 @@
 // All methods take `working_dir: &Path` for stateless, multi-project support (AD7).
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::AppResult;
@@ -55,6 +56,28 @@ pub struct PrSyncState {
     pub base_ref_oid: Option<String>,
 }
 
+/// Pull request found by an exact head-branch lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrBranchMatch {
+    pub number: i64,
+    pub url: String,
+    pub status: PrStatus,
+    pub is_draft: bool,
+    pub head_ref_name: String,
+    pub updated_at: Option<String>,
+}
+
+impl PrBranchMatch {
+    pub fn publication_status(&self) -> &'static str {
+        match self.status {
+            PrStatus::Open if self.is_draft => "draft",
+            PrStatus::Open => "open",
+            PrStatus::Closed => "closed",
+            PrStatus::Merged { .. } => "merged",
+        }
+    }
+}
+
 /// Inline review comment attached to a GitHub pull request review.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrReviewCommentFeedback {
@@ -73,6 +96,55 @@ pub struct PrReviewFeedback {
     pub submitted_at: Option<String>,
     pub body: Option<String>,
     pub comments: Vec<PrReviewCommentFeedback>,
+}
+
+/// Normalized GitHub PR annotation that can be rendered against RalphX diffs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDiffAnnotation {
+    pub id: String,
+    pub source: String,
+    pub path: Option<String>,
+    pub side: Option<String>,
+    pub start_line: Option<i64>,
+    pub end_line: Option<i64>,
+    pub start_column: Option<i64>,
+    pub end_column: Option<i64>,
+    pub level: String,
+    pub status: Option<String>,
+    pub title: Option<String>,
+    pub message: String,
+    pub author: Option<String>,
+    pub check_name: Option<String>,
+    pub url: Option<String>,
+    pub is_outdated: bool,
+    pub created_at: Option<String>,
+}
+
+/// A source that could not be synced without failing the whole annotation payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrAnnotationSourceUnavailable {
+    pub source: String,
+    pub reason: String,
+}
+
+/// Live PR annotation payload for a published agent workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDiffAnnotations {
+    pub pr_number: i64,
+    pub head_sha: Option<String>,
+    pub annotations: Vec<PrDiffAnnotation>,
+    pub sources_unavailable: Vec<PrAnnotationSourceUnavailable>,
+}
+
+impl PrDiffAnnotations {
+    pub fn empty(pr_number: i64) -> Self {
+        Self {
+            pr_number,
+            head_sha: None,
+            annotations: Vec::new(),
+            sources_unavailable: Vec::new(),
+        }
+    }
 }
 
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
@@ -123,6 +195,15 @@ pub trait GithubServiceTrait: Send + Sync {
         Ok(None)
     }
 
+    /// Fetch normalized review/check annotations for display in RalphX diff viewers.
+    async fn fetch_pr_diff_annotations(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrDiffAnnotations> {
+        Ok(PrDiffAnnotations::empty(pr_number))
+    }
+
     /// Push a branch to origin.
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()>;
 
@@ -135,10 +216,132 @@ pub trait GithubServiceTrait: Send + Sync {
     /// Fetch a branch from origin.
     async fn fetch_remote(&self, working_dir: &Path, branch: &str) -> AppResult<()>;
 
+    /// Return a pull request's unified patch diff.
+    async fn get_pr_diff_patch(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        pr_url: Option<&str>,
+    ) -> AppResult<String>;
+
     /// Find an existing open PR by head branch. Returns (pr_number, pr_url) if found.
     async fn find_pr_by_head_branch(
         &self,
         working_dir: &Path,
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
+
+    /// Find the latest PR for a head branch across all GitHub states.
+    async fn find_latest_pr_by_head_branch(
+        &self,
+        _working_dir: &Path,
+        _head: &str,
+    ) -> AppResult<Option<PrBranchMatch>> {
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DefaultOnlyGithubService;
+
+    #[async_trait]
+    impl GithubServiceTrait for DefaultOnlyGithubService {
+        async fn create_draft_pr(
+            &self,
+            _working_dir: &Path,
+            _base: &str,
+            _head: &str,
+            _title: &str,
+            _body_file: &Path,
+        ) -> AppResult<(i64, String)> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn mark_pr_ready(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn update_pr_details(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+            _title: &str,
+            _body_file: &Path,
+        ) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn update_pr_base(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+            _base: &str,
+        ) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn check_pr_status(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+        ) -> AppResult<PrStatus> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn check_pr_sync_state(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+        ) -> AppResult<PrSyncState> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn push_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn close_pr(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn delete_remote_branch(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn fetch_remote(&self, _working_dir: &Path, _branch: &str) -> AppResult<()> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn find_pr_by_head_branch(
+            &self,
+            _working_dir: &Path,
+            _head: &str,
+        ) -> AppResult<Option<(i64, String)>> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
+        async fn get_pr_diff_patch(
+            &self,
+            _working_dir: &Path,
+            _pr_number: i64,
+            _pr_url: Option<&str>,
+        ) -> AppResult<String> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+    }
+
+    #[tokio::test]
+    async fn default_pr_diff_annotations_are_empty_for_pr_number() {
+        let service = DefaultOnlyGithubService;
+
+        let annotations = service
+            .fetch_pr_diff_annotations(Path::new("/tmp"), 123)
+            .await
+            .expect("default annotations should be empty");
+
+        assert_eq!(annotations, PrDiffAnnotations::empty(123));
+    }
 }

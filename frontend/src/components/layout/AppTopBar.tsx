@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { Check, ChevronDown, GitPullRequest, Search } from "lucide-react";
-import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { chatApi, type ChatMessageResponse, type ConversationMessagesPageResponse } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import { agentConversationKeys } from "@/components/agents/useProjectAgentConversations";
+import { ProjectSelector } from "@/components/projects/ProjectSelector";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { chatKeys, useConversationHistoryWindow } from "@/hooks/useChat";
+import { chatKeys } from "@/hooks/useChat";
 import { cn } from "@/lib/utils";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
@@ -22,6 +23,8 @@ interface AppTopBarProps {
   pendingReviewCount: number;
   reviewsPanelOpen: boolean;
   onToggleReviewsPanel: () => void;
+  onNewProject?: () => void;
+  showProjectSelector?: boolean;
 }
 
 const VIEW_LABELS: Partial<Record<ViewType, string>> = {
@@ -40,6 +43,8 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "lg", label: "110%" },
   { value: "xl", label: "125%" },
 ];
+
+const PROJECT_SELECTOR_VIEWS = new Set<ViewType>(["ideation", "graph", "kanban"]);
 
 function viewLabel(view: ViewType): string {
   return VIEW_LABELS[view] ?? "Workspace";
@@ -72,7 +77,7 @@ type ConversationQueryData = {
 };
 
 function updateConversationTitleInCache(
-  queryClient: ReturnType<typeof useQueryClient>,
+  queryClient: QueryClient,
   conversation: ChatConversation,
   title: string,
 ) {
@@ -97,6 +102,11 @@ function updateConversationTitleInCache(
         : oldData,
   );
 
+  queryClient.setQueryData<ChatConversation | null>(
+    chatKeys.conversationSummary(conversation.id),
+    (oldData) => oldData ? updateConversation(oldData) : oldData,
+  );
+
   queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
     chatKeys.conversationHistory(conversation.id),
     (oldData) =>
@@ -115,6 +125,118 @@ function updateConversationTitleInCache(
     chatKeys.conversationList(conversation.contextType, conversation.contextId),
     (oldData) => oldData?.map(updateConversation),
   );
+}
+
+function isCachedConversation(value: unknown, conversationId: string): value is ChatConversation {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<ChatConversation>;
+  return (
+    candidate.id === conversationId &&
+    typeof candidate.contextType === "string" &&
+    typeof candidate.contextId === "string"
+  );
+}
+
+function findConversationInQueryData(
+  data: unknown,
+  conversationId: string,
+): ChatConversation | null {
+  if (isCachedConversation(data, conversationId)) {
+    return data;
+  }
+
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
+  const objectData = data as {
+    conversation?: unknown;
+    conversations?: unknown;
+    pages?: unknown;
+  };
+
+  if (isCachedConversation(objectData.conversation, conversationId)) {
+    return objectData.conversation;
+  }
+
+  if (Array.isArray(objectData.conversations)) {
+    const conversation = objectData.conversations.find((item) =>
+      isCachedConversation(item, conversationId)
+    );
+    if (conversation) {
+      return conversation;
+    }
+  }
+
+  if (Array.isArray(objectData.pages)) {
+    for (const page of objectData.pages) {
+      const conversation = findConversationInQueryData(page, conversationId);
+      if (conversation) {
+        return conversation;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findCachedAgentConversation(
+  queryClient: QueryClient,
+  conversationId: string,
+): ChatConversation | null {
+  const direct = findConversationInQueryData(
+    queryClient.getQueryData(chatKeys.conversation(conversationId)),
+    conversationId,
+  );
+  if (direct) {
+    return direct;
+  }
+
+  const summary = findConversationInQueryData(
+    queryClient.getQueryData(chatKeys.conversationSummary(conversationId)),
+    conversationId,
+  );
+  if (summary) {
+    return summary;
+  }
+
+  const history = findConversationInQueryData(
+    queryClient.getQueryData(chatKeys.conversationHistory(conversationId)),
+    conversationId,
+  );
+  if (history) {
+    return history;
+  }
+
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: agentConversationKeys.all })) {
+    const conversation = findConversationInQueryData(query.state.data, conversationId);
+    if (conversation) {
+      return conversation;
+    }
+  }
+
+  return null;
+}
+
+function useCachedAgentConversation(
+  conversationId: string | null,
+  enabled: boolean,
+): ChatConversation | null {
+  const queryClient = useQueryClient();
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => queryClient.getQueryCache().subscribe(onStoreChange),
+    [queryClient],
+  );
+  const getSnapshot = useCallback(() => {
+    if (!enabled || !conversationId) {
+      return null;
+    }
+    return findCachedAgentConversation(queryClient, conversationId);
+  }, [conversationId, enabled, queryClient]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
 interface EditableAgentBreadcrumbTitleProps {
@@ -229,12 +351,12 @@ function FontScaleSelector({ open, onOpenChange }: FontScaleSelectorProps) {
     <div className="relative inline-flex shrink-0" data-testid="font-scale-selector">
       <button
         type="button"
-        className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]"
-        style={{
-          backgroundColor: open ? "var(--bg-hover)" : "var(--bg-elevated)",
-          borderColor: open ? "var(--border-strong)" : "var(--border-default)",
-          color: open ? "var(--text-primary)" : "var(--text-secondary)",
-        }}
+        className={cn(
+          "inline-flex h-8 items-center gap-1.5 rounded-[6px] border px-2.5 text-[0.7812rem] font-medium transition-colors duration-150 outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent-primary)]",
+          open
+            ? "bg-[var(--bg-hover)] border-[var(--border-strong)] text-[var(--text-primary)]"
+            : "bg-[var(--bg-elevated)] border-[var(--border-default)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+        )}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`Font size · ${current.label}`}
@@ -299,17 +421,28 @@ export function AppTopBar({
   pendingReviewCount,
   reviewsPanelOpen,
   onToggleReviewsPanel,
+  onNewProject,
+  showProjectSelector = false,
 }: AppTopBarProps) {
   const activeProject = useProjectStore(selectActiveProject);
   const selectedAgentConversationId = useAgentSessionStore((s) => s.selectedConversationId);
-  const selectedAgentConversation = useConversationHistoryWindow(selectedAgentConversationId, {
-    enabled: currentView === "agents" && Boolean(selectedAgentConversationId),
-    pageSize: 1,
+  const cachedAgentConversation = useCachedAgentConversation(
+    selectedAgentConversationId,
+    currentView === "agents",
+  );
+  const selectedAgentConversationSummary = useQuery({
+    queryKey: chatKeys.conversationSummary(selectedAgentConversationId ?? ""),
+    queryFn: () => chatApi.getConversationSummary(selectedAgentConversationId ?? ""),
+    enabled:
+      currentView === "agents" &&
+      Boolean(selectedAgentConversationId) &&
+      !cachedAgentConversation,
+    staleTime: 30 * 1000,
   });
   const [activeMenu, setActiveMenu] = useState<"theme" | "font" | null>(null);
   const agentConversation =
     currentView === "agents" && selectedAgentConversationId
-      ? selectedAgentConversation.data?.conversation ?? null
+      ? cachedAgentConversation ?? selectedAgentConversationSummary.data ?? null
       : null;
   const agentConversationTitle =
     agentConversation
@@ -324,6 +457,8 @@ export function AppTopBar({
     pendingReviewCount > 0
       ? `Reviews · ${pendingReviewCount} pending`
       : "Reviews";
+  const shouldShowProjectSelector =
+    showProjectSelector && PROJECT_SELECTOR_VIEWS.has(currentView) && Boolean(onNewProject);
 
   return (
     <header
@@ -408,6 +543,14 @@ export function AppTopBar({
             ⌘K
           </kbd>
         </button>
+
+        {shouldShowProjectSelector && onNewProject && (
+          <ProjectSelector
+            onNewProject={onNewProject}
+            align="end"
+            className="max-w-[240px]"
+          />
+        )}
 
         <Tooltip>
           <TooltipTrigger asChild>

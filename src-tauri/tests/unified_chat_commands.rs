@@ -1,16 +1,20 @@
 use ralphx_lib::application::{AppState, MockChatService, SendResult};
 use ralphx_lib::commands::unified_chat_commands::{
+    agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
-    AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse, SendAgentMessageResponse,
+    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse,
+    SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state,
 };
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
 use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatContextType,
     ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
 };
-use ralphx_lib::domain::services::QueuedMessage;
+use ralphx_lib::domain::services::{MemoryRunningAgentRegistry, QueuedMessage, RunningAgentKey};
 use ralphx_lib::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
+use tauri::Manager;
 
 #[test]
 fn test_parse_context_type() {
@@ -136,6 +140,63 @@ fn test_agent_workspace() -> AgentConversationWorkspace {
         "ralphx/ralphx/agent-1234".to_string(),
         "/tmp/agent-1234".to_string(),
     )
+}
+
+#[tokio::test]
+async fn ipc_contract_bulk_agent_running_states_returns_requested_context_map() {
+    let service = MockChatService::new();
+    service
+        .set_agent_running("project/conv-running".to_string(), true)
+        .await;
+    service
+        .set_agent_running("project/conv-unrequested".to_string(), true)
+        .await;
+
+    let requested_ids = vec![
+        "conv-running".to_string(),
+        "conv-idle".to_string(),
+        "conv-running".to_string(),
+    ];
+    let states =
+        get_agent_running_states_for_service(&service, "project".to_string(), requested_ids)
+            .await
+            .expect("bulk running states should resolve");
+
+    assert_eq!(states.get("conv-running"), Some(&true));
+    assert_eq!(states.get("conv-idle"), Some(&false));
+    assert_eq!(states.get("conv-unrequested"), None);
+    assert_eq!(states.len(), 2);
+}
+
+#[tokio::test]
+async fn ipc_contract_get_agent_running_states_command_uses_registry_truth() {
+    let registry = Arc::new(MemoryRunningAgentRegistry::new());
+    registry
+        .set_running(RunningAgentKey::new("project", "conv-running"))
+        .await;
+    registry
+        .set_running(RunningAgentKey::new("project", "conv-unrequested"))
+        .await;
+
+    let app = tauri::test::mock_builder()
+        .manage(AppState::new_sqlite_test_with_registry(registry))
+        .manage(Arc::new(ExecutionState::new()))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build");
+
+    let states = ralphx_lib::commands::unified_chat_commands::get_agent_running_states(
+        "project".to_string(),
+        vec!["conv-running".to_string(), "conv-idle".to_string()],
+        app.state::<AppState>(),
+        app.state::<Arc<ExecutionState>>(),
+    )
+    .await
+    .expect("bulk running states command should resolve");
+
+    assert_eq!(states.get("conv-running"), Some(&true));
+    assert_eq!(states.get("conv-idle"), Some(&false));
+    assert_eq!(states.get("conv-unrequested"), None);
+    assert_eq!(states.len(), 2);
 }
 
 #[tokio::test]
@@ -265,6 +326,61 @@ async fn workspace_publish_operational_failure_is_not_routed_to_agent() {
     assert!(service.get_sent_messages().await.is_empty());
 }
 
+#[test]
+fn workspace_repair_action_defaults_to_publish_for_legacy_events() {
+    assert_eq!(
+        agent_workspace_post_repair_action_from_events(&[]),
+        AgentWorkspacePostRepairAction::Publish
+    );
+
+    let conversation_id = ChatConversationId::new();
+    let events = vec![AgentConversationWorkspacePublicationEvent::new(
+        conversation_id,
+        "repair_requested",
+        "started",
+        "legacy repair request",
+        Some("agent_fixable".to_string()),
+    )];
+
+    assert_eq!(
+        agent_workspace_post_repair_action_from_events(&events),
+        AgentWorkspacePostRepairAction::Publish
+    );
+}
+
+#[test]
+fn workspace_repair_action_uses_latest_requested_action() {
+    let conversation_id = ChatConversationId::new();
+    let events = vec![
+        AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "repair_requested",
+            "started",
+            "publish repair request",
+            Some("agent_fixable:publish".to_string()),
+        ),
+        AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "failed",
+            "failed",
+            "later base update failure",
+            Some("agent_fixable".to_string()),
+        ),
+        AgentConversationWorkspacePublicationEvent::new(
+            conversation_id,
+            "repair_requested",
+            "started",
+            "base update repair request",
+            Some("agent_fixable:update_only".to_string()),
+        ),
+    ];
+
+    assert_eq!(
+        agent_workspace_post_repair_action_from_events(&events),
+        AgentWorkspacePostRepairAction::UpdateOnly
+    );
+}
+
 // ── AgentRunStatusResponse model field tests ──────────────────────────────────
 
 #[test]
@@ -311,22 +427,28 @@ mod ipc_contract {
         StartAgentConversationInput, SwitchAgentConversationModeInput,
         UpdateAgentConversationTitleInput,
     };
+    use ralphx_lib::commands::unified_chat_commands::archive_agent_conversation_inner;
     use ralphx_lib::commands::unified_chat_commands::{
-        get_agent_conversation_messages_page_for_app_state, get_agent_conversation_workspace,
+        get_agent_conversation_messages_page_for_app_state, get_agent_conversation_summary,
+        get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
-        publish_agent_conversation_workspace_for_app_state, CreateAgentConversationInput,
-        QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
-        SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
+        publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
+        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
+        StartAgentConversationInput, SwitchAgentConversationModeInput,
+        UpdateAgentConversationTitleInput,
     };
+    use ralphx_lib::commands::ExecutionState;
     use ralphx_lib::domain::agents::{
         built_in_agent_models, default_effort_for_provider, default_efforts_for_provider,
         default_model_for_provider, lightweight_model_for_provider, AgentHarnessKind,
         AgentModelDefinition, AgentModelRegistrySnapshot, AgentModelSource, LogicalEffort,
     };
+    use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus, AgentRun, ChatConversation, ChatConversationId,
-        ChatMessage, IdeationAnalysisBaseRefKind, MessageRole, ProjectId,
+        AgentConversationWorkspaceStatus, AgentRun, ArtifactId, ChatConversation,
+        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionId,
+        MessageRole, PlanBranch, Project, ProjectId,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
@@ -334,6 +456,8 @@ mod ipc_contract {
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
+    use std::ffi::OsString;
+    use std::sync::Arc;
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
 
@@ -387,10 +511,13 @@ mod ipc_contract {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should return blocked state");
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should return blocked state");
 
         assert_eq!(response.base_status, "blocked");
         assert_eq!(response.base_ref, "feature/deleted-base");
@@ -418,10 +545,13 @@ mod ipc_contract {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let response =
-            get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-                .await
-                .expect("freshness should resolve retargeted base");
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should resolve retargeted base");
 
         assert_eq!(response.base_status, "retargeted");
         assert_eq!(response.base_ref, "feature/deleted-base");
@@ -516,9 +646,13 @@ mod ipc_contract {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        get_agent_conversation_workspace_freshness(conversation_id.as_str(), app.state())
-            .await
-            .expect("freshness should load");
+        get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("full".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("freshness should load");
         let refreshed = app
             .state::<AppState>()
             .agent_conversation_workspace_repo
@@ -644,7 +778,7 @@ mod ipc_contract {
             &state,
             &execution_state,
             None,
-            conversation_id.clone(),
+            conversation_id,
             false,
         )
         .await
@@ -666,7 +800,7 @@ mod ipc_contract {
         let state = AppState::new_test();
         let project_id = ProjectId::from_string("project-preview-ipc".to_string());
         let conversation = ChatConversation::new_project(project_id.clone());
-        let conversation_id = conversation.id.clone();
+        let conversation_id = conversation.id;
         state
             .chat_conversation_repo
             .create(conversation)
@@ -679,7 +813,7 @@ mod ipc_contract {
             .join("\n");
         let mut message = ChatMessage::user_in_project(project_id, "assistant preview");
         message.role = MessageRole::Orchestrator;
-        message.conversation_id = Some(conversation_id.clone());
+        message.conversation_id = Some(conversation_id);
         message.tool_calls = Some(
             serde_json::json!([
                 {
@@ -727,7 +861,7 @@ mod ipc_contract {
 
         let page = get_agent_conversation_messages_page_for_app_state(
             app.state::<AppState>().inner(),
-            conversation_id.clone(),
+            conversation_id,
             10,
             0,
         )
@@ -779,6 +913,208 @@ mod ipc_contract {
             .as_str()
             .unwrap()
             .contains("block line 12"));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_summary_returns_metadata_without_message_window() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-summary-ipc".to_string());
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.set_title("Cheap breadcrumb title");
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let summary = get_agent_conversation_summary(
+            conversation_id.as_str().to_string(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("summary command should succeed")
+        .expect("conversation should exist");
+
+        assert_eq!(summary.id, conversation_id.as_str());
+        assert_eq!(summary.context_type, "project");
+        assert_eq!(summary.context_id, "project-summary-ipc");
+        assert_eq!(summary.title.as_deref(), Some("Cheap breadcrumb title"));
+        assert_eq!(summary.message_count, 0);
+
+        let missing = get_agent_conversation_summary_for_app_state(
+            app.state::<AppState>().inner(),
+            "missing-summary-conversation".to_string(),
+        )
+        .await
+        .expect("summary helper should succeed for a missing conversation");
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_messages_page_read_short_circuits_bridge_wakeup_when_unlinked() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-read-no-bridge-ipc".to_string());
+        let mut project = Project::new(
+            "Read no bridge".to_string(),
+            "/tmp/project-read-no-bridge-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.title = Some("Read no bridge".to_string());
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "main".to_string(),
+            Some("Current branch".to_string()),
+            None,
+            format!("agent-{conversation_id}"),
+            "/tmp/project-read-no-bridge-ipc-workspace".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let wakeup = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            MockChatService::new,
+        )
+        .await
+        .expect("read bridge wake-up should prepare");
+        assert!(wakeup.is_none());
+
+        let page =
+            get_agent_conversation_messages_page_for_app_state(&state, conversation_id, 1, 0)
+                .await
+                .expect("message page command should succeed")
+                .expect("conversation should exist");
+
+        assert_eq!(page.conversation.id, conversation_id.as_str());
+        assert!(page.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_read_bridge_wakeup_dispatches_linked_ideation_events() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-read-bridge-ipc".to_string());
+        let mut project = Project::new(
+            "Read bridge".to_string(),
+            "/tmp/project-read-bridge-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let conversation = ChatConversation::new_project(project_id.clone());
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::CurrentBranch,
+            "main".to_string(),
+            Some("Current branch".to_string()),
+            None,
+            format!("agent-{conversation_id}"),
+            "/tmp/project-read-bridge-ipc-workspace".to_string(),
+        );
+        workspace.linked_ideation_session_id =
+            Some(IdeationSessionId::from_string("session-ipc".to_string()));
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:verified",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc", "gap_score": 1 }).to_string(),
+            )
+            .await
+            .expect("event should persist");
+
+        let result = wake_agent_workspace_for_bridge_events_with_service_factory(
+            &state,
+            &conversation_id,
+            MockChatService::new,
+        )
+        .await
+        .expect("read bridge wake-up should prepare")
+        .expect("linked ideation event should dispatch a wake-up");
+
+        assert_eq!(result.event_count, 1);
+        assert!(!result.agent_run_id.is_empty());
+
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:proposals_ready",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc", "proposal_count": 2 })
+                    .to_string(),
+            )
+            .await
+            .expect("event should persist");
+        let prepared = prepare_agent_workspace_bridge_wakeup(&state, &conversation_id)
+            .await
+            .expect("read bridge wake-up should prepare")
+            .expect("new linked ideation event should prepare a wake-up");
+        let dispatch_service = MockChatService::new();
+        let dispatched =
+            dispatch_prepared_agent_workspace_bridge_wakeup(&state, &dispatch_service, prepared)
+                .await
+                .expect("prepared wake-up should dispatch");
+        assert_eq!(dispatched.event_count, 1);
+        assert_eq!(dispatch_service.call_count(), 1);
+
+        state
+            .external_events_repo
+            .insert_event(
+                "ideation:session_accepted",
+                project_id.as_str(),
+                &serde_json::json!({ "session_id": "session-ipc" }).to_string(),
+            )
+            .await
+            .expect("event should persist");
+        let eager_service = MockChatService::new();
+        let eager =
+            wake_agent_workspace_for_bridge_events(&state, &eager_service, &conversation_id)
+                .await
+                .expect("read bridge wake-up should dispatch")
+                .expect("new linked ideation event should dispatch a wake-up");
+        assert_eq!(eager.event_count, 1);
+        assert_eq!(eager_service.call_count(), 1);
     }
 
     // ── SendAgentMessageInput ───────────────────────────────────────────────
@@ -873,6 +1209,120 @@ mod ipc_contract {
         assert_eq!(input.mode.as_deref(), Some("chat"));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_chat_mode_queues_without_workspace() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-start-agent-chat-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Chat".to_string(),
+            "/tmp/project-start-agent-chat-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Inspect the repo without editing".to_string(),
+                conversation_id: None,
+                provider_harness: None,
+                model_override: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("chat".to_string()),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("chat-mode start should succeed");
+
+        assert!(response.workspace.is_none());
+        assert_eq!(response.conversation.context_id, project_id.as_str());
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+        assert!(response.send_result.was_queued);
+        assert_eq!(
+            response.send_result.conversation_id.as_str(),
+            response.conversation.id.as_str()
+        );
+
+        let workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(
+                response.conversation.id.clone(),
+            ))
+            .await
+            .expect("workspace lookup should succeed");
+        assert!(workspace.is_none());
+    }
+
+    struct FakeCliOnPath {
+        _temp_dir: tempfile::TempDir,
+        previous_path: Option<OsString>,
+    }
+
+    impl FakeCliOnPath {
+        fn new(command_name: &str) -> Self {
+            let temp_dir = tempfile::tempdir().expect("fake CLI dir should be created");
+            let cli_path = temp_dir.path().join(command_name);
+            std::fs::write(&cli_path, "#!/bin/sh\nexit 0\n").expect("fake CLI should be written");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = std::fs::metadata(&cli_path)
+                    .expect("fake CLI metadata should load")
+                    .permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(&cli_path, permissions)
+                    .expect("fake CLI should be executable");
+            }
+
+            let previous_path = std::env::var_os("PATH");
+            let mut paths = vec![temp_dir.path().to_path_buf()];
+            if let Some(existing) = previous_path.as_ref() {
+                paths.extend(std::env::split_paths(existing));
+            }
+            let joined_path = std::env::join_paths(paths).expect("fake CLI PATH should join");
+            std::env::set_var("PATH", joined_path);
+
+            Self {
+                _temp_dir: temp_dir,
+                previous_path,
+            }
+        }
+    }
+
+    impl Drop for FakeCliOnPath {
+        fn drop(&mut self) {
+            match self.previous_path.as_ref() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
     }
 
     #[test]

@@ -6,7 +6,10 @@ import { withAlpha } from "@/lib/theme-colors";
 
 import { AgentsSidebar } from "./AgentsSidebar";
 
-type AgentsSidebarShellProps = Omit<ComponentProps<typeof AgentsSidebar>, "onCollapse">;
+type AgentsSidebarShellProps = Omit<
+  ComponentProps<typeof AgentsSidebar>,
+  "isVisible" | "onCollapse"
+>;
 
 interface AgentsShellLayoutProps {
   children: ReactNode;
@@ -100,7 +103,11 @@ export function AgentsShellLayout({
             }}
             aria-hidden={isSidebarCollapsed ? "true" : undefined}
           >
-            <AgentsSidebar {...sidebarProps} onCollapse={onToggleSidebarCollapse} />
+            <AgentsSidebar
+              {...sidebarProps}
+              isVisible={!isSidebarCollapsed}
+              onCollapse={onToggleSidebarCollapse}
+            />
           </div>
         )}
 
@@ -116,7 +123,11 @@ export function AgentsShellLayout({
               zIndex: 35,
             }}
           >
-            <AgentsSidebar {...sidebarProps} onCollapse={onCloseSidebarOverlay} />
+            <AgentsSidebar
+              {...sidebarProps}
+              isVisible={isSidebarOverlayOpen}
+              onCollapse={onCloseSidebarOverlay}
+            />
           </div>
         )}
 

@@ -338,4 +338,23 @@ impl ChatService for MockChatService {
             .copied()
             .unwrap_or(false)
     }
+
+    async fn get_agent_running_states(
+        &self,
+        context_type: ChatContextType,
+        context_ids: &[String],
+    ) -> HashMap<String, bool> {
+        let running_agents = self.running_agents.lock().await;
+        context_ids
+            .iter()
+            .filter(|context_id| !context_id.is_empty())
+            .map(|context_id| {
+                let key = format!("{}/{}", context_type, context_id);
+                (
+                    context_id.clone(),
+                    running_agents.get(&key).copied().unwrap_or(false),
+                )
+            })
+            .collect()
+    }
 }

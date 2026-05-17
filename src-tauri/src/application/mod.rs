@@ -6,6 +6,7 @@ pub mod agent_lane_resolution;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub mod agent_workspace_pr_description;
+pub mod agent_workspace_external_pr_reconciliation;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
@@ -32,6 +33,7 @@ pub mod interactive_process_registry;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;
+pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod permission_state;
 pub mod plan_ranking;
@@ -103,7 +105,10 @@ pub use event_cleanup_service::EventCleanupService;
 pub use execution_settings_bootstrap::{
     load_or_seed_execution_settings_defaults, ExecutionSettingsBootstrapResult,
 };
-pub use diff_service::{ConflictDiff, DiffService, FileChange, FileChangeStatus, FileDiff};
+pub use diff_service::{
+    ConflictDiff, DiffHunk, DiffLine, DiffLineKind, DiffRefKind, DiffService, DiffSide,
+    FileChange, FileChangeStatus, FileDiff, RangeLine,
+};
 pub use git_service::{
     checkout_free::CheckoutFreeMergeResult, CommitInfo, DiffStats, GitService, MergeAttemptResult,
     MergeResult, RebaseResult,
@@ -154,6 +159,8 @@ pub use webhook_service::WebhookService;
 #[cfg(test)]
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
+mod agent_workspace_external_pr_reconciliation_tests;
+#[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]
 mod agent_lane_resolution_tests;
@@ -161,6 +168,8 @@ mod agent_lane_resolution_tests;
 mod chat_service_output_tests;
 #[cfg(test)]
 mod ideation_harness_availability_tests;
+#[cfg(test)]
+mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pr_startup_recovery_tests;
 #[cfg(test)]

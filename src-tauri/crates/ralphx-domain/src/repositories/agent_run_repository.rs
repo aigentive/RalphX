@@ -84,6 +84,15 @@ pub trait AgentRunRepository: Send + Sync {
     /// Returns the number of runs cancelled.
     async fn cancel_all_running(&self) -> AppResult<u32>;
 
+    /// Cancel running runs that started before the current app boot cutoff.
+    ///
+    /// Used by startup previous-session cleanup so delayed recovery cannot mark
+    /// current-boot runs as orphaned.
+    async fn cancel_running_started_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u32>;
+
     /// Get conversations that were interrupted during app shutdown
     ///
     /// Returns conversations where:

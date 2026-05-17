@@ -7,6 +7,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   ArrowUp,
   Bot,
@@ -71,6 +72,8 @@ interface ComposerOption {
   id: string;
   label: string;
   description?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }
 
 interface ProjectFieldConfig {
@@ -87,8 +90,9 @@ interface ProjectFieldConfig {
 interface ProviderFieldConfig {
   value: AgentProvider;
   onValueChange: (value: AgentProvider) => void;
-  options: Array<{ id: AgentProvider; label: string }>;
+  options: Array<ComposerOption & { id: AgentProvider }>;
   disabled?: boolean;
+  footerAction?: ReactNode;
   testId?: string;
   className?: string;
 }
@@ -105,6 +109,7 @@ interface ModelFieldConfig {
 interface ModeFieldConfig {
   value: string;
   onValueChange: (value: string) => void;
+  onOpen?: () => void | Promise<unknown>;
   options: ComposerOption[];
   disabled?: boolean;
   testId?: string;
@@ -144,6 +149,7 @@ export interface AgentComposerSurfaceProps {
   actionTestId?: string;
   submitLabel?: string;
   submittingLabel?: string;
+  sendDisabledReason?: string | null;
   className?: string;
 }
 
@@ -175,6 +181,7 @@ export function AgentComposerSurface({
   actionTestId,
   submitLabel = "Send",
   submittingLabel = "Sending...",
+  sendDisabledReason = null,
   className,
 }: AgentComposerSurfaceProps) {
   const isControlled = controlledValue !== undefined;
@@ -187,7 +194,11 @@ export function AgentComposerSurface({
   const isAgentAlive = agentStatus !== "idle";
   const canQueue = !isReadOnly && isAgentAlive;
   const shouldShowStop = Boolean(onStop) && isAgentAlive && value.trim().length === 0;
-  const canSubmit = value.trim().length > 0 && !isReadOnly && (!isSubmitting || canQueue);
+  const canSubmit =
+    value.trim().length > 0 &&
+    !isReadOnly &&
+    !sendDisabledReason &&
+    (!isSubmitting || canQueue);
   const attachmentDisabled = isReadOnly || (isSubmitting && !canQueue);
   const effectivePlaceholder = isReadOnly
     ? "Viewing historical state (read-only)"
@@ -267,6 +278,10 @@ export function AgentComposerSurface({
     [isControlled, matchOptionsFromInput, onChangeProp]
   );
 
+  const { addEntry: addHistoryEntry, handleHistoryKeyDown } = useInputHistory({
+    setValue,
+  });
+
   const clearValue = useCallback(() => {
     if (isControlled) {
       onChangeProp?.("");
@@ -311,9 +326,11 @@ export function AgentComposerSurface({
       return;
     }
 
-    if ((isSubmitting && !canQueue) || isReadOnly) {
+    if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
       return;
     }
+
+    addHistoryEntry(trimmedValue);
 
     if (questionMode || isControlled) {
       await onSend(trimmedValue);
@@ -327,6 +344,7 @@ export function AgentComposerSurface({
       // Errors surface through the parent; preserve the current interaction model.
     }
   }, [
+    addHistoryEntry,
     canQueue,
     clearValue,
     isControlled,
@@ -335,6 +353,7 @@ export function AgentComposerSurface({
     onSend,
     onStop,
     questionMode,
+    sendDisabledReason,
     shouldShowStop,
     value,
   ]);
@@ -356,9 +375,14 @@ export function AgentComposerSurface({
       if (event.key === "ArrowUp" && !value && hasQueuedMessages) {
         event.preventDefault();
         onEditLastQueued?.();
+        return;
+      }
+
+      if (handleHistoryKeyDown(event, value)) {
+        return;
       }
     },
-    [handleSend, hasQueuedMessages, onEditLastQueued, value]
+    [handleHistoryKeyDown, handleSend, hasQueuedMessages, onEditLastQueued, value]
   );
 
   const helperText = useMemo(() => {
@@ -534,7 +558,7 @@ function ComposerActionMenu({
   const [open, setOpen] = useState(false);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -618,17 +642,21 @@ function ComposerModeMenuSection({
       <div className="space-y-1">
         {mode.options.map((option) => {
           const isSelected = option.id === mode.value;
+          const optionDisabled = mode.disabled || option.disabled;
           return (
             <button
               key={option.id}
               type="button"
-              disabled={mode.disabled}
+              disabled={optionDisabled}
               data-testid={mode.testId ? `${mode.testId}-${option.id}` : undefined}
               className={cn(
-                "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors disabled:opacity-50",
+                "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
                 isSelected ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--bg-hover)]"
               )}
               onClick={() => {
+                if (optionDisabled) {
+                  return;
+                }
                 mode.onValueChange(option.id);
                 onDone();
               }}
@@ -643,6 +671,11 @@ function ComposerModeMenuSection({
                 {option.description && (
                   <span className="mt-0.5 block text-[11px] leading-snug text-[var(--text-muted)]">
                     {option.description}
+                  </span>
+                )}
+                {option.disabledReason && (
+                  <span className="mt-1 block text-[0.6875rem] leading-snug text-[var(--text-muted)]">
+                    {option.disabledReason}
                   </span>
                 )}
               </span>

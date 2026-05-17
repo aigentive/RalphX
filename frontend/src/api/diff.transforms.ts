@@ -1,12 +1,41 @@
 // Transform functions for diff API (snake_case -> camelCase)
 
 import type { z } from "zod";
-import type { FileChangeSchema, FileDiffSchema, CommitInfoSchema } from "./diff.schemas";
-import type { FileChange, FileDiff, CommitInfo } from "./diff.types";
+import type {
+  AgentWorkspaceReviewResponseSchema,
+  FileChangeSchema,
+  FileDiffSchema,
+  DiffLineSchema,
+  DiffHunkSchema,
+  CommitInfoSchema,
+  PrDiffAnnotationSchema,
+  PrAnnotationSourceUnavailableSchema,
+  PrDiffAnnotationsResponseSchema,
+  RangeLineSchema,
+} from "./diff.schemas";
+import type {
+  AgentWorkspaceReview,
+  FileChange,
+  FileDiff,
+  DiffLine,
+  DiffHunk,
+  CommitInfo,
+  PrDiffAnnotation,
+  PrAnnotationSourceUnavailable,
+  PrDiffAnnotationsResponse,
+  RangeLine,
+} from "./diff.types";
 
 type RawFileChange = z.infer<typeof FileChangeSchema>;
 type RawFileDiff = z.infer<typeof FileDiffSchema>;
+type RawDiffLine = z.infer<typeof DiffLineSchema>;
+type RawDiffHunk = z.infer<typeof DiffHunkSchema>;
 type RawCommitInfo = z.infer<typeof CommitInfoSchema>;
+type RawPrDiffAnnotation = z.infer<typeof PrDiffAnnotationSchema>;
+type RawPrAnnotationSourceUnavailable = z.infer<typeof PrAnnotationSourceUnavailableSchema>;
+type RawPrDiffAnnotationsResponse = z.infer<typeof PrDiffAnnotationsResponseSchema>;
+type RawRangeLine = z.infer<typeof RangeLineSchema>;
+type RawAgentWorkspaceReview = z.infer<typeof AgentWorkspaceReviewResponseSchema>;
 
 export function transformFileChange(raw: RawFileChange): FileChange {
   return {
@@ -14,15 +43,45 @@ export function transformFileChange(raw: RawFileChange): FileChange {
     status: raw.status,
     additions: raw.additions,
     deletions: raw.deletions,
+    isGenerated: raw.is_generated ?? false,
+  };
+}
+
+export function transformDiffLine(raw: RawDiffLine): DiffLine {
+  return {
+    kind: raw.kind,
+    content: raw.content,
+    oldLineNum: raw.old_line_num,
+    newLineNum: raw.new_line_num,
+  };
+}
+
+export function transformDiffHunk(raw: RawDiffHunk): DiffHunk {
+  return {
+    oldStart: raw.old_start,
+    oldLines: raw.old_lines,
+    newStart: raw.new_start,
+    newLines: raw.new_lines,
+    header: raw.header,
+    lines: raw.lines.map(transformDiffLine),
   };
 }
 
 export function transformFileDiff(raw: RawFileDiff): FileDiff {
   return {
     filePath: raw.file_path,
-    oldContent: raw.old_content,
-    newContent: raw.new_content,
     language: raw.language,
+    hunks: raw.hunks.map(transformDiffHunk),
+    oldTotalLines: raw.old_total_lines,
+    newTotalLines: raw.new_total_lines,
+    isBinary: raw.is_binary,
+  };
+}
+
+export function transformRangeLine(raw: RawRangeLine): RangeLine {
+  return {
+    lineNum: raw.line_num,
+    content: raw.content,
   };
 }
 
@@ -33,5 +92,59 @@ export function transformCommitInfo(raw: RawCommitInfo): CommitInfo {
     message: raw.message,
     author: raw.author,
     date: new Date(raw.timestamp),
+  };
+}
+
+export function transformPrDiffAnnotation(raw: RawPrDiffAnnotation): PrDiffAnnotation {
+  return {
+    id: raw.id,
+    source: raw.source,
+    path: raw.path,
+    side: raw.side,
+    startLine: raw.start_line,
+    endLine: raw.end_line,
+    startColumn: raw.start_column,
+    endColumn: raw.end_column,
+    level: raw.level,
+    status: raw.status,
+    title: raw.title,
+    message: raw.message,
+    author: raw.author,
+    checkName: raw.check_name,
+    url: raw.url,
+    isOutdated: raw.is_outdated,
+    createdAt: raw.created_at,
+  };
+}
+
+export function transformPrAnnotationSourceUnavailable(
+  raw: RawPrAnnotationSourceUnavailable
+): PrAnnotationSourceUnavailable {
+  return {
+    source: raw.source,
+    reason: raw.reason,
+  };
+}
+
+export function transformPrDiffAnnotationsResponse(
+  raw: RawPrDiffAnnotationsResponse
+): PrDiffAnnotationsResponse {
+  return {
+    prNumber: raw.pr_number,
+    headSha: raw.head_sha,
+    annotations: raw.annotations.map(transformPrDiffAnnotation),
+    sourcesUnavailable: raw.sources_unavailable.map(transformPrAnnotationSourceUnavailable),
+  };
+}
+
+export function transformAgentWorkspaceReview(
+  raw: RawAgentWorkspaceReview
+): AgentWorkspaceReview {
+  return {
+    changes: raw.changes.map(transformFileChange),
+    commits: raw.commits.map(transformCommitInfo),
+    baseRef: raw.base_ref,
+    headRef: raw.head_ref,
+    supportsWorktreeModes: raw.supports_worktree_modes,
   };
 }

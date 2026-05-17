@@ -11,11 +11,18 @@ import type {
 import { normalizeConversationProviderMetadata } from "@/types/chat-conversation";
 import type {
   ChatMessageResponse,
+  ChatTimelineItemResponse,
   ChildSessionStatusResponse,
   ConversationListPageResponse,
   ConversationStatsResponse,
+  ConversationTimelinePageResponse,
   AgentConversationWorkspace,
   AgentConversationWorkspacePublicationEvent,
+  AgentSidebarConversationGroupsResponse,
+  AgentSidebarConversationsInput,
+  AgentSidebarPublicationState,
+  AgentSidebarSort,
+  PrecomputeAgentConversationWorkspacePrDescriptionResult,
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
   SendAgentMessageResult,
@@ -54,6 +61,8 @@ type MockChildSessionStatusOverride = {
   delayMs?: number;
 };
 
+type MockContentBlock = NonNullable<ChatMessageResponse["contentBlocks"]>[number];
+
 export interface MockChatController {
   reset(): void;
   seedScenario(name: MockChatScenarioName): void;
@@ -87,9 +96,18 @@ export interface MockChatController {
     search?: string,
     archivedOnly?: boolean
   ): Promise<ConversationListPageResponse>;
+  listAgentSidebarConversations(
+    input: AgentSidebarConversationsInput
+  ): Promise<AgentSidebarConversationGroupsResponse>;
   getConversation(
     conversationId: string
   ): Promise<{ conversation: ChatConversation; messages: ChatMessageResponse[] }>;
+  getConversationSummary(conversationId: string): Promise<ChatConversation | null>;
+  getConversationTimelinePage(
+    conversationId: string,
+    limit: number,
+    beforeSequence?: number | null
+  ): Promise<ConversationTimelinePageResponse>;
   getConversationStats(
     conversationId: string
   ): Promise<ConversationStatsResponse | null>;
@@ -199,7 +217,10 @@ function exposeMockChatController(): void {
     clearChildSessionStatusOverrides: mockClearChildSessionStatusOverrides,
     listConversations: mockListConversations,
     listConversationsPage: mockListConversationsPage,
+    listAgentSidebarConversations: mockListAgentSidebarConversations,
     getConversation: mockGetConversation,
+    getConversationSummary: mockGetConversationSummary,
+    getConversationTimelinePage: mockGetConversationTimelinePage,
     getConversationStats: mockGetConversationStats,
     seedAgentConversationWorkspace: seedMockAgentConversationWorkspace,
   };
@@ -266,6 +287,188 @@ export async function mockListConversationsPage(
   };
 }
 
+const MOCK_PUBLICATION_STATES: AgentSidebarPublicationState[] = [
+  "active",
+  "draft",
+  "merged",
+  "closed",
+  "uncommitted",
+  "unpushed",
+];
+
+export async function mockListAgentSidebarConversations(
+  input: AgentSidebarConversationsInput
+): Promise<AgentSidebarConversationGroupsResponse> {
+  const projectIds = Array.from(
+    new Set(input.projectIds.map((projectId) => projectId.trim()).filter(Boolean))
+  );
+  const publicationStates = input.publicationStates ?? MOCK_PUBLICATION_STATES;
+  const normalizedSearch = input.search?.trim().toLowerCase();
+  const includeArchived = input.includeArchived ?? false;
+  const archivedOnly = input.archivedOnly ?? false;
+  const pinnedConversationIds = new Set(input.pinnedConversationIds ?? []);
+
+  const rows = projectIds
+    .flatMap((projectId) =>
+      Array.from(mockConversations.values())
+        .filter(
+          (conversation) =>
+            conversation.contextType === "project" &&
+            conversation.contextId === projectId &&
+            (archivedOnly
+              ? Boolean(conversation.archivedAt)
+              : includeArchived || !conversation.archivedAt)
+        )
+        .filter((conversation) => {
+          if (!normalizedSearch) return true;
+          return (conversation.title ?? "Untitled agent")
+            .toLowerCase()
+            .includes(normalizedSearch);
+        })
+        .map((conversation) => {
+          const workspace = mockWorkspaces.get(conversation.id) ?? null;
+          const publicationState = getMockPublicationState(workspace);
+          return {
+            conversation,
+            workspace,
+            refKind:
+              workspace?.publicationPrNumber != null
+                ? ("pull-request" as const)
+                : ("branch" as const),
+            refLabel:
+              workspace?.publicationPrNumber != null
+                ? `PR #${workspace.publicationPrNumber}`
+                : workspace?.baseRef || "master",
+            publicationState,
+            publicationLabel:
+              publicationState === "active"
+                ? null
+                : getMockPublicationLabel(publicationState),
+          };
+        })
+        .filter((row) => publicationStates.includes(row.publicationState))
+    )
+    .sort((left, right) =>
+      compareMockSidebarRows(left, right, input.sort ?? "latest", pinnedConversationIds)
+    );
+
+  const groupBy = input.groupBy ?? "project";
+  const limit = input.limitPerGroup ?? 6;
+  const offsets = input.offsets ?? {};
+
+  if (groupBy === "publication") {
+    return {
+      groups: publicationStates.map((state) =>
+        buildMockSidebarGroup(
+          state,
+          getMockPublicationGroupLabel(state),
+          rows.filter((row) => row.publicationState === state),
+          offsets[state] ?? 0,
+          limit
+        )
+      ),
+    };
+  }
+
+  return {
+    groups: projectIds.map((projectId) =>
+      buildMockSidebarGroup(
+        projectId,
+        projectId,
+        rows.filter((row) => row.conversation.contextId === projectId),
+        offsets[projectId] ?? 0,
+        limit
+      )
+    ),
+  };
+}
+
+function compareMockSidebarRows(
+  left: AgentSidebarConversationGroupsResponse["groups"][number]["rows"][number],
+  right: AgentSidebarConversationGroupsResponse["groups"][number]["rows"][number],
+  sort: AgentSidebarSort,
+  pinnedConversationIds: Set<string>
+): number {
+  const pinnedDelta =
+    Number(pinnedConversationIds.has(right.conversation.id)) -
+    Number(pinnedConversationIds.has(left.conversation.id));
+  if (pinnedDelta !== 0) return pinnedDelta;
+
+  if (sort === "az" || sort === "za") {
+    const leftTitle = (left.conversation.title ?? "Untitled agent").toLowerCase();
+    const rightTitle = (right.conversation.title ?? "Untitled agent").toLowerCase();
+    const titleDelta = leftTitle.localeCompare(rightTitle);
+    if (titleDelta !== 0) {
+      return sort === "az" ? titleDelta : -titleDelta;
+    }
+  }
+
+  return (
+    new Date(right.conversation.createdAt).getTime() -
+    new Date(left.conversation.createdAt).getTime()
+  );
+}
+
+function buildMockSidebarGroup(
+  key: string,
+  label: string,
+  rows: AgentSidebarConversationGroupsResponse["groups"][number]["rows"],
+  offset: number,
+  limit: number
+): AgentSidebarConversationGroupsResponse["groups"][number] {
+  const pagedRows = rows.slice(offset, offset + limit);
+  return {
+    key,
+    label,
+    total: rows.length,
+    offset,
+    limit,
+    hasMore: offset + pagedRows.length < rows.length,
+    rows: pagedRows,
+  };
+}
+
+function getMockPublicationState(
+  workspace: AgentConversationWorkspace | null
+): AgentSidebarPublicationState {
+  const prStatus = workspace?.publicationPrStatus?.trim().toLowerCase();
+  const pushStatus = workspace?.publicationPushStatus?.trim().toLowerCase();
+
+  if (prStatus === "merged") return "merged";
+  if (prStatus === "closed") return "closed";
+  if (pushStatus === "needs_agent") return "uncommitted";
+  if (
+    pushStatus === "pending" ||
+    pushStatus === "failed" ||
+    pushStatus === "description_failed"
+  ) {
+    return "unpushed";
+  }
+  if (prStatus === "draft") return "draft";
+  return "active";
+}
+
+function getMockPublicationLabel(state: AgentSidebarPublicationState): string {
+  return getMockPublicationGroupLabel(state).toLowerCase();
+}
+
+function getMockPublicationGroupLabel(state: AgentSidebarPublicationState): string {
+  switch (state) {
+    case "active":
+      return "Active";
+    case "draft":
+      return "Draft";
+    case "merged":
+      return "Merged";
+    case "closed":
+      return "Closed";
+    case "uncommitted":
+      return "Uncommitted";
+    case "unpushed":
+      return "Unpushed";
+  }
+}
+
 export async function mockGetConversation(
   conversationId: string
 ): Promise<{ conversation: ChatConversation; messages: ChatMessageResponse[] }> {
@@ -289,6 +492,161 @@ export async function mockGetConversation(
   return {
     conversation,
     messages: mockMessages.get(conversationId) ?? [],
+  };
+}
+
+export async function mockGetConversationSummary(
+  conversationId: string
+): Promise<ChatConversation | null> {
+  return (await mockGetConversation(conversationId)).conversation;
+}
+
+function normalizeMockContentBlocks(message: ChatMessageResponse): MockContentBlock[] {
+  if (Array.isArray(message.contentBlocks) && message.contentBlocks.length > 0) {
+    return message.contentBlocks;
+  }
+
+  if (message.content.trim().length === 0) {
+    return [];
+  }
+
+  return [{ type: "text", text: message.content }];
+}
+
+function mockTimelineToolCallFromBlock(block: Record<string, unknown>, index: number) {
+  const id = typeof block.id === "string" ? block.id : `tool-${index}`;
+  const name = typeof block.name === "string" ? block.name : "unknown";
+  const toolCall: NonNullable<ChatTimelineItemResponse["toolCall"]> = {
+    id,
+    name,
+    arguments: block.arguments ?? block.input ?? {},
+  };
+  if ("result" in block) {
+    toolCall.result = block.result;
+  }
+  const parentToolUseId = block.parentToolUseId ?? block.parent_tool_use_id;
+  if (typeof parentToolUseId === "string") {
+    toolCall.parentToolUseId = parentToolUseId;
+  }
+  if (typeof block.error === "string") {
+    toolCall.error = block.error;
+  }
+  return toolCall;
+}
+
+function mockTimelineItemsForMessages(
+  conversationId: string,
+  messages: ChatMessageResponse[]
+): ChatTimelineItemResponse[] {
+  let sequence = 0;
+  return messages.flatMap((message) => {
+    const blocks = normalizeMockContentBlocks(message);
+    return blocks.map((block, blockIndex) => {
+      sequence += 1;
+      const blockRecord =
+        block != null && typeof block === "object"
+          ? (block as unknown as Record<string, unknown>)
+          : {};
+      const isToolCall = blockRecord.type === "tool_use";
+      const status =
+        message.timelineStatus ??
+        (message.id.includes("live") ? "streaming" : "finalized");
+      const carriesParentUsage = blockIndex === 0 && message.role !== "user";
+      const toolCall = isToolCall
+        ? mockTimelineToolCallFromBlock(blockRecord, blockIndex)
+        : null;
+      const text =
+        typeof blockRecord.text === "string"
+          ? blockRecord.text
+          : isToolCall
+            ? ""
+            : message.content;
+      const contentBlocks: MockContentBlock[] = [block];
+      const blockIdentity = isToolCall && toolCall?.id
+        ? toolCall.id
+        : String(blockIndex);
+      const asMessage: ChatMessageResponse = {
+        ...message,
+        id: `block:${message.id}:${blockIdentity}`,
+        content: text,
+        parentMessageId: message.id,
+        conversationId,
+        toolCalls: toolCall ? [toolCall] : null,
+        contentBlocks,
+        inputTokens: carriesParentUsage ? message.inputTokens ?? null : null,
+        outputTokens: carriesParentUsage ? message.outputTokens ?? null : null,
+        cacheCreationTokens: carriesParentUsage ? message.cacheCreationTokens ?? null : null,
+        cacheReadTokens: carriesParentUsage ? message.cacheReadTokens ?? null : null,
+        estimatedUsd: carriesParentUsage ? message.estimatedUsd ?? null : null,
+        effectiveModelId: carriesParentUsage ? message.effectiveModelId ?? null : null,
+        logicalModel: carriesParentUsage ? message.logicalModel ?? null : null,
+        effectiveEffort: carriesParentUsage ? message.effectiveEffort ?? null : null,
+        logicalEffort: carriesParentUsage ? message.logicalEffort ?? null : null,
+        timelineStatus: status,
+        timelineKind: isToolCall ? "tool_use" : "text",
+        timelineSequence: sequence,
+      };
+
+      return {
+        id: asMessage.id,
+        conversationId,
+        messageId: message.id,
+        runId: null,
+        sequence,
+        blockIndex,
+        role: message.role,
+        kind: asMessage.timelineKind ?? "text",
+        status,
+        content: text,
+        contentBlocks,
+        toolCall,
+        metadata: message.metadata,
+        providerHarness: message.providerHarness ?? null,
+        providerSessionId: message.providerSessionId ?? null,
+        upstreamProvider: message.upstreamProvider ?? null,
+        providerProfile: message.providerProfile ?? null,
+        logicalModel: carriesParentUsage ? message.logicalModel ?? null : null,
+        effectiveModelId: carriesParentUsage ? message.effectiveModelId ?? null : null,
+        logicalEffort: carriesParentUsage ? message.logicalEffort ?? null : null,
+        effectiveEffort: carriesParentUsage ? message.effectiveEffort ?? null : null,
+        inputTokens: carriesParentUsage ? message.inputTokens ?? null : null,
+        outputTokens: carriesParentUsage ? message.outputTokens ?? null : null,
+        cacheCreationTokens: carriesParentUsage ? message.cacheCreationTokens ?? null : null,
+        cacheReadTokens: carriesParentUsage ? message.cacheReadTokens ?? null : null,
+        estimatedUsd: carriesParentUsage ? message.estimatedUsd ?? null : null,
+        createdAt: message.createdAt,
+        updatedAt: message.createdAt,
+        finalizedAt: status === "streaming" ? null : message.createdAt,
+        asMessage,
+      };
+    });
+  });
+}
+
+export async function mockGetConversationTimelinePage(
+  conversationId: string,
+  limit: number,
+  beforeSequence: number | null = null
+): Promise<ConversationTimelinePageResponse> {
+  const { conversation, messages } = await mockGetConversation(conversationId);
+  const allItems = mockTimelineItemsForMessages(conversationId, messages);
+  const eligibleItems =
+    beforeSequence == null
+      ? allItems
+      : allItems.filter((item) => item.sequence < beforeSequence);
+  const start = Math.max(0, eligibleItems.length - limit);
+  const items = eligibleItems.slice(start);
+
+  return {
+    conversation,
+    items,
+    messages: items.map((item) => item.asMessage),
+    limit,
+    beforeSequence,
+    totalItemCount: allItems.length,
+    hasOlder: start > 0,
+    oldestLoadedSequence: items[0]?.sequence ?? null,
+    newestLoadedSequence: items[items.length - 1]?.sequence ?? null,
   };
 }
 
@@ -605,6 +963,23 @@ export async function mockPublishAgentConversationWorkspace(
   };
 }
 
+export async function mockReconcileAgentConversationWorkspacePublication(
+  _conversationId: string
+): Promise<void> {
+  return undefined;
+}
+
+export async function mockPrecomputeAgentConversationWorkspacePrDescription(
+  conversationId: string
+): Promise<PrecomputeAgentConversationWorkspacePrDescriptionResult> {
+  return {
+    conversationId,
+    status: mockWorkspaces.has(conversationId) ? "ready" : "skipped",
+    cacheStatus: mockWorkspaces.has(conversationId) ? "miss" : null,
+    reason: mockWorkspaces.has(conversationId) ? null : "missing_workspace",
+  };
+}
+
 export async function mockGetQueuedAgentMessages(
   contextType: ContextType,
   contextId: string
@@ -646,6 +1021,21 @@ export async function mockIsAgentRunning(
   return false;
 }
 
+export async function mockGetAgentRunningStates(
+  _contextType: ContextType,
+  contextIds: string[]
+): Promise<Record<string, boolean>> {
+  return Object.fromEntries(contextIds.map((contextId) => [contextId, false]));
+}
+
+export async function mockGetBulkWorkspacePublicationStates(
+  conversationIds: string[]
+): Promise<Record<string, { publication_state: string; publication_label: string | null }>> {
+  return Object.fromEntries(
+    conversationIds.map((id) => [id, { publication_state: "active", publication_label: null }])
+  );
+}
+
 // ============================================================================
 // Mock Chat API Object
 // ============================================================================
@@ -658,6 +1048,8 @@ export const mockChatApi = {
   listConversations: mockListConversations,
   listConversationsPage: mockListConversationsPage,
   getConversation: mockGetConversation,
+  getConversationSummary: mockGetConversationSummary,
+  getConversationTimelinePage: mockGetConversationTimelinePage,
   createConversation: mockCreateConversation,
   updateConversationTitle: mockUpdateConversationTitle,
   archiveConversation: mockArchiveConversation,
@@ -667,8 +1059,13 @@ export const mockChatApi = {
   getAgentConversationWorkspace: mockGetAgentConversationWorkspace,
   listAgentConversationWorkspacesByProject:
     mockListAgentConversationWorkspacesByProject,
+  listAgentSidebarConversations: mockListAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents:
     mockListAgentConversationWorkspacePublicationEvents,
+  precomputeAgentConversationWorkspacePrDescription:
+    mockPrecomputeAgentConversationWorkspacePrDescription,
+  reconcileAgentConversationWorkspacePublication:
+    mockReconcileAgentConversationWorkspacePublication,
   publishAgentConversationWorkspace: mockPublishAgentConversationWorkspace,
   startAgentConversation: mockStartAgentConversation,
   switchAgentConversationMode: mockSwitchAgentConversationMode,
@@ -678,4 +1075,6 @@ export const mockChatApi = {
   isChatServiceAvailable: mockIsChatServiceAvailable,
   stopAgent: mockStopAgent,
   isAgentRunning: mockIsAgentRunning,
+  getAgentRunningStates: mockGetAgentRunningStates,
+  getBulkWorkspacePublicationStates: mockGetBulkWorkspacePublicationStates,
 } as const;

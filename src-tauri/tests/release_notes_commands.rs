@@ -21,7 +21,8 @@ async fn ipc_contract_current_release_notes_reads_current_version_notes() {
         .await
         .expect("current release notes should load");
 
-    assert_eq!(response.version, "0.9.0");
+    let expected_version = env!("CARGO_PKG_VERSION");
+    assert_eq!(response.version, expected_version);
     assert!(matches!(
         response.source,
         ReleaseNotesSource::BundledResource | ReleaseNotesSource::DevelopmentCheckout
@@ -29,7 +30,7 @@ async fn ipc_contract_current_release_notes_reads_current_version_notes() {
     assert!(response
         .body
         .as_deref()
-        .is_some_and(|body| body.contains("# RalphX.app v0.9.0")));
+        .is_some_and(|body| body.contains(&format!("# RalphX.app v{expected_version}"))));
 }
 
 #[tokio::test]

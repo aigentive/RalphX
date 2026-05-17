@@ -30,7 +30,7 @@ Each test step maps to one or more acceptance criteria and contains:
         "agent-browser wait --load",
         "agent-browser snapshot -i -c",
         "agent-browser is visible [data-testid='task-board']",
-        "agent-browser screenshot .artifacts/screenshots/qa1-taskboard.png"
+        "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/qa1-taskboard.png\""
       ],
       "expected": "Task board visible with 7 columns"
     }
@@ -46,7 +46,7 @@ agent-browser open <url>
 agent-browser wait --load
 agent-browser snapshot -i -c
 # verification commands
-agent-browser screenshot .artifacts/screenshots/<task>-<step>.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/<task>-<step>.png"
 agent-browser close
 ```
 
@@ -77,7 +77,7 @@ agent-browser is visible [data-testid='success']
 agent-browser snapshot -i -c
 agent-browser drag @e5 @e8
 agent-browser wait 500
-agent-browser screenshot .artifacts/screenshots/after-drag.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/after-drag.png"
 ```
 
 ### Text Verification
@@ -110,10 +110,10 @@ agent-browser click @e3
 - `wait @e1` for element to appear
 
 ### Screenshot Naming
-Format: `.artifacts/screenshots/<task-name>-<step>-<description>.png`
+Format: `$RALPHX_AGENT_SCREENSHOT_DIR/<task-name>-<step>-<description>.png`
 Examples:
-- `.artifacts/screenshots/kanban-qa1-board-visible.png`
-- `.artifacts/screenshots/task-create-qa2-form-submitted.png`
+- `$RALPHX_AGENT_SCREENSHOT_DIR/kanban-qa1-board-visible.png`
+- `$RALPHX_AGENT_SCREENSHOT_DIR/task-create-qa2-form-submitted.png`
 
 ## Common Scenarios
 
@@ -127,7 +127,7 @@ Examples:
     "agent-browser open http://localhost:1420",
     "agent-browser wait --load",
     "agent-browser is visible [data-testid='component']",
-    "agent-browser screenshot .artifacts/screenshots/component-visible.png",
+    "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/component-visible.png\"",
     "agent-browser close"
   ],
   "expected": "Component is visible on page"
@@ -146,7 +146,7 @@ Examples:
     "agent-browser click [data-testid='open-button']",
     "agent-browser wait 500",
     "agent-browser is visible [data-testid='panel']",
-    "agent-browser screenshot .artifacts/screenshots/panel-opened.png",
+    "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/panel-opened.png\"",
     "agent-browser close"
   ],
   "expected": "Panel opens after button click"
@@ -165,7 +165,7 @@ Examples:
     "agent-browser is visible [data-testid='col-draft']",
     "agent-browser is visible [data-testid='col-planned']",
     "agent-browser is visible [data-testid='col-executing']",
-    "agent-browser screenshot .artifacts/screenshots/all-columns.png",
+    "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/all-columns.png\"",
     "agent-browser close"
   ],
   "expected": "All required columns visible"

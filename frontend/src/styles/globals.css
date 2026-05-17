@@ -316,6 +316,11 @@ input[data-agent-sidebar-search="true"]:focus-visible {
   outline: none;
 }
 
+[data-testid="agents-filter-popover"] :focus-visible {
+  outline: 1px solid var(--accent-border);
+  outline-offset: 0;
+}
+
 /* Reduce motion — OS setting OR app-level override */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

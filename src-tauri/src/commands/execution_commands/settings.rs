@@ -193,7 +193,16 @@ pub async fn set_active_project(
         }
     }
 
-    active_project_state.set(project_id.clone()).await;
+    if !active_project_state
+        .set_if_changed(project_id.clone())
+        .await
+    {
+        tracing::debug!(
+            project_id = ?project_id.as_ref().map(|p| p.as_str()),
+            "Active project set skipped; requested project is already active"
+        );
+        return Ok(());
+    }
 
     // Persist to DB so it survives app restarts
     app_state

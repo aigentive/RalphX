@@ -37,11 +37,11 @@ impl From<&str> for MemoryArchiveJobId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArchiveJobType {
-    /// Per-memory snapshot: .claude/memory-archive/memories/<memory_id>.md
+    /// Per-memory snapshot in RalphX-owned app-data archive storage.
     MemorySnapshot,
-    /// Per-rule reconstruction: .claude/memory-archive/rules/<scope_key>/<timestamp>.md
+    /// Per-rule reconstruction in RalphX-owned app-data archive storage.
     RuleSnapshot,
-    /// Full project rebuild: .claude/memory-archive/projects/<project_id>/<timestamp>.md
+    /// Full project rebuild in RalphX-owned app-data archive storage.
     FullRebuild,
 }
 

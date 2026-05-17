@@ -3,10 +3,12 @@
 
 pub mod activity_commands;
 pub mod agent_model_commands;
+pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub mod branch_helpers;
 pub mod api_key_commands;
 pub mod agent_profile_commands;
+pub(crate) mod agent_workspace_auto_publish;
 pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
@@ -45,6 +47,7 @@ pub mod team_commands;
 pub mod test_data_commands;
 pub mod unified_chat_commands;
 pub mod ui_commands;
+pub mod workspace_open_commands;
 pub mod workflow_commands;
 
 // Re-export commands for registration
@@ -191,22 +194,29 @@ pub use team_commands::{
     TeamHistoryResponse, TeamMessageRecordResponse, TeamSessionResponse, TeammateSnapshotResponse,
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
+pub use agent_sidebar_commands::{
+    get_bulk_workspace_publication_states, BulkPublicationStateResponse,
+};
 pub use unified_chat_commands::{
     append_agent_bridge_message, archive_agent_conversation, create_agent_conversation,
     delete_queued_agent_message, get_agent_conversation, get_agent_conversation_messages_page,
+    get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
     get_agent_run_status_unified, get_queued_agent_messages, is_agent_running,
     is_chat_service_available, list_agent_conversations,
     list_agent_conversation_workspace_publication_events,
     list_agent_conversation_workspaces_by_project, list_agent_conversations_page,
+    precompute_agent_conversation_workspace_pr_description,
+    reconcile_agent_conversation_workspace_publication,
     publish_agent_conversation_workspace, queue_agent_message, restore_agent_conversation,
     send_agent_message, start_agent_conversation, stop_agent, switch_agent_conversation_mode,
     update_agent_conversation_title, update_agent_conversation_workspace_from_base,
     AgentConversationWorkspaceFreshnessResponse,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
+    PrecomputeAgentConversationWorkspacePrDescriptionResponse,
     PublishAgentConversationWorkspaceResponse, UpdateAgentConversationWorkspaceFromBaseResponse,
     AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
-    AgentConversationResponse,
+    AgentConversationResponse, AgentConversationTimelinePageResponse,
     AgentConversationWithMessagesResponse, AgentMessageResponse, AgentRunStatusResponse,
     AppendAgentBridgeMessageInput, CreateAgentConversationInput, QueueAgentMessageInput,
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
@@ -222,6 +232,10 @@ pub use plan_branch_commands::{
 };
 // UI feature flag commands
 pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
+pub use workspace_open_commands::{
+    list_workspace_open_targets, open_agent_conversation_workspace,
+    WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,
+};
 // Plan commands (Active plan management)
 pub use plan_commands::{
     clear_active_plan, get_active_plan, list_plan_selector_candidates, set_active_plan,

@@ -60,6 +60,9 @@ export interface AgentsChatHeaderProps {
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
   onPublishWorkspace?: (conversationId: string) => Promise<void>;
   onOpenPublishPane?: () => void;
+  workspaceOpenTargets?: readonly WorkspaceOpenTarget[] | undefined;
+  openingWorkspaceTargetId?: string | null | undefined;
+  onOpenWorkspaceTarget?: (targetId: string) => void;
   onPreloadArtifacts?: () => void;
   publishShortcutLabel?: string;
   isPublishingWorkspace?: boolean;
@@ -83,6 +86,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onRenameConversation,
   onPublishWorkspace,
   onOpenPublishPane,
+  workspaceOpenTargets = [],
+  openingWorkspaceTargetId = null,
+  onOpenWorkspaceTarget,
   onPreloadArtifacts,
   publishShortcutLabel = "Commit & Publish",
   isPublishingWorkspace = false,
@@ -111,6 +117,9 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       workspace?.mode === "edit" &&
       !workspace.linkedPlanBranchId &&
       !publishPaneOpen,
+  );
+  const showWorkspaceOpenControl = Boolean(
+    workspace && workspaceOpenTargets.length > 0 && onOpenWorkspaceTarget,
   );
   const [isEditing, setIsEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(title);
@@ -250,6 +259,14 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               (terminalOpen ? "Close terminal" : "Open terminal")}
           </TooltipContent>
         </Tooltip>
+
+        {showWorkspaceOpenControl && onOpenWorkspaceTarget && (
+          <AgentsWorkspaceOpenControl
+            targets={workspaceOpenTargets}
+            openingTargetId={openingWorkspaceTargetId}
+            onOpenTarget={onOpenWorkspaceTarget}
+          />
+        )}
 
         {showPublishShortcut && (
           <Tooltip>

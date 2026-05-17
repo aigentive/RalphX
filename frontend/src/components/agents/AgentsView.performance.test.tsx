@@ -123,7 +123,8 @@ describe("AgentsView performance", () => {
     expect(terminalDrawerModuleLoadedMock).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
-        "conversation-1"
+        "conversation-1",
+        { scope: "local" }
       )
     );
     await waitFor(() =>

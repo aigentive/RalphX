@@ -1,6 +1,8 @@
 import React from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useUiStore } from "@/stores/uiStore";
+import { POST_UPDATE_PREPARING_STORAGE_KEY } from "@/lib/postUpdatePreparing";
 import { UpdateChecker } from "./UpdateChecker";
 
 const mocks = vi.hoisted(() => ({
@@ -62,6 +64,12 @@ function renderToastById(id: string) {
   return render(call![0] as React.ReactElement);
 }
 
+function toastCallsById(id: string) {
+  return mocks.toast.mock.calls.filter(
+    ([, options]) => (options as { id?: string } | undefined)?.id === id,
+  );
+}
+
 async function flushAsyncWork() {
   await Promise.resolve();
   await Promise.resolve();
@@ -84,8 +92,11 @@ describe("UpdateChecker", () => {
     mocks.getLastSeenReleaseNotesVersion.mockReset();
     mocks.markReleaseNotesSeen.mockReset();
     update.downloadAndInstall.mockReset();
+    localStorage.clear();
+    useUiStore.setState({ activeModal: null, modalContext: undefined });
 
     mocks.check.mockResolvedValue(update);
+    mocks.relaunch.mockResolvedValue(undefined);
     mocks.listen.mockImplementation(async (event: string, handler: (event: unknown) => unknown) => {
       eventListeners.set(event, handler);
       return vi.fn();
@@ -168,9 +179,44 @@ describe("UpdateChecker", () => {
       expect.stringContaining("Update installed"),
       expect.objectContaining({ id: "update-progress" }),
     );
+    expect(localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY)).toBeNull();
 
     await vi.advanceTimersByTimeAsync(2_000);
+    const marker = JSON.parse(
+      localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY) ?? "null",
+    ) as { startedAt?: unknown; version?: unknown } | null;
+    expect(marker).toMatchObject({ version: "0.7.1" });
+    expect(typeof marker?.startedAt).toBe("number");
     expect(mocks.relaunch).toHaveBeenCalled();
+  });
+
+  it("clears the preparing marker and reports when relaunch fails", async () => {
+    const restartError = new Error("restart denied");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.relaunch.mockRejectedValue(restartError);
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const versioned = { ...update, version: "0.7.3", downloadAndInstall };
+    mocks.check.mockResolvedValue(versioned);
+
+    try {
+      render(<UpdateChecker />);
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      const toastUi = renderToastById("update-available");
+      await fireEvent.click(toastUi.getByTestId("update-install-button"));
+
+      await vi.advanceTimersByTimeAsync(1_500);
+      await flushAsyncWork();
+
+      expect(localStorage.getItem(POST_UPDATE_PREPARING_STORAGE_KEY)).toBeNull();
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "Failed to restart RalphX. Please reopen the app manually.",
+        expect.objectContaining({ id: "update-progress" }),
+      );
+      expect(consoleError).toHaveBeenCalledWith("Update relaunch failed:", restartError);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("install failure shows an error toast and does not relaunch", async () => {
@@ -284,6 +330,103 @@ describe("UpdateChecker", () => {
     fireEvent.click(toastUi.getByTestId("whats-new-dismiss-button"));
     expect(mocks.markReleaseNotesSeen).toHaveBeenCalledWith("0.9.0");
     expect(mocks.toastDismiss).toHaveBeenCalledWith("whats-new-0.9.0");
+  });
+
+  it("strips generated GitHub metadata from What's new preview and dialog", async () => {
+    mocks.check.mockResolvedValue(null);
+    mocks.getCurrentReleaseNotes.mockResolvedValue({
+      version: "0.9.0",
+      body: [
+        "## Current Release",
+        "",
+        "- Rich markdown notes",
+        "",
+        "<!-- github-release-metadata:start -->",
+        "## What's Changed",
+        "",
+        "* Release metadata stays visible",
+        "<!-- github-release-metadata:end -->",
+      ].join("\n"),
+      source: "development_checkout",
+    });
+    mocks.getLastSeenReleaseNotesVersion.mockResolvedValue("0.8.0");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    const toastUi = renderToastById("whats-new-0.9.0");
+    expect(toastUi.getByTestId("whats-new-toast")).toHaveTextContent(
+      "Rich markdown notes",
+    );
+    expect(toastUi.getByTestId("whats-new-toast")).not.toHaveTextContent(
+      "github-release-metadata",
+    );
+
+    fireEvent.click(toastUi.getByTestId("whats-new-open-button"));
+    await flushAsyncWork();
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toHaveTextContent(
+      "Rich markdown notes",
+    );
+    expect(screen.getByTestId("release-notes-dialog-body")).toHaveTextContent(
+      "Release metadata stays visible",
+    );
+    expect(screen.getByTestId("release-notes-dialog-body")).not.toHaveTextContent(
+      "github-release-metadata",
+    );
+  });
+
+  it("defers the What's new toast while the settings modal is open", async () => {
+    mocks.check.mockResolvedValue(null);
+    mocks.getCurrentReleaseNotes.mockResolvedValue({
+      version: "0.9.0",
+      body: "## Current Release\n\n- Rich markdown notes",
+      source: "development_checkout",
+    });
+    mocks.getLastSeenReleaseNotesVersion.mockResolvedValue("0.8.0");
+    useUiStore.setState({ activeModal: "settings", modalContext: undefined });
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(toastCallsById("whats-new-0.9.0")).toHaveLength(0);
+
+    act(() => {
+      useUiStore.getState().closeModal();
+    });
+    await flushAsyncWork();
+
+    expect(toastCallsById("whats-new-0.9.0")).toHaveLength(1);
+    expect(mocks.markReleaseNotesSeen).not.toHaveBeenCalled();
+  });
+
+  it("dismisses and replays the What's new toast around settings without marking it seen", async () => {
+    mocks.check.mockResolvedValue(null);
+    mocks.getCurrentReleaseNotes.mockResolvedValue({
+      version: "0.9.0",
+      body: "## Current Release\n\n- Rich markdown notes",
+      source: "development_checkout",
+    });
+    mocks.getLastSeenReleaseNotesVersion.mockResolvedValue("0.8.0");
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(toastCallsById("whats-new-0.9.0")).toHaveLength(1);
+
+    act(() => {
+      useUiStore.getState().openModal("settings");
+    });
+    await flushAsyncWork();
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith("whats-new-0.9.0");
+    expect(mocks.markReleaseNotesSeen).not.toHaveBeenCalled();
+
+    act(() => {
+      useUiStore.getState().closeModal();
+    });
+    await flushAsyncWork();
+
+    expect(toastCallsById("whats-new-0.9.0")).toHaveLength(2);
   });
 
   it("native menu release notes opens current-version notes", async () => {
