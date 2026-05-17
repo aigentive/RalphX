@@ -16,6 +16,8 @@ import {
 const {
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
+  getWorkspaceDiffMock,
+  getWorkspaceReviewMock,
   publishAgentConversationWorkspaceMock,
   sendAgentMessageMock,
   toastErrorMock,
@@ -40,6 +42,91 @@ describe("AgentsView publish", () => {
       expect(screen.getByTestId("agents-artifact-pane")).toBeInTheDocument()
     );
     expect(publishAgentConversationWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a composer workspace changes summary without fetching file diffs", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Foo.tsx",
+          status: "modified",
+          additions: 10,
+          deletions: 2,
+          isGenerated: false,
+        },
+        {
+          path: "src/generated.ts",
+          status: "added",
+          additions: 4,
+          deletions: 0,
+          isGenerated: true,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId("agents-composer-workspace-changes");
+    expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
+      "2 files",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-additions")).toHaveTextContent(
+      "+14",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-deletions")).toHaveTextContent(
+      "−2",
+    );
+
+    expect(
+      screen.queryByTestId("agents-composer-workspace-changes-list"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-header"));
+
+    expect(screen.getByTestId("agents-composer-workspace-file-src/Foo.tsx")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("agents-composer-workspace-file-src/generated.ts"),
+    ).toHaveTextContent("Generated");
+    expect(getWorkspaceDiffMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the publish pane with a focused file request from the composer summary", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Foo.tsx",
+          status: "modified",
+          additions: 10,
+          deletions: 2,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId("agents-composer-workspace-changes");
+    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-count"));
+    fireEvent.click(screen.getByTestId("agents-composer-workspace-file-src/Foo.tsx"));
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "publish");
+    expect(pane).toHaveAttribute("data-publish-focus-path", "src/Foo.tsx");
+    expect(pane).toHaveAttribute("data-publish-focus-mode", "uncommitted");
   });
 
   it("shows Update from base in the header shortcut when the workspace base moved", async () => {

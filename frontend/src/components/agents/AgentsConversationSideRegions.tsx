@@ -9,6 +9,7 @@ import type {
 import type { AgentConversation } from "./agentConversations";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 
 interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
@@ -21,6 +22,7 @@ interface AgentsConversationSideRegionsProps {
   isArtifactResizing: boolean;
   openArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   panelDockElement: HTMLDivElement | null;
+  publishFocusRequest: AgentPublishFocusRequest | null;
   publishingConversationId: string | null;
   selectedConversationId: string | null;
   setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
@@ -45,6 +47,7 @@ export function AgentsConversationSideRegions({
   isArtifactResizing,
   openArtifactTab,
   panelDockElement,
+  publishFocusRequest,
   publishingConversationId,
   selectedConversationId,
   setArtifactPaneVisibility,
@@ -77,6 +80,7 @@ export function AgentsConversationSideRegions({
           }
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
+          publishFocusRequest={publishFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}
           terminalUnavailableReason={terminalUnavailableReason}

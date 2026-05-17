@@ -32,6 +32,7 @@ interface AgentsConversationMainRegionProps {
   onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
+  onOpenPublishFile: ActiveConversationPanelProps["onOpenPublishFile"];
   onPreloadArtifacts: ActiveConversationPanelProps["onPreloadArtifacts"];
   onPublishWorkspace: ActiveConversationPanelProps["onPublishWorkspace"];
   onRenameConversation: ActiveConversationPanelProps["onRenameConversation"];
@@ -75,6 +76,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onCreateProject,
   onFocusIdeationSession,
   onOpenPublishPane,
+  onOpenPublishFile,
   onPreloadArtifacts,
   onPublishWorkspace,
   onRenameConversation,
@@ -114,6 +116,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onAgentUserMessageSent={onAgentUserMessageSent}
         onFocusIdeationSession={onFocusIdeationSession}
         onOpenPublishPane={onOpenPublishPane}
+        onOpenPublishFile={onOpenPublishFile}
         onPreloadArtifacts={onPreloadArtifacts}
         onPublishWorkspace={onPublishWorkspace}
         onRenameConversation={onRenameConversation}

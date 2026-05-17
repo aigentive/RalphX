@@ -32,10 +32,12 @@ import {
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
+import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
 } from "./agentConversationMode";
+import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
   agentEffortOptions,
@@ -102,6 +104,7 @@ interface AgentsActiveConversationPanelProps {
   }) => void;
   onFocusIdeationSession: (sessionId: string) => void;
   onOpenPublishPane: () => void;
+  onOpenPublishFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadArtifacts: () => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -137,6 +140,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onFocusIdeationSession,
   onOpenPublishPane,
+  onOpenPublishFile,
   onPreloadArtifacts,
   onPublishWorkspace,
   onRenameConversation,
@@ -355,6 +359,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               "shrink-0 bg-transparent px-4 pb-4 pt-3",
             renderComposer: (composerProps: IntegratedChatComposerRenderProps) => (
               <>
+                <AgentsComposerWorkspaceChangesCard
+                  conversationId={selectedConversationId}
+                  workspace={activeWorkspace}
+                  isFocusedChildChat={isFocusedChildChat}
+                  onOpenFile={onOpenPublishFile}
+                  onPreloadPublishPane={onPreloadArtifacts}
+                />
                 <AgentComposerSurface
                   dataTestId="agents-conversation-composer"
                   actionTestId="agents-conversation-submit"

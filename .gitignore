@@ -63,6 +63,7 @@ src-tauri/target
 src-tauri/target/
 src-tauri/target-*/
 src-tauri/gen/schemas
+src-tauri/.ralphx-dev-fresh-db-snapshot
 
 # Playwright
 playwright-report/

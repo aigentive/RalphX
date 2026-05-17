@@ -400,6 +400,34 @@ describe("AgentsPublishInlineDiffs", () => {
       );
     });
 
+    it("constrains the virtualized file list to vertical scrolling", () => {
+      const changes = [
+        makeFileChange(
+          "src/really/deep/path/that/should/not/create/a/horizontal/list/scroller/Foo.tsx",
+        ),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      const list = screen.getByTestId("inline-diffs-virtual-list");
+      expect(screen.getByTestId("agents-publish-inline-diffs")).toHaveClass(
+        "overflow-x-hidden",
+      );
+      expect(list).toHaveClass("overflow-x-hidden");
+      expect(list).toHaveStyle({ overflowX: "hidden" });
+      expect(screen.getByTestId("mock-virtuoso-item-0").firstElementChild).toHaveClass(
+        "overflow-x-hidden",
+      );
+    });
+
     it("only renders the active virtual range of file cards", () => {
       virtuosoMockState.range = { startIndex: 0, endIndex: 0 };
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
@@ -1242,6 +1270,59 @@ describe("AgentsPublishInlineDiffs", () => {
         behavior: "auto",
         index: 1,
       });
+    });
+
+    it("scrolls and expands a file from an external focus request", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+          client,
+        ),
+      );
+
+      await user.click(screen.getByTestId("inline-diffs-collapse-all"));
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-expanded",
+        "false",
+      );
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            focusRequest={{
+              conversationId: "conv-1",
+              filePath: "src/Bar.tsx",
+              mode: "uncommitted",
+              requestId: 1,
+            }}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-expanded",
+        "true",
+      );
     });
 
     it("closes jump popover after selecting a file", async () => {
