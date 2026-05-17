@@ -285,6 +285,53 @@ fn supervised_agent_workspace_pr_health_routes_mergeability_blockers() {
 }
 
 #[test]
+fn supervised_agent_workspace_pr_health_routes_dirty_and_blocked_mergeability() {
+    let mut dirty_health = open_pr_health("dirty-head");
+    dirty_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
+    let dirty_issue = super::classify_agent_workspace_pr_autofix_issue(101, &dirty_health)
+        .expect("dirty merge state should route autofix");
+    assert!(dirty_issue
+        .details
+        .contains(&"PR branch has merge conflicts".to_string()));
+
+    let mut blocked_health = open_pr_health("blocked-head");
+    blocked_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Blocked);
+    let blocked_issue = super::classify_agent_workspace_pr_autofix_issue(101, &blocked_health)
+        .expect("blocked merge state should route autofix");
+    assert!(blocked_issue
+        .details
+        .contains(&"PR is blocked from merging".to_string()));
+}
+
+#[test]
+fn supervised_agent_workspace_pr_health_detects_codecov_action_keywords() {
+    for body in [
+        "Codecov threshold was not met",
+        "Codecov target coverage was missed",
+        "Coverage decreased for this patch",
+        "Patch coverage is below the requirement",
+    ] {
+        assert!(
+            super::agent_workspace_codecov_comment_is_actionable(body),
+            "{body:?} should be actionable"
+        );
+    }
+
+    assert!(!super::agent_workspace_codecov_comment_is_actionable(
+        "Codecov report uploaded successfully"
+    ));
+}
+
+#[test]
+fn supervised_agent_workspace_pr_feedback_text_truncates_compactly() {
+    let body = "This      feedback\ncontains enough words to exceed the tiny limit";
+    assert_eq!(
+        super::compact_pr_feedback_text(body, 24),
+        "This feedback contains ..."
+    );
+}
+
+#[test]
 fn supervised_agent_workspace_pr_message_includes_fix_context_entrypoint() {
     let workspace = supervised_workspace(
         "autofix-message-conversation",
