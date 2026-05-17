@@ -78,6 +78,44 @@ export const AGENT_WORKSPACE_TOOLS = [
         },
     },
     {
+        name: "get_agent_workspace_pr_fix_context",
+        description: "Read PR health, review feedback, publish events, and workspace metadata for an agent workspace PR fix. " +
+            "Call this first when assigned to fix CI failures, review feedback, or mergeability blockers on a published agent workspace PR.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "The agent workspace conversation ID",
+                },
+            },
+            required: ["conversation_id"],
+        },
+    },
+    {
+        name: "complete_agent_workspace_pr_fix",
+        description: "Signal that PR CI/review fixes have been completed in the agent workspace, then let RalphX publish updates and resume PR supervision. " +
+            "Call this after committing focused fixes, or provide a blocker when the issue cannot be completed safely.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "The agent workspace conversation ID",
+                },
+                summary: {
+                    type: "string",
+                    description: "Brief summary of the PR fix work or investigation outcome",
+                },
+                blocker: {
+                    type: "string",
+                    description: "Optional blocker explanation when the PR fix cannot be completed safely",
+                },
+            },
+            required: ["conversation_id", "summary"],
+        },
+    },
+    {
         name: "complete_agent_workspace_repair",
         description: "Signal that an agent workspace publish/update repair has been committed, then let RalphX verify the repair and continue the original workflow. " +
             "Call this only after the workspace branch contains the current base, the repair is committed, and the worktree is clean.",
@@ -152,6 +190,10 @@ export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args
             return callUpdateAgentWorkspaceFromBaseTool(callTauri, args);
         case "publish_agent_workspace":
             return callPublishAgentWorkspaceTool(callTauri, args);
+        case "get_agent_workspace_pr_fix_context":
+            return callGetAgentWorkspacePrFixContextTool(callTauriGet, args);
+        case "complete_agent_workspace_pr_fix":
+            return callCompleteAgentWorkspacePrFixTool(callTauri, args);
         case "complete_agent_workspace_repair":
             return callCompleteAgentWorkspaceRepairTool(callTauri, args);
         case "submit_agent_workspace_pr_description":
@@ -179,6 +221,17 @@ export async function callUpdateAgentWorkspaceFromBaseTool(callTauri, args) {
 export async function callPublishAgentWorkspaceTool(callTauri, args) {
     const { conversation_id } = args;
     return callTauri(`agent-workspaces/${conversation_id}/publish`, {});
+}
+export async function callGetAgentWorkspacePrFixContextTool(callTauriGet, args) {
+    const { conversation_id } = args;
+    return callTauriGet(`agent-workspaces/${conversation_id}/pr-fix-context`);
+}
+export async function callCompleteAgentWorkspacePrFixTool(callTauri, args) {
+    const { conversation_id, summary, blocker } = args;
+    return callTauri(`agent-workspaces/${conversation_id}/complete-pr-fix`, {
+        summary,
+        blocker,
+    });
 }
 export async function callCompleteAgentWorkspaceRepairTool(callTauri, args) {
     const { conversation_id, repair_commit_sha, resolved_base_ref, resolved_base_commit, summary, } = args;

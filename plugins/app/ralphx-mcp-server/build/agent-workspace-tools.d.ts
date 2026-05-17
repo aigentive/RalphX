@@ -13,6 +13,8 @@ export declare function callGetAgentWorkspacePublishStatusTool(callTauriGet: Tau
 export declare function callCheckAgentWorkspacePublishReadinessTool(callTauriGet: TauriGet, args: unknown): Promise<unknown>;
 export declare function callUpdateAgentWorkspaceFromBaseTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export declare function callPublishAgentWorkspaceTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
+export declare function callGetAgentWorkspacePrFixContextTool(callTauriGet: TauriGet, args: unknown): Promise<unknown>;
+export declare function callCompleteAgentWorkspacePrFixTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export declare function callCompleteAgentWorkspaceRepairTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export declare function callSubmitAgentWorkspacePrDescriptionTool(callTauri: TauriPost, args: unknown): Promise<unknown>;
 export {};
