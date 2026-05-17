@@ -86,7 +86,7 @@ export function AgentsPublishFileDiff({
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border"
+      className="flex min-h-0 flex-col overflow-hidden rounded-md border"
       data-testid={`publish-file-diff-${file.path}`}
       style={{
         backgroundColor: "var(--bg-surface)",
@@ -221,7 +221,7 @@ export function AgentsPublishFileDiff({
       {/* Body — only mounted when expanded */}
       {isExpanded && (
         <div
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          className="flex min-h-0 flex-col"
           style={{ minHeight: "60px" }}
         >
           {showGeneratedPlaceholder ? (
@@ -300,6 +300,7 @@ export function AgentsPublishFileDiff({
                   conversationId={conversationId}
                   filePath={file.path}
                   refKind={refKind}
+                  scrollContainer={false}
                   annotations={annotations}
                 />
               )}

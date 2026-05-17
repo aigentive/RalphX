@@ -31,6 +31,8 @@ export interface SimpleDiffViewProps {
   conversationId?: string | undefined;
   filePath?: string | undefined;
   refKind?: DiffRefKind | undefined;
+  /** Own the vertical scroll container. Inline virtualized callers disable this. */
+  scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
   annotations?: PrDiffAnnotation[] | undefined;
 }
@@ -389,6 +391,7 @@ export function SimpleDiffView({
   conversationId,
   filePath,
   refKind,
+  scrollContainer = true,
   annotations = [],
 }: SimpleDiffViewProps) {
   const [wrapLines, setWrapLines] = useState(true);
@@ -641,7 +644,7 @@ export function SimpleDiffView({
   // ── Main render ────────────────────────────────────────────────────────
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className={scrollContainer ? "h-full overflow-y-auto" : "w-full overflow-visible"}>
       <div
         className="font-mono text-[0.8125rem] leading-[20px]"
         style={{ backgroundColor: "var(--bg-base)" }}
