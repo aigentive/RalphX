@@ -10,7 +10,9 @@ use crate::application::{
     RangeLine,
 };
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
-use crate::domain::entities::{ChatConversationId, PlanBranch, Project, Task, TaskId};
+use crate::domain::entities::{
+    AgentConversationWorkspace, ChatConversationId, PlanBranch, Project, Task, TaskId,
+};
 use crate::domain::services::github_service::{PrAnnotationSourceUnavailable, PrDiffAnnotations};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -34,6 +36,10 @@ fn resolve_merge_base(repo: &Path, base: &str, target: &str) -> Result<String, S
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn agent_workspace_pr_head_ref(pr_number: i64) -> String {
+    format!("refs/ralphx/pr-heads/{pr_number}")
 }
 
 /// Determine the working path for a task.
@@ -220,7 +226,7 @@ pub async fn get_file_diff_for_state(
 struct AgentWorkspaceContext {
     working_path: PathBuf,
     base_ref: String,
-    /// For plan-branch workspaces, the diff target is the plan branch (not HEAD).
+    /// For plan-branch or terminal PR workspaces, the diff target is an explicit ref (not HEAD).
     diff_target: Option<String>,
     /// Unified patch fallback when local git refs are no longer available.
     patch_diff: Option<Arc<str>>,
@@ -487,6 +493,10 @@ async fn get_agent_workspace_context(
         .await?
         .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.as_str().to_string()))?;
 
+    if let Some(context) = get_terminal_agent_workspace_pr_context(&project, &workspace).await? {
+        return Ok(context);
+    }
+
     // For ideation workspaces linked to a plan branch, the commits live on the
     // plan branch, not the workspace's own branch. Use the project root and
     // resolve the merge-base so the diff only shows changes introduced by the
@@ -639,6 +649,42 @@ async fn resolve_agent_workspace_github_patch_context(
         base_ref: base_commit.to_string(),
         diff_target: Some(format!("github-pr-diff/{pr_number}")),
         patch_diff: Some(Arc::<str>::from(patch)),
+        supports_worktree_modes: false,
+    }))
+}
+
+async fn get_terminal_agent_workspace_pr_context(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<AgentWorkspaceContext>> {
+    if !workspace.has_terminal_publication_pr_status() {
+        return Ok(None);
+    }
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(None);
+    };
+
+    let repo_path = PathBuf::from(&project.working_directory);
+    let pr_head_ref = agent_workspace_pr_head_ref(pr_number);
+    let head_ref = if GitService::ref_exists(&repo_path, &pr_head_ref).await? {
+        pr_head_ref
+    } else if GitService::ref_exists(&repo_path, &workspace.branch_name).await? {
+        workspace.branch_name.clone()
+    } else {
+        return Ok(None);
+    };
+    let base_ref_source = if workspace.base_ref.trim().is_empty() {
+        project.base_branch.as_deref().unwrap_or("main").to_string()
+    } else {
+        workspace.base_ref.clone()
+    };
+    let base_ref =
+        resolve_merge_base(&repo_path, &base_ref_source, &head_ref).unwrap_or(base_ref_source);
+    Ok(Some(AgentWorkspaceContext {
+        working_path: repo_path,
+        base_ref,
+        diff_target: Some(head_ref),
+        patch_diff: None,
         supports_worktree_modes: false,
     }))
 }
@@ -2894,6 +2940,86 @@ new file mode 100644
         assert_eq!(
             diff.old_total_lines, 0,
             "File did not exist in base, so old_total_lines is 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn cumulative_file_changes_for_merged_workspace_use_pr_head_merge_base() {
+        let (temp_dir, state, conversation_id, worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let repo = temp_dir.path().join("repo");
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let pr_head_ref = agent_workspace_pr_head_ref(243);
+        let pr_head = run_git(&worktree_path, &["rev-parse", "HEAD"]);
+        run_git(&worktree_path, &["update-ref", &pr_head_ref, &pr_head]);
+
+        run_git(&repo, &["merge", "--squash", &pr_head_ref]);
+        run_git(&repo, &["commit", "-m", "Squash PR 243"]);
+        let squash_commit = run_git(&repo, &["rev-parse", "HEAD"]);
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                worktree_path.to_str().unwrap(),
+            ],
+        );
+
+        workspace.base_commit = Some(squash_commit);
+        workspace.publication_pr_number = Some(243);
+        workspace.publication_pr_status = Some("merged".to_string());
+        workspace.publication_push_status = Some("pushed".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should update");
+
+        let review = get_agent_conversation_workspace_review_for_state(&state, &conversation_id)
+            .await
+            .expect("merged workspace review should use preserved PR head");
+        assert_eq!(review.response.head_ref, pr_head_ref);
+        assert!(
+            review
+                .response
+                .changes
+                .iter()
+                .any(|change| change.path == "src/lib.rs"),
+            "review changes should still show the published PR file"
+        );
+
+        let changes = get_agent_conversation_workspace_cumulative_file_changes_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("merged workspace cumulative changes should use preserved PR head");
+
+        assert!(
+            changes.iter().any(|change| change.path == "src/lib.rs"),
+            "cumulative changes should still show the published PR file"
+        );
+
+        let diff = get_agent_conversation_workspace_cumulative_file_diff_for_state(
+            &state,
+            &conversation_id,
+            "src/lib.rs".to_string(),
+        )
+        .await
+        .expect("merged workspace cumulative diff should use preserved PR head");
+
+        assert!(
+            diff.hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("answer")),
+            "cumulative diff should still show the published PR hunk"
         );
     }
 
