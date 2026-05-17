@@ -18,7 +18,7 @@
  */
 
 import { memo, useState, useCallback, useMemo, useRef, useEffect } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { ArrowDownToLine, ChevronDown, ChevronUp } from "lucide-react";
 import { Virtuoso, type ListRange, type VirtuosoHandle } from "react-virtuoso";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -36,6 +36,8 @@ import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
 const EMPTY_PR_DIFF_ANNOTATIONS: PrDiffAnnotation[] = [];
 const VIRTUAL_RANGE_OVERSCAN_FILES = 0;
@@ -48,6 +50,7 @@ export interface AgentsPublishInlineDiffsProps {
   annotations?: PrDiffAnnotation[] | undefined;
   error?: unknown;
   onOpenInDialog?: ((filePath: string) => void) | undefined;
+  focusRequest?: AgentPublishFocusRequest | null | undefined;
 }
 
 interface AgentsPublishVirtualFileRowProps {
@@ -63,6 +66,7 @@ interface AgentsPublishVirtualFileRowProps {
   annotations: PrDiffAnnotation[];
   isShowAnywayOverridden: boolean;
   onShowAnywayPath: (path: string) => void;
+  isFocusTarget: boolean;
 }
 
 const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
@@ -78,6 +82,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   annotations,
   isShowAnywayOverridden,
   onShowAnywayPath,
+  isFocusTarget,
 }: AgentsPublishVirtualFileRowProps) {
   const handleToggle = useCallback(() => {
     onTogglePath(file.path);
@@ -101,6 +106,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       annotations={annotations}
       isShowAnywayOverridden={isShowAnywayOverridden}
       onShowAnyway={handleShowAnyway}
+      isFocusTarget={isFocusTarget}
     />
   );
 });
@@ -113,8 +119,8 @@ export function AgentsPublishInlineDiffs({
   annotations = [],
   error,
   onOpenInDialog,
+  focusRequest,
 }: AgentsPublishInlineDiffsProps) {
-  const [mode, setMode] = useState<DiffFilterMode>("uncommitted");
   // Set of collapsed file paths; empty = all expanded (default).
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
   // Jump-to-file popover
@@ -127,31 +133,28 @@ export function AgentsPublishInlineDiffs({
   const [hydratedPaths, setHydratedPaths] = useState<Set<string>>(new Set());
   // Show-anyway overrides — paths where the user has dismissed the generated-file placeholder.
   const [userShowAnywayPaths, setUserShowAnywayPaths] = useState<Set<string>>(new Set());
-
-  const supportsWorktreeModes = review?.supportsWorktreeModes ?? true;
-  const effectiveMode =
-    !supportsWorktreeModes &&
-    (mode === "uncommitted" || mode === "staged" || mode === "unstaged")
-      ? "cumulative"
-      : mode;
-  const isStagedMode = effectiveMode === "staged";
-  const isUnstagedMode = effectiveMode === "unstaged";
-  const isCumulativeMode = effectiveMode === "cumulative";
-  const isCommitMode =
-    effectiveMode !== "uncommitted" &&
-    !isStagedMode &&
-    !isUnstagedMode &&
-    !isCumulativeMode;
-  const commitSha = isCommitMode ? effectiveMode : undefined;
-
-  /** Map the current mode to the backend DiffRefKind for range fetches. */
-  const refKind = useMemo<DiffRefKind>(() => {
-    if (isStagedMode) return { kind: "staged" };
-    if (isUnstagedMode) return { kind: "unstaged" };
-    if (isCumulativeMode) return { kind: "cumulative_head" };
-    if (isCommitMode && commitSha !== undefined) return { kind: "commit", sha: commitSha };
-    return { kind: "head" }; // uncommitted = diff vs HEAD
-  }, [isStagedMode, isUnstagedMode, isCumulativeMode, isCommitMode, commitSha]);
+  const [pendingFocusRequest, setPendingFocusRequest] =
+    useState<AgentPublishFocusRequest | null>(null);
+  const [focusTargetPath, setFocusTargetPath] = useState<string | null>(null);
+  const {
+    commitSha,
+    currentFiles,
+    currentFilesError,
+    effectiveMode,
+    isCommitMode,
+    isCurrentFilesLoading,
+    isCumulativeMode,
+    isStagedMode,
+    isUnstagedMode,
+    refKind,
+    setMode,
+    stagedCount,
+    supportsWorktreeModes,
+    totalAdditions,
+    totalDeletions,
+    uncommittedCount,
+    unstagedCount,
+  } = useAgentWorkspaceChangeSummary({ conversationId, review });
   const canRenderPrAnnotations = refKind.kind === "head" || refKind.kind === "cumulative_head";
   const annotationsByPath = useMemo(() => {
     const map = new Map<string, PrDiffAnnotation[]>();
@@ -170,65 +173,11 @@ export function AgentsPublishInlineDiffs({
     return map;
   }, [annotations, canRenderPrAnnotations]);
 
-  // ── Commit file list (only active in commit mode) ──────────────────────
-  const commitFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "commit-files", commitSha],
-    queryFn: () => {
-      if (!commitSha) throw new Error("commitSha required");
-      return diffApi.getAgentConversationWorkspaceCommitFileChanges(conversationId, commitSha);
-    },
-    enabled: isCommitMode && Boolean(commitSha),
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-  });
-
-  // ── Staged file list (only active in staged mode) ──────────────────────
-  const stagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
-    enabled: supportsWorktreeModes && isStagedMode,
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-  });
-
-  // ── Unstaged file list (only active in unstaged mode) ─────────────────
-  const unstagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
-    enabled: supportsWorktreeModes && isUnstagedMode,
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-  });
-
-  // ── Cumulative file list (only active in cumulative mode) ─────────────
-  const cumulativeFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "cumulative-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceCumulativeFileChanges(conversationId),
-    enabled: isCumulativeMode,
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-  });
-
-  // ── Current file list (mode-dependent) ────────────────────────────────
-  const currentFiles = useMemo<FileChange[]>(() => {
-    if (isCommitMode) return commitFilesQuery.data ?? [];
-    if (isStagedMode && supportsWorktreeModes) return stagedFilesQuery.data ?? [];
-    if (isUnstagedMode && supportsWorktreeModes) return unstagedFilesQuery.data ?? [];
-    if (isCumulativeMode) return cumulativeFilesQuery.data ?? review?.changes ?? [];
-    return review?.changes ?? [];
-  }, [
-    isCommitMode,
-    isStagedMode,
-    isUnstagedMode,
-    isCumulativeMode,
-    supportsWorktreeModes,
-    commitFilesQuery.data,
-    stagedFilesQuery.data,
-    unstagedFilesQuery.data,
-    cumulativeFilesQuery.data,
-    review,
-  ]);
-
   // ── Mode change → reset hydrated set (new mode = new file list) ─────────
   useEffect(() => {
     setHydratedPaths(new Set());
     setVisibleRange(null);
+    setFocusTargetPath(null);
   }, [conversationId, effectiveMode]);
 
   const bufferedVisiblePathSet = useMemo(() => {
@@ -400,7 +349,7 @@ export function AgentsPublishInlineDiffs({
   // ── Handlers ──────────────────────────────────────────────────────────
   const handleModeChange = useCallback((next: DiffFilterMode) => {
     setMode(next);
-  }, []);
+  }, [setMode]);
 
   const handleToggle = useCallback((path: string) => {
     setCollapsedPaths((prev) => {
@@ -458,6 +407,53 @@ export function AgentsPublishInlineDiffs({
     });
   }, [currentFiles, hydrateVisibleRange]);
 
+  useEffect(() => {
+    if (!focusRequest || focusRequest.conversationId !== conversationId) {
+      return;
+    }
+    setPendingFocusRequest(focusRequest);
+    setMode(focusRequest.mode);
+  }, [conversationId, focusRequest, setMode]);
+
+  useEffect(() => {
+    if (!pendingFocusRequest || pendingFocusRequest.conversationId !== conversationId) {
+      return;
+    }
+    const index = currentFiles.findIndex(
+      (file) => file.path === pendingFocusRequest.filePath,
+    );
+    if (index < 0) {
+      if (!isCurrentFilesLoading && !isLoading) {
+        setPendingFocusRequest(null);
+      }
+      return;
+    }
+
+    setCollapsedPaths((prev) => {
+      if (!prev.has(pendingFocusRequest.filePath)) {
+        return prev;
+      }
+      const next = new Set(prev);
+      next.delete(pendingFocusRequest.filePath);
+      return next;
+    });
+    hydrateVisibleRange({ startIndex: index, endIndex: index });
+    virtuosoRef.current?.scrollToIndex({
+      index,
+      align: "start",
+      behavior: "auto",
+    });
+    setFocusTargetPath(pendingFocusRequest.filePath);
+    setPendingFocusRequest(null);
+  }, [
+    conversationId,
+    currentFiles,
+    hydrateVisibleRange,
+    isCurrentFilesLoading,
+    isLoading,
+    pendingFocusRequest,
+  ]);
+
   const computeFileKey = useCallback(
     (_index: number, file: FileChange) => file.path,
     [],
@@ -465,7 +461,7 @@ export function AgentsPublishInlineDiffs({
 
   const renderFileRow = useCallback(
     (_index: number, fileChange: FileChange) => (
-      <div className="py-1 first:pt-3 last:pb-3">
+      <div className="min-w-0 overflow-x-hidden py-1 first:pt-3 last:pb-3">
         <AgentsPublishVirtualFileRow
           file={fileChange}
           diff={diffByPath.get(fileChange.path)}
@@ -479,6 +475,7 @@ export function AgentsPublishInlineDiffs({
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
           onShowAnywayPath={handleShowAnyway}
+          isFocusTarget={focusTargetPath === fileChange.path}
         />
       </div>
     ),
@@ -492,21 +489,19 @@ export function AgentsPublishInlineDiffs({
       handleShowAnyway,
       handleToggle,
       hydratedPaths,
+      focusTargetPath,
       refKind,
       userShowAnywayPaths,
     ],
   );
 
-  // ── Derived counts ────────────────────────────────────────────────────
-  // uncommittedCount always reflects the review's changes (not current-mode files)
-  const uncommittedCount = review?.changes.length ?? 0;
-  const totalAdditions = currentFiles.reduce((sum, f) => sum + (f.additions ?? 0), 0);
-  const totalDeletions = currentFiles.reduce((sum, f) => sum + (f.deletions ?? 0), 0);
+  const displayError = error ?? currentFilesError;
+  const isFileListLoading = isLoading || isCurrentFilesLoading;
 
   return (
     <div
       data-testid="agents-publish-inline-diffs"
-      className="flex min-h-0 flex-1 flex-col"
+      className="flex min-h-0 flex-1 flex-col overflow-x-hidden"
     >
       {/* Sticky bar — always renders synchronously */}
       <div
@@ -520,12 +515,8 @@ export function AgentsPublishInlineDiffs({
         <AgentsPublishDiffFilter
           mode={effectiveMode}
           uncommittedCount={uncommittedCount}
-          {...(stagedFilesQuery.data !== undefined && {
-            stagedCount: stagedFilesQuery.data.length,
-          })}
-          {...(unstagedFilesQuery.data !== undefined && {
-            unstagedCount: unstagedFilesQuery.data.length,
-          })}
+          {...(stagedCount !== undefined && { stagedCount })}
+          {...(unstagedCount !== undefined && { unstagedCount })}
           commits={commits}
           supportsWorktreeModes={supportsWorktreeModes}
           onModeChange={handleModeChange}
@@ -671,13 +662,13 @@ export function AgentsPublishInlineDiffs({
       </div>
 
       {/* Body */}
-      {isLoading ? (
+      {isFileListLoading ? (
         <div data-testid="inline-diffs-loading" className="flex flex-col gap-2 p-3">
           {[1, 2, 3].map((i) => (
             <Skeleton key={i} className="h-10 w-full rounded-md" />
           ))}
         </div>
-      ) : error ? (
+      ) : displayError ? (
         <div
           data-testid="inline-diffs-error"
           className="flex flex-col items-center justify-center px-4 py-12 text-center"
@@ -685,7 +676,7 @@ export function AgentsPublishInlineDiffs({
         >
           <p className="text-sm">Could not load workspace changes</p>
           <p className="mt-1 max-w-xl text-xs" style={{ color: "var(--text-muted)" }}>
-            {error instanceof Error ? error.message : String(error)}
+            {displayError instanceof Error ? displayError.message : String(displayError)}
           </p>
         </div>
       ) : currentFiles.length === 0 ? (
@@ -704,8 +695,8 @@ export function AgentsPublishInlineDiffs({
           ref={virtuosoRef}
           data={currentFiles}
           data-testid="inline-diffs-virtual-list"
-          className="min-h-0 flex-1 px-3"
-          style={{ height: "100%" }}
+          className="min-h-0 flex-1 overflow-x-hidden px-3"
+          style={{ height: "100%", overflowX: "hidden" }}
           computeItemKey={computeFileKey}
           rangeChanged={hydrateVisibleRange}
           increaseViewportBy={{ top: 240, bottom: 480 }}

@@ -70,6 +70,8 @@ import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
 } from "./agentWorkspaceQueries";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import { mapReviewCommitsToDiffViewerCommits } from "./useAgentWorkspaceChangeSummary";
 
 const LazyDiffViewer = lazy(() =>
   import("@/components/diff").then((module) => ({ default: module.DiffViewer })),
@@ -119,11 +121,13 @@ export function AgentPublishPanel({
   projectBaseBranch,
   onPublishWorkspace,
   isPublishingWorkspace,
+  publishFocusRequest,
 }: {
   workspace: AgentConversationWorkspace | null;
   projectBaseBranch?: string | null;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
+  publishFocusRequest?: AgentPublishFocusRequest | null;
 }) {
   const queryClient = useQueryClient();
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -290,17 +294,8 @@ export function AgentPublishPanel({
   const changesError = reviewQuery.error;
   const changes = reviewQuery.data?.changes ?? [];
   const commits = useMemo<DiffViewerCommit[]>(
-    () =>
-      (reviewQuery.data?.commits ?? [])
-        .map((commit) => ({
-          sha: commit.sha,
-          shortSha: commit.shortSha,
-          message: commit.message,
-          author: commit.author,
-          date: commit.date,
-        }))
-        .reverse(),
-    [reviewQuery.data?.commits],
+    () => mapReviewCommitsToDiffViewerCommits(reviewQuery.data),
+    [reviewQuery.data],
   );
   const publicationEvents = publicationEventsQuery.data ?? [];
   const prAnnotations = prAnnotationsQuery.data?.annotations ?? [];
@@ -841,6 +836,7 @@ export function AgentPublishPanel({
               annotations={prAnnotations}
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
+              focusRequest={publishFocusRequest}
             />
           </section>
         )}
