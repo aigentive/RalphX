@@ -5,7 +5,6 @@ pub mod active_plan_repository;
 pub mod activity_event_repository;
 pub mod agent_conversation_workspace_repository;
 pub mod agent_lane_settings_repository;
-pub mod agent_conversation_workspace_repository;
 pub mod agent_profile_repository;
 pub mod agent_provider_settings_repository;
 pub mod agent_run_repository;
@@ -55,7 +54,6 @@ pub use activity_event_repository::{
 };
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
 pub use agent_lane_settings_repository::AgentLaneSettingsRepository;
-pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
 pub use agent_profile_repository::{AgentProfileId, AgentProfileRepository};
 pub use agent_provider_settings_repository::AgentProviderSettingsRepository;
 pub use agent_run_repository::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};

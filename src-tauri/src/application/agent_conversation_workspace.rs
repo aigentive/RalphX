@@ -3,6 +3,9 @@ use std::path::{Component, Path, PathBuf};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
+use crate::application::agent_conversation_workspace_base::{
+    apply_workspace_base_resolution, is_commit_contained_in, resolve_workspace_base, BaseStatus,
+};
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
@@ -13,6 +16,9 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
 };
+
+pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
+    "A new workspace branch has been created automatically.";
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentConversationWorkspaceBaseSelection {
@@ -120,6 +126,125 @@ pub async fn prepare_agent_conversation_workspace(
     })
 }
 
+pub async fn rollover_agent_conversation_workspace(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<AgentConversationWorkspace> {
+    if !is_terminal_agent_conversation_publication_status(
+        workspace.publication_pr_status.as_deref(),
+    ) {
+        return Ok(workspace.clone());
+    }
+
+    if workspace.project_id != project.id {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace {} belongs to project {} instead of {}",
+            workspace.conversation_id, workspace.project_id, project.id
+        )));
+    }
+
+    let repo_path = PathBuf::from(&project.working_directory);
+    let expected_path =
+        resolve_agent_conversation_workspace_path(project, &workspace.conversation_id)?;
+    let stored_path = PathBuf::from(&workspace.worktree_path);
+    if stored_path != expected_path {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace path mismatch for conversation {}",
+            workspace.conversation_id
+        )));
+    }
+
+    let project_root = PathBuf::from(&project.working_directory);
+    if expected_path == project_root {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace {} points to the project root",
+            workspace.conversation_id
+        )));
+    }
+
+    if expected_path.exists() {
+        if !expected_path.is_dir() {
+            return Err(AppError::Validation(format!(
+                "Agent conversation workspace path exists but is not a directory: {}",
+                expected_path.display()
+            )));
+        }
+
+        if GitService::has_uncommitted_changes(&expected_path).await? {
+            return Err(AppError::Validation(format!(
+                "Cannot continue agent conversation {} on a new branch because the old workspace has uncommitted changes",
+                workspace.conversation_id
+            )));
+        }
+    }
+
+    let base_resolution = resolve_workspace_base(project, workspace).await?;
+    if base_resolution.status == BaseStatus::Blocked {
+        return Err(AppError::Validation(
+            base_resolution
+                .block_reason
+                .clone()
+                .unwrap_or_else(|| "Agent workspace base is blocked".to_string()),
+        ));
+    }
+    if base_resolution.status == BaseStatus::Retargeted {
+        let old_branch_head = GitService::get_branch_sha(&repo_path, &workspace.branch_name)
+            .await
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "Cannot verify old workspace branch containment before rollover: {error}"
+                ))
+            })?;
+        let target_ref = base_resolution.effective_checkout_ref()?;
+        if !is_commit_contained_in(&repo_path, &old_branch_head, target_ref).await? {
+            return Err(AppError::Validation(format!(
+                "Cannot continue agent conversation {} on a new branch because old workspace branch HEAD is not contained in the default branch",
+                workspace.conversation_id
+            )));
+        }
+    }
+
+    if expected_path.exists() {
+        GitService::delete_worktree(&repo_path, &expected_path).await?;
+    }
+
+    let base_checkout_ref = base_resolution.effective_checkout_ref()?.to_string();
+    let branch_name =
+        agent_conversation_continuation_branch_name(project, &workspace.conversation_id);
+
+    ensure_agent_conversation_worktree(
+        &repo_path,
+        &expected_path,
+        &branch_name,
+        &base_checkout_ref,
+    )
+    .await?;
+    run_agent_conversation_workspace_setup(
+        project,
+        &workspace.conversation_id,
+        &expected_path,
+        &branch_name,
+    )
+    .await;
+    let base_commit = GitService::get_head_sha(&expected_path).await?;
+    let mut updated = workspace.clone();
+    apply_workspace_base_resolution(&mut updated, &base_resolution)?;
+    updated.base_commit = Some(base_commit);
+    updated.branch_name = branch_name;
+    updated.worktree_path = expected_path.to_string_lossy().to_string();
+    updated.publication_pr_number = None;
+    updated.publication_pr_url = None;
+    updated.publication_pr_status = None;
+    updated.publication_push_status = None;
+    updated.status = crate::domain::entities::AgentConversationWorkspaceStatus::Active;
+    updated.updated_at = Utc::now();
+    Ok(updated)
+}
+
+pub fn is_terminal_agent_conversation_publication_status(status: Option<&str>) -> bool {
+    matches!(status, Some("merged" | "closed"))
+}
+
 async fn run_agent_conversation_workspace_setup(
     project: &Project,
     conversation_id: &ChatConversationId,
@@ -182,6 +307,14 @@ pub fn agent_conversation_branch_name(
         short_id
     };
     format!("ralphx/{project_slug}/agent-{short_id}")
+}
+
+fn agent_conversation_continuation_branch_name(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+) -> String {
+    let base = agent_conversation_branch_name(project, conversation_id);
+    format!("{}-{}", base, Utc::now().timestamp_millis())
 }
 
 pub fn agent_name_for_workspace_mode(mode: AgentConversationWorkspaceMode) -> &'static str {

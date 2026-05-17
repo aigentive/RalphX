@@ -2,6 +2,7 @@
 // Commands should be minimal - delegate to domain/infrastructure
 
 pub mod activity_commands;
+pub mod agent_model_commands;
 pub mod agent_terminal_commands;
 pub mod branch_helpers;
 pub mod api_key_commands;

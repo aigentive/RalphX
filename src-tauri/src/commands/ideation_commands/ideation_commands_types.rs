@@ -90,6 +90,14 @@ pub struct IdeationSessionResponse {
     pub analysis_base_locked_at: Option<String>,
 }
 
+/// Lightweight latest child-session lookup response.
+#[derive(Debug, Serialize)]
+pub struct LatestChildSessionIdResponse {
+    pub session_id: String,
+    pub purpose: Option<String>,
+    pub latest_child_session_id: Option<String>,
+}
+
 impl From<IdeationSession> for IdeationSessionResponse {
     fn from(session: IdeationSession) -> Self {
         let gap_score = session.verification_gap_score.map(|score| score as i32);

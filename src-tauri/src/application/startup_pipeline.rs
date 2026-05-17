@@ -20,12 +20,13 @@ use crate::application::{
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentRunRepository, AppStateRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryArchiveRepository,
-    MemoryEntryRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryArchiveRepository, MemoryEntryRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::WebhookPublisher;

@@ -70,8 +70,9 @@ mod lifecycle;
 
 pub(crate) use lifecycle::prepare_resumed_task_for_entry_actions;
 pub use lifecycle::{
-    __cmd__pause_execution, __cmd__resume_execution, __cmd__stop_execution, pause_execution,
-    resume_execution, stop_execution,
+    __cmd__pause_execution, __cmd__resume_execution, __cmd__stop_execution,
+    __tauri_command_name_pause_execution, __tauri_command_name_resume_execution,
+    __tauri_command_name_stop_execution, pause_execution, resume_execution, stop_execution,
 };
 
 mod settings;
@@ -79,16 +80,21 @@ mod settings;
 pub use settings::{
     __cmd__get_active_project, __cmd__get_execution_settings, __cmd__get_global_execution_settings,
     __cmd__set_active_project, __cmd__set_max_concurrent, __cmd__update_execution_settings,
-    __cmd__update_global_execution_settings, get_active_project, get_execution_settings,
-    get_global_execution_settings, set_active_project, set_max_concurrent,
+    __cmd__update_global_execution_settings, __tauri_command_name_get_active_project,
+    __tauri_command_name_get_execution_settings, __tauri_command_name_get_global_execution_settings,
+    __tauri_command_name_set_active_project, __tauri_command_name_set_max_concurrent,
+    __tauri_command_name_update_execution_settings,
+    __tauri_command_name_update_global_execution_settings, get_active_project,
+    get_execution_settings, get_global_execution_settings, set_active_project, set_max_concurrent,
     update_execution_settings, update_global_execution_settings,
 };
 
 mod status_queries;
 
 pub use status_queries::{
-    __cmd__get_execution_status, __cmd__get_running_processes, get_execution_status,
-    get_running_processes,
+    __cmd__get_execution_status, __cmd__get_running_processes,
+    __tauri_command_name_get_execution_status, __tauri_command_name_get_running_processes,
+    get_execution_status, get_running_processes,
 };
 
 /// Recover a task execution after a stop request

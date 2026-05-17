@@ -20,7 +20,7 @@ use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
     AgentConversationWorkspace, ExecutionPlanId, ExecutionPlanStatus, InternalStatus, PlanBranch,
-    PlanBranchStatus, Project, Task, TaskCategory, TaskId,
+    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, ArtifactRepository, ExecutionPlanRepository,

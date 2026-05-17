@@ -38,20 +38,6 @@ pub fn ensure_tauri_mcp_bypass_token() -> String {
     token
 }
 
-pub const TAURI_MCP_BYPASS_TOKEN_ENV: &str = "RALPHX_TAURI_MCP_BYPASS_TOKEN";
-
-pub fn ensure_tauri_mcp_bypass_token() -> String {
-    if let Ok(token) = std::env::var(TAURI_MCP_BYPASS_TOKEN_ENV) {
-        if !token.trim().is_empty() {
-            return token;
-        }
-    }
-
-    let token = format!("rx_tauri_{}", uuid::Uuid::new_v4().simple());
-    std::env::set_var(TAURI_MCP_BYPASS_TOKEN_ENV, &token);
-    token
-}
-
 // ── Environment detection ─────────────────────────────────────────────────
 
 fn is_test_environment() -> bool {

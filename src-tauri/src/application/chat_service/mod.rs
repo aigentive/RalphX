@@ -41,11 +41,6 @@ use crate::application::harness_runtime_registry::{
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
-use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
-use crate::application::harness_runtime_registry::{
-    default_harness_runtime_available, resolve_default_chat_service_bootstrap,
-    resolve_harness_plugin_dir, resolve_chat_service_bootstrap,
-};
 use crate::application::question_state::QuestionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{

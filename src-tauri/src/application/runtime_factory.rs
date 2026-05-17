@@ -10,9 +10,10 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
     TaskStepRepository,

@@ -10,7 +10,7 @@ use crate::application::TeamStateTracker;
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::AppState;
 use tauri::Manager;
-use tracing::warn;
+use tracing::{info, warn};
 
 const BUNDLED_PLUGIN_DIR_REL: &str = "plugins/app";
 const BUNDLED_AGENTS_DIR_REL: &str = "agents";

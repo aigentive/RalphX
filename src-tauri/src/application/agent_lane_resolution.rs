@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::domain::agents::{
+    default_approval_policy_for_harness, default_sandbox_mode_for_harness,
     generic_harness_lane_defaults, AgentHarnessKind, AgentLane, AgentLaneSettings, LogicalEffort,
     StoredAgentLaneSettings, DEFAULT_AGENT_HARNESS,
 };
