@@ -15,6 +15,8 @@ interface AgentsConversationMainRegionProps {
   activeWorkspace: ActiveConversationPanelProps["activeWorkspace"];
   attachedIdeationSessionId: ActiveConversationPanelProps["attachedIdeationSessionId"];
   availableArtifactTabs: ActiveConversationPanelProps["availableArtifactTabs"];
+  chatFocus: ActiveConversationPanelProps["chatFocus"];
+  chatFocusOptions: ActiveConversationPanelProps["chatFocusOptions"];
   defaultProjectId: StartConversationPanelProps["defaultProjectId"];
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
@@ -24,13 +26,16 @@ interface AgentsConversationMainRegionProps {
   onActiveModelChange: ActiveConversationPanelProps["onActiveModelChange"];
   onAgentUserMessageSent: ActiveConversationPanelProps["onAgentUserMessageSent"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
+  onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
   onPreloadArtifacts: ActiveConversationPanelProps["onPreloadArtifacts"];
   onPublishWorkspace: ActiveConversationPanelProps["onPublishWorkspace"];
   onRenameConversation: ActiveConversationPanelProps["onRenameConversation"];
+  onRuntimePreferenceChange: StartConversationPanelProps["onRuntimePreferenceChange"];
   onSelectArtifact: ActiveConversationPanelProps["onSelectArtifact"];
   onStartAgentConversation: StartConversationPanelProps["onStartAgentConversation"];
   onToggleArtifacts: ActiveConversationPanelProps["onToggleArtifacts"];
+  onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
   publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
@@ -49,6 +54,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   activeWorkspace,
   attachedIdeationSessionId,
   availableArtifactTabs,
+  chatFocus,
+  chatFocusOptions,
   defaultProjectId,
   defaultRuntime,
   hasAutoOpenArtifacts,
@@ -58,13 +65,16 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onActiveModelChange,
   onAgentUserMessageSent,
   onCreateProject,
+  onFocusIdeationSession,
   onOpenPublishPane,
   onPreloadArtifacts,
   onPublishWorkspace,
   onRenameConversation,
+  onRuntimePreferenceChange,
   onSelectArtifact,
   onStartAgentConversation,
   onToggleArtifacts,
+  onSelectChatFocus,
   projects,
   publishShortcutLabel,
   publishingConversationId,
@@ -84,17 +94,21 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         activeWorkspace={activeWorkspace}
         attachedIdeationSessionId={attachedIdeationSessionId}
         availableArtifactTabs={availableArtifactTabs}
+        chatFocus={chatFocus}
+        chatFocusOptions={chatFocusOptions}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveModelChange={onActiveModelChange}
         onAgentUserMessageSent={onAgentUserMessageSent}
+        onFocusIdeationSession={onFocusIdeationSession}
         onOpenPublishPane={onOpenPublishPane}
         onPreloadArtifacts={onPreloadArtifacts}
         onPublishWorkspace={onPublishWorkspace}
         onRenameConversation={onRenameConversation}
         onSelectArtifact={onSelectArtifact}
         onToggleArtifacts={onToggleArtifacts}
+        onSelectChatFocus={onSelectChatFocus}
         publishShortcutLabel={publishShortcutLabel}
         publishingConversationId={publishingConversationId}
         selectedConversationId={selectedConversationId}
@@ -112,6 +126,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
       defaultRuntime={defaultRuntime}
       isLoadingProjects={isLoadingProjects}
       onCreateProject={onCreateProject}
+      onRuntimePreferenceChange={onRuntimePreferenceChange}
       onStartAgentConversation={onStartAgentConversation}
     />
   );

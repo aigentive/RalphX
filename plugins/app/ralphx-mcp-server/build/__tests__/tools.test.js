@@ -7,6 +7,7 @@ import { getAllowedToolNames, getFilteredTools, getToolsByAgent, isToolAllowed, 
 import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-metadata.js';
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
+import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
 import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
@@ -300,12 +301,13 @@ describe('getFilteredTools', () => {
         expect(toolNames).not.toContain('report_verification_round');
         expect(toolNames).not.toContain('complete_plan_verification');
     });
-    it('should keep project chat off internal ideation launch and mutation tools', () => {
+    it('should keep project chat on the scoped ideation append tool only', () => {
         setAgentType(CHAT_PROJECT);
         const tools = getFilteredTools();
         const toolNames = tools.map((t) => t.name);
         expect(toolNames).toContain('suggest_task');
         expect(toolNames).toContain('list_tasks');
+        expect(toolNames).toContain('append_task_to_ideation_plan');
         expect(toolNames).not.toContain('start_ideation_session');
         expect(toolNames).not.toContain('create_child_session');
         expect(toolNames).not.toContain('create_task_proposal');

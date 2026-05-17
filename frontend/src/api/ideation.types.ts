@@ -48,6 +48,12 @@ export interface IdeationSessionResponse {
   lastEffectiveModel?: string | null;
 }
 
+export interface LatestChildSessionIdResponse {
+  sessionId: string;
+  purpose: "general" | "verification" | null;
+  latestChildSessionId: string | null;
+}
+
 export type IdeationAnalysisBaseRefKind =
   | "project_default"
   | "current_branch"

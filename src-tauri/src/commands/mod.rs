@@ -198,7 +198,7 @@ pub use agent_sidebar_commands::{
     get_bulk_workspace_publication_states, BulkPublicationStateResponse,
 };
 pub use unified_chat_commands::{
-    append_agent_bridge_message, archive_agent_conversation, create_agent_conversation,
+    archive_agent_conversation, create_agent_conversation,
     delete_queued_agent_message, get_agent_conversation, get_agent_conversation_messages_page,
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
@@ -218,7 +218,7 @@ pub use unified_chat_commands::{
     AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
     AgentConversationResponse, AgentConversationTimelinePageResponse,
     AgentConversationWithMessagesResponse, AgentMessageResponse, AgentRunStatusResponse,
-    AppendAgentBridgeMessageInput, CreateAgentConversationInput, QueueAgentMessageInput,
+    CreateAgentConversationInput, QueueAgentMessageInput,
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,

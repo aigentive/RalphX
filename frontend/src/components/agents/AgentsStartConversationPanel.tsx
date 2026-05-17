@@ -12,6 +12,7 @@ interface AgentsStartConversationPanelProps {
   defaultRuntime: StartComposerProps["defaultRuntime"];
   isLoadingProjects: StartComposerProps["isLoadingProjects"];
   onCreateProject: StartComposerProps["onCreateProject"];
+  onRuntimePreferenceChange?: StartComposerProps["onRuntimePreferenceChange"];
   onStartAgentConversation: (input: StartConversationInput) => Promise<void>;
   projects: StartComposerProps["projects"];
 }
@@ -21,6 +22,7 @@ export function AgentsStartConversationPanel({
   defaultRuntime,
   isLoadingProjects,
   onCreateProject,
+  onRuntimePreferenceChange,
   onStartAgentConversation,
   projects,
 }: AgentsStartConversationPanelProps) {
@@ -35,6 +37,7 @@ export function AgentsStartConversationPanel({
         isLoadingProjects={isLoadingProjects}
         isSubmitting={isStartingConversation}
         onCreateProject={onCreateProject}
+        {...(onRuntimePreferenceChange ? { onRuntimePreferenceChange } : {})}
         onSubmit={async (input) => {
           try {
             setIsStartingConversation(true);

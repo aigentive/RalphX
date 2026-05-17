@@ -438,6 +438,7 @@ interface ChatMessageListProps {
   providerHarness?: string | null | undefined;
   providerSessionId?: string | null | undefined;
   contentWidthClassName?: string | undefined;
+  topInsetClassName?: string | undefined;
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: (() => void | Promise<void>) | undefined;
@@ -471,6 +472,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       providerHarness,
       providerSessionId,
       contentWidthClassName,
+      topInsetClassName,
       hasOlderMessages = false,
       isFetchingOlderMessages = false,
       onLoadOlderMessages,
@@ -1187,11 +1189,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // revealed finalized assistant message is visible.
     useEffect(() => {
       if (scrollToTimestamp) return; // Don't auto-scroll in history mode
-      if (prevShouldFilterRef.current && !shouldFilterLastProviderMessage) {
+      if (prevShouldFilterRef.current && !shouldFilterCurrentProviderMessage) {
         scheduleBottomPin("finalized provider message revealed");
       }
-      prevShouldFilterRef.current = shouldFilterLastProviderMessage;
-    }, [scheduleBottomPin, shouldFilterLastProviderMessage, scrollToTimestamp]);
+      prevShouldFilterRef.current = shouldFilterCurrentProviderMessage;
+    }, [scheduleBottomPin, shouldFilterCurrentProviderMessage, scrollToTimestamp]);
 
     const startReachedHandler =
       hasOlderMessages && onLoadOlderMessages
@@ -1321,7 +1323,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         clearTimeout(safetyTimer);
         verifyTimers.forEach(clearTimeout);
       };
-    }, [conversationId, lastItemIndex, scheduleBottomPin, timeline.length]);
+    }, [conversationId, lastItemIndex, scheduleBottomPin, scrollToTrueBottom, timeline.length]);
 
     useEffect(() => {
       const previousLastItemIndex = previousLastItemIndexRef.current;
@@ -1400,6 +1402,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             );
           })}
 
+          {shouldShowActiveTypingIndicator && hasRenderableStreamingBlocks && (
+            <TypingIndicator />
+          )}
+
           {/* Fallback when agent is running but no content blocks yet:
               - Tool calls pending → show ToolCallIndicator for each (immediate visibility into what agent is doing)
               - No tool calls either → show TypingIndicator (agent thinking) */}
@@ -1442,7 +1448,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // to re-mount Header → layout change → atBottomStateChange → re-render → loop.
     const virtuosoComponents = useMemo(() => ({
       Header: () => (
-        <div className="px-3 pt-3 w-full" style={contentContainerStyle}>
+        <div
+          className={cn("px-3 w-full", topInsetClassName ?? "pt-3")}
+          style={contentContainerStyle}
+        >
           <ContentShell className={contentWidthClassName}>
             {/* Show failed run banner if last run failed */}
             {failedRun?.errorMessage && onDismissFailedRun && (
@@ -1454,18 +1463,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       ),
-      Footer: () => {
-        if (!footerContent) {
-          return null;
-        }
-        return (
-          <div ref={handleFooterRef} className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
-            <ContentShell className={contentWidthClassName}>
-              {footerContent}
-            </ContentShell>
-          </div>
-        );
-      },
     }), [
       contentWidthClassName,
       failedRun, onDismissFailedRun,
@@ -1514,6 +1511,18 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                 content={teamMsg.content}
                 timestamp={teamMsg.timestamp}
               />
+            </ContentShell>
+          </div>
+        );
+      }
+      if (item.kind === "streaming") {
+        if (!footerContent) {
+          return null;
+        }
+        return (
+          <div ref={handleFooterRef} className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+            <ContentShell className={contentWidthClassName}>
+              {footerContent}
             </ContentShell>
           </div>
         );
@@ -1568,7 +1577,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           </ContentShell>
         </div>
       );
-    }, [contentWidthClassName, getTeammateInfo, providerHarness, providerSessionId, timeline.length]);
+    }, [contentWidthClassName, footerContent, getTeammateInfo, handleFooterRef, providerHarness, providerSessionId, timeline.length]);
 
     if (isTestEnv) {
       return (
@@ -1592,7 +1601,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               </span>
             </div>
           )}
-          <div className="px-3 pt-3 w-full" style={contentContainerStyle}>
+          <div
+            className={cn("px-3 w-full", topInsetClassName ?? "pt-3")}
+            style={contentContainerStyle}
+          >
             <ContentShell className={contentWidthClassName}>
               {failedRun?.errorMessage && onDismissFailedRun && (
                 <FailedRunBanner
@@ -1624,6 +1636,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                       content={teamMsg.content}
                       timestamp={teamMsg.timestamp}
                     />
+                  </ContentShell>
+                </div>
+              );
+            }
+            if (item.kind === "streaming") {
+              if (!footerContent) {
+                return null;
+              }
+              return (
+                <div key="streaming-live" ref={handleFooterRef} className="px-3 pb-3 w-full relative" style={contentContainerStyle}>
+                  <ContentShell className={contentWidthClassName}>
+                    {footerContent}
+                    <div ref={messagesEndRef} />
                   </ContentShell>
                 </div>
               );
@@ -1679,14 +1704,6 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             );
           })}
 
-          {footerContent && (
-            <div className="px-3 pb-3 w-full" style={contentContainerStyle}>
-              <ContentShell className={contentWidthClassName}>
-                {footerContent}
-                <div ref={messagesEndRef} />
-              </ContentShell>
-            </div>
-          )}
           <ScrollToBottomControl
             visible={shouldShowScrollToBottom}
             onClick={handleScrollToBottomClick}

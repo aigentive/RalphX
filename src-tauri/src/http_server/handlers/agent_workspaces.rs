@@ -7,13 +7,15 @@ use axum::{
 };
 
 use super::*;
-use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
 use crate::application::publish_resilience::{
-    inspect_publish_branch_freshness_for_source, verify_agent_workspace_repair_completion,
-    AgentWorkspaceRepairCompletionCheck,
+    inspect_publish_branch_freshness_for_source, push_publish_branch,
+    verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
 };
 use crate::application::GitService;
-use crate::commands::unified_chat_commands::publish_agent_conversation_workspace_for_app_state;
+use crate::commands::unified_chat_commands::{
+    publish_agent_conversation_workspace_for_app_state, resolve_agent_workspace_publish_target,
+};
+use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{AgentConversationWorkspacePublicationEvent, ChatConversationId};
 
 #[derive(Debug, serde::Deserialize)]
@@ -78,39 +80,46 @@ pub async fn complete_agent_workspace_repair(
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Project not found", None))?;
 
-    let workspace_path = resolve_valid_agent_conversation_workspace_path(&project, &workspace)
-        .await
-        .map_err(|error| json_error(StatusCode::BAD_REQUEST, error.to_string(), None))?;
+    let publish_target =
+        resolve_agent_workspace_publish_target(state.app_state.as_ref(), &project, &workspace)
+            .await
+            .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?;
 
     let freshness = inspect_publish_branch_freshness_for_source(
-        &workspace_path,
-        &workspace.base_ref,
-        &workspace.branch_name,
+        &publish_target.worktree_path,
+        &publish_target.base_ref,
+        &publish_target.branch_name,
         workspace.base_commit.as_deref(),
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 
-    let workspace_head_sha = GitService::get_head_sha(&workspace_path)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let has_uncommitted_changes = GitService::has_uncommitted_changes(&workspace_path)
-        .await
-        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
-    let has_conflict_markers = GitService::has_conflict_markers(&workspace_path)
+    let workspace_head_sha =
+        GitService::get_branch_sha(&publish_target.worktree_path, &publish_target.branch_name)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+    let has_uncommitted_changes =
+        GitService::has_uncommitted_changes(&publish_target.worktree_path)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+    let has_conflict_markers = GitService::has_conflict_markers(&publish_target.worktree_path)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 
     verify_agent_workspace_repair_completion(AgentWorkspaceRepairCompletionCheck {
         freshness_status: &freshness,
-        workspace_base_ref: &workspace.base_ref,
+        workspace_base_ref: &publish_target.base_ref,
         resolved_base_ref: &req.resolved_base_ref,
         resolved_base_commit: &req.resolved_base_commit,
         repair_commit_sha: &req.repair_commit_sha,
         workspace_head_sha: &workspace_head_sha,
         has_uncommitted_changes,
-        is_merge_in_progress: GitService::is_merge_in_progress(&workspace_path),
-        is_rebase_in_progress: GitService::is_rebase_in_progress(&workspace_path),
+        is_merge_in_progress: GitService::is_merge_in_progress(&publish_target.worktree_path),
+        is_rebase_in_progress: GitService::is_rebase_in_progress(&publish_target.worktree_path),
         has_conflict_markers,
     })
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
@@ -144,15 +153,6 @@ pub async fn complete_agent_workspace_repair(
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     let post_repair_action = agent_workspace_post_repair_action_from_events(&publication_events);
 
-    let auto_publish = publish_agent_conversation_workspace_for_app_state(
-        state.app_state.as_ref(),
-        &state.execution_state,
-        Some(state.team_service.clone()),
-        conversation_id,
-        false,
-    )
-    .await;
-
     let (
         message,
         new_status,
@@ -161,67 +161,262 @@ pub async fn complete_agent_workspace_repair(
         auto_publish_error,
         pr_number,
         pr_url,
-    ) = match auto_publish {
-        Ok(result) => {
-            let status = result
-                .workspace
-                .publication_push_status
-                .clone()
-                .unwrap_or_else(|| "pushed".to_string());
-            let base_commit = result
-                .workspace
-                .base_commit
-                .clone()
-                .unwrap_or_else(|| freshness.target_base_commit.clone());
+    ) = if let Some(plan_branch) = publish_target.plan_branch.as_ref() {
+        let pr_number = plan_branch.pr_number;
+        let pr_url = plan_branch.pr_url.clone();
+        let pr_status = plan_branch
+            .pr_status
+            .as_ref()
+            .map(|status| status.to_db_string());
+
+        if pr_number.is_none() {
             (
-                "Agent workspace repair verified and published".to_string(),
-                status,
-                base_commit,
-                Some("succeeded".to_string()),
+                "Agent workspace repair verified".to_string(),
+                "refreshed".to_string(),
+                freshness.target_base_commit.clone(),
+                Some("skipped".to_string()),
                 None,
-                result.pr_number,
-                result.pr_url,
+                pr_number,
+                pr_url,
             )
-        }
-        Err(error) => {
-            let refreshed = state
+        } else if let Some(github) = state.app_state.github_service.as_ref() {
+            match push_publish_branch(
+                github,
+                &publish_target.worktree_path,
+                &publish_target.branch_name,
+            )
+            .await
+            {
+                Ok(()) => {
+                    state
+                        .app_state
+                        .plan_branch_repo
+                        .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
+                        .await
+                        .map_err(|error| {
+                            json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                        })?;
+                    state
+                        .app_state
+                        .agent_conversation_workspace_repo
+                        .update_publication(
+                            &conversation_id,
+                            pr_number,
+                            pr_url.as_deref(),
+                            pr_status.as_deref(),
+                            Some("pushed"),
+                        )
+                        .await
+                        .map_err(|error| {
+                            json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                        })?;
+                    state
+                        .app_state
+                        .agent_conversation_workspace_repo
+                        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                            conversation_id,
+                            "published",
+                            "succeeded",
+                            "Plan branch repair pushed",
+                            None,
+                        ))
+                        .await
+                        .map_err(|error| {
+                            json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                        })?;
+                    (
+                        "Agent workspace repair verified and pushed".to_string(),
+                        "pushed".to_string(),
+                        freshness.target_base_commit.clone(),
+                        Some("succeeded".to_string()),
+                        None,
+                        pr_number,
+                        pr_url,
+                    )
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    state
+                        .app_state
+                        .plan_branch_repo
+                        .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+                        .await
+                        .map_err(|repo_error| {
+                            json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                repo_error.to_string(),
+                                None,
+                            )
+                        })?;
+                    state
+                        .app_state
+                        .agent_conversation_workspace_repo
+                        .update_publication(
+                            &conversation_id,
+                            pr_number,
+                            pr_url.as_deref(),
+                            pr_status.as_deref(),
+                            Some("failed"),
+                        )
+                        .await
+                        .map_err(|repo_error| {
+                            json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                repo_error.to_string(),
+                                None,
+                            )
+                        })?;
+                    state
+                        .app_state
+                        .agent_conversation_workspace_repo
+                        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                            conversation_id,
+                            "failed",
+                            "failed",
+                            message.clone(),
+                            Some("operational".to_string()),
+                        ))
+                        .await
+                        .map_err(|repo_error| {
+                            json_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                repo_error.to_string(),
+                                None,
+                            )
+                        })?;
+                    (
+                        format!(
+                            "Agent workspace repair verified; automatic push failed: {message}"
+                        ),
+                        "failed".to_string(),
+                        freshness.target_base_commit.clone(),
+                        Some("failed".to_string()),
+                        Some(message),
+                        pr_number,
+                        pr_url,
+                    )
+                }
+            }
+        } else {
+            let message = "GitHub integration is not available".to_string();
+            state
+                .app_state
+                .plan_branch_repo
+                .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            state
                 .app_state
                 .agent_conversation_workspace_repo
-                .get_by_conversation_id(&conversation_id)
+                .update_publication(
+                    &conversation_id,
+                    pr_number,
+                    pr_url.as_deref(),
+                    pr_status.as_deref(),
+                    Some("failed"),
+                )
                 .await
-                .map_err(|repo_error| {
-                    json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        repo_error.to_string(),
-                        None,
-                    )
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
                 })?;
-            let final_status = refreshed
-                .as_ref()
-                .and_then(|workspace| workspace.publication_push_status.clone())
-                .unwrap_or_else(|| "failed".to_string());
-            let final_base_commit = refreshed
-                .as_ref()
-                .and_then(|workspace| workspace.base_commit.clone())
-                .unwrap_or_else(|| freshness.target_base_commit.clone());
-            let publish_status = if final_status == "no_changes" {
-                "skipped"
-            } else {
-                "failed"
-            };
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id,
+                    "failed",
+                    "failed",
+                    message.clone(),
+                    Some("operational".to_string()),
+                ))
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
             (
-                format!("Agent workspace repair verified; automatic publish failed: {error}"),
-                final_status,
-                final_base_commit,
-                Some(publish_status.to_string()),
-                Some(error),
-                refreshed
-                    .as_ref()
-                    .and_then(|workspace| workspace.publication_pr_number),
-                refreshed
-                    .as_ref()
-                    .and_then(|workspace| workspace.publication_pr_url.clone()),
+                format!("Agent workspace repair verified; automatic push failed: {message}"),
+                "failed".to_string(),
+                freshness.target_base_commit.clone(),
+                Some("failed".to_string()),
+                Some(message),
+                pr_number,
+                pr_url,
             )
+        }
+    } else {
+        let auto_publish = publish_agent_conversation_workspace_for_app_state(
+            state.app_state.as_ref(),
+            &state.execution_state,
+            Some(state.team_service.clone()),
+            conversation_id,
+            false,
+        )
+        .await;
+
+        match auto_publish {
+            Ok(result) => {
+                let status = result
+                    .workspace
+                    .publication_push_status
+                    .clone()
+                    .unwrap_or_else(|| "pushed".to_string());
+                let base_commit = result
+                    .workspace
+                    .base_commit
+                    .clone()
+                    .unwrap_or_else(|| freshness.target_base_commit.clone());
+                (
+                    "Agent workspace repair verified and published".to_string(),
+                    status,
+                    base_commit,
+                    Some("succeeded".to_string()),
+                    None,
+                    result.pr_number,
+                    result.pr_url,
+                )
+            }
+            Err(error) => {
+                let refreshed = state
+                    .app_state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&conversation_id)
+                    .await
+                    .map_err(|repo_error| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            repo_error.to_string(),
+                            None,
+                        )
+                    })?;
+                let final_status = refreshed
+                    .as_ref()
+                    .and_then(|workspace| workspace.publication_push_status.clone())
+                    .unwrap_or_else(|| "failed".to_string());
+                let final_base_commit = refreshed
+                    .as_ref()
+                    .and_then(|workspace| workspace.base_commit.clone())
+                    .unwrap_or_else(|| freshness.target_base_commit.clone());
+                let publish_status = if final_status == "no_changes" {
+                    "skipped"
+                } else {
+                    "failed"
+                };
+                (
+                    format!("Agent workspace repair verified; automatic publish failed: {error}"),
+                    final_status,
+                    final_base_commit,
+                    Some(publish_status.to_string()),
+                    Some(error),
+                    refreshed
+                        .as_ref()
+                        .and_then(|workspace| workspace.publication_pr_number),
+                    refreshed
+                        .as_ref()
+                        .and_then(|workspace| workspace.publication_pr_url.clone()),
+                )
+            }
         }
     };
 

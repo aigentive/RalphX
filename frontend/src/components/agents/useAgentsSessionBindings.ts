@@ -21,6 +21,7 @@ export function useAgentsSessionBindings({
   const selectConversation = useAgentSessionStore((s) => s.selectConversation);
   const clearSelection = useAgentSessionStore((s) => s.clearSelection);
   const setRuntimeForConversation = useAgentSessionStore((s) => s.setRuntimeForConversation);
+  const setLastRuntimeForProject = useAgentSessionStore((s) => s.setLastRuntimeForProject);
   const clearAgentConversationSelection = useCallback(() => {
     setOptimisticSelectedConversationId(null);
     clearSelection();
@@ -35,6 +36,7 @@ export function useAgentsSessionBindings({
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
+    setLastRuntimeForProject,
     setRuntimeForConversation,
     storedSelectedConversationId,
   };

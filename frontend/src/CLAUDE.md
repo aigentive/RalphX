@@ -121,7 +121,6 @@ Example: "View Registry Pattern" — see @../../.claude/rules/task-detail-views.
 - **Chat Context Registry** — `src/lib/chat-context-registry.ts`. Use `buildStoreKey()`, `resolveContextType()`, `getContextConfig()` for all chat context derivations. New context type = add to registry + `CONTEXT_TYPE_VALUES`.
 - **Unified Chat Hooks** — `useChatActions` (send/queue/stop), `useChatEvents` (streaming/tool calls), `useChatRecovery` (polling/sync). Both panels use these.
 - **First-Paint Shells** — heavy panes/drawers/widgets render a lightweight shell immediately, then lazy-load/hydrate content after paint. See @../../.claude/rules/frontend-interaction-performance.md
-- **Agents Chat Focus** — Agents keeps one primary chat surface; child ideation/verification runs focus that surface while artifacts remain structured side-panel output. See @../../specs/agents-chat-focus.md
 
 ### Composition Over Props
 ```tsx

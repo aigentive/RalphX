@@ -36,16 +36,21 @@ import { ideationKeys } from "@/hooks/useIdeation";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { useVerificationStatus } from "@/hooks/useVerificationStatus";
 import type { Artifact } from "@/types/artifact";
-import type { IdeationSession, TaskProposal } from "@/types/ideation";
-import type { DependencyGraphResponse } from "@/api/ideation.types";
+import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/ideation";
+import type {
+  DependencyGraphResponse,
+} from "@/api/ideation.types";
 import type { AgentConversation } from "./agentConversations";
 import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
 } from "./agentArtifactTabs";
+import { getLatestIdeationChildId } from "./agentIdeationChildren";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
+import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
+import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 
@@ -56,6 +61,11 @@ const LazyTaskGraphView = lazy(() =>
 );
 const LazyTaskBoard = lazy(() =>
   import("@/components/tasks/TaskBoard").then((module) => ({ default: module.TaskBoard })),
+);
+const LazyAgentsTaskDetailOverlay = lazy(() =>
+  import("@/components/agents/task-details/AgentsTaskDetailOverlay").then((module) => ({
+    default: module.AgentsTaskDetailOverlay,
+  })),
 );
 const LazyExportPlanDialog = lazy(() =>
   import("@/components/Ideation/ExportPlanDialog").then((module) => ({
@@ -76,6 +86,11 @@ const LazyPlanEmptyState = lazy(() =>
 const LazyProposalsTabContent = lazy(() =>
   import("@/components/Ideation/ProposalsTabContent").then((module) => ({
     default: module.ProposalsTabContent,
+  })),
+);
+const LazyProposalDetailSheet = lazy(() =>
+  import("@/components/Ideation/ProposalDetailSheet").then((module) => ({
+    default: module.ProposalDetailSheet,
   })),
 );
 const LazyVerificationPanel = lazy(() =>
@@ -101,40 +116,78 @@ const PUBLISH_TAB = {
   icon: GitPullRequestArrow,
 };
 
+const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
+
+function readSelectedTaskForConversation(
+  conversationId: string | null,
+): string | null {
+  if (!conversationId) return null;
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(
+      `${SELECTED_TASK_STORAGE_PREFIX}${conversationId}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function writeSelectedTaskForConversation(
+  conversationId: string | null,
+  taskId: string | null,
+): void {
+  if (!conversationId) return;
+  if (typeof window === "undefined") return;
+  try {
+    const key = `${SELECTED_TASK_STORAGE_PREFIX}${conversationId}`;
+    if (taskId) {
+      window.localStorage.setItem(key, taskId);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore quota / private-mode write failures.
+  }
+}
+
 interface AgentsArtifactPaneProps {
   conversation: AgentConversation | null;
   workspace?: AgentConversationWorkspace | null;
+  focusedIdeationSessionId?: string | null;
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
   onTabChange: (tab: AgentArtifactTab) => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
+  onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onClose: () => void;
 }
 
 export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   conversation,
   workspace = null,
+  focusedIdeationSessionId = null,
   activeTab,
   taskMode,
   onTabChange,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
+  onFocusVerificationSession,
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
   const canHydrateIdeationArtifacts = Boolean(
-    workspace?.mode === "ideation" ||
+    focusedIdeationSessionId ||
+      workspace?.mode === "ideation" ||
       workspace?.linkedIdeationSessionId ||
       workspace?.linkedPlanBranchId,
   );
-  const showPublishTab =
-    workspace?.mode === "edit" && !workspace.linkedIdeationSessionId && !workspace.linkedPlanBranchId;
+  const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
   const conversationQuery = useConversationHistoryWindow(conversation?.id ?? null, {
-    enabled: shouldLoadIdeationData && !!conversation?.id,
+    enabled: shouldLoadIdeationData && !focusedIdeationSessionId && !!conversation?.id,
     pageSize: 40,
   });
   const conversationData = conversationQuery.data;
@@ -149,19 +202,41 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const attachedSessionId = useMemo(
     () =>
-      shouldLoadIdeationData
+      focusedIdeationSessionId ??
+      (shouldLoadIdeationData
         ? resolveAttachedIdeationSessionId(
             conversation,
             conversationMessages,
             workspace?.linkedIdeationSessionId ?? null,
           )
-        : null,
+        : null),
     [
       conversation,
       conversationMessages,
+      focusedIdeationSessionId,
       shouldLoadIdeationData,
       workspace?.linkedIdeationSessionId,
     ],
+  );
+  const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
+    status: VerificationStatus;
+    inProgress: boolean;
+  } | null>(null);
+  const conversationId = conversation?.id ?? null;
+  const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] =
+    useState<string | null>(() => readSelectedTaskForConversation(conversationId));
+  useEffect(() => {
+    setDisplayedVerificationStatus(null);
+  }, [attachedSessionId]);
+  useEffect(() => {
+    setTaskArtifactSelectedIdState(readSelectedTaskForConversation(conversationId));
+  }, [conversationId]);
+  const setTaskArtifactSelectedId = useCallback(
+    (id: string | null) => {
+      setTaskArtifactSelectedIdState(id);
+      writeSelectedTaskForConversation(conversationId, id);
+    },
+    [conversationId],
   );
   const sessionQuery = useQuery({
     queryKey: ideationKeys.sessionWithData(attachedSessionId ?? ""),
@@ -231,6 +306,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const verificationQuery = useVerificationStatus(
     shouldLoadVerificationData ? attachedSessionId ?? undefined : undefined,
   );
+  const verificationChildrenQuery = useQuery({
+    queryKey: ["childSessions", attachedSessionId, "verification"],
+    queryFn: () => ideationApi.sessions.getChildren(attachedSessionId!, "verification"),
+    enabled: shouldLoadVerificationData && !!attachedSessionId,
+    staleTime: 4_000,
+  });
   const dependencyQuery = useDependencyGraph(
     shouldLoadDependencyGraph ? attachedSessionId ?? "" : "",
   );
@@ -241,9 +322,34 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const dependencyGraph = attachedSessionId && sessionData ? dependencyQuery.data ?? null : null;
   const proposalCount = proposals.length;
   const verificationState =
-    verificationData?.status ?? sessionData?.session.verificationStatus ?? "unverified";
+    displayedVerificationStatus?.status ??
+    verificationData?.status ??
+    sessionData?.session.verificationStatus ??
+    "unverified";
   const verificationInProgress =
-    verificationData?.inProgress ?? sessionData?.session.verificationInProgress ?? false;
+    displayedVerificationStatus?.inProgress ??
+    verificationData?.inProgress ??
+    sessionData?.session.verificationInProgress ??
+    false;
+  const latestVerificationChildId = useMemo(
+    () => getLatestIdeationChildId(verificationChildrenQuery.data),
+    [verificationChildrenQuery.data],
+  );
+  useEffect(() => {
+    if (
+      effectiveActiveTab !== "verification" ||
+      !attachedSessionId ||
+      !latestVerificationChildId
+    ) {
+      return;
+    }
+    onFocusVerificationSession?.(attachedSessionId, latestVerificationChildId);
+  }, [
+    attachedSessionId,
+    effectiveActiveTab,
+    latestVerificationChildId,
+    onFocusVerificationSession,
+  ]);
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
       queryClient.setQueryData(["agents", "artifact", updatedPlan.id], updatedPlan);
@@ -256,7 +362,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       className="h-full w-full min-w-0 flex flex-col overflow-hidden border-l"
       style={{
         background: "var(--bg-surface)",
-        borderColor: "var(--border-subtle)",
+        borderColor: "var(--overlay-faint)",
       }}
       data-testid="agents-artifact-pane"
     >
@@ -267,24 +373,45 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           background: withAlpha("var(--bg-surface)", 60),
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          borderColor: "var(--border-subtle)",
+          borderColor: "var(--overlay-faint)",
         }}
       >
         <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
           {visibleTabs.map(({ id, label, icon: Icon }) => {
             const isActive = effectiveActiveTab === id;
             const count = id === "proposal" ? proposalCount : 0;
-            const showVerificationDot =
-              id === "verification" &&
-              (verificationInProgress ||
+
+            let iconColor: string | undefined;
+            let iconPulse = false;
+            if (id === "verification") {
+              if (verificationInProgress) {
+                iconColor = "var(--accent-primary)";
+                iconPulse = true;
+              } else if (
                 verificationState === "verified" ||
-                verificationState === "imported_verified" ||
-                verificationState === "needs_revision");
+                verificationState === "imported_verified"
+              ) {
+                iconColor = "var(--status-success)";
+              } else if (verificationState === "needs_revision") {
+                iconColor = "var(--status-warning)";
+              }
+            }
+
             return (
               <button
                 key={id}
                 type="button"
-                onClick={() => onTabChange(id)}
+                onClick={() => {
+                  if (
+                    id === "tasks" &&
+                    effectiveActiveTab === "tasks" &&
+                    taskArtifactSelectedId
+                  ) {
+                    setTaskArtifactSelectedId(null);
+                    return;
+                  }
+                  onTabChange(id);
+                }}
                 className={cn(
                   "relative flex h-full self-stretch items-center gap-1.5 bg-transparent px-3 text-[12px] font-medium transition-colors duration-150 rounded-none shadow-none outline-none ring-0 focus:ring-0 focus:outline-none focus-visible:outline-none focus-visible:ring-0 appearance-none",
                   id === "tasks" ? "hidden xl:flex" : ""
@@ -297,24 +424,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 data-testid={`agents-artifact-tab-${id}`}
                 data-theme-button-skip="true"
               >
-                <Icon className="w-4 h-4 shrink-0" />
+                <Icon
+                  className={cn("w-4 h-4 shrink-0", iconPulse ? "animate-pulse" : "")}
+                  style={iconColor ? { color: iconColor } : undefined}
+                />
                 <span>{label}</span>
-                {showVerificationDot && (
-                  <span
-                    className={cn(
-                      "w-2 h-2 rounded-full shrink-0",
-                      verificationInProgress ? "animate-pulse" : ""
-                    )}
-                    style={{
-                      background:
-                        verificationState === "needs_revision"
-                          ? "var(--status-warning)"
-                          : verificationState === "verified" || verificationState === "imported_verified"
-                            ? "var(--status-success)"
-                            : "var(--accent-primary)",
-                    }}
-                  />
-                )}
                 {count > 0 && (
                   <span
                     className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
@@ -436,6 +550,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           proposals={proposals}
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
+          onFocusVerificationSession={onFocusVerificationSession}
+          onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
+          taskArtifactSelectedId={taskArtifactSelectedId}
+          onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
         />
       </div>
     </aside>
@@ -459,6 +577,13 @@ type ArtifactContentProps = {
   proposals: TaskProposal[];
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
+  onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
+  onDisplayedVerificationStatusChange: (status: {
+    status: VerificationStatus;
+    inProgress: boolean;
+  } | null) => void;
+  taskArtifactSelectedId: string | null;
+  onTaskArtifactSelectedIdChange: (id: string | null) => void;
 };
 
 function ArtifactContent({
@@ -478,10 +603,45 @@ function ArtifactContent({
   proposals,
   onPublishWorkspace,
   isPublishingWorkspace,
+  onFocusVerificationSession: _onFocusVerificationSession,
+  onDisplayedVerificationStatusChange,
+  taskArtifactSelectedId,
+  onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
   const criticalPathSet = useMemo(
     () => new Set(dependencyGraph?.criticalPath ?? []),
     [dependencyGraph?.criticalPath],
+  );
+  const [viewingProposalId, setViewingProposalId] = useState<string | null>(null);
+  const [viewingEnrichment, setViewingEnrichment] = useState<ProposalDetailEnrichment | undefined>(undefined);
+  const viewingProposal = viewingProposalId
+    ? proposals.find((p) => p.id === viewingProposalId) ?? null
+    : null;
+  const handleViewProposal = useCallback(
+    (proposalId: string, enrichment: ProposalDetailEnrichment) => {
+      setViewingProposalId(proposalId);
+      setViewingEnrichment(enrichment);
+    },
+    [],
+  );
+  const handleCloseProposalDetail = useCallback(() => {
+    setViewingProposalId(null);
+    setViewingEnrichment(undefined);
+  }, []);
+  // Opening the Verification tab no longer auto-focuses the chat on the
+  // verification child. The user switches chats explicitly via the composer
+  // chat-focus pill instead.
+  const handleDisplayedVerificationChildChange = useCallback(
+    (_childSessionId: string | null) => {
+      // intentionally empty — see comment above.
+    },
+    [],
+  );
+  const handleDisplayedVerificationStatusChange = useCallback(
+    (status: VerificationStatus, inProgress: boolean) => {
+      onDisplayedVerificationStatusChange({ status, inProgress });
+    },
+    [onDisplayedVerificationStatusChange],
   );
 
   if (activeTab === "publish") {
@@ -528,7 +688,11 @@ function ArtifactContent({
     return (
       <div className="flex h-full min-h-0 flex-col">
         <Suspense fallback={<EmptyArtifactState title="Loading verification..." />}>
-          <LazyVerificationPanel session={session} />
+          <LazyVerificationPanel
+            session={session}
+            onDisplayedVerificationChildChange={handleDisplayedVerificationChildChange}
+            onDisplayedVerificationStatusChange={handleDisplayedVerificationStatusChange}
+          />
         </Suspense>
       </div>
     );
@@ -539,26 +703,40 @@ function ArtifactContent({
       return <EmptyArtifactState title="No proposals yet" />;
     }
     return (
-      <Suspense fallback={<EmptyArtifactState title="Loading proposals..." />}>
-        <LazyProposalsTabContent
-          session={session}
-          proposals={proposals}
-          dependencyGraph={dependencyGraph}
-          criticalPathSet={criticalPathSet}
-          highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
-          isReadOnly
-          onEditProposal={noop}
-          onNavigateToTask={noop}
-          onViewHistoricalPlan={noop}
-          onImportPlan={noop}
-          onClearAll={noop}
-          onAcceptPlan={noop}
-          onReviewSync={noop}
-          onUndoSync={noop}
-          onDismissSync={noop}
-          hideToolbar
-        />
-      </Suspense>
+      <>
+        <Suspense fallback={<EmptyArtifactState title="Loading proposals..." />}>
+          <LazyProposalsTabContent
+            session={session}
+            proposals={proposals}
+            dependencyGraph={dependencyGraph}
+            criticalPathSet={criticalPathSet}
+            highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
+            isReadOnly
+            onEditProposal={noop}
+            onNavigateToTask={noop}
+            onViewProposal={handleViewProposal}
+            {...(viewingProposalId != null && { selectedProposalId: viewingProposalId })}
+            onViewHistoricalPlan={noop}
+            onImportPlan={noop}
+            onClearAll={noop}
+            onAcceptPlan={noop}
+            onReviewSync={noop}
+            onUndoSync={noop}
+            onDismissSync={noop}
+            hideToolbar
+          />
+        </Suspense>
+        {viewingProposal && (
+          <Suspense fallback={null}>
+            <LazyProposalDetailSheet
+              proposal={viewingProposal}
+              {...(viewingEnrichment !== undefined && { enrichment: viewingEnrichment })}
+              isReadOnly
+              onClose={handleCloseProposalDetail}
+            />
+          </Suspense>
+        )}
+      </>
     );
   }
 
@@ -567,6 +745,8 @@ function ArtifactContent({
       projectId={projectId}
       sessionId={attachedSessionId}
       mode={taskMode}
+      selectedTaskId={taskArtifactSelectedId}
+      onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
     />
   );
 }
@@ -622,7 +802,7 @@ function AgentPlanPanel({
   }
 
   return (
-    <div className="min-h-full p-4">
+    <div className="min-h-full px-4 pb-4 pt-4">
       {planArtifact ? (
         isEditing ? (
           <Suspense fallback={<EmptyArtifactState title="Loading plan editor..." />}>
@@ -644,6 +824,7 @@ function AgentPlanPanel({
               onExport={() => setExportDialogOpen(true)}
               isExpanded={isPlanExpanded}
               onExpandedChange={setIsPlanExpanded}
+              chromeless
               {...(teamMetadata !== undefined && { teamMetadata })}
               {...(session !== null && { onCreateProposals: handleCreateProposals })}
             />
@@ -676,34 +857,69 @@ function TaskArtifactSurface({
   projectId,
   sessionId,
   mode,
+  selectedTaskId,
+  onSelectedTaskIdChange,
 }: {
   projectId: string | null;
   sessionId: string;
   mode: AgentTaskArtifactMode;
+  selectedTaskId: string | null;
+  onSelectedTaskIdChange: (id: string | null) => void;
 }) {
+  const handleTaskSelect = useCallback(
+    (taskId: string) => {
+      onSelectedTaskIdChange(taskId);
+    },
+    [onSelectedTaskIdChange],
+  );
+  const handleCloseTaskDetail = useCallback(() => {
+    onSelectedTaskIdChange(null);
+  }, [onSelectedTaskIdChange]);
+
   if (!projectId) {
     return <EmptyArtifactState title="No project selected" />;
   }
 
+  const backLabel = mode === "kanban" ? "Back to Kanban" : "Back to Graph";
+  const detailOverlay = selectedTaskId ? (
+    <Suspense fallback={null}>
+      <LazyAgentsTaskDetailOverlay
+        projectId={projectId}
+        selectedTaskIdOverride={selectedTaskId}
+        onCloseOverride={handleCloseTaskDetail}
+        backLabel={backLabel}
+        onBack={handleCloseTaskDetail}
+        constrainContent
+      />
+    </Suspense>
+  ) : null;
+
   if (mode === "kanban") {
     return (
-      <div className="h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
+      <div className="relative h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
         <Suspense fallback={<EmptyArtifactState title="Loading task board..." />}>
-          <LazyTaskBoard projectId={projectId} ideationSessionId={sessionId} />
+          <LazyTaskBoard
+            projectId={projectId}
+            ideationSessionId={sessionId}
+            onTaskSelect={handleTaskSelect}
+          />
         </Suspense>
+        {detailOverlay}
       </div>
     );
   }
 
   return (
-    <div className="h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
+    <div className="relative h-full min-h-[520px] overflow-hidden bg-[var(--bg-base)]">
       <Suspense fallback={<EmptyArtifactState title="Loading task graph..." />}>
         <LazyTaskGraphView
           projectId={projectId}
           ideationSessionId={sessionId}
           hideCanvasControls
+          onTaskSelect={handleTaskSelect}
         />
       </Suspense>
+      {detailOverlay}
     </div>
   );
 }

@@ -102,8 +102,7 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-heading-word")).toHaveTextContent("agent");
     expect(screen.getByTestId("agents-start-project")).toBeInTheDocument();
     expect(screen.getByTestId("agents-start-base")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-start-provider")).toBeInTheDocument();
-    expect(screen.getByTestId("agents-start-model")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
     expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
@@ -210,6 +209,93 @@ describe("AgentsView start conversation", () => {
       })
     );
     invalidateSpy.mockRestore();
+  });
+
+  it("starts with the remembered runtime when the project has a valid runtime preference", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "claude",
+          modelId: "opus",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "use the remembered runtime" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerHarness: "claude",
+          modelId: "opus",
+        })
+      )
+    );
+  });
+
+  it("falls back to the default runtime when the remembered provider is no longer valid", async () => {
+    mockAgentViewData();
+    resetAgentSessionState({
+      lastRuntimeByProjectId: {
+        "project-1": {
+          provider: "removed-provider" as never,
+          modelId: "retired-model",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "recover runtime defaults" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerHarness: "codex",
+          modelId: "gpt-5.4",
+        })
+      )
+    );
+  });
+
+  it("remembers runtime changes made on the starter composer before creating a conversation", async () => {
+    mockAgentViewData();
+
+    renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+    await userEvent.click(screen.getByTestId("agents-start-provider-claude"));
+    await userEvent.click(screen.getByTestId("agents-start-model-opus"));
+
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().lastRuntimeByProjectId["project-1"]).toEqual({
+        provider: "claude",
+        modelId: "opus",
+      })
+    );
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "persist this runtime" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerHarness: "claude",
+          modelId: "opus",
+        })
+      )
+    );
   });
 
   it("paints the conversation shell after seeding before the heavy agent start resolves", async () => {

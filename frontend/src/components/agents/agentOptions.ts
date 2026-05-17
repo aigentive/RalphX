@@ -29,24 +29,36 @@ export const DEFAULT_AGENT_RUNTIME: AgentRuntimeSelection = {
   modelId: "gpt-5.4",
 };
 
+function isAgentProvider(value: unknown): value is AgentProvider {
+  return AGENT_PROVIDER_OPTIONS.some((provider) => provider.id === value);
+}
+
 export function defaultModelForProvider(provider: AgentProvider): string {
-  return AGENT_MODEL_OPTIONS[provider][0]?.id ?? DEFAULT_AGENT_RUNTIME.modelId;
+  return AGENT_MODEL_OPTIONS[provider]?.[0]?.id ?? DEFAULT_AGENT_RUNTIME.modelId;
 }
 
 export function normalizeRuntimeSelection(
-  runtime: AgentRuntimeSelection | null | undefined
+  runtime: unknown
 ): AgentRuntimeSelection {
-  if (!runtime) {
+  if (!runtime || typeof runtime !== "object") {
     return DEFAULT_AGENT_RUNTIME;
   }
 
-  const availableModels = AGENT_MODEL_OPTIONS[runtime.provider] ?? [];
-  if (availableModels.some((model) => model.id === runtime.modelId)) {
-    return runtime;
+  const candidate = runtime as Partial<Record<keyof AgentRuntimeSelection, unknown>>;
+  if (!isAgentProvider(candidate.provider)) {
+    return DEFAULT_AGENT_RUNTIME;
+  }
+
+  const provider = candidate.provider;
+  const modelId = typeof candidate.modelId === "string" ? candidate.modelId : "";
+  const availableModels = AGENT_MODEL_OPTIONS[provider];
+
+  if (availableModels.some((model) => model.id === modelId)) {
+    return { provider, modelId };
   }
 
   return {
-    provider: runtime.provider,
-    modelId: defaultModelForProvider(runtime.provider),
+    provider,
+    modelId: defaultModelForProvider(provider),
   };
 }

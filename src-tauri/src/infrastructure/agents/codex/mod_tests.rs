@@ -503,6 +503,63 @@ fn compose_codex_prompt_uses_shared_prompt_when_harness_is_explicitly_allowed() 
 }
 
 #[test]
+fn compose_codex_prompt_injects_directed_internal_skill_context() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+
+    std::fs::create_dir_all(root.join("agents/ralphx-chat-project/shared"))
+        .expect("create shared prompt dir");
+    std::fs::write(
+        root.join("agents/ralphx-chat-project/agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+capabilities:
+  internal_skills:
+    allowed:
+      - workspace-swe
+"#,
+    )
+    .expect("write shared definition");
+    std::fs::write(
+        root.join("agents/ralphx-chat-project/shared/prompt.md"),
+        "Project chat prompt",
+    )
+    .expect("write shared prompt");
+    std::fs::create_dir_all(root.join("plugins/app/skills/workspace-swe"))
+        .expect("create skill dir");
+    std::fs::write(
+        root.join("plugins/app/skills/workspace-swe/SKILL.md"),
+        r#"---
+name: workspace-swe
+description: Workspace bridge guidance
+disable-model-invocation: true
+user-invocable: false
+---
+# Workspace SWE
+Report only unless workspace intervention is explicit.
+"#,
+    )
+    .expect("write skill");
+
+    let composed = compose_codex_prompt(
+        "<!-- ralphx_internal_skill=workspace-swe -->\nBridge payload",
+        Some(&plugin_dir),
+        Some("ralphx-chat-project"),
+    );
+
+    assert!(composed.contains("Project chat prompt"));
+    assert!(
+        composed.contains("<ralphx_internal_skills>"),
+        "expected internal skill context to be injected"
+    );
+    assert!(
+        composed.contains("Report only unless workspace intervention is explicit."),
+        "expected directed skill body to be injected"
+    );
+}
+
+#[test]
 fn compose_codex_prompt_does_not_fall_back_to_legacy_prompt_when_canonical_agent_lacks_codex_prompt(
 ) {
     let temp_dir = tempfile::tempdir().expect("temp dir");

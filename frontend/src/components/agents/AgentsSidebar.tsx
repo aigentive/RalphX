@@ -200,6 +200,10 @@ export function AgentsSidebar({
         backdropFilter: "blur(20px) saturate(180%)",
         WebkitBackdropFilter: "blur(20px) saturate(180%)",
         borderColor: "var(--overlay-faint)",
+        // Inner edge shadow is light-mode only — token resolves to `none`
+        // in the dark theme so we don't bleed shadow over already-dark
+        // surfaces.
+        boxShadow: "var(--sidebar-edge-shadow, none)",
       }}
       data-testid="agents-sidebar"
     >

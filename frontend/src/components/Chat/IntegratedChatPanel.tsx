@@ -111,6 +111,8 @@ interface IntegratedChatPanelProps {
   inputContainerClassName?: string;
   /** Custom header content to replace default context indicator */
   headerContent?: React.ReactNode;
+  /** Optional secondary row rendered below the primary chat header. */
+  headerSubContent?: React.ReactNode;
   /** Hide provider/model/stat chips and conversation switcher in the header. */
   hideHeaderSessionControls?: boolean;
   /** Hide the secondary session toolbar below the header. */
@@ -170,6 +172,10 @@ export interface IntegratedChatComposerRenderProps {
   questionMode?: QuestionMode;
   value?: string;
   onChange?: (value: string) => void;
+  /** Model in use for this chat context, when known. Read-only signal. */
+  effectiveModel?: { id: string; label: string } | undefined;
+  /** Provider harness label (e.g. "claude", "codex") for this chat context. */
+  providerHarness?: string | null | undefined;
 }
 
 export function IntegratedChatPanel({
@@ -179,6 +185,7 @@ export function IntegratedChatPanel({
   showHelperTextAlways = false,
   inputContainerClassName,
   headerContent,
+  headerSubContent,
   hideHeaderSessionControls = false,
   hideSessionToolbar = false,
   surfaceBackground,
@@ -1072,6 +1079,7 @@ export function IntegratedChatPanel({
     "w-full",
     contentWidthClassName ? ["mx-auto", contentWidthClassName] : undefined,
   );
+  const transcriptTopInsetClassName = undefined;
 
   return (
     <>
@@ -1086,12 +1094,16 @@ export function IntegratedChatPanel({
       >
         {/* Inner surface — flat with blur, no perimeter or radius. */}
         <div
-          className="flex-1 flex flex-col overflow-hidden"
-          style={{
-            background: surfaceBackground ?? withAlpha("var(--bg-surface)", 92),
-            backdropFilter: "blur(20px) saturate(180%)",
-            WebkitBackdropFilter: "blur(20px) saturate(180%)",
-          }}
+          className="relative flex-1 flex flex-col overflow-hidden"
+          style={
+            surfaceBackground === "transparent"
+              ? { background: "transparent" }
+              : {
+                  background: surfaceBackground ?? withAlpha("var(--bg-surface)", 92),
+                  backdropFilter: "blur(20px) saturate(180%)",
+                  WebkitBackdropFilter: "blur(20px) saturate(180%)",
+                }
+          }
         >
           {/* Header — theme-agnostic subtle tint keeps the embedded chrome
              aligned across themes.
@@ -1255,6 +1267,7 @@ export function IntegratedChatPanel({
               providerHarness={activeConversationMeta?.providerHarness ?? null}
               providerSessionId={activeConversationMeta?.providerSessionId ?? null}
               contentWidthClassName={contentWidthClassName}
+              topInsetClassName={transcriptTopInsetClassName}
               hasOlderMessages={
                 isTeammateTab
                   ? teammateConversationHistory.hasOlderMessages
@@ -1414,6 +1427,11 @@ export function IntegratedChatPanel({
                     onFilesSelected: uploadFiles,
                     onRemoveAttachment: removeAttachment,
                     attachmentsUploading: uploading,
+                    effectiveModel,
+                    providerHarness:
+                      activeConversationMeta?.providerHarness ??
+                      fallbackProviderHarness ??
+                      null,
                     ...(activeQuestion
                       ? {
                           value: questionInputValue,

@@ -12,6 +12,9 @@ Suggest a new task for the project based on conversation or codebase analysis
 ### list_tasks
 Retrieve a list of tasks for the project (filtered by status, priority, etc.)
 
+### append_task_to_ideation_plan
+Append a one-off task to an accepted ideation plan while its plan branch is still active. Open PR / waiting-on-PR plans can still receive follow-up tasks; closed, merged, terminal, or actively merging plans cannot.
+
 ### search_memories / get_memory / get_memories_for_paths
 Read project memory when it helps answer the user or prepare an ideation prompt.
 

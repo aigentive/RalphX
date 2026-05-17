@@ -436,6 +436,7 @@ export const MessageItem = React.memo(function MessageItem({
                   className="h-4 w-4 rounded-sm p-0 text-text-primary/40 hover:bg-[var(--overlay-moderate)] hover:text-text-primary/70"
                   aria-label={copied ? "Copied" : "Copy message"}
                   data-testid="message-copy-button"
+                  data-theme-button-skip="true"
                 >
                   {copied ? (
                     <Check className="h-3 w-3 text-[var(--status-success)]" />

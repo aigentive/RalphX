@@ -13,7 +13,11 @@ import {
   getAgentTerminalUnavailableReason,
   runtimeFromConversation,
 } from "./agentConversationRuntime";
-import { isAgentWorkspacePublishCurrent } from "./agentWorkspacePublishState";
+import {
+  getAgentWorkspaceTerminalPublicationLabel,
+  hasPublishedWorkspacePr,
+  isAgentWorkspacePublishCurrent,
+} from "./agentWorkspacePublishState";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 
@@ -53,8 +57,16 @@ export function useAgentsWorkspaceModel({
       null
     : null;
   const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime);
+  const terminalPublicationLabel =
+    getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
+  const activeWorkspaceHasPublishedPr = hasPublishedWorkspacePr(activeWorkspace);
+  const canInspectActiveWorkspaceFreshness =
+    Boolean(activeWorkspace) &&
+    !terminalPublicationLabel &&
+    (activeWorkspace?.mode === "edit" || activeWorkspaceHasPublishedPr) &&
+    (activeWorkspace?.mode !== "edit" || activeWorkspace?.status !== "missing");
   const canHydrateActiveWorkspaceFreshness = useDeferredAgentHydration(
-    selectedConversationId && activeWorkspace?.mode === "edit"
+    selectedConversationId && canInspectActiveWorkspaceFreshness
       ? selectedConversationId
       : null,
   );
@@ -64,16 +76,17 @@ export function useAgentsWorkspaceModel({
     enabled:
       canHydrateActiveWorkspaceFreshness &&
       !!selectedConversationId &&
-      activeWorkspace?.mode === "edit" &&
-      activeWorkspace.status !== "missing",
+      canInspectActiveWorkspaceFreshness,
     staleTime: 5_000,
   });
   const isPublishShortcutCurrent = isAgentWorkspacePublishCurrent(
     activeWorkspace,
     activeWorkspaceFreshnessQuery.data,
   );
-  const publishShortcutLabel = activeWorkspaceFreshnessQuery.data?.isBaseAhead
-    ? `Update from ${activeWorkspace?.baseRef ?? activeWorkspaceFreshnessQuery.data.baseRef}`
+  const publishShortcutLabel = terminalPublicationLabel
+    ? terminalPublicationLabel
+    : activeWorkspaceFreshnessQuery.data?.isBaseAhead
+    ? `Update from ${activeWorkspaceFreshnessQuery.data.baseRef}`
     : isPublishShortcutCurrent
       ? "Published"
       : "Commit & Publish";

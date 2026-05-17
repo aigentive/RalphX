@@ -41,6 +41,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   restoreConversationMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
+  getLatestChildSessionIdMock: vi.fn(),
   getWorkspaceChangesMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
@@ -81,6 +82,7 @@ const {
   restoreConversationMock,
   getPlanBranchesMock,
   listIdeationSessionsMock,
+  getLatestChildSessionIdMock,
   getWorkspaceChangesMock,
   getWorkspaceReviewMock,
   getWorkspaceDiffMock,
@@ -304,7 +306,10 @@ vi.mock("@/api/chat", () => ({
 vi.mock("@/api/ideation", () => ({
   ideationApi: {
     sessions: {
+      get: vi.fn(),
       getWithData: vi.fn(),
+      getLatestChildSessionId: (...args: unknown[]) =>
+        getLatestChildSessionIdMock(...args),
       list: (...args: unknown[]) => listIdeationSessionsMock(...args),
       updateTitle: vi.fn(),
       archive: vi.fn(),
@@ -346,6 +351,7 @@ vi.mock("@/api/plan-branch", () => ({
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     headerContent,
+    headerSubContent,
     contentWidthClassName,
     renderComposer,
     ideationSessionId,
@@ -356,6 +362,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     onChildSessionNavigate,
   }: {
     headerContent?: ReactNode;
+    headerSubContent?: ReactNode;
     contentWidthClassName?: string;
     renderComposer?: (props: Record<string, unknown>) => ReactNode;
     ideationSessionId?: string;
@@ -386,6 +393,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         }
       >
         {headerContent}
+        {headerSubContent}
         {onChildSessionNavigate ? (
           <button
             type="button"
@@ -421,18 +429,37 @@ vi.mock("./AgentsArtifactPane", () => {
     AgentsArtifactPane: ({
     conversation,
     activeTab,
+    focusedIdeationSessionId,
     onClose,
+    onFocusVerificationSession,
     onPublishWorkspace,
   }: {
     conversation: AgentConversation | null;
     activeTab?: string;
+    focusedIdeationSessionId?: string | null;
     onClose?: () => void;
+    onFocusVerificationSession?: (parentSessionId: string, childSessionId: string) => void;
     onPublishWorkspace?: (conversationId: string) => Promise<void>;
   }) => (
-    <div data-testid="agents-artifact-pane" data-active-tab={activeTab ?? ""}>
+    <div
+      data-testid="agents-artifact-pane"
+      data-active-tab={activeTab ?? ""}
+      data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+    >
       {onClose ? (
         <button type="button" data-testid="agents-artifact-pane-close" onClick={onClose}>
           Close
+        </button>
+      ) : null}
+      {onFocusVerificationSession ? (
+        <button
+          type="button"
+          data-testid="mock-focus-verification-session"
+          onClick={() =>
+            onFocusVerificationSession("session-parent", "verification-child")
+          }
+        >
+          Focus verification
         </button>
       ) : null}
       {conversation && onPublishWorkspace ? (
@@ -448,10 +475,6 @@ vi.mock("./AgentsArtifactPane", () => {
   ),
   };
 });
-
-vi.mock("./useProjectAgentBridgeEvents", () => ({
-  useProjectAgentBridgeEvents: () => undefined,
-}));
 
 vi.mock("./useAgentConversationTitleEvents", () => ({
   useAgentConversationTitleEvents: () => undefined,
@@ -646,30 +669,34 @@ export function mockSessionWithData(
   overrides?: Partial<NonNullable<Awaited<ReturnType<typeof ideationApi.sessions.getWithData>>>["session"]>,
   proposals: NonNullable<Awaited<ReturnType<typeof ideationApi.sessions.getWithData>>>["proposals"] = []
 ) {
+  const session: NonNullable<
+    Awaited<ReturnType<typeof ideationApi.sessions.getWithData>>
+  >["session"] = {
+    id: "session-1",
+    projectId: "project-1",
+    title: "Agent Plan",
+    titleSource: "auto",
+    status: "active" as const,
+    planArtifactId: null,
+    seedTaskId: null,
+    parentSessionId: null,
+    teamMode: null,
+    teamConfig: null,
+    createdAt: "2026-04-23T09:00:00Z",
+    updatedAt: "2026-04-23T09:00:00Z",
+    archivedAt: null,
+    convertedAt: null,
+    verificationStatus: "unverified" as const,
+    verificationInProgress: false,
+    gapScore: null,
+    inheritedPlanArtifactId: null,
+    sessionPurpose: "general" as const,
+    acceptanceStatus: null,
+    ...overrides,
+  };
+  vi.mocked(ideationApi.sessions.get).mockResolvedValue(session);
   vi.mocked(ideationApi.sessions.getWithData).mockResolvedValue({
-    session: {
-      id: "session-1",
-      projectId: "project-1",
-      title: "Agent Plan",
-      titleSource: "auto",
-      status: "active",
-      planArtifactId: null,
-      seedTaskId: null,
-      parentSessionId: null,
-      teamMode: null,
-      teamConfig: null,
-      createdAt: "2026-04-23T09:00:00Z",
-      updatedAt: "2026-04-23T09:00:00Z",
-      archivedAt: null,
-      convertedAt: null,
-      verificationStatus: "unverified",
-      verificationInProgress: false,
-      gapScore: null,
-      inheritedPlanArtifactId: null,
-      sessionPurpose: "general",
-      acceptanceStatus: null,
-      ...overrides,
-    },
+    session,
     proposals,
     messages: [],
   });
@@ -891,8 +918,15 @@ export function setupAgentsViewTest() {
     id: "conversation-2",
     title: "Fix agent landing flow",
   });
+  vi.mocked(ideationApi.sessions.get).mockReset();
   vi.mocked(ideationApi.sessions.getWithData).mockReset();
   mockSessionWithData();
+  getLatestChildSessionIdMock.mockReset();
+  getLatestChildSessionIdMock.mockResolvedValue({
+    sessionId: "session-1",
+    purpose: "verification",
+    latestChildSessionId: null,
+  });
   archiveConversationMock.mockResolvedValue(undefined);
   restoreConversationMock.mockResolvedValue(undefined);
   vi.mocked(invoke).mockReset();

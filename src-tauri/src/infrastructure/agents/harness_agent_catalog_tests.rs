@@ -741,6 +741,27 @@ fn project_chat_codex_surface_can_advance_ideation_send_message_actions() {
 }
 
 #[test]
+fn project_chat_codex_surface_can_append_to_open_ideation_plans() {
+    let root = project_root();
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-chat-project");
+    let prompt = load_harness_agent_prompt(&root, "ralphx-chat-project", AgentPromptHarness::Codex)
+        .expect("missing codex prompt for ralphx-chat-project");
+
+    assert_eq!(metadata.mcp_transport.as_deref(), Some("external"));
+    assert!(
+        metadata
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "v1_append_task_to_plan"),
+        "project chat Codex must use the external append tool for accepted ideation follow-ups"
+    );
+    assert!(
+        prompt.contains("v1_append_task_to_plan") && prompt.contains("waiting-on-PR"),
+        "project chat Codex prompt must describe append behavior for open accepted ideation plans"
+    );
+}
+
+#[test]
 fn project_chat_claude_surface_uses_external_ideation_tools() {
     let root = project_root();
     let metadata = load_canonical_claude_metadata(&root, "ralphx-chat-project");
@@ -759,6 +780,28 @@ fn project_chat_claude_surface_uses_external_ideation_tools() {
     assert!(
         prompt.contains("v1_start_ideation") && prompt.contains("next_action` yourself"),
         "project chat Claude prompt must describe the external ideation flow"
+    );
+}
+
+#[test]
+fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
+    let root = project_root();
+    let metadata = load_canonical_claude_metadata(&root, "ralphx-chat-project");
+    let prompt =
+        load_harness_agent_prompt(&root, "ralphx-chat-project", AgentPromptHarness::Claude)
+            .expect("missing claude prompt for ralphx-chat-project");
+
+    assert_eq!(metadata.mcp_transport.as_deref(), Some("external"));
+    assert!(
+        metadata
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "v1_append_task_to_plan"),
+        "project chat Claude must use the external append tool for accepted ideation follow-ups"
+    );
+    assert!(
+        prompt.contains("v1_append_task_to_plan") && prompt.contains("waiting-on-PR"),
+        "project chat Claude prompt must describe append behavior for open accepted ideation plans"
     );
 }
 

@@ -771,6 +771,48 @@ describe("App", () => {
     });
   });
 
+  describe("Welcome screen navbar collapse", () => {
+    it("hides view tabs, project selector, and reviews toggle when no projects exist", async () => {
+      const { useProjects } = await import("@/hooks/useProjects");
+      vi.mocked(useProjects).mockReturnValueOnce({
+        data: [],
+        isLoading: false,
+      } as never);
+      useProjectStore.setState({
+        activeProjectId: null,
+        projects: {},
+        isInitialized: true,
+      });
+
+      render(<App />);
+
+      // Welcome screen renders
+      expect(screen.getByTestId("welcome-screen")).toBeInTheDocument();
+
+      // View nav items are gone
+      expect(screen.queryByTestId("nav-agents")).toBeNull();
+      expect(screen.queryByTestId("nav-ideation")).toBeNull();
+      expect(screen.queryByTestId("nav-graph")).toBeNull();
+      expect(screen.queryByTestId("nav-kanban")).toBeNull();
+
+      // Right-side controls are hidden
+      expect(screen.queryByTestId("reviews-toggle")).toBeNull();
+
+      // Settings button still rendered (only thing left in Navigation)
+      expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
+    });
+
+    it("renders the full navbar when projects exist", () => {
+      // Default beforeEach already sets up demo-project-1, no welcome state
+      render(<App />);
+
+      expect(screen.queryByTestId("welcome-screen")).toBeNull();
+      expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
+      expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
+      expect(screen.getByTestId("reviews-toggle")).toBeInTheDocument();
+    });
+  });
+
   describe("Execution Status Query Scoping", () => {
     it("should call useExecutionStatus with undefined when no active project", () => {
       // This test verifies Phase 82 requirement: execution status queries are scoped to active project

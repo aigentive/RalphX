@@ -1389,17 +1389,6 @@ export async function restoreConversation(
   return transformConversation(raw);
 }
 
-export async function appendAgentBridgeMessage(
-  input: AppendAgentBridgeMessageInput
-): Promise<ChatMessageResponse | null> {
-  const raw = await typedInvoke(
-    "append_agent_bridge_message",
-    { input },
-    AgentMessageSchema.nullable()
-  );
-  return raw ? transformAgentMessage(raw) : null;
-}
-
 /**
  * Get the current agent run status for a conversation
  * @param conversationId The conversation ID
@@ -1461,7 +1450,6 @@ export const chatApi = {
   spawnConversationSessionNamer,
   archiveConversation,
   restoreConversation,
-  appendAgentBridgeMessage,
   getAgentConversationWorkspace,
   listWorkspaceOpenTargets,
   openAgentConversationWorkspace,
@@ -1473,6 +1461,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  closeAgentWorkspacePr,
   getAgentRunStatus,
   getAgentRunningStates,
   getBulkWorkspacePublicationStates,
@@ -2049,6 +2038,17 @@ export async function publishAgentConversationWorkspace(
     PublishAgentConversationWorkspaceResponseSchema
   );
   return transformPublishAgentConversationWorkspaceResponse(raw);
+}
+
+export async function closeAgentWorkspacePr(
+  conversationId: string
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "close_agent_workspace_pr",
+    { conversationId },
+    AgentConversationWorkspaceResponseSchema
+  );
+  return transformAgentConversationWorkspace(raw);
 }
 
 export async function startAgentConversation(

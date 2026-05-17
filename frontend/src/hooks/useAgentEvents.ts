@@ -8,11 +8,14 @@
  */
 
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { chatApi } from "@/api/chat";
 import { useEventBus } from "@/providers/EventProvider";
-import type { ChatMessageResponse } from "@/api/chat";
+import type {
+  ChatMessageResponse,
+  ConversationMessagesPageResponse,
+} from "@/api/chat";
 import {
   mergeConversationProviderMetadata,
   type ChatConversation,

@@ -16,9 +16,10 @@ use crate::infrastructure::agents::claude::{
     validate_mcp_tool_name,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    load_canonical_codex_metadata, load_harness_agent_prompt,
-    resolve_project_root_from_plugin_dir, AgentPromptHarness, CanonicalCodexAgentMetadata,
+    load_canonical_codex_metadata, load_harness_agent_prompt, resolve_project_root_from_plugin_dir,
+    AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
+use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_query, McpRuntimeContext,
 };

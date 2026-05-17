@@ -17,7 +17,7 @@ use crate::application::{StopMode, TaskCleanupService};
 use crate::domain::entities::plan_branch::PlanBranchStatus;
 use crate::domain::entities::{
     ChatContextType, ChatConversationId, IdeationSession, IdeationSessionId, IdeationSessionStatus,
-    ProjectId, TaskId,
+    ProjectId, SessionPurpose, TaskId,
 };
 
 use super::ideation_commands_types::{

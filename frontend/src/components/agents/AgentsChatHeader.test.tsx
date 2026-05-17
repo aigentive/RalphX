@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
 import { useChatStore } from "@/stores/chatStore";
-import { AgentsChatHeader } from "./AgentsChatHeader";
+import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
@@ -151,6 +151,173 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByText("gpt-5.4")).not.toBeInTheDocument();
   });
 
+  it("keeps the workspace chat header neutral without a focus badge", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        chatFocus={{ type: "workspace" }}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByTestId("agents-chat-focus-badge")).not.toBeInTheDocument();
+  });
+
+  it("keeps ideation focus out of the primary title row", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        chatFocus={{ type: "ideation", sessionId: "session-child" }}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("agents-chat-header")).toHaveAttribute(
+      "data-focus-type",
+      "ideation",
+    );
+    expect(screen.queryByTestId("agents-chat-focus-badge")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-chat-title-group")).not.toHaveClass(
+      "border-l-2",
+    );
+    expect(screen.queryByTestId("agents-chat-focus-return")).not.toBeInTheDocument();
+  });
+
+  it("keeps verification focus out of the primary title row", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        chatFocus={{
+          type: "verification",
+          parentSessionId: "session-parent",
+          childSessionId: "verification-child",
+        }}
+        artifactOpen={false}
+        activeArtifactTab="verification"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("agents-chat-header")).toHaveAttribute(
+      "data-focus-type",
+      "verification",
+    );
+    expect(screen.queryByTestId("agents-chat-focus-badge")).not.toBeInTheDocument();
+  });
+
+  it("constrains long focused-chat titles so header controls remain reachable", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({
+          title:
+            "Add execution bar to Agents screen layout with enough words to collide with header buttons",
+        })}
+        workspace={null}
+        chatFocus={{
+          type: "verification",
+          parentSessionId: "session-parent",
+          childSessionId: "verification-child",
+        }}
+        artifactOpen
+        activeArtifactTab="verification"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("agents-chat-title-button")).toHaveClass(
+      "max-w-full",
+    );
+    expect(screen.getByTestId("agents-terminal-toggle")).toBeInTheDocument();
+    expect(screen.getByLabelText("Close panel")).toBeInTheDocument();
+  });
+
+  it("renders child chat navigation in a separate focus switcher row", () => {
+    const onSelectFocus = vi.fn();
+
+    renderWithProviders(
+      <AgentsChatFocusBar
+        activeType="verification"
+        options={[
+          {
+            type: "workspace",
+            label: "Workspace",
+            description: "Show the workspace agent chat",
+          },
+          {
+            type: "ideation",
+            label: "Ideation",
+            description: "Show the attached ideation chat",
+            tone: "accent",
+          },
+          {
+            type: "verification",
+            label: "Verification",
+            description: "Show the verification agent chat",
+            tone: "warning",
+          },
+        ]}
+        onSelectFocus={onSelectFocus}
+      />,
+    );
+
+    expect(screen.getByTestId("agents-chat-focus-bar")).not.toHaveAttribute("style");
+    fireEvent.click(screen.getByTestId("agents-chat-focus-trigger"));
+    expect(screen.getByTestId("agents-chat-focus-return")).toHaveAttribute(
+      "data-active",
+      "false",
+    );
+    expect(screen.getByTestId("agents-chat-focus-option-verification")).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-chat-focus-option-ideation"));
+
+    expect(onSelectFocus).toHaveBeenCalledWith("ideation");
+  });
+
+  it("adds an opaque chat background to the focus switcher in split surfaces", () => {
+    renderWithProviders(
+      <AgentsChatFocusBar
+        activeType="workspace"
+        options={[
+          {
+            type: "workspace",
+            label: "Workspace",
+            description: "Show the workspace agent chat",
+          },
+          {
+            type: "ideation",
+            label: "Ideation",
+            description: "Show the attached ideation chat",
+            tone: "accent",
+          },
+        ]}
+        surfaceBackground
+        onSelectFocus={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("agents-chat-focus-bar")).toHaveStyle({
+      backgroundColor: "var(--bg-base)",
+    });
+  });
+
   it("marks conversation stats as pending while the active Agents turn has no usage yet", async () => {
     vi.spyOn(chatApi, "getConversationStats").mockResolvedValue(conversationStats());
     useChatStore
@@ -180,10 +347,33 @@ describe("AgentsChatHeader", () => {
     expect(screen.getAllByText("Pending")).toHaveLength(4);
   });
 
-  it("shows the workspace branch status when available", () => {
+  it("keeps the primary header focused on title and actions when a workspace is available", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation()}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByTestId("agents-workspace-status")).not.toBeInTheDocument();
+  });
+
+  it("shows the workspace branch status inside the focus subheader", () => {
+    renderWithProviders(
+      <AgentsChatFocusBar
+        activeType="workspace"
+        options={[
+          {
+            type: "workspace",
+            label: "Workspace",
+            description: "Show the workspace agent chat",
+          },
+        ]}
         workspace={{
           conversationId: "conversation-1",
           projectId: "project-1",
@@ -204,11 +394,7 @@ describe("AgentsChatHeader", () => {
           createdAt: "2026-04-23T09:00:00Z",
           updatedAt: "2026-04-23T09:00:00Z",
         }}
-        artifactOpen={false}
-        activeArtifactTab="plan"
-        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
-        onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectFocus={vi.fn()}
       />
     );
 
@@ -272,6 +458,38 @@ describe("AgentsChatHeader", () => {
 
     fireEvent.click(openWorkspace);
     expect(openWorkspaceTarget).toHaveBeenCalledWith("cursor");
+
+    fireEvent.click(screen.getByTestId("agents-publish-workspace"));
+
+    expect(openPublishPane).toHaveBeenCalledTimes(1);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("shows the commit and publish shortcut for ideation workspaces linked to execution branches", () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const openPublishPane = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({
+          id: "conversation-1",
+          agentMode: "ideation",
+        })}
+        workspace={conversationWorkspace({
+          conversationId: "conversation-1",
+          mode: "ideation",
+          linkedIdeationSessionId: "session-1",
+          linkedPlanBranchId: "plan-branch-1",
+        })}
+        artifactOpen={false}
+        activeArtifactTab="tasks"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={publish}
+        onOpenPublishPane={openPublishPane}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
 
     fireEvent.click(screen.getByTestId("agents-publish-workspace"));
 

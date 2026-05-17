@@ -1,10 +1,24 @@
 import { create } from "zustand";
-import type { AgentArtifactState } from "@/stores/agentSessionStore";
+import type { AgentArtifactState, AgentTaskArtifactMode } from "@/stores/agentSessionStore";
+
+const TASK_MODE_STORAGE_KEY = "ralphx:agents:taskMode";
+
+function loadPersistedTaskMode(): AgentTaskArtifactMode {
+  try {
+    const stored = localStorage.getItem(TASK_MODE_STORAGE_KEY);
+    if (stored === "kanban" || stored === "graph") return stored;
+  } catch { /* SSR / privacy mode */ }
+  return "graph";
+}
+
+export function persistTaskMode(mode: AgentTaskArtifactMode): void {
+  try { localStorage.setItem(TASK_MODE_STORAGE_KEY, mode); } catch { /* noop */ }
+}
 
 export const DEFAULT_AGENT_ARTIFACT_UI_STATE: AgentArtifactState = {
   isOpen: false,
   activeTab: "plan",
-  taskMode: "graph",
+  taskMode: loadPersistedTaskMode(),
 };
 
 interface AgentArtifactUiState {

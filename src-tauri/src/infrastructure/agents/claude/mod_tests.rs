@@ -719,6 +719,67 @@ description: Generates concise ideation session titles from user or plan context
 }
 
 #[test]
+fn build_spawnable_command_injects_internal_skill_context_for_claude_prompt() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-chat-project");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+capabilities:
+  internal_skills:
+    allowed:
+      - workspace-swe
+"#,
+    )
+    .expect("write shared definition");
+    std::fs::write(agent_root.join("shared/prompt.md"), "Project chat prompt")
+        .expect("write shared prompt");
+    std::fs::create_dir_all(root.join("plugins/app/skills/workspace-swe"))
+        .expect("create skill dir");
+    std::fs::write(
+        root.join("plugins/app/skills/workspace-swe/SKILL.md"),
+        r#"---
+name: workspace-swe
+description: Workspace bridge guidance
+disable-model-invocation: true
+user-invocable: false
+---
+# Workspace SWE
+Report only unless workspace intervention is explicit.
+"#,
+    )
+    .expect("write skill");
+
+    let spawnable = build_spawnable_command_with_mcp_runtime_context_for_test(
+        Path::new("/fake/claude"),
+        &plugin_dir,
+        "Use /workspace-swe skill for this bridge wake-up.",
+        Some("ralphx:ralphx-chat-project"),
+        None,
+        Path::new("/tmp"),
+        None,
+        None,
+        None,
+    )
+    .expect("build spawnable");
+    let args = spawnable.get_args_for_test();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt")
+        .expect("expected inline system prompt with internal skill context");
+    assert!(
+        args[prompt_index + 1].contains("Report only unless workspace intervention is explicit."),
+        "expected internal skill body in Claude system prompt"
+    );
+    assert!(
+        !args.contains(&"--append-system-prompt-file".to_string()),
+        "Claude must use inline prompt when internal skill context is selected"
+    );
+}
+
+#[test]
 fn test_materialize_generated_plugin_dir_skips_canonical_agent_symlinks_outside_project_root() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     let outside_dir = tempfile::TempDir::new().expect("create outside dir");

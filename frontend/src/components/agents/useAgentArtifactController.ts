@@ -8,7 +8,7 @@ import {
 } from "@/stores/agentSessionStore";
 
 import { getAgentArtifactStateSnapshot } from "./agentArtifactState";
-import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
+import { useAgentArtifactUiStore, persistTaskMode } from "./agentArtifactUiStore";
 import { preloadAgentsArtifactPane } from "./agentArtifactPanePreload";
 import type { DeferredFrameJob } from "./agentDeferredFrame";
 
@@ -164,6 +164,7 @@ export function useAgentArtifactController({
 
   const setArtifactTaskMode = useCallback(
     (conversationId: string, mode: AgentTaskArtifactMode) => {
+      persistTaskMode(mode);
       updateArtifactState(conversationId, (current) => ({
         ...current,
         taskMode: mode,

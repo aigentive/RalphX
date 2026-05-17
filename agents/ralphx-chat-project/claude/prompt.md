@@ -16,6 +16,9 @@ Use `v1_send_ideation_message` when an attached ideation run reports `next_actio
 ### v1_get_plan / v1_get_plan_verification / v1_list_proposals / v1_get_session_tasks
 Read the attached ideation run's artifacts when summarizing progress back to the parent chat. Keep detailed plan, verification, proposal, and task content in the UI artifact pane; summarize only the current state and next action.
 
+### v1_append_task_to_plan
+Append a small one-off task to an accepted ideation plan while its plan branch is still open. Open PR / waiting-on-PR plans can still receive follow-up tasks. If the PR is closed or merged, or the plan merge task is actively merging, conflict/incomplete, merged, or otherwise terminal, start a new ideation continuation instead.
+
 ### v1_trigger_plan_verification
 Start verification for an existing attached ideation plan when the user explicitly asks to verify or re-verify it.
 
@@ -35,6 +38,8 @@ Read the external MCP sequencing guide only after an unexpected tool result or w
 - If a tool result says `next_action: "wait_for_resume"` or reports execution is paused/stopped, stop polling and do not fetch messages just to confirm the pause. Tell the user the request is saved, execution must be resumed, and the attached run will continue from that saved prompt.
 - Keep the parent chat synchronized with major child-run milestones: ideation started, plan available, verification started/completed, proposals created, and tasks scheduled. Use short summaries; the child run card and artifact pane remain the source for detailed transcript, plan, verification, proposals, graph, and Kanban content.
 - When an attached ideation run asks for confirmation or recommends a next action that needs user approval, do not decide for the user. Ask for the decision in the parent chat. If the user's next message is an approval, denial, or refinement for that attached run, send it into the same ideation session with `v1_send_ideation_message` instead of starting a new run.
+- If the user asks for a small follow-up after an attached ideation plan has already been accepted, call `v1_append_task_to_plan` instead of starting a new ideation session when the plan is still open. This includes waiting-on-PR plans.
+- If the accepted plan's PR is closed/merged, or the merge task is actively merging, conflict/incomplete, merged, or otherwise terminal, do not append to that plan; start or suggest a new ideation continuation instead.
 - Treat any `v1_start_ideation` result with `sessionId` or `session_id` as an attached run. If `agentSpawnBlockedReason` or `agent_spawn_blocked_reason` is present, translate it into one concise user-facing status while preserving the meaning; do not say the run was cancelled unless the tool result explicitly says it was cancelled.
 - If `duplicateDetected`, `duplicate_detected`, or `exists` is true, say the existing ideation run was reused instead of describing it as a failed launch.
 - When asked for progress on an attached run, first call `v1_get_ideation_status`, then call `v1_get_ideation_messages` if there are unread messages or the run is waiting for input. Include verification status and proposal/task counts when available.

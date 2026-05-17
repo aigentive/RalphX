@@ -54,6 +54,7 @@ interface AgentsStartComposerProps {
   isLoadingProjects: boolean;
   isSubmitting: boolean;
   onCreateProject: () => void;
+  onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
   onSubmit: (input: {
     projectId: string;
     content: string;
@@ -100,6 +101,7 @@ export function AgentsStartComposer({
   isLoadingProjects,
   isSubmitting,
   onCreateProject,
+  onRuntimePreferenceChange,
   onSubmit,
 }: AgentsStartComposerProps) {
   const [projectId, setProjectId] = useState(defaultProjectId ?? "");
@@ -196,10 +198,49 @@ export function AgentsStartComposer({
     };
   }, [activeProject]);
 
-  const handleProviderChange = (nextProvider: AgentProvider) => {
-    setProvider(nextProvider);
-    setModelId(defaultModelForProvider(nextProvider));
-  };
+  const persistRuntimePreference = useCallback(
+    (nextProjectId: string, runtime: AgentRuntimeSelection) => {
+      if (!nextProjectId) {
+        return;
+      }
+      onRuntimePreferenceChange?.(nextProjectId, normalizeRuntimeSelection(runtime));
+    },
+    [onRuntimePreferenceChange]
+  );
+
+  const handleProjectChange = useCallback(
+    (nextProjectId: string) => {
+      setProjectId(nextProjectId);
+      persistRuntimePreference(nextProjectId, { provider, modelId });
+    },
+    [modelId, persistRuntimePreference, provider]
+  );
+
+  const handleProviderChange = useCallback(
+    (nextProvider: AgentProvider) => {
+      const nextRuntime = normalizeRuntimeSelection({
+        provider: nextProvider,
+        modelId: defaultModelForProvider(nextProvider),
+      });
+      setProvider(nextRuntime.provider);
+      setModelId(nextRuntime.modelId);
+      persistRuntimePreference(projectId, nextRuntime);
+    },
+    [persistRuntimePreference, projectId]
+  );
+
+  const handleModelChange = useCallback(
+    (nextModelId: string) => {
+      const nextRuntime = normalizeRuntimeSelection({
+        provider,
+        modelId: nextModelId,
+      });
+      setProvider(nextRuntime.provider);
+      setModelId(nextRuntime.modelId);
+      persistRuntimePreference(projectId, nextRuntime);
+    },
+    [persistRuntimePreference, projectId, provider]
+  );
 
   const handleFilesSelected = (files: File[]) => {
     if (attachments.length + files.length > MAX_FILES) {
@@ -420,7 +461,7 @@ export function AgentsStartComposer({
             }}
             project={{
               value: projectId,
-              onValueChange: setProjectId,
+              onValueChange: handleProjectChange,
               options: projects.map((project) => ({
                 id: project.id,
                 label: project.name,
@@ -452,7 +493,7 @@ export function AgentsStartComposer({
             }}
             model={{
               value: modelId,
-              onValueChange: setModelId,
+              onValueChange: handleModelChange,
               options: modelOptions,
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
@@ -488,7 +529,7 @@ export function AgentsStartComposer({
           <div className="mt-3 flex w-full flex-wrap items-center justify-between gap-2 px-2">
             <AgentComposerProjectLine
               value={projectId}
-              onValueChange={setProjectId}
+              onValueChange={handleProjectChange}
               options={projects.map((project) => ({
                 id: project.id,
                 label: project.name,

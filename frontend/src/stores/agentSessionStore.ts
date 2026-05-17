@@ -70,6 +70,7 @@ interface AgentSessionActions {
     projectId: string,
     runtime: AgentRuntimeSelection
   ) => void;
+  setLastRuntimeForProject: (projectId: string, runtime: AgentRuntimeSelection) => void;
 }
 
 const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
@@ -77,6 +78,26 @@ const DEFAULT_ARTIFACT_STATE: AgentArtifactState = {
   activeTab: "plan",
   taskMode: "graph",
 };
+const DEFAULT_SHOW_ALL_PROJECTS = true;
+const AGENT_SESSION_STORE_VERSION = 1;
+
+export function migrateAgentSessionStore(
+  persistedState: unknown,
+  version: number,
+) {
+  if (
+    version >= AGENT_SESSION_STORE_VERSION ||
+    persistedState === null ||
+    typeof persistedState !== "object"
+  ) {
+    return persistedState;
+  }
+
+  return {
+    ...persistedState,
+    showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
+  };
+}
 
 function ensureArtifactState(state: AgentSessionState, conversationId: string): AgentArtifactState {
   if (!state.artifactByConversationId[conversationId]) {
@@ -93,7 +114,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       selectedConversationId: null,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
-      showAllProjects: false,
+      showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
       projectSort: "latest",
       sidebarGroupBy: "project",
       sidebarProjectFilterIds: [],
@@ -228,9 +249,16 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           state.runtimeByConversationId[conversationId] = runtime;
           state.lastRuntimeByProjectId[projectId] = runtime;
         }),
+
+      setLastRuntimeForProject: (projectId, runtime) =>
+        set((state) => {
+          state.lastRuntimeByProjectId[projectId] = runtime;
+        }),
     })),
     {
       name: "ralphx-agent-session-store",
+      version: AGENT_SESSION_STORE_VERSION,
+      migrate: migrateAgentSessionStore,
       partialize: (state) => ({
         focusedProjectId: state.focusedProjectId,
         selectedProjectId: state.selectedProjectId,

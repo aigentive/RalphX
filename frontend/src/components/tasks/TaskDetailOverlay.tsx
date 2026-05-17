@@ -266,15 +266,23 @@ interface TaskDetailOverlayProps {
   footer?: React.ReactNode;
   /** Center task details in a readable column when no adjacent chat is present. */
   constrainContent?: boolean;
+  /** Optional host-owned selected task id for embedded task surfaces. */
+  selectedTaskIdOverride?: string | null;
+  /** Optional host-owned close handler for embedded task surfaces. */
+  onCloseOverride?: () => void;
 }
 
 export function TaskDetailOverlay({
   projectId,
   footer,
   constrainContent = false,
+  selectedTaskIdOverride,
+  onCloseOverride,
 }: TaskDetailOverlayProps) {
-  const selectedTaskId = useUiStore((s) => s.selectedTaskId);
-  const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
+  const globalSelectedTaskId = useUiStore((s) => s.selectedTaskId);
+  const setGlobalSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
+  const selectedTaskId =
+    selectedTaskIdOverride === undefined ? globalSelectedTaskId : selectedTaskIdOverride;
   const setCurrentView = useUiStore((s) => s.setCurrentView);
   // History state from store - shared with IntegratedChatPanel
   const historyState = useUiStore((s) => s.taskHistoryState);

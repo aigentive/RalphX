@@ -16,6 +16,7 @@ interface AgentsConversationSideRegionsProps {
   activeWorkspace: AgentConversationWorkspace | null;
   artifactWidthCss: string;
   chatDockElement: HTMLDivElement | null;
+  focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
   isArtifactResizing: boolean;
   openArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
@@ -26,6 +27,7 @@ interface AgentsConversationSideRegionsProps {
   setArtifactTaskMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
   terminalUnavailableReason: string | null;
+  onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onResizeReset: (event: ReactMouseEvent) => void;
   onResizeStart: (event: ReactMouseEvent) => void;
@@ -38,6 +40,7 @@ export function AgentsConversationSideRegions({
   activeWorkspace,
   artifactWidthCss,
   chatDockElement,
+  focusedIdeationSessionId,
   hasAutoOpenArtifacts,
   isArtifactResizing,
   openArtifactTab,
@@ -48,6 +51,7 @@ export function AgentsConversationSideRegions({
   setArtifactTaskMode,
   setTerminalPanelDockElement,
   terminalUnavailableReason,
+  onFocusVerificationSession,
   onPublishWorkspace,
   onResizeReset,
   onResizeStart,
@@ -60,6 +64,7 @@ export function AgentsConversationSideRegions({
           conversationId={selectedConversationId}
           conversation={activeConversation}
           workspace={activeWorkspace}
+          focusedIdeationSessionId={focusedIdeationSessionId}
           hasAutoOpenArtifacts={hasAutoOpenArtifacts}
           artifactWidthCss={artifactWidthCss}
           isArtifactResizing={isArtifactResizing}
@@ -71,6 +76,7 @@ export function AgentsConversationSideRegions({
           }
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
+          onFocusVerificationSession={onFocusVerificationSession}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}
           terminalUnavailableReason={terminalUnavailableReason}
           setTerminalPanelDockElement={setTerminalPanelDockElement}

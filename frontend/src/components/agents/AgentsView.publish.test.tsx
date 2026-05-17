@@ -73,6 +73,72 @@ describe("AgentsView publish", () => {
     );
   });
 
+  it("shows Update from base in the header shortcut for ideation plan-branch workspaces", async () => {
+    mockAgentViewData(conversation({ agentMode: "ideation" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "ideation",
+        status: "missing",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "Open",
+        publicationPushStatus: "pushed",
+        baseRef: "main",
+        baseDisplayName: "Project default (main)",
+      })
+    );
+    getAgentConversationWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-workspace")).toHaveTextContent(
+        "Update from feature/agent-screen"
+      )
+    );
+    expect(screen.getByTestId("agents-publish-workspace")).toBeEnabled();
+  });
+
+  it("shows merged terminal state instead of Update from base in the header shortcut", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        publicationPrNumber: 91,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      })
+    );
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-workspace")).toHaveTextContent(
+        "Merged"
+      )
+    );
+    expect(screen.getByTestId("agents-publish-workspace")).not.toHaveTextContent(
+      "Update from feature/agent-screen"
+    );
+    expect(getAgentConversationWorkspaceFreshnessMock).not.toHaveBeenCalled();
+  });
+
   it("shows Published in the header shortcut when the workspace branch is already current", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(

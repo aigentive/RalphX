@@ -52,59 +52,58 @@ export function useAgentsAttachedIdeation({
     ],
   );
   const attachedIdeationSessionQuery = useQuery({
-    queryKey: ideationKeys.sessionWithData(attachedIdeationSessionId ?? ""),
-    queryFn: () => ideationApi.sessions.getWithData(attachedIdeationSessionId!),
+    queryKey: ideationKeys.sessionDetail(attachedIdeationSessionId ?? ""),
+    queryFn: () => ideationApi.sessions.get(attachedIdeationSessionId!),
     enabled: shouldHydrateAttachedIdeation && !!attachedIdeationSessionId,
     staleTime: 5_000,
   });
-  const attachedIdeationSessionData =
+  const attachedIdeationSession =
     attachedIdeationSessionId &&
-    attachedIdeationSessionQuery.data?.session.id === attachedIdeationSessionId
+    attachedIdeationSessionQuery.data?.id === attachedIdeationSessionId
       ? attachedIdeationSessionQuery.data
       : null;
   const hasAutoOpenArtifacts = useMemo(() => {
-    if (!attachedIdeationSessionData) {
+    if (!attachedIdeationSession) {
       return false;
     }
 
-    const session = attachedIdeationSessionData.session;
     return Boolean(
-      session.planArtifactId ||
-        session.inheritedPlanArtifactId ||
-        session.acceptanceStatus === "pending" ||
-        session.verificationInProgress ||
-        session.verificationStatus !== "unverified" ||
-        attachedIdeationSessionData.proposals.length > 0
+      attachedIdeationSession.planArtifactId ||
+        attachedIdeationSession.inheritedPlanArtifactId ||
+        attachedIdeationSession.acceptanceStatus === "pending" ||
+        attachedIdeationSession.verificationInProgress ||
+        attachedIdeationSession.verificationStatus !== "unverified"
     );
-  }, [attachedIdeationSessionData]);
+  }, [attachedIdeationSession]);
   const availableArtifactTabs = useMemo(() => {
-    const session = attachedIdeationSessionData?.session;
     const hasPlanArtifact = Boolean(
-      session?.planArtifactId || session?.inheritedPlanArtifactId,
+      attachedIdeationSession?.planArtifactId ||
+        attachedIdeationSession?.inheritedPlanArtifactId,
     );
     const hasExecutionTasks = Boolean(
       activeWorkspace?.linkedPlanBranchId ||
-        session?.acceptanceStatus === "accepted" ||
-        session?.convertedAt,
+        attachedIdeationSession?.acceptanceStatus === "accepted" ||
+        attachedIdeationSession?.convertedAt,
     );
 
     return getVisibleIdeationArtifactTabs({
-      hasAttachedIdeationSession: Boolean(attachedIdeationSessionData),
+      hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
       hasExecutionTasks,
     });
-  }, [activeWorkspace?.linkedPlanBranchId, attachedIdeationSessionData]);
+  }, [activeWorkspace?.linkedPlanBranchId, attachedIdeationSession]);
   useEffect(() => {
     if (
       activeConversation?.contextType !== "project" ||
-      !attachedIdeationSessionData ||
+      !attachedIdeationSession ||
       activeConversation.archivedAt ||
       childArchiveSyncRef.current.has(activeConversation.id)
     ) {
       return;
     }
-    const session = attachedIdeationSessionData.session;
-    const sessionArchived = session.status === "archived" || Boolean(session.archivedAt);
+    const sessionArchived =
+      attachedIdeationSession.status === "archived" ||
+      Boolean(attachedIdeationSession.archivedAt);
     if (!sessionArchived) {
       return;
     }
@@ -117,11 +116,11 @@ export function useAgentsAttachedIdeation({
       });
   }, [
     activeConversation,
-    attachedIdeationSessionData,
+    attachedIdeationSession,
     invalidateProjectConversations,
   ]);
   return {
-    attachedIdeationSessionData,
+    attachedIdeationSessionData: attachedIdeationSession,
     attachedIdeationSessionId,
     availableArtifactTabs,
     hasAutoOpenArtifacts,

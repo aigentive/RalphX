@@ -28,6 +28,7 @@ interface ReviewFeedbackBodyProps {
   dialogTitle?: string;
   dialogDescription?: string;
   fullButtonLabel?: string;
+  collapseButtonLabel?: string;
   fullButtonClassName?: string;
   previewClassName?: string;
   dialogBodyClassName?: string;
@@ -76,6 +77,7 @@ export function ReviewFeedbackBody({
   dialogTitle = "Full feedback",
   dialogDescription = "Full feedback in a scrollable view.",
   fullButtonLabel = "View full details",
+  collapseButtonLabel = "Show less",
   fullButtonClassName,
   previewClassName,
   dialogBodyClassName,
@@ -173,7 +175,7 @@ export function ReviewFeedbackBody({
               "mt-2 font-medium text-[var(--accent-primary)] hover:text-[var(--accent-primary-hover)]",
               fullButtonClassName ?? "text-[12px]"
             )}
-            onClick={() => setIsDialogOpen(true)}
+            onClick={handleToggle}
           >
             {buttonLabel}
           </button>

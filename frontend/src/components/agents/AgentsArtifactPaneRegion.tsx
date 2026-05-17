@@ -40,6 +40,7 @@ interface AgentsArtifactPaneRegionProps {
   conversationId: string;
   conversation: AgentConversation;
   workspace: AgentConversationWorkspace | null;
+  focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
   artifactWidthCss: string;
   isArtifactResizing: boolean;
@@ -49,6 +50,7 @@ interface AgentsArtifactPaneRegionProps {
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
+  onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onClose: () => void;
   terminalUnavailableReason: string | null;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
@@ -58,6 +60,7 @@ export function AgentsArtifactPaneRegion({
   conversationId,
   conversation,
   workspace,
+  focusedIdeationSessionId,
   hasAutoOpenArtifacts,
   artifactWidthCss,
   isArtifactResizing,
@@ -67,6 +70,7 @@ export function AgentsArtifactPaneRegion({
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace,
+  onFocusVerificationSession,
   onClose,
   terminalUnavailableReason,
   setTerminalPanelDockElement,
@@ -116,12 +120,14 @@ export function AgentsArtifactPaneRegion({
                   <LazyAgentsArtifactPane
                     conversation={conversation}
                     workspace={workspace}
+                    focusedIdeationSessionId={focusedIdeationSessionId}
                     activeTab={artifactState.activeTab}
                     taskMode={artifactState.taskMode}
                     onTabChange={onTabChange}
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
+                    onFocusVerificationSession={onFocusVerificationSession}
                     onClose={onClose}
                   />
                 </Suspense>

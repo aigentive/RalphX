@@ -883,4 +883,111 @@ mod tests {
             "agent conversation workspace should always capture the immutable base commit"
         );
     }
+
+    #[tokio::test]
+    async fn rollover_agent_conversation_workspace_creates_new_branch_after_terminal_pr() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Rollover".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-rollover-test".to_string());
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+        let old_branch = workspace.branch_name.clone();
+        let old_worktree_path = workspace.worktree_path.clone();
+        workspace.publication_pr_number = Some(91);
+        workspace.publication_pr_url = Some("https://example.test/pr/91".to_string());
+        workspace.publication_pr_status = Some("merged".to_string());
+        workspace.publication_push_status = Some("pushed".to_string());
+        workspace.status = crate::domain::entities::AgentConversationWorkspaceStatus::Missing;
+
+        let updated = rollover_agent_conversation_workspace(&project, &workspace)
+            .await
+            .expect("terminal published workspace should roll over");
+
+        assert_eq!(updated.worktree_path, old_worktree_path);
+        assert!(
+            updated.branch_name.starts_with(&format!("{old_branch}-")),
+            "continuation branch should extend the canonical workspace branch"
+        );
+        assert_ne!(updated.branch_name, old_branch);
+        assert_eq!(updated.publication_pr_number, None);
+        assert_eq!(updated.publication_pr_url, None);
+        assert_eq!(updated.publication_pr_status, None);
+        assert_eq!(updated.publication_push_status, None);
+        assert_eq!(
+            updated.status,
+            crate::domain::entities::AgentConversationWorkspaceStatus::Active
+        );
+        let checked_out = GitService::get_current_branch(Path::new(&updated.worktree_path))
+            .await
+            .expect("rolled workspace branch should resolve");
+        assert_eq!(checked_out, updated.branch_name);
+    }
+
+    #[tokio::test]
+    async fn rollover_agent_conversation_workspace_blocks_dirty_old_worktree() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+
+        let mut project = Project::new(
+            "Agent Dirty Rollover".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-dirty-rollover-test".to_string());
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+        workspace.publication_pr_status = Some("merged".to_string());
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("dirty.txt"),
+            "uncommitted\n",
+        )
+        .expect("dirty file should be written");
+
+        let error = rollover_agent_conversation_workspace(&project, &workspace)
+            .await
+            .expect_err("dirty rollover should be blocked");
+
+        assert!(
+            error.to_string().contains("uncommitted changes"),
+            "dirty workspace should produce a clear validation error: {error}"
+        );
+        let checked_out = GitService::get_current_branch(Path::new(&workspace.worktree_path))
+            .await
+            .expect("old workspace should remain checked out");
+        assert_eq!(checked_out, workspace.branch_name);
+    }
 }

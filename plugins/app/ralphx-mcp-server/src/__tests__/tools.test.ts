@@ -408,13 +408,14 @@ describe('getFilteredTools', () => {
     expect(toolNames).not.toContain('complete_plan_verification');
   });
 
-  it('should keep project chat off internal ideation launch and mutation tools', () => {
+  it('should keep project chat on the scoped ideation append tool only', () => {
     setAgentType(CHAT_PROJECT);
     const tools = getFilteredTools();
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain('suggest_task');
     expect(toolNames).toContain('list_tasks');
+    expect(toolNames).toContain('append_task_to_ideation_plan');
     expect(toolNames).not.toContain('start_ideation_session');
     expect(toolNames).not.toContain('create_child_session');
     expect(toolNames).not.toContain('create_task_proposal');
