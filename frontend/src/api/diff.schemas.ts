@@ -41,6 +41,40 @@ export const FileDiffSchema = z.object({
   is_binary: z.boolean(),
 });
 
+// ── GitHub PR annotation schemas ───────────────────────────────────────────
+
+export const PrDiffAnnotationSchema = z.object({
+  id: z.string(),
+  source: z.string(),
+  path: z.string().nullable(),
+  side: z.string().nullable(),
+  start_line: z.number().nullable(),
+  end_line: z.number().nullable(),
+  start_column: z.number().nullable(),
+  end_column: z.number().nullable(),
+  level: z.string(),
+  status: z.string().nullable(),
+  title: z.string().nullable(),
+  message: z.string(),
+  author: z.string().nullable(),
+  check_name: z.string().nullable(),
+  url: z.string().nullable(),
+  is_outdated: z.boolean(),
+  created_at: z.string().nullable(),
+});
+
+export const PrAnnotationSourceUnavailableSchema = z.object({
+  source: z.string(),
+  reason: z.string(),
+});
+
+export const PrDiffAnnotationsResponseSchema = z.object({
+  pr_number: z.number(),
+  head_sha: z.string().nullable(),
+  annotations: z.array(PrDiffAnnotationSchema),
+  sources_unavailable: z.array(PrAnnotationSourceUnavailableSchema),
+});
+
 // ── DiffRefKind — tagged enum from backend ────────────────────────────────
 
 export const DiffRefKindSchema = z.discriminatedUnion("kind", [
@@ -82,4 +116,5 @@ export const AgentWorkspaceReviewResponseSchema = z.object({
   commits: z.array(CommitInfoSchema),
   base_ref: z.string(),
   head_ref: z.string(),
+  supports_worktree_modes: z.boolean().default(true),
 });

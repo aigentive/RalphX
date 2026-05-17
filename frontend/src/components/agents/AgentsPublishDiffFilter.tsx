@@ -40,6 +40,7 @@ export interface AgentsPublishDiffFilterProps {
   /** Unstaged file count — provided lazily by parent when unstaged mode is active. */
   unstagedCount?: number;
   commits: DiffViewerCommit[];
+  supportsWorktreeModes?: boolean;
   onModeChange: (mode: DiffFilterMode) => void;
 }
 
@@ -131,6 +132,7 @@ export function AgentsPublishDiffFilter({
   stagedCount,
   unstagedCount,
   commits,
+  supportsWorktreeModes = true,
   onModeChange,
 }: AgentsPublishDiffFilterProps) {
   const [open, setOpen] = useState(false);
@@ -197,27 +199,32 @@ export function AgentsPublishDiffFilter({
           {/* VIEW section */}
           <div className="space-y-1">
             <FilterSectionLabel>View</FilterSectionLabel>
-            <FilterRadioRow
-              selected={mode === "uncommitted"}
-              onClick={() => handleSelect("uncommitted")}
-              testId="diff-filter-option-uncommitted"
-            >
-              Uncommitted ({uncommittedCount} {uncommittedCount === 1 ? "file" : "files"})
-            </FilterRadioRow>
-            <FilterRadioRow
-              selected={mode === "unstaged"}
-              onClick={() => handleSelect("unstaged")}
-              testId="diff-filter-option-unstaged"
-            >
-              Unstaged
-            </FilterRadioRow>
-            <FilterRadioRow
-              selected={mode === "staged"}
-              onClick={() => handleSelect("staged")}
-              testId="diff-filter-option-staged"
-            >
-              Staged
-            </FilterRadioRow>
+            {supportsWorktreeModes && (
+              <>
+                <FilterRadioRow
+                  selected={mode === "uncommitted"}
+                  onClick={() => handleSelect("uncommitted")}
+                  testId="diff-filter-option-uncommitted"
+                >
+                  Uncommitted ({uncommittedCount}{" "}
+                  {uncommittedCount === 1 ? "file" : "files"})
+                </FilterRadioRow>
+                <FilterRadioRow
+                  selected={mode === "unstaged"}
+                  onClick={() => handleSelect("unstaged")}
+                  testId="diff-filter-option-unstaged"
+                >
+                  Unstaged
+                </FilterRadioRow>
+                <FilterRadioRow
+                  selected={mode === "staged"}
+                  onClick={() => handleSelect("staged")}
+                  testId="diff-filter-option-staged"
+                >
+                  Staged
+                </FilterRadioRow>
+              </>
+            )}
             <FilterRadioRow
               selected={mode === "cumulative"}
               onClick={() => handleSelect("cumulative")}

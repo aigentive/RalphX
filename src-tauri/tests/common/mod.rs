@@ -280,6 +280,15 @@ impl GithubServiceTrait for MockGithubService {
         Ok(())
     }
 
+    async fn get_pr_diff_patch(
+        &self,
+        _wd: &Path,
+        _pr_number: i64,
+        _pr_url: Option<&str>,
+    ) -> AppResult<String> {
+        Ok(String::new())
+    }
+
     async fn find_pr_by_head_branch(
         &self,
         _wd: &Path,

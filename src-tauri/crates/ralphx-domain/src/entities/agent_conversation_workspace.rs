@@ -134,6 +134,22 @@ impl AgentConversationWorkspace {
     pub fn is_execution_owned(&self) -> bool {
         self.linked_plan_branch_id.is_some()
     }
+
+    pub fn has_terminal_publication_pr_status(&self) -> bool {
+        is_terminal_publication_pr_status(self.publication_pr_status.as_deref())
+    }
+
+    pub fn has_pr_status_pollable_push_status(&self) -> bool {
+        is_pr_status_pollable_push_status(self.publication_push_status.as_deref())
+    }
+}
+
+pub fn is_terminal_publication_pr_status(status: Option<&str>) -> bool {
+    matches!(status, Some("merged" | "closed"))
+}
+
+pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
+    matches!(status, None | Some("pushed" | "refreshed"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

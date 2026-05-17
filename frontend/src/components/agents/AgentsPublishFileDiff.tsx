@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { FileChange, FileDiff, DiffRefKind } from "@/api/diff";
+import type { FileChange, FileDiff, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
 
@@ -36,6 +36,8 @@ export interface AgentsPublishFileDiffProps {
   refKind?: DiffRefKind | undefined;
   /** Whether this file is in the viewport (±200px) — controls body hydration. */
   shouldHydrate: boolean;
+  /** GitHub PR review/check annotations for this file. */
+  annotations?: PrDiffAnnotation[] | undefined;
   /** Whether the user has clicked "Show anyway" for a generated file. */
   isShowAnywayOverridden: boolean;
   /** Called when the user clicks "Show anyway" on a generated-file placeholder. */
@@ -75,6 +77,7 @@ export function AgentsPublishFileDiff({
   conversationId,
   refKind,
   shouldHydrate,
+  annotations = [],
   isShowAnywayOverridden,
   onShowAnyway,
 }: AgentsPublishFileDiffProps) {
@@ -83,7 +86,7 @@ export function AgentsPublishFileDiff({
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border"
+      className="flex min-h-0 flex-col overflow-hidden rounded-md border"
       data-testid={`publish-file-diff-${file.path}`}
       style={{
         backgroundColor: "var(--bg-surface)",
@@ -182,6 +185,19 @@ export function AgentsPublishFileDiff({
           </span>
         )}
 
+        {annotations.length > 0 && (
+          <span
+            data-testid="file-diff-annotation-count"
+            className="shrink-0 rounded border px-1.5 py-0.5 text-[0.6875rem] font-medium"
+            style={{
+              borderColor: "var(--status-warning-border)",
+              color: "var(--status-warning)",
+            }}
+          >
+            {annotations.length}
+          </span>
+        )}
+
         {/* Open fullscreen */}
         <Tooltip>
           <TooltipTrigger asChild>
@@ -205,7 +221,7 @@ export function AgentsPublishFileDiff({
       {/* Body — only mounted when expanded */}
       {isExpanded && (
         <div
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          className="flex min-h-0 flex-col"
           style={{ minHeight: "60px" }}
         >
           {showGeneratedPlaceholder ? (
@@ -284,6 +300,8 @@ export function AgentsPublishFileDiff({
                   conversationId={conversationId}
                   filePath={file.path}
                   refKind={refKind}
+                  scrollContainer={false}
+                  annotations={annotations}
                 />
               )}
 

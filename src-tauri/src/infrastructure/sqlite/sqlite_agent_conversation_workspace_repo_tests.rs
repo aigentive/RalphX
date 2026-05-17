@@ -272,6 +272,15 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     published.publication_pr_status = Some("open".to_string());
     repo.create_or_update(published.clone()).await.unwrap();
 
+    let refreshed_id =
+        ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    seed_conversation(&db, &refreshed_id);
+    let mut refreshed = make_workspace(refreshed_id);
+    refreshed.publication_pr_number = Some(78);
+    refreshed.publication_pr_status = Some("open".to_string());
+    refreshed.publication_push_status = Some("refreshed".to_string());
+    repo.create_or_update(refreshed.clone()).await.unwrap();
+
     let archived_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     seed_conversation(&db, &archived_id);
     let mut archived = make_workspace(archived_id);
@@ -316,9 +325,17 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, published.conversation_id);
-    assert_eq!(workspaces[0].publication_pr_number, Some(72));
+    assert_eq!(workspaces.len(), 2);
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == published.conversation_id)
+    );
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshed.conversation_id)
+    );
 }
 
 #[tokio::test]

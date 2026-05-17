@@ -43,6 +43,7 @@ pub use agent_run::{
     InterruptedConversation,
 };
 pub use agent_conversation_workspace::{
+    is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription,

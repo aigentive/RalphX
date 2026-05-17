@@ -19,10 +19,12 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState,
-    PrReviewCommentFeedback, PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrAnnotationSourceUnavailable, PrBranchMatch, PrDiffAnnotation,
+    PrDiffAnnotations, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
+    PrReviewFeedback, PrStatus, PrSyncState,
 };
 use crate::error::AppError;
+use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::infrastructure::git_auth::{
     apply_git_subprocess_env, git_auth_error_from_failure, GitNetworkOperation,
 };
@@ -31,7 +33,6 @@ use crate::utils::secret_redactor::redact;
 use crate::AppResult;
 
 const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Secret keyword fragments to filter from stderr output (case-insensitive match)
 const SECRET_KEYWORDS: &[&str] = &[
     "token",
@@ -335,11 +336,81 @@ fn build_pr_review_comments_api_args(pr_number: i64) -> Vec<String> {
     ]
 }
 
+fn build_pr_annotation_pr_view_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--json".to_string(),
+        "headRefOid".to_string(),
+    ]
+}
+
+fn build_check_runs_for_ref_api_args(head_sha: &str) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/commits/{head_sha}/check-runs"),
+        "--paginate".to_string(),
+        "--slurp".to_string(),
+    ]
+}
+
+fn build_check_run_annotations_api_args(check_run_id: i64) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/check-runs/{check_run_id}/annotations"),
+        "--paginate".to_string(),
+        "--slurp".to_string(),
+    ]
+}
+
+fn build_code_scanning_alerts_api_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!(
+            "repos/{{owner}}/{{repo}}/code-scanning/alerts?state=open&pr={pr_number}&per_page=100"
+        ),
+        "--paginate".to_string(),
+        "--slurp".to_string(),
+    ]
+}
+
+fn build_pr_diff_patch_args(pr_number: i64, pr_url: Option<&str>) -> Vec<String> {
+    let selector = pr_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| pr_number.to_string());
+    vec![
+        "pr".to_string(),
+        "diff".to_string(),
+        selector,
+        "--patch".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+    ]
+}
+
 fn is_duplicate_pr_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
     DUPLICATE_PR_FRAGMENTS
         .iter()
         .any(|fragment| lower.contains(fragment))
+}
+
+fn pr_annotation_source_unavailable(
+    source: &str,
+    error: impl std::fmt::Display,
+) -> PrAnnotationSourceUnavailable {
+    PrAnnotationSourceUnavailable {
+        source: source.to_string(),
+        reason: error.to_string(),
+    }
+}
+
+fn max_pr_check_run_annotation_fetches() -> usize {
+    usize::try_from(git_runtime_config().workspace_pr_annotations_check_run_fetch_limit)
+        .unwrap_or(usize::MAX)
 }
 
 /// Sanitize a single stderr line:
@@ -514,6 +585,151 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_review_feedback_output(&reviews_stdout.join("\n"), &comments_stdout.join("\n"))
     }
 
+    async fn fetch_pr_diff_annotations(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrDiffAnnotations> {
+        let mut payload = PrDiffAnnotations::empty(pr_number);
+
+        match self
+            .runner
+            .run_gh(working_dir, &build_pr_review_comments_api_args(pr_number))
+            .await
+        {
+            Ok(stdout) => {
+                match parse_pr_review_comment_annotations_output(pr_number, &stdout.join("\n")) {
+                    Ok(mut annotations) => payload.annotations.append(&mut annotations),
+                    Err(error) => payload
+                        .sources_unavailable
+                        .push(pr_annotation_source_unavailable("review_comments", error)),
+                }
+            }
+            Err(error) => payload
+                .sources_unavailable
+                .push(pr_annotation_source_unavailable("review_comments", error)),
+        }
+
+        match self
+            .runner
+            .run_gh(working_dir, &build_code_scanning_alerts_api_args(pr_number))
+            .await
+        {
+            Ok(stdout) => match parse_code_scanning_alert_annotations_output(&stdout.join("\n")) {
+                Ok(mut annotations) => payload.annotations.append(&mut annotations),
+                Err(error) => payload
+                    .sources_unavailable
+                    .push(pr_annotation_source_unavailable("code_scanning", error)),
+            },
+            Err(error) => payload
+                .sources_unavailable
+                .push(pr_annotation_source_unavailable("code_scanning", error)),
+        }
+
+        match self
+            .runner
+            .run_gh(working_dir, &build_pr_annotation_pr_view_args(pr_number))
+            .await
+        {
+            Ok(stdout) => match parse_pr_annotation_head_sha_output(&stdout.join("\n")) {
+                Ok(Some(head_sha)) => {
+                    payload.head_sha = Some(head_sha.clone());
+                    match self
+                        .runner
+                        .run_gh(working_dir, &build_check_runs_for_ref_api_args(&head_sha))
+                        .await
+                    {
+                        Ok(check_runs_stdout) => {
+                            match parse_check_runs_output(&check_runs_stdout.join("\n")) {
+                                Ok(check_runs) => {
+                                    let annotated_check_runs = check_runs
+                                        .into_iter()
+                                        .filter(|run| run.annotations_count > 0)
+                                        .collect::<Vec<_>>();
+                                    let fetch_limit = max_pr_check_run_annotation_fetches();
+                                    let skipped_count =
+                                        annotated_check_runs.len().saturating_sub(fetch_limit);
+                                    for check_run in
+                                        annotated_check_runs.into_iter().take(fetch_limit)
+                                    {
+                                        match self
+                                            .runner
+                                            .run_gh(
+                                                working_dir,
+                                                &build_check_run_annotations_api_args(check_run.id),
+                                            )
+                                            .await
+                                        {
+                                            Ok(annotation_stdout) => {
+                                                match parse_check_run_annotations_output(
+                                                    &check_run,
+                                                    &annotation_stdout.join("\n"),
+                                                ) {
+                                                    Ok(mut annotations) => {
+                                                        payload.annotations.append(&mut annotations)
+                                                    }
+                                                    Err(error) => payload.sources_unavailable.push(
+                                                        pr_annotation_source_unavailable(
+                                                            "check_run_annotations",
+                                                            error,
+                                                        ),
+                                                    ),
+                                                }
+                                            }
+                                            Err(error) => payload.sources_unavailable.push(
+                                                pr_annotation_source_unavailable(
+                                                    "check_run_annotations",
+                                                    error,
+                                                ),
+                                            ),
+                                        }
+                                    }
+                                    if skipped_count > 0 {
+                                        payload.sources_unavailable.push(
+                                            PrAnnotationSourceUnavailable {
+                                                source: "check_run_annotations".to_string(),
+                                                reason: format!(
+                                                    "Skipped annotations for {skipped_count} additional check runs after limit of {fetch_limit}"
+                                                ),
+                                            },
+                                        );
+                                    }
+                                }
+                                Err(error) => payload
+                                    .sources_unavailable
+                                    .push(pr_annotation_source_unavailable("check_runs", error)),
+                            }
+                        }
+                        Err(error) => payload
+                            .sources_unavailable
+                            .push(pr_annotation_source_unavailable("check_runs", error)),
+                    }
+                }
+                Ok(None) => payload
+                    .sources_unavailable
+                    .push(PrAnnotationSourceUnavailable {
+                        source: "check_runs".to_string(),
+                        reason: "Pull request head SHA was unavailable".to_string(),
+                    }),
+                Err(error) => payload
+                    .sources_unavailable
+                    .push(pr_annotation_source_unavailable("check_runs", error)),
+            },
+            Err(error) => payload
+                .sources_unavailable
+                .push(pr_annotation_source_unavailable("check_runs", error)),
+        }
+
+        payload.annotations.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(left.start_line.cmp(&right.start_line))
+                .then(left.source.cmp(&right.source))
+                .then(left.id.cmp(&right.id))
+        });
+        Ok(payload)
+    }
+
     async fn push_branch(&self, working_dir: &Path, branch: &str) -> AppResult<()> {
         // git push origin <branch> — fire-and-forget style (stdout null, stderr piped for safety)
         let args = vec!["push".to_string(), "origin".to_string(), branch.to_string()];
@@ -607,6 +823,19 @@ impl GithubServiceTrait for GhCliGithubService {
             branch.to_string(),
         ];
         self.runner.run_git(working_dir, &args).await
+    }
+
+    async fn get_pr_diff_patch(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        pr_url: Option<&str>,
+    ) -> AppResult<String> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_diff_patch_args(pr_number, pr_url))
+            .await?;
+        Ok(stdout.join("\n"))
     }
 
     async fn find_pr_by_head_branch(
@@ -920,6 +1149,16 @@ fn required_string(v: &Value, field: &str, context: &str) -> AppResult<String> {
         .ok_or_else(|| AppError::Infrastructure(format!("{context}: missing '{field}' field")))
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CheckRunAnnotationSource {
+    pub id: i64,
+    pub name: String,
+    pub conclusion: Option<String>,
+    pub status: Option<String>,
+    pub html_url: Option<String>,
+    pub annotations_count: i64,
+}
+
 pub(crate) fn parse_pr_review_decision_output(json_str: &str) -> AppResult<bool> {
     let v: Value = serde_json::from_str(json_str).map_err(|e| {
         AppError::Infrastructure(format!(
@@ -1038,6 +1277,312 @@ pub(crate) fn parse_pr_review_feedback_output(
         body,
         comments: review_comments,
     }))
+}
+
+pub(crate) fn parse_pr_annotation_head_sha_output(json_str: &str) -> AppResult<Option<String>> {
+    let value: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr view headRefOid JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+    Ok(value
+        .get("headRefOid")
+        .and_then(Value::as_str)
+        .filter(|sha| !sha.trim().is_empty())
+        .map(str::to_string))
+}
+
+pub(crate) fn parse_pr_review_comment_annotations_output(
+    pr_number: i64,
+    comments_json: &str,
+) -> AppResult<Vec<PrDiffAnnotation>> {
+    let comments_value: Value = serde_json::from_str(comments_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh review comments JSON: {e}\nRaw: {comments_json}"
+        ))
+    })?;
+    let comments = flatten_paginated_array(&comments_value).ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh review comments: expected JSON array/pages, got: {comments_json}"
+        ))
+    })?;
+
+    Ok(comments
+        .into_iter()
+        .map(|comment| {
+            let id = json_id_to_string(comment.get("id"))
+                .unwrap_or_else(|| format!("pr-{pr_number}-review-comment"));
+            let line = comment.get("line").and_then(Value::as_i64);
+            let original_line = comment.get("original_line").and_then(Value::as_i64);
+            let start_line = comment
+                .get("start_line")
+                .and_then(Value::as_i64)
+                .or_else(|| comment.get("original_start_line").and_then(Value::as_i64))
+                .or(line)
+                .or(original_line);
+            let end_line = line.or(original_line).or(start_line);
+            let side = comment
+                .get("side")
+                .and_then(Value::as_str)
+                .or_else(|| comment.get("diff_side").and_then(Value::as_str))
+                .map(|side| side.to_ascii_lowercase());
+            PrDiffAnnotation {
+                id: format!("review-comment:{id}"),
+                source: "review_comment".to_string(),
+                path: comment
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                side,
+                start_line,
+                end_line,
+                start_column: None,
+                end_column: None,
+                level: "comment".to_string(),
+                status: None,
+                title: None,
+                message: comment
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                author: comment
+                    .get("user")
+                    .and_then(|user| user.get("login"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                check_name: None,
+                url: comment
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                is_outdated: line.is_none() && original_line.is_some(),
+                created_at: comment
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            }
+        })
+        .collect())
+}
+
+pub(crate) fn parse_check_runs_output(json_str: &str) -> AppResult<Vec<CheckRunAnnotationSource>> {
+    let value: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh check runs JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let pages: Vec<&Value> = match value.as_array() {
+        Some(array) if array.iter().all(Value::is_object) => array.iter().collect(),
+        _ if value.is_object() => vec![&value],
+        _ => {
+            return Err(AppError::Infrastructure(format!(
+                "gh check runs: expected JSON object/pages, got: {json_str}"
+            )));
+        }
+    };
+
+    let mut check_runs = Vec::new();
+    for page in pages {
+        let Some(runs) = page.get("check_runs").and_then(Value::as_array) else {
+            continue;
+        };
+        for run in runs {
+            let Some(id) = run.get("id").and_then(Value::as_i64) else {
+                continue;
+            };
+            check_runs.push(CheckRunAnnotationSource {
+                id,
+                name: run
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("GitHub check")
+                    .to_string(),
+                conclusion: run
+                    .get("conclusion")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                status: run
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                html_url: run
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                annotations_count: run
+                    .get("annotations_count")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+            });
+        }
+    }
+    Ok(check_runs)
+}
+
+pub(crate) fn parse_check_run_annotations_output(
+    check_run: &CheckRunAnnotationSource,
+    annotations_json: &str,
+) -> AppResult<Vec<PrDiffAnnotation>> {
+    let annotations_value: Value = serde_json::from_str(annotations_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh check run annotations JSON: {e}\nRaw: {annotations_json}"
+        ))
+    })?;
+    let annotations = flatten_paginated_array(&annotations_value).ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh check run annotations: expected JSON array/pages, got: {annotations_json}"
+        ))
+    })?;
+
+    Ok(annotations
+        .into_iter()
+        .enumerate()
+        .map(|(idx, annotation)| {
+            let path = annotation
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let start_line = annotation.get("start_line").and_then(Value::as_i64);
+            let end_line = annotation
+                .get("end_line")
+                .and_then(Value::as_i64)
+                .or(start_line);
+            let title = annotation
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.trim().is_empty())
+                .map(str::to_string);
+            let message = annotation
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| annotation.get("raw_details").and_then(Value::as_str))
+                .unwrap_or_default()
+                .to_string();
+            PrDiffAnnotation {
+                id: format!("check-run:{}:{idx}", check_run.id),
+                source: "check_run".to_string(),
+                path,
+                side: Some("right".to_string()),
+                start_line,
+                end_line,
+                start_column: annotation.get("start_column").and_then(Value::as_i64),
+                end_column: annotation.get("end_column").and_then(Value::as_i64),
+                level: annotation
+                    .get("annotation_level")
+                    .and_then(Value::as_str)
+                    .unwrap_or("warning")
+                    .to_string(),
+                status: check_run
+                    .conclusion
+                    .clone()
+                    .or_else(|| check_run.status.clone()),
+                title,
+                message,
+                author: None,
+                check_name: Some(check_run.name.clone()),
+                url: annotation
+                    .get("blob_href")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| check_run.html_url.clone()),
+                is_outdated: false,
+                created_at: None,
+            }
+        })
+        .collect())
+}
+
+pub(crate) fn parse_code_scanning_alert_annotations_output(
+    alerts_json: &str,
+) -> AppResult<Vec<PrDiffAnnotation>> {
+    let alerts_value: Value = serde_json::from_str(alerts_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh code scanning alerts JSON: {e}\nRaw: {alerts_json}"
+        ))
+    })?;
+    let alerts = flatten_paginated_array(&alerts_value).ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh code scanning alerts: expected JSON array/pages, got: {alerts_json}"
+        ))
+    })?;
+
+    Ok(alerts
+        .into_iter()
+        .filter_map(|alert| {
+            let alert_number = json_id_to_string(alert.get("number")).unwrap_or_default();
+            let instance = alert.get("most_recent_instance")?;
+            let location = instance.get("location")?;
+            let path = location
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let rule = alert.get("rule");
+            let tool_name = alert
+                .get("tool")
+                .and_then(|tool| tool.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("Code scanning")
+                .to_string();
+            let title = rule
+                .and_then(|rule| rule.get("description"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    rule.and_then(|rule| rule.get("name"))
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| rule.and_then(|rule| rule.get("id")).and_then(Value::as_str))
+                .map(str::to_string);
+            let message = instance
+                .get("message")
+                .and_then(|message| message.get("text"))
+                .and_then(Value::as_str)
+                .or(title.as_deref())
+                .unwrap_or_default()
+                .to_string();
+            let level = rule
+                .and_then(|rule| rule.get("security_severity_level"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    rule.and_then(|rule| rule.get("severity"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("warning")
+                .to_string();
+            Some(PrDiffAnnotation {
+                id: format!("code-scanning:{alert_number}"),
+                source: "code_scanning".to_string(),
+                path,
+                side: Some("right".to_string()),
+                start_line: location.get("start_line").and_then(Value::as_i64),
+                end_line: location
+                    .get("end_line")
+                    .and_then(Value::as_i64)
+                    .or_else(|| location.get("start_line").and_then(Value::as_i64)),
+                start_column: location.get("start_column").and_then(Value::as_i64),
+                end_column: location.get("end_column").and_then(Value::as_i64),
+                level,
+                status: alert
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                title,
+                message,
+                author: None,
+                check_name: Some(tool_name),
+                url: alert
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                is_outdated: false,
+                created_at: alert
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect())
 }
 
 fn flatten_paginated_array(value: &Value) -> Option<Vec<&Value>> {
