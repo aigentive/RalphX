@@ -28,6 +28,7 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
     IdeationAnalysisBaseRefKind,
 };
+use crate::domain::services::github_service::{PrHealth, PrReviewFeedback};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct CompleteAgentWorkspaceRepairRequest {
@@ -99,6 +100,38 @@ pub struct AgentWorkspacePublishActionResponse {
     pub updated: Option<bool>,
     pub target_ref: Option<String>,
     pub base_commit: Option<String>,
+    pub commit_sha: Option<String>,
+    pub pushed: Option<bool>,
+    pub created_pr: Option<bool>,
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePrFixContextResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub health: Option<PrHealth>,
+    pub review_feedback: Option<PrReviewFeedback>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CompleteAgentWorkspacePrFixRequest {
+    pub summary: String,
+    pub blocker: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CompleteAgentWorkspacePrFixResponse {
+    pub success: bool,
+    pub status: String,
+    pub message: String,
+    pub workspace: Option<AgentConversationWorkspaceResponse>,
+    pub publish_status: Option<String>,
+    pub publish_error: Option<String>,
     pub commit_sha: Option<String>,
     pub pushed: Option<bool>,
     pub created_pr: Option<bool>,
@@ -290,6 +323,242 @@ pub async fn publish_agent_workspace(
         Err(error) => {
             action_response_for_needs_repair(state.app_state.as_ref(), &conversation_id, error)
                 .await
+        }
+    }
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/pr-fix-context
+pub async fn get_agent_workspace_pr_fix_context(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<AgentWorkspacePrFixContextResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace =
+        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let events =
+        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
+
+    let (health, review_feedback) = match (
+        state.app_state.github_service.as_ref(),
+        workspace.publication_pr_number,
+    ) {
+        (Some(github), Some(pr_number)) => {
+            let working_dir = std::path::Path::new(&workspace.worktree_path);
+            let health = github.fetch_pr_health(working_dir, pr_number).await.ok();
+            let review_feedback = github
+                .check_pr_review_feedback(working_dir, pr_number)
+                .await
+                .ok()
+                .flatten();
+            (health, review_feedback)
+        }
+        _ => (None, None),
+    };
+
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
+    Ok(Json(AgentWorkspacePrFixContextResponse {
+        success: true,
+        workspace,
+        events,
+        pr_number,
+        pr_url,
+        health,
+        review_feedback,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/complete-pr-fix
+///
+/// Called by the PR fixer agent after it has addressed PR health/review issues.
+/// RalphX then republishes the workspace branch and resumes PR supervision.
+pub async fn complete_agent_workspace_pr_fix(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CompleteAgentWorkspacePrFixRequest>,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let summary = req.summary.trim();
+    if summary.is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "summary must describe the PR fix outcome",
+            None,
+        ));
+    }
+
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
+
+    if let Some(blocker) = req
+        .blocker
+        .as_deref()
+        .map(str::trim)
+        .filter(|blocker| !blocker.is_empty())
+    {
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .update_pr_auto_merge_state(
+                &conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(blocker),
+            )
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        state
+            .app_state
+            .agent_conversation_workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "pr_autofix_blocked",
+                "blocked",
+                blocker,
+                Some("pr_autofix_blocker".to_string()),
+            ))
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        let workspace =
+            load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+        return Ok(Json(CompleteAgentWorkspacePrFixResponse {
+            success: true,
+            status: "blocked".to_string(),
+            message: blocker.to_string(),
+            workspace: Some(workspace),
+            publish_status: Some("skipped".to_string()),
+            publish_error: None,
+            commit_sha: None,
+            pushed: None,
+            created_pr: None,
+            pr_number: None,
+            pr_url: None,
+        }));
+    }
+
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            &conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("publishing"),
+            Some("PR fix completed; publishing updates."),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_completed",
+            "succeeded",
+            summary,
+            Some("pr_autofix_completed".to_string()),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    match publish_agent_conversation_workspace_for_app_state(
+        state.app_state.as_ref(),
+        &state.execution_state,
+        Some(state.team_service.clone()),
+        conversation_id.clone(),
+        false,
+    )
+    .await
+    {
+        Ok(result) => {
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &conversation_id,
+                    result.workspace.pr_auto_merge_current,
+                    Some("monitoring"),
+                    Some("PR fix published; RalphX is monitoring the pull request."),
+                )
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            let workspace =
+                load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+            Ok(Json(CompleteAgentWorkspacePrFixResponse {
+                success: true,
+                status: "published".to_string(),
+                message: "PR fix published; RalphX is monitoring the pull request.".to_string(),
+                workspace: Some(workspace),
+                publish_status: Some("succeeded".to_string()),
+                publish_error: None,
+                commit_sha: result.commit_sha,
+                pushed: Some(result.pushed),
+                created_pr: Some(result.created_pr),
+                pr_number: result.pr_number,
+                pr_url: result.pr_url,
+            }))
+        }
+        Err(error) => {
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &conversation_id,
+                    workspace.pr_auto_merge_current,
+                    Some("blocked"),
+                    Some(&format!("PR fix publish failed: {error}")),
+                )
+                .await
+                .map_err(|repo_error| {
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        repo_error.to_string(),
+                        None,
+                    )
+                })?;
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                    conversation_id.clone(),
+                    "pr_autofix_publish_failed",
+                    "failed",
+                    error.clone(),
+                    Some("pr_autofix_publish_failed".to_string()),
+                ))
+                .await
+                .map_err(|repo_error| {
+                    json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        repo_error.to_string(),
+                        None,
+                    )
+                })?;
+            let workspace =
+                load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+            Ok(Json(CompleteAgentWorkspacePrFixResponse {
+                success: true,
+                status: "publish_failed".to_string(),
+                message: format!("PR fix publish failed: {error}"),
+                workspace: Some(workspace),
+                publish_status: Some("failed".to_string()),
+                publish_error: Some(error),
+                commit_sha: None,
+                pushed: None,
+                created_pr: None,
+                pr_number: None,
+                pr_url: None,
+            }))
         }
     }
 }
@@ -884,7 +1153,13 @@ pub async fn get_agent_workspace_staged_file_changes(
     )
     .await
     .map(Json)
-    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+    .map_err(|e| {
+        json_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+            None,
+        )
+    })
 }
 
 /// GET /api/agent-workspaces/{conversation_id}/unstaged-changes
@@ -915,7 +1190,13 @@ pub async fn get_agent_workspace_staged_file_diff(
     )
     .await
     .map(Json)
-    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+    .map_err(|e| {
+        json_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+            None,
+        )
+    })
 }
 
 /// GET /api/agent-workspaces/{conversation_id}/unstaged-changes/{*file_path}
@@ -931,7 +1212,13 @@ pub async fn get_agent_workspace_unstaged_file_diff(
     )
     .await
     .map(Json)
-    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+    .map_err(|e| {
+        json_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+            None,
+        )
+    })
 }
 
 // =========================================================================
@@ -966,7 +1253,13 @@ pub async fn get_agent_workspace_cumulative_file_diff(
     )
     .await
     .map(Json)
-    .map_err(|e| json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))
+    .map_err(|e| {
+        json_error(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
+            None,
+        )
+    })
 }
 
 /// Query parameters for the file content range endpoint.
@@ -1036,12 +1329,10 @@ pub async fn get_agent_workspace_file_content_range(
     Path(conversation_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<FileContentRangeQuery>,
 ) -> Result<Json<Vec<crate::application::RangeLine>>, JsonError> {
-    let (side, file_path, ref_kind, from, to) =
-        params.into_service_params().map_err(|msg| {
-            json_error(axum::http::StatusCode::BAD_REQUEST, msg, None)
-        })?;
-    let conversation_id =
-        crate::domain::entities::ChatConversationId::from_string(conversation_id);
+    let (side, file_path, ref_kind, from, to) = params
+        .into_service_params()
+        .map_err(|msg| json_error(axum::http::StatusCode::BAD_REQUEST, msg, None))?;
+    let conversation_id = crate::domain::entities::ChatConversationId::from_string(conversation_id);
     crate::commands::diff_commands::get_agent_conversation_workspace_file_content_range_for_state(
         state.app_state.as_ref(),
         &conversation_id,
@@ -1054,7 +1345,11 @@ pub async fn get_agent_workspace_file_content_range(
     .await
     .map(Json)
     .map_err(|e| {
-        let status = if e.to_string().to_lowercase().contains("validation") || e.to_string().to_lowercase().contains("unsafe") || e.to_string().to_lowercase().contains("relative") || e.to_string().to_lowercase().contains("too large") {
+        let status = if e.to_string().to_lowercase().contains("validation")
+            || e.to_string().to_lowercase().contains("unsafe")
+            || e.to_string().to_lowercase().contains("relative")
+            || e.to_string().to_lowercase().contains("too large")
+        {
             axum::http::StatusCode::BAD_REQUEST
         } else {
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
@@ -1473,8 +1768,7 @@ mod tests {
     // Extension A/B — Diff HTTP handler tests
     // =========================================================================
 
-    async fn create_diff_workspace(
-    ) -> (
+    async fn create_diff_workspace() -> (
         tempfile::TempDir,
         Arc<AppState>,
         ChatConversationId,
@@ -1491,14 +1785,16 @@ mod tests {
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo).expect("create repo");
         git(repo.as_path(), &["init", "-b", "main"]);
-        git(repo.as_path(), &["config", "user.email", "test@example.com"]);
+        git(
+            repo.as_path(),
+            &["config", "user.email", "test@example.com"],
+        );
         git(repo.as_path(), &["config", "user.name", "Test"]);
         std::fs::write(repo.join("base.txt"), "base\n").unwrap();
         git(repo.as_path(), &["add", "."]);
         git(repo.as_path(), &["commit", "-m", "Initial"]);
 
-        let mut project =
-            Project::new("Diff Test".to_string(), repo.display().to_string());
+        let mut project = Project::new("Diff Test".to_string(), repo.display().to_string());
         project.base_branch = Some("main".to_string());
         project.worktree_parent_directory =
             Some(tmp.path().join("worktrees").display().to_string());
@@ -1520,7 +1816,11 @@ mod tests {
         let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
 
         let app_state = Arc::new(AppState::new_test());
-        app_state.project_repo.create(project).await.expect("seed project");
+        app_state
+            .project_repo
+            .create(project)
+            .await
+            .expect("seed project");
         app_state
             .agent_conversation_workspace_repo
             .create_or_update(workspace)
@@ -1532,8 +1832,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_staged_changes_handler_returns_staged_files() {
-        let (_tmp, app_state, conversation_id, worktree_path) =
-            create_diff_workspace().await;
+        let (_tmp, app_state, conversation_id, worktree_path) = create_diff_workspace().await;
 
         std::fs::write(worktree_path.join("staged.txt"), "staged\n").unwrap();
         git(worktree_path.as_path(), &["add", "staged.txt"]);
@@ -1552,8 +1851,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_unstaged_changes_handler_returns_unstaged_files() {
-        let (_tmp, app_state, conversation_id, worktree_path) =
-            create_diff_workspace().await;
+        let (_tmp, app_state, conversation_id, worktree_path) = create_diff_workspace().await;
 
         // Modify committed file without staging
         std::fs::write(worktree_path.join("base.txt"), "base\nmodified\n").unwrap();
@@ -1571,8 +1869,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_staged_diff_handler_returns_head_vs_index_content() {
-        let (_tmp, app_state, conversation_id, worktree_path) =
-            create_diff_workspace().await;
+        let (_tmp, app_state, conversation_id, worktree_path) = create_diff_workspace().await;
 
         std::fs::write(worktree_path.join("base.txt"), "base\nnew\n").unwrap();
         git(worktree_path.as_path(), &["add", "base.txt"]);
@@ -1589,7 +1886,10 @@ mod tests {
 
         // Hunk-based: staged diff HEAD→index; "new" line appears as an addition
         assert!(
-            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("new")),
+            diff.hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("new")),
             "staged diff hunks should contain the staged addition"
         );
         assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
@@ -1598,13 +1898,15 @@ mod tests {
 
     #[tokio::test]
     async fn get_cumulative_changes_handler_shows_all_committed_changes() {
-        let (_tmp, app_state, conversation_id, worktree_path) =
-            create_diff_workspace().await;
+        let (_tmp, app_state, conversation_id, worktree_path) = create_diff_workspace().await;
 
         // Commit a change in the worktree
         std::fs::write(worktree_path.join("committed.txt"), "committed\n").unwrap();
         git(worktree_path.as_path(), &["add", "committed.txt"]);
-        git(worktree_path.as_path(), &["commit", "-m", "Add committed file"]);
+        git(
+            worktree_path.as_path(),
+            &["commit", "-m", "Add committed file"],
+        );
 
         let state = test_http_state(app_state);
         let Json(changes) = get_agent_workspace_cumulative_file_changes(
@@ -1619,8 +1921,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_cumulative_diff_handler_shows_base_to_head_file_content() {
-        let (_tmp, app_state, conversation_id, worktree_path) =
-            create_diff_workspace().await;
+        let (_tmp, app_state, conversation_id, worktree_path) = create_diff_workspace().await;
 
         // Commit a new file in the worktree
         std::fs::write(worktree_path.join("new.rs"), "pub fn hello() {}\n").unwrap();
@@ -1638,7 +1939,10 @@ mod tests {
         assert_eq!(diff.file_path, "new.rs");
         // Hunk-based: cumulative diff base→HEAD; "hello" fn appears as additions
         assert!(
-            diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("hello")),
+            diff.hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("hello")),
             "cumulative diff hunks should contain the committed function"
         );
         // File did not exist at base, so old_total_lines = 0

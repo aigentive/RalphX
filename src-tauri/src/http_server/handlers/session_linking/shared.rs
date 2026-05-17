@@ -119,7 +119,10 @@ pub(super) async fn load_parent_context(
     ParentContextResponse {
         parent_session: ParentSessionSummary {
             id: parent.id.to_string(),
-            title: parent.title.clone().unwrap_or_else(|| "Untitled".to_string()),
+            title: parent
+                .title
+                .clone()
+                .unwrap_or_else(|| "Untitled".to_string()),
             status: parent.status.to_string(),
         },
         plan_content,

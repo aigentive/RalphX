@@ -113,11 +113,11 @@ pub(crate) async fn build_child_session_status_response(
     use crate::domain::entities::ideation::VerificationStatus;
     use crate::domain::entities::IdeationSessionId;
     use crate::domain::services::RunningAgentKey;
-    use crate::infrastructure::agents::claude::ideation_activity_threshold_secs;
     use crate::http_server::types::{
         AgentStateInfo, ChatMessageSummary, ChildSessionStatusResponse, IdeationSessionSummary,
         VerificationInfo,
     };
+    use crate::infrastructure::agents::claude::ideation_activity_threshold_secs;
 
     let session_id_obj = IdeationSessionId::from_string(session_id.to_string());
 
@@ -306,7 +306,10 @@ pub async fn send_ideation_session_message_handler(
         .await
         .map_err(|e| {
             error!("Failed to get ideation session {}: {}", session_id, e);
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to get ideation session")
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to get ideation session",
+            )
         })?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Session not found"))?;
 
@@ -345,11 +348,12 @@ pub async fn send_ideation_session_message_handler(
             .has_process(&ipr_key)
             .await
         {
-            let stream_json_message = crate::http_server::handlers::format_interactive_stdin_message(
-                ChatContextType::Ideation,
-                &session_id,
-                &req.message,
-            );
+            let stream_json_message =
+                crate::http_server::handlers::format_interactive_stdin_message(
+                    ChatContextType::Ideation,
+                    &session_id,
+                    &req.message,
+                );
             match state
                 .app_state
                 .interactive_process_registry
@@ -382,10 +386,11 @@ pub async fn send_ideation_session_message_handler(
             .is_running(&agent_key)
             .await
         {
-            state
-                .app_state
-                .message_queue
-                .queue(ChatContextType::Ideation, &session_id, req.message.clone());
+            state.app_state.message_queue.queue(
+                ChatContextType::Ideation,
+                &session_id,
+                req.message.clone(),
+            );
             return Ok(Json(SendSessionMessageResponse {
                 delivery_status: "queued".to_string(),
                 conversation_id: None,

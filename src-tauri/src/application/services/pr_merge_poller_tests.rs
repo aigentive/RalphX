@@ -27,6 +27,9 @@ use crate::domain::entities::{
     IdeationSessionId, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::services::github_service::{
+    PrHealth, PrHealthCheck, PrMergeableState, PrSyncState,
+};
 use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
@@ -115,6 +118,25 @@ fn expected_workspace_branch(project: &Project, conversation_id: &str) -> String
     agent_conversation_branch_name(project, &conversation_id)
 }
 
+fn open_pr_health(head: &str) -> PrHealth {
+    PrHealth {
+        sync_state: PrSyncState {
+            status: crate::domain::services::github_service::PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "feature/pr".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head.to_string()),
+            base_ref_oid: Some("base".to_string()),
+        },
+        review_decision: None,
+        checks: Vec::new(),
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
 #[test]
 fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
     let repo = init_cleanup_repo();
@@ -128,7 +150,42 @@ fn refreshed_agent_workspace_pr_remains_pollable_for_terminal_status() {
     workspace.publication_pr_status = Some("open".to_string());
     workspace.publication_push_status = Some("refreshed".to_string());
 
-    assert!(super::agent_workspace_pr_polling_is_current(&workspace, 101));
+    assert!(super::agent_workspace_pr_polling_is_current(
+        &workspace, 101
+    ));
+}
+
+#[test]
+fn supervised_agent_workspace_pr_health_routes_failing_checks() {
+    let mut health = open_pr_health("abc123");
+    health.checks.push(PrHealthCheck {
+        name: "CI / test".to_string(),
+        status: Some("COMPLETED".to_string()),
+        conclusion: Some("FAILURE".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/1".to_string()),
+    });
+
+    let issue = super::classify_agent_workspace_pr_autofix_issue(101, &health)
+        .expect("failing check should route autofix");
+    assert_eq!(issue.kind, super::AgentWorkspacePrAutofixIssueKind::Checks);
+    assert!(issue.summary.contains("1 failing check"));
+    assert!(issue.details[0].contains("CI / test"));
+    assert!(issue
+        .classification
+        .starts_with("github_pr_autofix:101:abc123"));
+}
+
+#[test]
+fn supervised_agent_workspace_pr_health_ignores_pending_checks() {
+    let mut health = open_pr_health("abc123");
+    health.checks.push(PrHealthCheck {
+        name: "CI / test".to_string(),
+        status: Some("IN_PROGRESS".to_string()),
+        conclusion: None,
+        details_url: None,
+    });
+
+    assert!(super::classify_agent_workspace_pr_autofix_issue(101, &health).is_none());
 }
 
 fn repo_error() -> AppError {
@@ -600,6 +657,16 @@ impl AgentConversationWorkspaceRepository for WorkspaceLookupErrorRepository {
         _pr_url: Option<&str>,
         _pr_status: Option<&str>,
         _push_status: Option<&str>,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _autofix_enabled: bool,
+        _auto_merge_desired: bool,
+        _auto_merge_method: &str,
     ) -> AppResult<()> {
         Err(repo_error())
     }

@@ -48,6 +48,19 @@ export function getSidebarPublicationLabel(
   );
 }
 
+export function getSidebarPublicationLabelForWorkspace(
+  workspace: AgentConversationWorkspace | null | undefined,
+  state: AgentSidebarPublicationState = getSidebarPublicationState(workspace)
+): string | null {
+  if (state === "active" || state === "uncommitted" || state === "unpushed") {
+    const supervisionLabel = getSidebarSupervisionLabel(workspace);
+    if (supervisionLabel) {
+      return supervisionLabel;
+    }
+  }
+  return getSidebarPublicationLabel(state);
+}
+
 export function getSidebarPublicationGroupLabel(
   state: AgentSidebarPublicationState
 ): string {
@@ -92,4 +105,26 @@ export function shouldShowConversationForPublicationFilters(
 function normalizeStatus(status: string | null | undefined): string | null {
   const normalized = status?.trim().toLowerCase();
   return normalized || null;
+}
+
+function getSidebarSupervisionLabel(
+  workspace: AgentConversationWorkspace | null | undefined
+): string | null {
+  const supervisionStatus = normalizeStatus(workspace?.prSupervisionStatus);
+  if (supervisionStatus === "fixing" || supervisionStatus === "publishing") {
+    return "fixing";
+  }
+  if (supervisionStatus === "blocked") {
+    return "blocked";
+  }
+  if (
+    supervisionStatus === "waiting" ||
+    supervisionStatus === "waiting_for_checks"
+  ) {
+    return "waiting";
+  }
+  if (supervisionStatus === "monitoring" && workspace?.prAutoMergeCurrent === true) {
+    return "auto-merge";
+  }
+  return null;
 }

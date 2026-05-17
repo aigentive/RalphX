@@ -100,16 +100,15 @@ pub async fn complete_review(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 2. Parse and validate decision policy
-    let outcome = parse_review_decision(&req.decision)
-        .map_err(|e| {
-            tracing::warn!(
-                task_id = %task_id.as_str(),
-                decision = %req.decision,
-                rejection_reason = %e,
-                "complete_review rejected: invalid decision value"
-            );
-            (StatusCode::BAD_REQUEST, e.to_string())
-        })?;
+    let outcome = parse_review_decision(&req.decision).map_err(|e| {
+        tracing::warn!(
+            task_id = %task_id.as_str(),
+            decision = %req.decision,
+            rejection_reason = %e,
+            "complete_review rejected: invalid decision value"
+        );
+        (StatusCode::BAD_REQUEST, e.to_string())
+    })?;
     validate_complete_review_policy(
         task_context.scope_drift_status.clone(),
         &task_context.out_of_scope_files,
@@ -197,7 +196,9 @@ pub async fn complete_review(
             (StatusCode::BAD_REQUEST, msg)
         })?;
 
-    let domain_issues = parsed_issues.as_ref().map(|issues| build_review_note_issues(issues));
+    let domain_issues = parsed_issues
+        .as_ref()
+        .map(|issues| build_review_note_issues(issues));
 
     // For now, we don't create fix tasks automatically - that can be added later
     let fix_task_id: Option<TaskId> = None;
@@ -269,12 +270,10 @@ pub async fn complete_review(
 
     // 6. Trigger state transition via TaskTransitionService
     // Create scheduler for auto-scheduling next Ready task when this one exits Reviewing
-    let scheduler_concrete = Arc::new(
-        state.app_state.build_task_scheduler_for_runtime(
-            Arc::clone(&state.execution_state),
-            state.app_state.app_handle.as_ref().cloned(),
-        ),
-    );
+    let scheduler_concrete = Arc::new(state.app_state.build_task_scheduler_for_runtime(
+        Arc::clone(&state.execution_state),
+        state.app_state.app_handle.as_ref().cloned(),
+    ));
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 
@@ -284,8 +283,8 @@ pub async fn complete_review(
         .with_task_scheduler(task_scheduler);
 
     if let Some(ref pub_) = state.app_state.webhook_publisher {
-        transition_service_builder = transition_service_builder
-            .with_webhook_publisher_for_emitter(Arc::clone(pub_));
+        transition_service_builder =
+            transition_service_builder.with_webhook_publisher_for_emitter(Arc::clone(pub_));
     }
 
     let transition_service = transition_service_builder
@@ -319,8 +318,7 @@ pub async fn complete_review(
 
     let new_status = match outcome {
         ReviewToolOutcome::Approved => {
-            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision)
-                .await?;
+            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision).await?;
 
             // Check if human review is required
             let require_human = state
@@ -331,17 +329,11 @@ pub async fn complete_review(
                 .map(|s| s.require_human_review)
                 .unwrap_or(false);
 
-            transition_ai_review_approval(
-                &state,
-                &transition_service,
-                &task_id,
-                require_human,
-            )
-            .await?
+            transition_ai_review_approval(&state, &transition_service, &task_id, require_human)
+                .await?
         }
         ReviewToolOutcome::NeedsChanges => {
-            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision)
-                .await?;
+            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision).await?;
 
             // Needs changes: transition to RevisionNeeded (auto re-execute)
             transition_service
@@ -351,8 +343,7 @@ pub async fn complete_review(
             InternalStatus::RevisionNeeded
         }
         ReviewToolOutcome::Escalate => {
-            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision)
-                .await?;
+            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision).await?;
 
             // Escalate: transition to Escalated (requires human decision)
             transition_service
@@ -362,8 +353,7 @@ pub async fn complete_review(
             InternalStatus::Escalated
         }
         ReviewToolOutcome::ApprovedNoChanges => {
-            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision)
-                .await?;
+            ensure_task_still_reviewing_before_transition(&state, &task_id, &req.decision).await?;
 
             // Extract fields BEFORE transition (transition may clear these from task)
             let task_branch = task.task_branch.clone();
@@ -422,13 +412,8 @@ pub async fn complete_review(
 
             if has_code_changes {
                 // Fall back to standard Approved flow (reviewer decision treated as regular Approved)
-                transition_ai_review_approval(
-                    &state,
-                    &transition_service,
-                    &task_id,
-                    require_human,
-                )
-                .await?
+                transition_ai_review_approval(&state, &transition_service, &task_id, require_human)
+                    .await?
             } else {
                 // No code changes confirmed — set metadata and skip merge pipeline.
                 // Re-fetch task for a fresh mutable copy to avoid borrow conflicts.
@@ -439,7 +424,10 @@ pub async fn complete_review(
                     .await
                     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
                     .ok_or_else(|| {
-                        (StatusCode::NOT_FOUND, "Task not found after review bookkeeping".to_string())
+                        (
+                            StatusCode::NOT_FOUND,
+                            "Task not found after review bookkeeping".to_string(),
+                        )
                     })?;
 
                 set_no_code_changes_metadata(&mut fresh_task);
@@ -529,10 +517,21 @@ pub async fn complete_review(
     {
         use crate::application::interactive_process_registry::InteractiveProcessKey;
         let key = InteractiveProcessKey::new("review", task_id.as_str());
-        if let Some(signal) = state.app_state.interactive_process_registry.get_completion_signal(&key).await {
+        if let Some(signal) = state
+            .app_state
+            .interactive_process_registry
+            .get_completion_signal(&key)
+            .await
+        {
             signal.notify_one();
         }
-        if state.app_state.interactive_process_registry.remove(&key).await.is_some() {
+        if state
+            .app_state
+            .interactive_process_registry
+            .remove(&key)
+            .await
+            .is_some()
+        {
             tracing::info!("IPR removed for reviewer on task {}", task_id.as_str());
         }
     }
@@ -574,7 +573,12 @@ async fn transition_ai_review_approval(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(|task| task.internal_status)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "Task not found after approval transition".to_string()))
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "Task not found after approval transition".to_string(),
+            )
+        })
 }
 
 async fn persist_review_scope_snapshot(

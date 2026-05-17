@@ -2,7 +2,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
-    ProjectId,
+    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -420,4 +420,32 @@ async fn list_active_needs_agent_workspaces_filters_to_open_active_workspaces() 
         workspaces[0].publication_push_status.as_deref(),
         Some("needs_agent")
     );
+}
+
+#[tokio::test]
+async fn pr_supervision_preferences_round_trip() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let workspace = make_workspace(conversation_id.clone());
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_pr_supervision_preferences(&conversation_id, true, true, "squash")
+        .await
+        .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(updated.pr_autofix_enabled);
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(
+        updated.pr_auto_merge_method,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+    );
+    assert_eq!(
+        updated.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
+    assert!(updated.pr_supervision_updated_at.is_some());
 }

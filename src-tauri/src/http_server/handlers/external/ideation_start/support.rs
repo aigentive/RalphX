@@ -17,11 +17,9 @@ pub(super) async fn spawn_session_namer(
     session_id: String,
     prompt: String,
 ) {
-    if let Err(error) = spawn_session_namer_agent(
-        app,
-        SessionNamerTarget::session_initial(session_id, prompt),
-    )
-    .await
+    if let Err(error) =
+        spawn_session_namer_agent(app, SessionNamerTarget::session_initial(session_id, prompt))
+            .await
     {
         tracing::warn!(
             project_id,
@@ -38,8 +36,9 @@ pub(crate) async fn determine_agent_status(
     interactive_process_registry: &crate::application::InteractiveProcessRegistry,
     context_id: &str,
 ) -> String {
-    let agent_key =
-        crate::domain::services::running_agent_registry::RunningAgentKey::new("ideation", context_id);
+    let agent_key = crate::domain::services::running_agent_registry::RunningAgentKey::new(
+        "ideation", context_id,
+    );
     if running_agent_registry.is_running(&agent_key).await {
         let ipr_key = crate::application::InteractiveProcessKey {
             context_type: "ideation".to_string(),

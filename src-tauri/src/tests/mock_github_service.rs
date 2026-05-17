@@ -8,7 +8,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrStatus,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -27,6 +28,9 @@ pub struct MockGithubState {
     pub check_pr_review_feedback_delay_ms: u64,
     pub fetch_pr_diff_annotations_result: Option<AppResult<PrDiffAnnotations>>,
     pub fetch_pr_diff_annotations_delay_ms: u64,
+    pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
+    pub enable_pr_auto_merge_result: Option<AppResult<()>>,
+    pub disable_pr_auto_merge_result: Option<AppResult<()>>,
     pub push_branch_result: Option<AppResult<()>>,
     pub close_pr_result: Option<AppResult<()>>,
     pub delete_remote_branch_result: Option<AppResult<()>>,
@@ -46,6 +50,9 @@ pub struct MockGithubState {
     pub active_check_pr_review_feedback_calls: u32,
     pub max_concurrent_check_pr_review_feedback_calls: u32,
     pub fetch_pr_diff_annotations_calls: u32,
+    pub fetch_pr_health_calls: u32,
+    pub enable_pr_auto_merge_calls: u32,
+    pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
     pub close_pr_calls: u32,
     pub delete_remote_branch_calls: u32,
@@ -65,6 +72,9 @@ pub struct MockGithubState {
     pub last_check_pr_sync_state_number: Option<i64>,
     pub last_check_pr_review_feedback_number: Option<i64>,
     pub last_fetch_pr_diff_annotations_number: Option<i64>,
+    pub last_fetch_pr_health_number: Option<i64>,
+    pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
+    pub last_disable_pr_auto_merge_number: Option<i64>,
     pub last_push_branch_name: Option<String>,
     pub last_close_pr_number: Option<i64>,
     pub last_delete_remote_branch_name: Option<String>,
@@ -309,6 +319,45 @@ impl GithubServiceTrait for MockGithubService {
         }
 
         result.unwrap_or_else(|| Ok(PrDiffAnnotations::empty(pr_number)))
+    }
+
+    async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
+        let configured = {
+            let mut s = self.state.lock().expect("lock poisoned");
+            s.fetch_pr_health_calls += 1;
+            s.last_fetch_pr_health_number = Some(pr_number);
+            s.fetch_pr_health_result.take()
+        };
+        if let Some(result) = configured {
+            return result;
+        }
+        let sync_state = self.check_pr_sync_state(working_dir, pr_number).await?;
+        Ok(PrHealth {
+            sync_state,
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        })
+    }
+
+    async fn enable_pr_auto_merge(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        method: &str,
+    ) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.enable_pr_auto_merge_calls += 1;
+        s.last_enable_pr_auto_merge_args = Some((pr_number, method.to_string()));
+        s.enable_pr_auto_merge_result.take().unwrap_or(Ok(()))
+    }
+
+    async fn disable_pr_auto_merge(&self, _working_dir: &Path, pr_number: i64) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.disable_pr_auto_merge_calls += 1;
+        s.last_disable_pr_auto_merge_number = Some(pr_number);
+        s.disable_pr_auto_merge_result.take().unwrap_or(Ok(()))
     }
 
     async fn push_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {

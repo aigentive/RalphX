@@ -10,7 +10,9 @@ pub async fn edit_plan_artifact(
     let edits = req.edits;
 
     if edits.is_empty() {
-        return Err(HttpError::validation("edits array must not be empty".to_string()));
+        return Err(HttpError::validation(
+            "edits array must not be empty".to_string(),
+        ));
     }
     for (i, edit) in edits.iter().enumerate() {
         if edit.old_text.is_empty() {

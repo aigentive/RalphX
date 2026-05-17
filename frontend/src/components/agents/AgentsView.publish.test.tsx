@@ -17,6 +17,7 @@ const {
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   publishAgentConversationWorkspaceMock,
+  setAgentConversationWorkspacePrSupervisionMock,
   sendAgentMessageMock,
   toastErrorMock,
 } = getAgentsViewTestMocks();
@@ -40,6 +41,37 @@ describe("AgentsView publish", () => {
       expect(screen.getByTestId("agents-artifact-pane")).toBeInTheDocument()
     );
     expect(publishAgentConversationWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it("persists PR supervision switches from the publish pane", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      })
+    );
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    fireEvent.click(await screen.findByTestId("agents-publish-workspace"));
+
+    fireEvent.click(await screen.findByTestId("agents-pr-autofix-switch"));
+
+    await waitFor(() =>
+      expect(setAgentConversationWorkspacePrSupervisionMock).toHaveBeenCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        }
+      )
+    );
   });
 
   it("shows Update from base in the header shortcut when the workspace base moved", async () => {

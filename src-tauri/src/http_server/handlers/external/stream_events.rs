@@ -9,7 +9,12 @@ pub async fn stream_events_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
     Query(params): Query<StreamEventsQuery>,
-) -> Result<axum::response::sse::Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>>, StatusCode> {
+) -> Result<
+    axum::response::sse::Sse<
+        impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    >,
+    StatusCode,
+> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use futures::stream;
     use futures::StreamExt as _;
@@ -150,9 +155,7 @@ pub async fn stream_events_http(
                             .unwrap_or(serde_json::json!({})),
                         "created_at": created_at,
                     });
-                    Ok(Event::default()
-                        .event(event_type)
-                        .data(data.to_string()))
+                    Ok(Event::default().event(event_type).data(data.to_string()))
                 })
                 .collect();
 

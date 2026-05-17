@@ -43,7 +43,11 @@ pub async fn get_attention_items_http(
         .get_by_project(&project_id)
         .await
         .map_err(|e| {
-            error!("Failed to get tasks for project {}: {}", project_id.as_str(), e);
+            error!(
+                "Failed to get tasks for project {}: {}",
+                project_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -114,7 +118,11 @@ pub async fn get_execution_capacity_http(
         .get_by_project(&project_id)
         .await
         .map_err(|e| {
-            error!("Failed to get tasks for project {}: {}", project_id.as_str(), e);
+            error!(
+                "Failed to get tasks for project {}: {}",
+                project_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 

@@ -29,9 +29,7 @@ pub async fn get_confirmation_status(
             Ok(Json(ConfirmationStatusResponse {
                 session_id,
                 status: "pending".to_string(),
-                plan_artifact_id: session
-                    .plan_artifact_id
-                    .map(|id| id.as_str().to_string()),
+                plan_artifact_id: session.plan_artifact_id.map(|id| id.as_str().to_string()),
                 available_specialists: Some(available_specialists),
             }))
         }

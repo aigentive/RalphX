@@ -46,7 +46,7 @@ pub use agent_conversation_workspace::{
     is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrDescription,
+    AgentWorkspacePrDescription, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use event_type::{EventType, ParseEventTypeError};
 pub use api_key::{

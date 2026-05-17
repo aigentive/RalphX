@@ -41,9 +41,8 @@ use crate::http_server::types::{
     PublishVerificationFindingResponse, RejectTeamPlanRequest, RequestTeamPlanRequest,
     RequestTeamPlanResponse, RequestTeammateSpawnRequest, RequestTeammateSpawnResponse,
     SaveTeamSessionStateRequest, SaveTeamSessionStateResponse, SpawnedTeammateInfo,
-    TeamArtifactSummary, TeamCompositionEntry, TeamPlanRegisterResponse,
-    TeamSessionStateResponse, VerificationFindingGapPayload, VerificationFindingQuery,
-    VerificationFindingSummary,
+    TeamArtifactSummary, TeamCompositionEntry, TeamPlanRegisterResponse, TeamSessionStateResponse,
+    VerificationFindingGapPayload, VerificationFindingQuery, VerificationFindingSummary,
 };
 use crate::infrastructure::agents::claude::{
     get_team_constraints, resolve_effort, team_constraints_config, validate_team_plan,
@@ -68,8 +67,8 @@ pub use self::plan::{
 pub use self::session_state::{get_team_session_state, save_team_session_state};
 pub use self::spawn::request_teammate_spawn;
 pub use self::spawn_helpers::{
-    assign_teammate_color, find_active_team, generate_unique_teammate_name,
-    resolve_mcp_agent_type, TEAMMATE_COLORS,
+    assign_teammate_color, find_active_team, generate_unique_teammate_name, resolve_mcp_agent_type,
+    TEAMMATE_COLORS,
 };
 
 use self::spawn_execution::execute_team_spawn;

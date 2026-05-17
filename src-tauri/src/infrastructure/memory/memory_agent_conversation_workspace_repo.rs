@@ -8,6 +8,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -142,6 +143,61 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.publication_pr_status = pr_status.map(str::to_string);
             workspace.publication_push_status = push_status.map(str::to_string);
             workspace.updated_at = Utc::now();
+        }
+        Ok(())
+    }
+
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.pr_autofix_enabled = autofix_enabled;
+            workspace.pr_auto_merge_desired = auto_merge_desired;
+            let method = auto_merge_method.trim();
+            workspace.pr_auto_merge_method = if method.is_empty() {
+                DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()
+            } else {
+                method.to_string()
+            };
+            workspace.pr_supervision_status = Some(
+                if autofix_enabled || auto_merge_desired {
+                    "monitoring"
+                } else {
+                    "disabled"
+                }
+                .to_string(),
+            );
+            workspace.pr_supervision_summary = (autofix_enabled || auto_merge_desired)
+                .then(|| "RalphX PR supervision is enabled.".to_string());
+            let now = Utc::now();
+            workspace.pr_supervision_updated_at = Some(now);
+            workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
+    async fn update_pr_auto_merge_state(
+        &self,
+        conversation_id: &ChatConversationId,
+        auto_merge_current: Option<bool>,
+        status: Option<&str>,
+        summary: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.pr_auto_merge_current = auto_merge_current;
+            if let Some(status) = status {
+                workspace.pr_supervision_status = Some(status.to_string());
+            }
+            if let Some(summary) = summary {
+                workspace.pr_supervision_summary = Some(summary.to_string());
+            }
+            let now = Utc::now();
+            workspace.pr_supervision_updated_at = Some(now);
+            workspace.updated_at = now;
         }
         Ok(())
     }

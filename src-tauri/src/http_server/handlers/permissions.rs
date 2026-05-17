@@ -28,11 +28,7 @@ pub async fn request_permission(
     };
 
     // Store pending request with metadata
-    state
-        .app_state
-        .permission_state
-        .register(info)
-        .await;
+    state.app_state.permission_state.register(info).await;
 
     // Emit Tauri event to frontend
     if let Some(ref app_handle) = state.app_state.app_handle {
@@ -114,7 +110,8 @@ pub async fn await_permission(
 
         // Check timeout
         if start.elapsed() >= timeout {
-            return expire_permission_and_emit(&state, &request_id, StatusCode::REQUEST_TIMEOUT).await;
+            return expire_permission_and_emit(&state, &request_id, StatusCode::REQUEST_TIMEOUT)
+                .await;
         }
 
         // Wait for change with remaining timeout

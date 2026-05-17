@@ -515,10 +515,8 @@ fn build_group(
 
 impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
     fn from(row: SidebarConversationRow) -> Self {
-        let publication_label = row
-            .publication_state
-            .publication_label()
-            .map(str::to_string);
+        let publication_label =
+            publication_label_for_workspace_response(row.workspace.as_ref(), row.publication_state);
         Self {
             conversation: AgentConversationResponse::from(row.conversation),
             workspace: row.workspace,
@@ -561,7 +559,7 @@ async fn get_bulk_workspace_publication_states_inner(
             id.clone(),
             BulkPublicationStateResponse {
                 publication_state: pub_state.key().to_string(),
-                publication_label: pub_state.publication_label().map(|s| s.to_string()),
+                publication_label: publication_label_for_domain(workspace.as_ref(), pub_state),
             },
         );
     }
@@ -586,6 +584,61 @@ fn publication_state_from_domain(
         (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
         (Some("draft"), _) => SidebarPublicationState::Draft,
         _ => SidebarPublicationState::Active,
+    }
+}
+
+fn publication_label_for_workspace_response(
+    workspace: Option<&AgentConversationWorkspaceResponse>,
+    state: SidebarPublicationState,
+) -> Option<String> {
+    if matches!(
+        state,
+        SidebarPublicationState::Active
+            | SidebarPublicationState::Uncommitted
+            | SidebarPublicationState::Unpushed
+    ) {
+        if let Some(label) = supervision_publication_label(
+            workspace.and_then(|workspace| workspace.pr_supervision_status.as_deref()),
+            workspace.and_then(|workspace| workspace.pr_auto_merge_current),
+        ) {
+            return Some(label.to_string());
+        }
+    }
+
+    state.publication_label().map(str::to_string)
+}
+
+fn publication_label_for_domain(
+    workspace: Option<&crate::domain::entities::AgentConversationWorkspace>,
+    state: SidebarPublicationState,
+) -> Option<String> {
+    if matches!(
+        state,
+        SidebarPublicationState::Active
+            | SidebarPublicationState::Uncommitted
+            | SidebarPublicationState::Unpushed
+    ) {
+        if let Some(label) = supervision_publication_label(
+            workspace.and_then(|workspace| workspace.pr_supervision_status.as_deref()),
+            workspace.and_then(|workspace| workspace.pr_auto_merge_current),
+        ) {
+            return Some(label.to_string());
+        }
+    }
+
+    state.publication_label().map(str::to_string)
+}
+
+fn supervision_publication_label(
+    status: Option<&str>,
+    auto_merge_current: Option<bool>,
+) -> Option<&'static str> {
+    match status.map(normalize_status).as_deref() {
+        Some("fixing" | "publishing") => Some("fixing"),
+        Some("blocked") => Some("blocked"),
+        Some("waiting" | "waiting_for_checks") => Some("waiting"),
+        Some("monitoring") if auto_merge_current == Some(true) => Some("auto-merge"),
+        _ => None,
     }
 }
 
@@ -657,6 +710,27 @@ mod tests {
         workspace.publication_pr_number = pr_number;
         workspace.publication_pr_status = pr_status.map(str::to_string);
         workspace.publication_push_status = push_status.map(str::to_string);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+    }
+
+    async fn set_workspace_supervision(
+        state: &AppState,
+        conversation: &ChatConversation,
+        status: &str,
+        auto_merge_current: Option<bool>,
+    ) {
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        workspace.pr_supervision_status = Some(status.to_string());
+        workspace.pr_auto_merge_current = auto_merge_current;
         state
             .agent_conversation_workspace_repo
             .create_or_update(workspace)
@@ -742,6 +816,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publication_grouping_surfaces_pr_supervision_attention_labels() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let fixing = create_conversation(&state, &project.id, "Fixing PR", now).await;
+        create_workspace(
+            &state,
+            &fixing,
+            &project.id,
+            Some(77),
+            Some("open"),
+            Some("needs_agent"),
+        )
+        .await;
+        set_workspace_supervision(&state, &fixing, "fixing", Some(false)).await;
+
+        let monitored = create_conversation(
+            &state,
+            &project.id,
+            "Auto merge ready",
+            now - chrono::Duration::minutes(1),
+        )
+        .await;
+        create_workspace(
+            &state,
+            &monitored,
+            &project.id,
+            Some(78),
+            Some("open"),
+            Some("pushed"),
+        )
+        .await;
+        set_workspace_supervision(&state, &monitored, "monitoring", Some(true)).await;
+
+        let mut input = sidebar_input(&project.id);
+        input.group_by = Some("project".to_string());
+        input.publication_states = Some(vec!["active".to_string(), "uncommitted".to_string()]);
+
+        let response = list_agent_sidebar_conversations_for_app_state(input, &state)
+            .await
+            .unwrap();
+
+        let rows = &response.groups[0].rows;
+        let fixing_row = rows
+            .iter()
+            .find(|row| row.conversation.id == fixing.id.as_str())
+            .unwrap();
+        assert_eq!(fixing_row.publication_state, "uncommitted");
+        assert_eq!(fixing_row.publication_label.as_deref(), Some("fixing"));
+
+        let monitored_row = rows
+            .iter()
+            .find(|row| row.conversation.id == monitored.id.as_str())
+            .unwrap();
+        assert_eq!(monitored_row.publication_state, "active");
+        assert_eq!(
+            monitored_row.publication_label.as_deref(),
+            Some("auto-merge")
+        );
+    }
+
+    #[tokio::test]
     async fn publication_grouping_paginates_each_group_independently() {
         let state = AppState::new_test();
         let project = create_project(&state, "alpha").await;
@@ -818,12 +954,10 @@ mod tests {
         let conv = create_conversation(&state, &project.id, "No workspace", now).await;
         let conv_id = conv.id.as_str();
 
-        let result = get_bulk_workspace_publication_states_inner(
-            std::slice::from_ref(&conv_id),
-            &state,
-        )
-        .await
-        .unwrap();
+        let result =
+            get_bulk_workspace_publication_states_inner(std::slice::from_ref(&conv_id), &state)
+                .await
+                .unwrap();
 
         assert_eq!(result.len(), 1);
         let entry = result.get(&conv_id).unwrap();
@@ -934,18 +1068,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 5);
-        assert_eq!(
-            result.get(&merged_id).unwrap().publication_state,
-            "merged"
-        );
+        assert_eq!(result.get(&merged_id).unwrap().publication_state, "merged");
         assert_eq!(
             result.get(&merged_id).unwrap().publication_label.as_deref(),
             Some("merged")
         );
-        assert_eq!(
-            result.get(&draft_id).unwrap().publication_state,
-            "draft"
-        );
+        assert_eq!(result.get(&draft_id).unwrap().publication_state, "draft");
         assert_eq!(
             result.get(&uncommitted_id).unwrap().publication_state,
             "uncommitted"
@@ -954,10 +1082,7 @@ mod tests {
             result.get(&unpushed_id).unwrap().publication_state,
             "unpushed"
         );
-        assert_eq!(
-            result.get(&closed_id).unwrap().publication_state,
-            "closed"
-        );
+        assert_eq!(result.get(&closed_id).unwrap().publication_state, "closed");
     }
 
     #[tokio::test]

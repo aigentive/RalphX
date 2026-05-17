@@ -21,8 +21,8 @@ use delegation::DelegationService;
 // Submodules
 // ============================================================================
 
-pub mod handlers;
 pub mod delegation;
+pub mod handlers;
 pub mod helpers;
 pub mod project_scope;
 pub mod types;
@@ -75,7 +75,10 @@ pub async fn start_http_server(
         .route("/api/auth/keys/:id/rotate", post(rotate_api_key))
         .route("/api/auth/keys/:id/projects", put(update_api_key_projects))
         .route("/api/auth/keys/:id/audit", get(get_audit_log))
-        .route("/api/auth/keys/:id/permissions", put(update_key_permissions))
+        .route(
+            "/api/auth/keys/:id/permissions",
+            put(update_key_permissions),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_key,
@@ -99,10 +102,7 @@ pub async fn start_http_server(
     // CORS preflight requests, so adding a CORS layer here is both unnecessary
     // and undesirable (it would allow browser pages to call these routes).
     let internal_routes = Router::new()
-        .route(
-            "/api/internal/projects",
-            get(list_projects_internal),
-        )
+        .route("/api/internal/projects", get(list_projects_internal))
         .route(
             "/api/internal/cross_project/create_session",
             post(create_cross_project_session_http),
@@ -205,14 +205,8 @@ pub async fn start_http_server(
             get(get_pending_confirmations),
         )
         // Verification confirmation endpoints (UI-session gate)
-        .route(
-            "/api/verification/confirm",
-            post(confirm_verification),
-        )
-        .route(
-            "/api/verification/dismiss",
-            post(dismiss_verification),
-        )
+        .route("/api/verification/confirm", post(confirm_verification))
+        .route("/api/verification/dismiss", post(dismiss_verification))
         .route(
             "/api/verification/auto-accept",
             post(set_auto_accept_verification),
@@ -323,6 +317,14 @@ pub async fn start_http_server(
             post(publish_agent_workspace),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-fix-context",
+            get(get_agent_workspace_pr_fix_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-pr-fix",
+            post(complete_agent_workspace_pr_fix),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/pr-description",
             post(submit_agent_workspace_pr_description),
         )
@@ -406,7 +408,10 @@ pub async fn start_http_server(
             "/api/external/projects",
             get(list_projects_http).post(register_project_external),
         )
-        .route("/api/external/project/:id/status", get(get_project_status_http))
+        .route(
+            "/api/external/project/:id/status",
+            get(get_project_status_http),
+        )
         .route("/api/external/start_ideation", post(start_ideation_http))
         .route(
             "/api/external/ideation_status/:id",
@@ -477,13 +482,16 @@ pub async fn start_http_server(
             "/api/external/webhooks/register",
             post(register_webhook_http),
         )
-        .route("/api/external/webhooks/:id", delete(unregister_webhook_http))
-        .route("/api/external/webhooks", get(list_webhooks_http))
-        .route("/api/external/webhooks/health", get(get_webhook_health_http))
         .route(
-            "/api/external/task-note",
-            post(create_task_note_http),
+            "/api/external/webhooks/:id",
+            delete(unregister_webhook_http),
         )
+        .route("/api/external/webhooks", get(list_webhooks_http))
+        .route(
+            "/api/external/webhooks/health",
+            get(get_webhook_health_http),
+        )
+        .route("/api/external/task-note", post(create_task_note_http))
         // Team endpoints (agent teams) — two-phase plan flow
         .route("/api/team/plan/request", post(request_team_plan_register))
         .route("/api/team/plan/await/:plan_id", get(await_team_plan))

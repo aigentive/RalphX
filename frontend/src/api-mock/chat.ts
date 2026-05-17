@@ -26,6 +26,7 @@ import type {
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
   SendAgentMessageResult,
+  SetAgentConversationWorkspacePrSupervisionInput,
   StartAgentConversationInput,
   StartAgentConversationResult,
   SwitchAgentConversationModeInput,
@@ -340,10 +341,7 @@ export async function mockListAgentSidebarConversations(
                 ? `PR #${workspace.publicationPrNumber}`
                 : workspace?.baseRef || "master",
             publicationState,
-            publicationLabel:
-              publicationState === "active"
-                ? null
-                : getMockPublicationLabel(publicationState),
+            publicationLabel: getMockPublicationLabel(workspace, publicationState),
           };
         })
         .filter((row) => publicationStates.includes(row.publicationState))
@@ -448,8 +446,17 @@ function getMockPublicationState(
   return "active";
 }
 
-function getMockPublicationLabel(state: AgentSidebarPublicationState): string {
-  return getMockPublicationGroupLabel(state).toLowerCase();
+function getMockPublicationLabel(
+  workspace: AgentConversationWorkspace | null,
+  state: AgentSidebarPublicationState
+): string | null {
+  if (state === "active" || state === "uncommitted" || state === "unpushed") {
+    const supervisionLabel = getMockSupervisionPublicationLabel(workspace);
+    if (supervisionLabel) {
+      return supervisionLabel;
+    }
+  }
+  return state === "active" ? null : getMockPublicationGroupLabel(state).toLowerCase();
 }
 
 function getMockPublicationGroupLabel(state: AgentSidebarPublicationState): string {
@@ -467,6 +474,19 @@ function getMockPublicationGroupLabel(state: AgentSidebarPublicationState): stri
     case "unpushed":
       return "Unpushed";
   }
+}
+
+function getMockSupervisionPublicationLabel(
+  workspace: AgentConversationWorkspace | null
+): string | null {
+  const status = workspace?.prSupervisionStatus?.trim().toLowerCase();
+  if (status === "fixing" || status === "publishing") return "fixing";
+  if (status === "blocked") return "blocked";
+  if (status === "waiting" || status === "waiting_for_checks") return "waiting";
+  if (status === "monitoring" && workspace?.prAutoMergeCurrent === true) {
+    return "auto-merge";
+  }
+  return null;
 }
 
 export async function mockGetConversation(
@@ -969,6 +989,32 @@ export async function mockReconcileAgentConversationWorkspacePublication(
   return undefined;
 }
 
+export async function mockSetAgentConversationWorkspacePrSupervision(
+  conversationId: string,
+  input: SetAgentConversationWorkspacePrSupervisionInput
+): Promise<AgentConversationWorkspace> {
+  const workspace = mockWorkspaces.get(conversationId);
+  if (!workspace) {
+    throw new Error(`No mock workspace seeded for ${conversationId}`);
+  }
+  const updated: AgentConversationWorkspace = {
+    ...workspace,
+    prAutofixEnabled: input.autoFixEnabled,
+    prAutoMergeDesired: input.autoMergeDesired,
+    prAutoMergeMethod: input.autoMergeMethod ?? workspace.prAutoMergeMethod ?? "squash",
+    prSupervisionStatus:
+      input.autoFixEnabled || input.autoMergeDesired ? "monitoring" : "disabled",
+    prSupervisionSummary:
+      input.autoFixEnabled || input.autoMergeDesired
+        ? "RalphX PR supervision is enabled."
+        : null,
+    prSupervisionUpdatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  mockWorkspaces.set(conversationId, updated);
+  return updated;
+}
+
 export async function mockPrecomputeAgentConversationWorkspacePrDescription(
   conversationId: string
 ): Promise<PrecomputeAgentConversationWorkspacePrDescriptionResult> {
@@ -1067,6 +1113,8 @@ export const mockChatApi = {
   reconcileAgentConversationWorkspacePublication:
     mockReconcileAgentConversationWorkspacePublication,
   publishAgentConversationWorkspace: mockPublishAgentConversationWorkspace,
+  setAgentConversationWorkspacePrSupervision:
+    mockSetAgentConversationWorkspacePrSupervision,
   startAgentConversation: mockStartAgentConversation,
   switchAgentConversationMode: mockSwitchAgentConversationMode,
   sendAgentMessage: mockSendAgentMessage,

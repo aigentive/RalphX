@@ -2104,9 +2104,8 @@ mod http_error_tests {
 
     #[test]
     fn test_validation_error_has_422_status_and_message() {
-        let err = HttpError::validation(
-            "Cannot modify accepted session. Reopen it first.".to_string(),
-        );
+        let err =
+            HttpError::validation("Cannot modify accepted session. Reopen it first.".to_string());
         assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(
             err.message.as_deref(),
@@ -2117,25 +2116,39 @@ mod http_error_tests {
     #[test]
     fn test_validation_error_message_is_not_sensitive() {
         // Verify the message is a user-actionable string, not a raw DB error
-        let err = HttpError::validation("Validation error: Cannot modify archived session. Reopen it first.".to_string());
+        let err = HttpError::validation(
+            "Validation error: Cannot modify archived session. Reopen it first.".to_string(),
+        );
         let msg = err.message.unwrap();
-        assert!(msg.contains("Reopen it first"), "Message should guide the user");
+        assert!(
+            msg.contains("Reopen it first"),
+            "Message should guide the user"
+        );
         assert!(!msg.contains("SQLITE"), "Should not leak DB internals");
-        assert!(!msg.contains("rusqlite"), "Should not leak internal library names");
+        assert!(
+            !msg.contains("rusqlite"),
+            "Should not leak internal library names"
+        );
     }
 
     #[test]
     fn test_from_status_code_has_no_message() {
         let err = HttpError::from(StatusCode::NOT_FOUND);
         assert_eq!(err.status, StatusCode::NOT_FOUND);
-        assert!(err.message.is_none(), "StatusCode errors should have no body message");
+        assert!(
+            err.message.is_none(),
+            "StatusCode errors should have no body message"
+        );
     }
 
     #[test]
     fn test_from_internal_server_error_has_no_message() {
         let err = HttpError::from(StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(err.message.is_none(), "Internal errors should not expose messages");
+        assert!(
+            err.message.is_none(),
+            "Internal errors should not expose messages"
+        );
     }
 
     #[tokio::test]

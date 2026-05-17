@@ -38,10 +38,7 @@ pub async fn batch_task_status_http(
     if req.task_ids.len() > 50 {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!(
-                "Too many task IDs: {}. Maximum is 50.",
-                req.task_ids.len()
-            ),
+            format!("Too many task IDs: {}. Maximum is 50.", req.task_ids.len()),
         ));
     }
 
