@@ -254,6 +254,9 @@ fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
         crate::utils::runtime_log_paths::agent_screenshot_dir(),
     );
     crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
+    // Provider-neutral setsid wrapper — same helper Codex uses. See
+    // `crate::infrastructure::agents::spawn_isolation` for rationale.
+    crate::infrastructure::agents::spawn_isolation::install_setsid_pre_exec(cmd);
 }
 
 /// Normalize legacy short agent ids to the current canonical ids.

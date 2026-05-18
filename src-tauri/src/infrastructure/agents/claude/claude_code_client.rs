@@ -281,17 +281,56 @@ lazy_static! {
 ///
 /// Called during app exit to ensure no orphaned non-streaming agent processes remain.
 /// The lazy_static is not dropped on exit, so explicit cleanup is required.
+///
+/// On Unix, every Claude spawn runs `setsid()` via
+/// [`crate::infrastructure::agents::claude::apply_common_spawn_env`], so the
+/// child PID also names its process group. We send SIGTERM to the whole
+/// group first (Claude + its Task subagents + the stdio MCP server), give it
+/// a short grace window to flush keep-alive sockets and any pending stdio,
+/// then escalate to SIGKILL on the group. This is the difference between
+/// "MCP server gets a clean close" and "MCP server is reaped mid-burst and
+/// leaves orphan TIME_WAITs".
+///
+/// On Windows we fall back to `child.kill()` (SIGKILL-equivalent on the head
+/// PID); taskkill /T tree-kill via the registry path covers the descendants.
 pub async fn kill_all_tracked_processes() {
+    use crate::infrastructure::agents::spawn_isolation;
+
     let mut processes = PROCESSES.lock().await;
     let count = processes.len();
-    if count > 0 {
-        tracing::info!(
-            count,
-            "Killing tracked non-streaming agent processes on exit"
-        );
-        for (_id, (mut child, _start_time)) in processes.drain() {
-            let _ = child.kill().await;
+    if count == 0 {
+        return;
+    }
+
+    tracing::info!(
+        count,
+        "Killing tracked non-streaming Claude agent processes on exit"
+    );
+
+    // Phase 1: SIGTERM the whole group for each tracked child (Unix only).
+    #[cfg(unix)]
+    {
+        let pids: Vec<u32> = processes
+            .iter()
+            .filter_map(|(_, (child, _))| child.id())
+            .collect();
+        for pid in &pids {
+            spawn_isolation::send_signal_to_group(*pid, nix::sys::signal::Signal::SIGTERM);
         }
+        // Brief grace window so the MCP server / Claude can close sockets and
+        // flush stdio. Keep this short — app exit is already on the hot path.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // Phase 2: drain the map. On Unix we follow up with SIGKILL to the group
+    // (catches whatever didn't honor SIGTERM); `child.kill()` covers Windows
+    // and serves as a defensive double-kill on Unix.
+    for (_id, (mut child, _start_time)) in processes.drain() {
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            spawn_isolation::send_signal_to_group(pid, nix::sys::signal::Signal::SIGKILL);
+        }
+        let _ = child.kill().await;
     }
 }
 

@@ -86,7 +86,13 @@ fn shutdown_agents(
             );
             interactive.clear().await;
             let stopped = registry.stop_all().await;
+            // Reap tracked head-process maps for both harnesses. Each helper
+            // sends SIGTERM to the spawn's process group (setsid-isolated),
+            // gives it a short grace window, then SIGKILLs the group — so
+            // the stdio MCP server gets a chance to close keep-alive sockets
+            // cleanly instead of being orphaned mid-burst.
             crate::infrastructure::agents::claude::kill_all_tracked_processes().await;
+            crate::infrastructure::agents::codex::kill_all_tracked_processes().await;
             if !stopped.is_empty() {
                 tracing::info!(count = stopped.len(), "Killed running agents on app exit");
             }
