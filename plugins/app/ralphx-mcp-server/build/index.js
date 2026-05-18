@@ -129,6 +129,7 @@ const RALPHX_PROJECT_ID = runtimeContext.projectId;
 const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
+const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 function buildArtifactMutationTransportHeaders() {
     if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
         return undefined;
@@ -542,7 +543,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             /* c8 ignore next 2 -- index.ts is a side-effectful MCP server; pure dispatch is covered in agent-workspace-tools tests. */
         }
         else if (isAgentWorkspaceToolName(name)) {
-            result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args);
+            result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
+                parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+            });
         }
         else if (name === "report_conflict") {
             // POST /api/git/tasks/:task_id/report-conflict

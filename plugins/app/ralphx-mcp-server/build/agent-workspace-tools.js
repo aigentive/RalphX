@@ -13,10 +13,9 @@ export const AGENT_WORKSPACE_TOOLS = [
             properties: {
                 conversation_id: {
                     type: "string",
-                    description: "The agent workspace conversation ID",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current RalphX workspace conversation.",
                 },
             },
-            required: ["conversation_id"],
         },
     },
     {
@@ -28,10 +27,9 @@ export const AGENT_WORKSPACE_TOOLS = [
             properties: {
                 conversation_id: {
                     type: "string",
-                    description: "The agent workspace conversation ID",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current RalphX workspace conversation.",
                 },
             },
-            required: ["conversation_id"],
         },
     },
     {
@@ -43,7 +41,7 @@ export const AGENT_WORKSPACE_TOOLS = [
             properties: {
                 conversation_id: {
                     type: "string",
-                    description: "The agent workspace conversation ID",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current RalphX workspace conversation.",
                 },
                 base_ref_kind: {
                     type: "string",
@@ -59,7 +57,6 @@ export const AGENT_WORKSPACE_TOOLS = [
                     description: "Optional user-facing label for the selected base.",
                 },
             },
-            required: ["conversation_id"],
         },
     },
     {
@@ -71,10 +68,9 @@ export const AGENT_WORKSPACE_TOOLS = [
             properties: {
                 conversation_id: {
                     type: "string",
-                    description: "The agent workspace conversation ID",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current RalphX workspace conversation.",
                 },
             },
-            required: ["conversation_id"],
         },
     },
     {
@@ -180,16 +176,16 @@ const AGENT_WORKSPACE_TOOL_NAMES = new Set(AGENT_WORKSPACE_TOOLS.map((tool) => t
 export function isAgentWorkspaceToolName(name) {
     return AGENT_WORKSPACE_TOOL_NAMES.has(name);
 }
-export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args) {
+export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args, runtimeContext) {
     switch (name) {
         case "get_agent_workspace_publish_status":
-            return callGetAgentWorkspacePublishStatusTool(callTauriGet, args);
+            return callGetAgentWorkspacePublishStatusTool(callTauriGet, args, runtimeContext);
         case "check_agent_workspace_publish_readiness":
-            return callCheckAgentWorkspacePublishReadinessTool(callTauriGet, args);
+            return callCheckAgentWorkspacePublishReadinessTool(callTauriGet, args, runtimeContext);
         case "update_agent_workspace_from_base":
-            return callUpdateAgentWorkspaceFromBaseTool(callTauri, args);
+            return callUpdateAgentWorkspaceFromBaseTool(callTauri, args, runtimeContext);
         case "publish_agent_workspace":
-            return callPublishAgentWorkspaceTool(callTauri, args);
+            return callPublishAgentWorkspaceTool(callTauri, args, runtimeContext);
         case "get_agent_workspace_pr_fix_context":
             return callGetAgentWorkspacePrFixContextTool(callTauriGet, args);
         case "complete_agent_workspace_pr_fix":
@@ -202,24 +198,41 @@ export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args
             throw new Error(`Unsupported agent workspace tool: ${name}`);
     }
 }
-export async function callGetAgentWorkspacePublishStatusTool(callTauriGet, args) {
-    const { conversation_id } = args;
+function resolveAgentWorkspaceConversationId(toolName, args, runtimeContext) {
+    const explicitId = args &&
+        typeof args === "object" &&
+        typeof args.conversation_id === "string"
+        ? args.conversation_id.trim()
+        : "";
+    if (explicitId.length > 0) {
+        return explicitId;
+    }
+    const currentConversationId = runtimeContext?.parentConversationId?.trim() ?? "";
+    if (currentConversationId.length > 0) {
+        return currentConversationId;
+    }
+    throw new Error(`${toolName} requires conversation_id because RalphX did not provide the current workspace conversation id to the MCP runtime context.`);
+}
+export async function callGetAgentWorkspacePublishStatusTool(callTauriGet, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("get_agent_workspace_publish_status", args, runtimeContext);
     return callTauriGet(`agent-workspaces/${conversation_id}/publish-status`);
 }
-export async function callCheckAgentWorkspacePublishReadinessTool(callTauriGet, args) {
-    const { conversation_id } = args;
+export async function callCheckAgentWorkspacePublishReadinessTool(callTauriGet, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("check_agent_workspace_publish_readiness", args, runtimeContext);
     return callTauriGet(`agent-workspaces/${conversation_id}/publish-readiness`);
 }
-export async function callUpdateAgentWorkspaceFromBaseTool(callTauri, args) {
-    const { conversation_id, base_ref_kind, base_ref, base_display_name } = args;
+export async function callUpdateAgentWorkspaceFromBaseTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("update_agent_workspace_from_base", args, runtimeContext);
+    const updateArgs = (args && typeof args === "object" ? args : {});
+    const { base_ref_kind, base_ref, base_display_name } = updateArgs;
     return callTauri(`agent-workspaces/${conversation_id}/update-from-base`, {
         base_ref_kind,
         base_ref,
         base_display_name,
     });
 }
-export async function callPublishAgentWorkspaceTool(callTauri, args) {
-    const { conversation_id } = args;
+export async function callPublishAgentWorkspaceTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("publish_agent_workspace", args, runtimeContext);
     return callTauri(`agent-workspaces/${conversation_id}/publish`, {});
 }
 export async function callGetAgentWorkspacePrFixContextTool(callTauriGet, args) {

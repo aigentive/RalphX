@@ -21,7 +21,7 @@ use crate::infrastructure::agents::harness_agent_catalog::{
 };
 use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
 use crate::infrastructure::agents::mcp_runtime_context::{
-    append_mcp_runtime_query, McpRuntimeContext,
+    append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
 };
 use crate::infrastructure::external_mcp_supervisor::{
     ensure_tauri_mcp_bypass_token, TAURI_MCP_BYPASS_TOKEN_ENV,
@@ -164,32 +164,7 @@ pub fn build_codex_mcp_overrides(
             .into_owned(),
     ];
 
-    if let Some(runtime_context) = runtime_context {
-        if let Some(context_type) = runtime_context.context_type.as_deref() {
-            mcp_args.push("--context-type".to_string());
-            mcp_args.push(context_type.to_string());
-        }
-        if let Some(context_id) = runtime_context.context_id.as_deref() {
-            mcp_args.push("--context-id".to_string());
-            mcp_args.push(context_id.to_string());
-        }
-        if let Some(task_id) = runtime_context.task_id.as_deref() {
-            mcp_args.push("--task-id".to_string());
-            mcp_args.push(task_id.to_string());
-        }
-        if let Some(project_id) = runtime_context.project_id.as_deref() {
-            mcp_args.push("--project-id".to_string());
-            mcp_args.push(project_id.to_string());
-        }
-        if let Some(working_directory) = runtime_context.working_directory.as_ref() {
-            mcp_args.push("--working-directory".to_string());
-            mcp_args.push(working_directory.to_string_lossy().into_owned());
-        }
-        if let Some(lead_session_id) = runtime_context.lead_session_id.as_deref() {
-            mcp_args.push("--lead-session-id".to_string());
-            mcp_args.push(lead_session_id.to_string());
-        }
-    }
+    append_mcp_runtime_args(&mut mcp_args, runtime_context);
 
     let enabled_tools = get_agent_config(short_name).map(|config| {
         let tools: Vec<String> = config

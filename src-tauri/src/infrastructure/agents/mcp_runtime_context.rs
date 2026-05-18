@@ -45,6 +45,44 @@ pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRu
     }
 }
 
+pub fn append_mcp_runtime_args(
+    args: &mut Vec<String>,
+    runtime_context: Option<&McpRuntimeContext>,
+) {
+    let Some(runtime_context) = runtime_context else {
+        return;
+    };
+
+    if let Some(context_type) = runtime_context.context_type.as_deref() {
+        args.push("--context-type".to_string());
+        args.push(context_type.to_string());
+    }
+    if let Some(context_id) = runtime_context.context_id.as_deref() {
+        args.push("--context-id".to_string());
+        args.push(context_id.to_string());
+    }
+    if let Some(task_id) = runtime_context.task_id.as_deref() {
+        args.push("--task-id".to_string());
+        args.push(task_id.to_string());
+    }
+    if let Some(project_id) = runtime_context.project_id.as_deref() {
+        args.push("--project-id".to_string());
+        args.push(project_id.to_string());
+    }
+    if let Some(working_directory) = runtime_context.working_directory.as_ref() {
+        args.push("--working-directory".to_string());
+        args.push(working_directory.to_string_lossy().into_owned());
+    }
+    if let Some(lead_session_id) = runtime_context.lead_session_id.as_deref() {
+        args.push("--lead-session-id".to_string());
+        args.push(lead_session_id.to_string());
+    }
+    if let Some(parent_conversation_id) = runtime_context.parent_conversation_id.as_deref() {
+        args.push("--parent-conversation-id".to_string());
+        args.push(parent_conversation_id.to_string());
+    }
+}
+
 fn encode_query_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.as_bytes() {
