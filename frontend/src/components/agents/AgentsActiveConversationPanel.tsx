@@ -337,6 +337,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   isSubmitting={composerProps.isSending}
                   isReadOnly={composerProps.isReadOnly}
                   autoFocus={composerProps.autoFocus}
+                  conversationId={selectedConversationId}
                   placeholder={
                     isFocusedChildChat
                       ? "Send a message..."

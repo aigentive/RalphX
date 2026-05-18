@@ -32,7 +32,11 @@ import { useTaskStore } from "@/stores/taskStore";
 import { useTasks, taskKeys } from "@/hooks/useTasks";
 import { useChatPanelContext } from "@/hooks/useChatPanelContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { chatApi, type SendAgentMessageResult } from "@/api/chat";
+import {
+  chatApi,
+  type ComposerProjectReference,
+  type SendAgentMessageResult,
+} from "@/api/chat";
 import { api } from "@/lib/tauri";
 import { withAlpha } from "@/lib/theme-colors";
 import { getContextConfig, buildStoreKey } from "@/lib/chat-context-registry";
@@ -154,7 +158,10 @@ interface IntegratedChatPanelProps {
 }
 
 export interface IntegratedChatComposerRenderProps {
-  onSend: (message: string) => Promise<void>;
+  onSend: (
+    message: string,
+    options?: { projectReferences?: ComposerProjectReference[] },
+  ) => Promise<void>;
   onStop: () => Promise<void>;
   agentStatus: AgentStatus;
   isSending: boolean;
@@ -793,7 +800,10 @@ export function IntegratedChatPanel({
   // Wrap handleSend to include attachment IDs, team target, and clear attachments after send.
   // Auto-scroll on new user messages is handled by ChatMessageList (see its
   // "new user message → scrollToBottom" effect).
-  const handleSend = useCallback(async (message: string) => {
+  const handleSend = useCallback(async (
+    message: string,
+    options?: { projectReferences?: ComposerProjectReference[] },
+  ) => {
     const attachmentIds = attachments.map(a => a.id);
     logger.debug("[ChatScroll] handleSend firing", {
       hasAttachments: attachmentIds.length > 0,
@@ -802,7 +812,8 @@ export function IntegratedChatPanel({
     await handleSendBase(
       message,
       attachmentIds.length > 0 ? attachmentIds : undefined,
-      showTeamUi ? sendTarget : undefined
+      showTeamUi ? sendTarget : undefined,
+      options
     );
     if (attachmentIds.length > 0) {
       clearAttachments();

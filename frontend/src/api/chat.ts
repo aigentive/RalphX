@@ -1494,6 +1494,19 @@ export interface SendAgentMessageResult {
   queuedMessageId?: string | null | undefined;
 }
 
+export interface ComposerProjectReference {
+  path: string;
+  kind?: "file" | "directory";
+}
+
+export interface SendAgentMessageOptions {
+  conversationId?: string | null;
+  providerHarness?: string | null;
+  modelId?: string | null;
+  logicalEffort?: string | null;
+  composerProjectReferences?: ComposerProjectReference[];
+}
+
 export type AgentConversationWorkspaceMode = AgentConversationMode;
 export type AgentConversationBaseRefKind =
   | "project_default"
@@ -1538,6 +1551,7 @@ export interface StartAgentConversationInput {
   logicalEffort?: string | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
+  composerProjectReferences?: ComposerProjectReference[];
 }
 
 export interface StartAgentConversationResult {
@@ -2077,6 +2091,9 @@ export async function startAgentConversation(
         ...(input.modelId ? { modelOverride: input.modelId } : {}),
         ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
+        ...(input.composerProjectReferences?.length
+          ? { composerProjectReferences: input.composerProjectReferences }
+          : {}),
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
@@ -2130,12 +2147,7 @@ export async function sendAgentMessage(
   content: string,
   attachmentIds?: string[],
   target?: string,
-  options?: {
-    conversationId?: string | null;
-    providerHarness?: string | null;
-    modelId?: string | null;
-    logicalEffort?: string | null;
-  }
+  options?: SendAgentMessageOptions
 ): Promise<SendAgentMessageResult> {
   const raw = await typedInvoke(
     "send_agent_message",
@@ -2150,6 +2162,9 @@ export async function sendAgentMessage(
         ...(options?.providerHarness ? { providerHarness: options.providerHarness } : {}),
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
+        ...(options?.composerProjectReferences?.length
+          ? { composerProjectReferences: options.composerProjectReferences }
+          : {}),
       },
     },
     SendAgentMessageResponseSchema

@@ -15,6 +15,14 @@ pub struct InternalSkillInjection {
     pub injected_skill_names: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InternalSkillSummary {
+    pub name: String,
+    pub description: Option<String>,
+    pub user_invocable: bool,
+    pub source_path: String,
+}
+
 #[derive(Debug, Clone)]
 struct InternalSkill {
     name: String,
@@ -164,6 +172,29 @@ pub fn validate_agent_internal_skills(project_root: &Path, agent_name: &str) -> 
         load_internal_skill(project_root, skill_name)?;
     }
     Ok(())
+}
+
+pub fn list_internal_skill_summaries_for_agent(
+    project_root: &Path,
+    agent_name: &str,
+) -> Result<Vec<InternalSkillSummary>, String> {
+    let Some(definition) = load_canonical_agent_definition(project_root, agent_name) else {
+        return Ok(Vec::new());
+    };
+    let policy = definition.capabilities.internal_skills;
+    validate_policy_skill_names(&policy.allowed)?;
+    let mut summaries = Vec::new();
+    for skill_name in &policy.allowed {
+        let skill = load_internal_skill(project_root, skill_name)?;
+        summaries.push(InternalSkillSummary {
+            name: skill.name,
+            description: skill.description,
+            user_invocable: skill.user_invocable,
+            source_path: display_skill_path(project_root, &skill.file_path),
+        });
+    }
+    summaries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(summaries)
 }
 
 fn render_internal_skill_context(project_root: &Path, skills: &[InternalSkill]) -> String {

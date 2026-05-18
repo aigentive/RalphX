@@ -43,6 +43,7 @@ pub(super) fn queued_message_to_send_options(
         metadata: message.metadata_override.clone(),
         created_at,
         harness_override: message.harness_override,
+        composer_project_references: message.composer_project_references.clone(),
         ..Default::default()
     }
 }

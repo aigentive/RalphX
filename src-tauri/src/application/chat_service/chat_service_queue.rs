@@ -93,6 +93,30 @@ fn hidden_resume_in_place_marker_metadata(metadata_override: Option<&str>) -> Op
     Some(value.to_string())
 }
 
+fn queued_persisted_metadata(
+    queued_msg: &crate::domain::services::QueuedMessage,
+) -> Option<String> {
+    let metadata = queued_msg.metadata_override.clone();
+    if queued_msg.composer_project_references.is_empty() {
+        return metadata;
+    }
+
+    let references = serde_json::to_value(&queued_msg.composer_project_references).ok()?;
+    let mut value = match metadata {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::json!({ "raw_metadata": raw })),
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    if !value.is_object() {
+        value = serde_json::json!({ "metadata": value });
+    }
+    let Some(object) = value.as_object_mut() else {
+        return Some(value.to_string());
+    };
+    object.insert("composer_project_references".to_string(), references);
+    Some(value.to_string())
+}
+
 async fn persist_hidden_resume_in_place_marker(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
     context_type: ChatContextType,
@@ -328,7 +352,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     context_id,
                     &queued_msg.content,
                     conversation_id,
-                    queued_msg.metadata_override.clone(),
+                    queued_persisted_metadata(&queued_msg),
                     created_at_override,
                 );
                 // Mark session recovery rehydration prompts so the frontend can hide them
@@ -411,6 +435,13 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 Arc::clone(&app_state.delegated_session_repo)
             });
 
+            let runtime_content =
+                super::chat_service_composer_references::expand_project_references_for_prompt(
+                    &queued_msg.content,
+                    &queued_msg.composer_project_references,
+                    working_directory,
+                );
+
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(
                 harness,
@@ -418,7 +449,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 plugin_dir,
                 context_type,
                 context_id,
-                &queued_msg.content,
+                &runtime_content,
                 working_directory,
                 session_id,
                 project_id,

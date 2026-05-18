@@ -3,6 +3,7 @@
 
 pub mod activity_commands;
 pub mod agent_model_commands;
+pub mod agent_composer_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub mod branch_helpers;
@@ -58,6 +59,11 @@ pub use activity_commands::{
 pub use agent_model_commands::{
     delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
     UpsertCustomAgentModelInput,
+};
+pub use agent_composer_commands::{
+    list_agent_composer_skills, search_agent_composer_entries, AgentComposerEntryResponse,
+    AgentComposerSkillResponse, ListAgentComposerSkillsInput, ListAgentComposerSkillsResponse,
+    SearchAgentComposerEntriesInput, SearchAgentComposerEntriesResponse,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,

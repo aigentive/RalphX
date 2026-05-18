@@ -73,6 +73,8 @@ macro_rules! register_tauri_commands {
             commands::agent_model_commands::list_agent_models,
             commands::agent_model_commands::upsert_custom_agent_model,
             commands::agent_model_commands::delete_custom_agent_model,
+            commands::agent_composer_commands::project_entries::search_agent_composer_entries,
+            commands::agent_composer_commands::skills::list_agent_composer_skills,
             commands::qa_commands::get_qa_settings,
             commands::qa_commands::update_qa_settings,
             commands::qa_commands::get_task_qa,

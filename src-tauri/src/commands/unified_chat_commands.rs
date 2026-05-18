@@ -77,7 +77,8 @@ use crate::domain::entities::{
     IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::services::{
-    AgentWorkspacePrPublisher, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    AgentWorkspacePrPublisher, ComposerProjectReference, QueuedMessage, RunningAgentKey,
+    RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -110,6 +111,9 @@ pub struct SendAgentMessageInput {
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Structured composer project references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_project_references: Vec<ComposerProjectReference>,
     /// Optional target for team message routing.
     /// When set to a teammate name, the message is routed to that teammate's stdin
     /// instead of the lead's. "lead" or None routes to the lead (default behavior).
@@ -166,6 +170,9 @@ pub struct StartAgentConversationInput {
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
     pub base_display_name: Option<String>,
+    /// Structured composer project references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_project_references: Vec<ComposerProjectReference>,
 }
 
 /// Response for an agent conversation workspace.
@@ -2439,6 +2446,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
                 logical_effort_override,
                 conversation_id_override: Some(conversation.id),
                 working_directory_override,
+                composer_project_references: input.composer_project_references.clone(),
                 ..Default::default()
             },
         )
@@ -2779,6 +2787,7 @@ pub async fn send_agent_message(
                 model_override,
                 logical_effort_override,
                 conversation_id_override,
+                composer_project_references: input.composer_project_references,
                 ..Default::default()
             },
         )

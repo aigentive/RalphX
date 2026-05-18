@@ -49,7 +49,9 @@ pub use verification_state::{
     load_current_verification_snapshot_or_default, load_effective_verification_status,
 };
 // Unified message queue - keyed by (context_type, context_id)
-pub use message_queue::{MessageQueue, QueueKey, QueuedMessage};
+pub use message_queue::{
+    ComposerProjectReference, ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
+};
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
 pub use pr_publish_service::{AgentWorkspacePrPublisher, PlanPrPublisher, PrReviewState};
 pub use research_service::ResearchService;

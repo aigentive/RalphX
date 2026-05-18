@@ -16,9 +16,11 @@ import {
 import { useEffect, useCallback, useMemo, useRef } from "react";
 import {
   chatApi,
+  type ComposerProjectReference,
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
+  type SendAgentMessageOptions,
   type SendAgentMessageResult,
 } from "@/api/chat";
 import {
@@ -72,6 +74,7 @@ type SendMessageVariables = {
   content: string;
   attachmentIds?: string[];
   target?: string;
+  composerProjectReferences?: ComposerProjectReference[];
 };
 
 type SendMessageMutationContext = {
@@ -602,12 +605,7 @@ export function useChat(
     storeKey?: string;
     disableAutoSelect?: boolean;
     skipActiveConversationQuery?: boolean;
-    sendOptions?: {
-      conversationId?: string | null;
-      providerHarness?: string | null;
-      modelId?: string | null;
-      logicalEffort?: string | null;
-    };
+    sendOptions?: SendAgentMessageOptions;
   }
 ) {
   const queryClient = useQueryClient();
@@ -693,7 +691,14 @@ export function useChat(
     SendMessageVariables,
     SendMessageMutationContext
   >({
-    mutationFn: async ({ content, attachmentIds, target }) => {
+    mutationFn: async ({ content, attachmentIds, target, composerProjectReferences }) => {
+      const sendOptions =
+        composerProjectReferences?.length
+          ? {
+              ...options?.sendOptions,
+              composerProjectReferences,
+            }
+          : options?.sendOptions;
       if (options?.sendOptions) {
         return chatApi.sendAgentMessage(
           contextType,
@@ -701,7 +706,7 @@ export function useChat(
           content,
           attachmentIds,
           target,
-          options.sendOptions
+          sendOptions
         );
       }
 
@@ -710,7 +715,8 @@ export function useChat(
         contextId,
         content,
         attachmentIds,
-        target
+        target,
+        sendOptions
       );
     },
     onMutate: (variables) => {
