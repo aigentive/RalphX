@@ -115,6 +115,23 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(workspaces)
     }
 
+    async fn list_active_direct_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let mut workspaces = self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_direct_pr_supervision_recovery_candidate(workspace))
+            .cloned()
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        workspaces.truncate(limit);
+        Ok(workspaces)
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
@@ -300,6 +317,22 @@ fn is_active_direct_external_pr_reconciliation_candidate(
             workspace.publication_push_status.as_deref(),
             Some("needs_agent" | "pending" | "failed" | "description_failed")
         )
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
+}
+
+fn is_active_direct_pr_supervision_recovery_candidate(
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_some()
+        && workspace.publication_push_status.as_deref() == Some("failed")
+        && workspace.pr_supervision_status.as_deref() == Some("blocked")
+        && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
         && !matches!(
             workspace.publication_pr_status.as_deref(),
             Some("closed") | Some("merged")
@@ -500,6 +533,68 @@ mod tests {
 
         let all = repo
             .list_active_direct_external_pr_reconciliation_candidates(10)
+            .await
+            .unwrap();
+        assert_eq!(
+            all.into_iter()
+                .map(|workspace| workspace.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![second.conversation_id, first.conversation_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_recovery_candidates_filter_blocked_failed_supervised_prs() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+
+        let mut first = candidate_workspace("candidate-1");
+        first.publication_pr_number = Some(41);
+        first.publication_pr_status = Some("open".to_string());
+        first.publication_push_status = Some("failed".to_string());
+        first.pr_supervision_status = Some("blocked".to_string());
+        first.pr_autofix_enabled = true;
+        let mut second = candidate_workspace("candidate-2");
+        second.publication_pr_number = Some(42);
+        second.publication_pr_status = Some("open".to_string());
+        second.publication_push_status = Some("failed".to_string());
+        second.pr_supervision_status = Some("blocked".to_string());
+        second.pr_auto_merge_desired = true;
+        let mut disabled = candidate_workspace("disabled");
+        disabled.publication_pr_number = Some(43);
+        disabled.publication_push_status = Some("failed".to_string());
+        disabled.pr_supervision_status = Some("blocked".to_string());
+        let mut needs_agent = candidate_workspace("needs-agent");
+        needs_agent.publication_pr_number = Some(44);
+        needs_agent.publication_push_status = Some("needs_agent".to_string());
+        needs_agent.pr_supervision_status = Some("blocked".to_string());
+        needs_agent.pr_autofix_enabled = true;
+        let mut terminal = candidate_workspace("terminal");
+        terminal.publication_pr_number = Some(45);
+        terminal.publication_pr_status = Some("merged".to_string());
+        terminal.publication_push_status = Some("failed".to_string());
+        terminal.pr_supervision_status = Some("blocked".to_string());
+        terminal.pr_autofix_enabled = true;
+
+        for workspace in [
+            first.clone(),
+            second.clone(),
+            disabled,
+            needs_agent,
+            terminal,
+        ] {
+            repo.create_or_update(workspace).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        let limited = repo
+            .list_active_direct_pr_supervision_recovery_candidates(1)
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].conversation_id, second.conversation_id);
+
+        let all = repo
+            .list_active_direct_pr_supervision_recovery_candidates(10)
             .await
             .unwrap();
         assert_eq!(

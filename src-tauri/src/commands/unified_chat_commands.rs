@@ -46,6 +46,10 @@ use crate::application::agent_workspace_pr_description::{
     draft_agent_workspace_pr_description, get_or_draft_agent_workspace_pr_description,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
 };
+use crate::application::agent_workspace_pr_supervision_recovery::{
+    pr_supervision_recovery_schedule_skip_reason, schedule_agent_workspace_pr_supervision_recovery,
+    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryTrigger,
+};
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_result_object, tool_detail_ref,
@@ -608,6 +612,12 @@ pub(crate) async fn agent_workspace_response_for_state(
     let workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
         .await
         .map_err(|e| e.to_string())?;
+    schedule_pr_supervision_recovery_for_workspace(
+        state,
+        &workspace,
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        false,
+    );
 
     let mode_lock = resolve_agent_conversation_workspace_mode_lock(state, &workspace).await?;
     let linked_plan_branch_id = workspace.linked_plan_branch_id.clone();
@@ -658,6 +668,35 @@ fn schedule_external_pr_reconciliation_for_workspace(
     );
 }
 
+fn schedule_pr_supervision_recovery_for_workspace(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) {
+    if pr_supervision_recovery_schedule_skip_reason(workspace).is_some() {
+        return;
+    }
+    let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
+        return;
+    };
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    schedule_agent_workspace_pr_supervision_recovery(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            project_repo: Arc::clone(&state.project_repo),
+            github,
+            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+            chat_service: Some(chat_service),
+            agent_run_repo: Arc::clone(&state.agent_run_repo),
+            app_handle: state.app_handle.clone(),
+        },
+        workspace.conversation_id.clone(),
+        trigger,
+        force,
+    );
+}
+
 async fn schedule_external_pr_reconciliation_for_conversation_id(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -674,6 +713,25 @@ async fn schedule_external_pr_reconciliation_for_conversation_id(
     };
 
     schedule_external_pr_reconciliation_for_workspace(state, &workspace, trigger, force);
+    Ok(())
+}
+
+async fn schedule_pr_supervision_recovery_for_conversation_id(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) -> Result<(), String> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+
+    schedule_pr_supervision_recovery_for_workspace(state, &workspace, trigger, force);
     Ok(())
 }
 
@@ -3295,10 +3353,18 @@ pub async fn reconcile_agent_conversation_workspace_publication(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
     schedule_external_pr_reconciliation_for_conversation_id(
         state.inner(),
-        ChatConversationId::from_string(conversation_id),
+        conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+        true,
+    )
+    .await?;
+    schedule_pr_supervision_recovery_for_conversation_id(
+        state.inner(),
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
         true,
     )
     .await
