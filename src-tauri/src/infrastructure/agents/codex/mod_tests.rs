@@ -685,7 +685,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
         lead_session_id: Some("lead-789".to_string()),
-        parent_conversation_id: None,
+        parent_conversation_id: Some("conversation-abc".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -748,6 +748,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("--lead-session-id"),
         "expected lead-session-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--parent-conversation-id"),
+        "expected parent-conversation-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("conversation-abc"),
+        "expected parent conversation id value in overrides: {args_override}"
     );
 }
 

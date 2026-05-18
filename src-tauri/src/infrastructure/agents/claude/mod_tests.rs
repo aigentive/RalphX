@@ -334,6 +334,66 @@ fn test_create_mcp_config_injects_app_owned_trace_dir() {
 }
 
 #[test]
+fn test_create_mcp_config_injects_runtime_context_args() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+    let workspace_dir = plugin_dir.join("workspace");
+    let runtime_context = McpRuntimeContext {
+        context_type: Some("project".to_string()),
+        context_id: Some("project-123".to_string()),
+        task_id: None,
+        project_id: Some("project-123".to_string()),
+        working_directory: Some(workspace_dir.clone()),
+        lead_session_id: Some("lead-456".to_string()),
+        parent_conversation_id: Some("conversation-789".to_string()),
+    };
+
+    let json = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "ralphx-general-worker",
+        false,
+        Some(&runtime_context),
+    )
+    .expect("should create config");
+    let args: Vec<String> = json
+        .get("mcpServers")
+        .and_then(|s| s.as_object())
+        .and_then(|m| m.values().next())
+        .and_then(|server| server.get("args"))
+        .and_then(|args| args.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    assert!(
+        args.contains(&"--context-type".to_string()),
+        "args: {args:?}"
+    );
+    assert!(args.contains(&"project".to_string()), "args: {args:?}");
+    assert!(args.contains(&"--context-id".to_string()), "args: {args:?}");
+    assert!(args.contains(&"project-123".to_string()), "args: {args:?}");
+    assert!(args.contains(&"--project-id".to_string()), "args: {args:?}");
+    assert!(
+        args.contains(&"--working-directory".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&workspace_dir.to_string_lossy().into_owned()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&"--parent-conversation-id".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&"conversation-789".to_string()),
+        "args: {args:?}"
+    );
+}
+
+#[test]
 fn test_create_mcp_config_no_allowed_tools_arg_for_unknown_agent() {
     let (_dir, plugin_dir) = make_temp_plugin_dir();
     // Unknown agent has no config → mcp_tools absent → no --allowed-tools injected

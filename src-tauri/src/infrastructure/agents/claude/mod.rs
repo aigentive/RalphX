@@ -80,7 +80,7 @@ use crate::infrastructure::agents::harness_agent_catalog::{
 };
 use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
 use crate::infrastructure::agents::mcp_runtime_context::{
-    append_mcp_runtime_query, McpRuntimeContext,
+    append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
 };
 use crate::infrastructure::external_mcp_supervisor::ensure_tauri_mcp_bypass_token;
 
@@ -1029,6 +1029,7 @@ pub(crate) fn build_mcp_config_with_runtime_context(
         if let Some(arg_value) = format_allowed_tools_arg_value(validated_tools.as_deref()) {
             args_vec.push(format!("--allowed-tools={}", arg_value));
         }
+        append_mcp_runtime_args(&mut args_vec, mcp_runtime_context);
 
         server_obj.insert(
             "args".to_string(),
