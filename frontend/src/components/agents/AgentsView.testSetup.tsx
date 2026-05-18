@@ -362,6 +362,12 @@ vi.mock("./agentTerminalPreload", () => ({
 vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     conversation: (conversationId: string) => ["chat", "conversations", conversationId],
+    conversationSummary: (conversationId: string) => [
+      "chat",
+      "conversations",
+      conversationId,
+      "summary",
+    ],
     conversationHistory: (conversationId: string) => [
       "chat",
       "conversations",
@@ -387,6 +393,13 @@ vi.mock("@/hooks/useChat", () => ({
     Boolean(conversationId?.startsWith("optimistic-conversation:")),
   invalidateConversationDataQueries: vi.fn(),
   useConversation: (conversationId: string | null) => useConversationMock(conversationId),
+  useConversationSummary: (conversationId: string | null) => {
+    const query = useConversationMock(conversationId);
+    return {
+      ...query,
+      data: query.data?.conversation ?? null,
+    };
+  },
   useConversationHistoryWindow: (conversationId: string | null) => {
     const query = useConversationMock(conversationId);
     return {

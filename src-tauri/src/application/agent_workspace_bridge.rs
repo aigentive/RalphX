@@ -277,6 +277,10 @@ pub async fn prepare_agent_workspace_bridge_wakeup_with_deps(
         return Ok(None);
     };
 
+    if !workspace_should_receive_bridge_events(&workspace) {
+        return Ok(None);
+    }
+
     let existing_messages = deps
         .chat_message_repo
         .get_by_conversation(conversation_id)
@@ -287,10 +291,6 @@ pub async fn prepare_agent_workspace_bridge_wakeup_with_deps(
     if removed_invalid_count > 0 {
         refresh_conversation_stats(deps, conversation_id).await?;
     }
-    if !workspace_should_receive_bridge_events(&workspace) {
-        return Ok(None);
-    }
-
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return Ok(None);
     };

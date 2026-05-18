@@ -1,4 +1,4 @@
-import { type MouseEvent, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { diffApi } from "@/api/diff";
@@ -22,6 +22,7 @@ interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
   workspace: AgentConversationWorkspace | null;
   isFocusedChildChat: boolean;
+  pauseHydration?: boolean;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }
@@ -63,6 +64,7 @@ export function AgentsComposerWorkspaceChangesCard({
   conversationId,
   workspace,
   isFocusedChildChat,
+  pauseHydration = false,
   onOpenFile,
   onPreloadPublishPane,
 }: AgentsComposerWorkspaceChangesCardProps) {
@@ -75,6 +77,7 @@ export function AgentsComposerWorkspaceChangesCard({
   return (
     <AgentsComposerWorkspaceChangesCardContent
       conversationId={conversationId}
+      pauseHydration={pauseHydration}
       onOpenFile={onOpenFile}
       onPreloadPublishPane={onPreloadPublishPane}
     />
@@ -83,15 +86,30 @@ export function AgentsComposerWorkspaceChangesCard({
 
 function AgentsComposerWorkspaceChangesCardContent({
   conversationId,
+  pauseHydration,
   onOpenFile,
   onPreloadPublishPane,
 }: {
   conversationId: string;
+  pauseHydration: boolean;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const canHydrateReview = useDeferredAgentHydration(conversationId);
+  const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
+  const [canHydrateReview, setCanHydrateReview] = useState(false);
+  useEffect(() => {
+    setCanHydrateReview(false);
+    if (!canScheduleReviewHydration || pauseHydration) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setCanHydrateReview(true);
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [canScheduleReviewHydration, conversationId, pauseHydration]);
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId),

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 
-import { useConversationHistoryWindow } from "@/hooks/useChat";
+import { useConversationSummary } from "@/hooks/useChat";
 import type { Project } from "@/types/project";
 
 import {
@@ -36,13 +36,12 @@ export function useAgentsSelectionModel({
   const defaultProjectId = focusedProjectId || selectedProjectId || projectId || projects[0]?.id || null;
   const activeProjectId = selectedProjectId || defaultProjectId;
   const focusedConversations = useProjectAgentConversations(activeProjectId, showArchived);
-  const selectedConversationQuery = useConversationHistoryWindow(selectedConversationId, {
+  const selectedConversationQuery = useConversationSummary(selectedConversationId, {
     enabled: !!selectedConversationId,
-    pageSize: 40,
   });
   const selectedConversationData = selectedConversationQuery.data;
   const selectedConversationFallback = useMemo(() => {
-    const conversation = selectedConversationData?.conversation;
+    const conversation = selectedConversationData;
     const isArchivedConversation = Boolean(conversation?.archivedAt);
     if (conversation) {
       if (
@@ -95,11 +94,8 @@ export function useAgentsSelectionModel({
     selectedConversationId,
   ]);
   const selectedConversationMessages = useMemo(
-    () =>
-      selectedConversationData && selectedConversationData.conversation?.id === selectedConversationId
-        ? selectedConversationData.messages
-        : [],
-    [selectedConversationData, selectedConversationId],
+    () => [],
+    [],
   );
   useEffect(() => {
     if (

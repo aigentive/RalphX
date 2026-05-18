@@ -36,7 +36,7 @@ function AgentsViewWithIdeationEvents() {
 describe("AgentsView", () => {
   beforeEach(setupAgentsViewTest);
 
-  it("deselects the selected agent when its row is clicked again", async () => {
+  it("keeps the selected agent active when its row is clicked again", async () => {
     mockAgentViewData();
 
     renderAgentsView();
@@ -52,9 +52,9 @@ describe("AgentsView", () => {
     fireEvent.click(within(row).getAllByRole("button")[0] ?? row);
 
     await waitFor(() =>
-      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
-    expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
   });
 
   it("places a supplied footer under the chat and artifact split, not under the sidebar", () => {
