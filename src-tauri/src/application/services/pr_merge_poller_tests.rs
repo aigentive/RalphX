@@ -227,6 +227,20 @@ fn supervised_agent_workspace_pr_health_ignores_pending_checks() {
 }
 
 #[test]
+fn supervised_agent_workspace_pr_health_ignores_pending_required_check_block() {
+    let mut health = open_pr_health("pending-required-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Blocked);
+    health.checks.push(PrHealthCheck {
+        name: "Required CI".to_string(),
+        status: Some("QUEUED".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/2".to_string()),
+    });
+
+    assert!(super::classify_agent_workspace_pr_autofix_issue(101, &health).is_none());
+}
+
+#[test]
 fn supervised_agent_workspace_pr_health_routes_requested_changes() {
     let mut health = open_pr_health("review-head");
     health.review_decision = Some(" CHANGES_REQUESTED ".to_string());
@@ -286,7 +300,7 @@ fn supervised_agent_workspace_pr_health_routes_mergeability_blockers() {
 }
 
 #[test]
-fn supervised_agent_workspace_pr_health_routes_dirty_and_blocked_mergeability() {
+fn supervised_agent_workspace_pr_health_routes_dirty_but_ignores_generic_blocked_mergeability() {
     let mut dirty_health = open_pr_health("dirty-head");
     dirty_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Dirty);
     let dirty_issue = super::classify_agent_workspace_pr_autofix_issue(101, &dirty_health)
@@ -297,11 +311,10 @@ fn supervised_agent_workspace_pr_health_routes_dirty_and_blocked_mergeability() 
 
     let mut blocked_health = open_pr_health("blocked-head");
     blocked_health.sync_state.merge_state_status = Some(PrMergeStateStatus::Blocked);
-    let blocked_issue = super::classify_agent_workspace_pr_autofix_issue(101, &blocked_health)
-        .expect("blocked merge state should route autofix");
-    assert!(blocked_issue
-        .details
-        .contains(&"PR is blocked from merging".to_string()));
+    assert!(
+        super::classify_agent_workspace_pr_autofix_issue(101, &blocked_health).is_none(),
+        "generic blocked state should wait for concrete review/check/conflict signals"
+    );
 }
 
 #[test]
@@ -435,6 +448,67 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
                 .unwrap_or_default()
                 .starts_with("github_pr_autofix:101:routehead")
     }));
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_waits_on_pending_required_check_block() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-pending-required-conversation",
+        "project-pending-required",
+        worktree.path(),
+    );
+    workspace.pr_supervision_status = Some("waiting".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("pending-required-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Blocked);
+    health.checks.push(PrHealthCheck {
+        name: "Required CI".to_string(),
+        status: Some("IN_PROGRESS".to_string()),
+        conclusion: None,
+        details_url: Some("https://github.com/owner/repo/actions/runs/2".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("pending required checks should not error");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(
+        updated.pr_supervision_summary.as_deref(),
+        Some("RalphX is monitoring PR health.")
+    );
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.is_empty());
 }
 
 #[tokio::test]
