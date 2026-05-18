@@ -1500,7 +1500,9 @@ fn classify_agent_workspace_pr_autofix_issue(
             mergeability_details.push("PR branch has merge conflicts".to_string());
         }
         Some(PrMergeStateStatus::Blocked) => {
-            mergeability_details.push("PR is blocked from merging".to_string());
+            // GitHub uses BLOCKED for branch-protection waits such as pending
+            // required checks or reviews. Route only the concrete signals above
+            // or explicit conflicts below.
         }
         _ => {}
     }
