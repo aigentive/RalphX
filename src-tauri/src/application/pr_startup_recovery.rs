@@ -32,8 +32,9 @@ use crate::domain::entities::{
     PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, ArtifactRepository, ExecutionPlanRepository,
-    IdeationSessionRepository, PlanBranchRepository, ProjectRepository, TaskRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
+    ExecutionPlanRepository, IdeationSessionRepository, PlanBranchRepository, ProjectRepository,
+    TaskRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
@@ -1074,6 +1075,7 @@ pub async fn recover_agent_workspace_pr_pollers(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
@@ -1109,6 +1111,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                 let workspace_repo = Arc::clone(&workspace_repo);
                 let project_repo = Arc::clone(&project_repo);
                 let pr_poller_registry = Arc::clone(&pr_poller_registry);
+                let agent_run_repo = Arc::clone(&agent_run_repo);
                 let chat_service = Arc::clone(&chat_service);
                 let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
                 async move {
@@ -1117,6 +1120,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                         workspace_repo,
                         project_repo,
                         pr_poller_registry,
+                        agent_run_repo,
                         chat_service,
                         blocked_git_project_ids,
                     )
@@ -1132,6 +1136,7 @@ async fn recover_one_agent_workspace_pr_poller(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
@@ -1225,6 +1230,7 @@ async fn recover_one_agent_workspace_pr_poller(
         project,
         worktree_path,
         workspace_repo,
+        agent_run_repo,
         chat_service,
     );
 }

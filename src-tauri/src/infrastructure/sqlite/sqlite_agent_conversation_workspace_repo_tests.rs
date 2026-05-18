@@ -379,6 +379,61 @@ async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_e
 }
 
 #[tokio::test]
+async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_failed_prs() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut candidate = make_workspace(conversation_id);
+    candidate.publication_pr_number = Some(82);
+    candidate.publication_pr_status = Some("open".to_string());
+    candidate.publication_push_status = Some("failed".to_string());
+    candidate.pr_supervision_status = Some("blocked".to_string());
+    candidate.pr_autofix_enabled = true;
+    repo.create_or_update(candidate.clone()).await.unwrap();
+
+    let disabled_id = ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
+    seed_conversation(&db, &disabled_id);
+    let mut disabled = make_workspace(disabled_id);
+    disabled.publication_pr_number = Some(83);
+    disabled.publication_pr_status = Some("open".to_string());
+    disabled.publication_push_status = Some("failed".to_string());
+    disabled.pr_supervision_status = Some("blocked".to_string());
+    repo.create_or_update(disabled).await.unwrap();
+
+    let needs_agent_id = ChatConversationId::from_string("77777777-7777-7777-7777-777777777777");
+    seed_conversation(&db, &needs_agent_id);
+    let mut needs_agent = make_workspace(needs_agent_id);
+    needs_agent.publication_pr_number = Some(84);
+    needs_agent.publication_pr_status = Some("open".to_string());
+    needs_agent.publication_push_status = Some("needs_agent".to_string());
+    needs_agent.pr_supervision_status = Some("blocked".to_string());
+    needs_agent.pr_autofix_enabled = true;
+    repo.create_or_update(needs_agent).await.unwrap();
+
+    let closed_id = ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    seed_conversation(&db, &closed_id);
+    let mut closed = make_workspace(closed_id);
+    closed.publication_pr_number = Some(85);
+    closed.publication_pr_status = Some("closed".to_string());
+    closed.publication_push_status = Some("failed".to_string());
+    closed.pr_supervision_status = Some("blocked".to_string());
+    closed.pr_autofix_enabled = true;
+    repo.create_or_update(closed).await.unwrap();
+
+    let workspaces = repo
+        .list_active_direct_pr_supervision_recovery_candidates(10)
+        .await
+        .unwrap();
+
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+
+    let limited = repo
+        .list_active_direct_pr_supervision_recovery_candidates(0)
+        .await
+        .unwrap();
+    assert!(limited.is_empty());
+}
+
+#[tokio::test]
 async fn list_active_needs_agent_workspaces_filters_to_open_active_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let mut needs_agent = make_workspace(conversation_id);
