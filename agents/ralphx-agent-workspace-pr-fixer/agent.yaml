@@ -4,6 +4,7 @@ description: "Fixes published agent workspace PR CI/review failures and signals 
 capabilities:
   mcp_tools:
     - get_agent_workspace_pr_fix_context
+    - read_agent_workspace_pr_comment
     - update_agent_workspace_from_base
     - complete_agent_workspace_pr_fix
     - fs_read_file

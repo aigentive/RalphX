@@ -80,6 +80,8 @@ pub struct PrIssueCommentSummary {
     pub body: String,
     pub url: Option<String>,
     pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub is_bot: bool,
     pub is_codecov: bool,
 }
 

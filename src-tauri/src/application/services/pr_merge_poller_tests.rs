@@ -171,6 +171,8 @@ fn codecov_comment(body: &str) -> PrIssueCommentSummary {
         body: body.to_string(),
         url: Some("https://github.com/owner/repo/pull/101#issuecomment-1".to_string()),
         created_at: Some("2026-05-17T10:00:00Z".to_string()),
+        updated_at: Some("2026-05-17T10:05:00Z".to_string()),
+        is_bot: true,
         is_codecov: true,
     }
 }
@@ -259,23 +261,16 @@ fn supervised_agent_workspace_pr_health_routes_requested_changes() {
 }
 
 #[test]
-fn supervised_agent_workspace_pr_health_routes_actionable_codecov_comment() {
+fn supervised_agent_workspace_pr_health_treats_codecov_comment_as_informative_only() {
     let mut health = open_pr_health("coverage-head");
     health.issue_comments.push(codecov_comment(
         "Codecov report: patch coverage is below target threshold and failed.",
     ));
 
-    let issue = super::classify_agent_workspace_pr_autofix_issue(101, &health)
-        .expect("Codecov failure should route autofix");
-    assert_eq!(
-        issue.kind,
-        super::AgentWorkspacePrAutofixIssueKind::Coverage
+    assert!(
+        super::classify_agent_workspace_pr_autofix_issue(101, &health).is_none(),
+        "issue comments should be context only; checks or formal reviews drive automation"
     );
-    assert_eq!(issue.summary, "PR #101 has actionable Codecov feedback");
-    assert!(issue.details[0].contains("@codecov: Codecov report"));
-    assert!(issue
-        .classification
-        .starts_with("github_pr_autofix:101:coveragehead"));
 }
 
 #[test]
@@ -315,25 +310,6 @@ fn supervised_agent_workspace_pr_health_routes_dirty_but_ignores_generic_blocked
         super::classify_agent_workspace_pr_autofix_issue(101, &blocked_health).is_none(),
         "generic blocked state should wait for concrete review/check/conflict signals"
     );
-}
-
-#[test]
-fn supervised_agent_workspace_pr_health_detects_codecov_action_keywords() {
-    for body in [
-        "Codecov threshold was not met",
-        "Codecov target coverage was missed",
-        "Coverage decreased for this patch",
-        "Patch coverage is below the requirement",
-    ] {
-        assert!(
-            super::agent_workspace_codecov_comment_is_actionable(body),
-            "{body:?} should be actionable"
-        );
-    }
-
-    assert!(!super::agent_workspace_codecov_comment_is_actionable(
-        "Codecov report uploaded successfully"
-    ));
 }
 
 #[test]
@@ -509,6 +485,54 @@ async fn supervised_agent_workspace_pr_autofix_waits_on_pending_required_check_b
         .await
         .expect("events should list");
     assert!(events.is_empty());
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_imports_comments_without_routing() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let workspace = supervised_workspace(
+        "autofix-comment-context-conversation",
+        "project-comment-context",
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("comment-context-head");
+    health.issue_comments.push(codecov_comment(
+        "Codecov report: patch coverage is below target threshold and failed.",
+    ));
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("comment-only PR health should not error");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let comments = workspace_repo
+        .list_pr_comment_evidence(&conversation_id, 101, 10)
+        .await
+        .expect("comment evidence should list");
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].comment_id, "codecov-comment");
+    assert!(comments[0].is_codecov);
+    assert!(comments[0].last_included_at.is_none());
 }
 
 #[tokio::test]
