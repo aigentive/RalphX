@@ -10,6 +10,7 @@ use crate::application::agent_conversation_workspace::resolve_valid_agent_conver
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_and_reload;
 use crate::application::chat_service::ChatService;
 use crate::application::git_service::GitService;
+use crate::application::services::pr_merge_poller::cleanup_terminal_agent_workspace_after_pr;
 use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
@@ -64,6 +65,7 @@ pub(crate) struct AgentWorkspacePrSupervisionRecoveryDeps {
 pub(crate) enum AgentWorkspacePrSupervisionRecoveryOutcome {
     Skipped(&'static str),
     Recovered { pr_number: i64, head_sha: String },
+    Terminal { pr_number: i64, pr_status: String },
 }
 
 pub(crate) fn schedule_agent_workspace_pr_supervision_recovery(
@@ -214,6 +216,40 @@ pub(crate) async fn recover_agent_workspace_pr_supervision(
         .github
         .check_pr_sync_state(&worktree_path, pr_number)
         .await?;
+    if is_terminal_pr_sync_status(&sync_state.status) {
+        let pr_status = publication_status_for_sync_state(&sync_state);
+        deps.workspace_repo
+            .update_publication(
+                &conversation_id,
+                Some(pr_number),
+                workspace.publication_pr_url.as_deref(),
+                Some(pr_status),
+                Some("pushed"),
+            )
+            .await?;
+        deps.workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                format!("pr_{pr_status}"),
+                "succeeded",
+                terminal_pr_recovery_summary(pr_status),
+                None,
+            ))
+            .await?;
+        emit_workspace_changed(deps.app_handle.as_ref(), &conversation_id);
+        cleanup_terminal_agent_workspace_after_pr(
+            Arc::clone(&deps.workspace_repo),
+            &conversation_id,
+            &project,
+            matches!(&sync_state.status, PrStatus::Merged { .. }).then(|| Arc::clone(&deps.github)),
+            pr_status == "merged",
+        )
+        .await;
+        return Ok(AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+            pr_number,
+            pr_status: pr_status.to_string(),
+        });
+    }
 
     if let Some(reason) =
         pr_sync_state_recovery_skip_reason(&workspace, &sync_state, &local_head_sha)
@@ -424,10 +460,23 @@ fn pr_sync_state_recovery_skip_reason(
 }
 
 fn publication_status_for_sync_state(sync_state: &PrSyncState) -> &'static str {
-    if sync_state.is_draft {
-        "draft"
-    } else {
-        "open"
+    match sync_state.status {
+        PrStatus::Merged { .. } => "merged",
+        PrStatus::Closed => "closed",
+        PrStatus::Open if sync_state.is_draft => "draft",
+        PrStatus::Open => "open",
+    }
+}
+
+fn is_terminal_pr_sync_status(status: &PrStatus) -> bool {
+    matches!(status, PrStatus::Closed | PrStatus::Merged { .. })
+}
+
+fn terminal_pr_recovery_summary(pr_status: &str) -> &'static str {
+    match pr_status {
+        "merged" => "Pull request merged while PR supervision was blocked.",
+        "closed" => "Pull request closed while PR supervision was blocked.",
+        _ => "Pull request reached a terminal state while PR supervision was blocked.",
     }
 }
 

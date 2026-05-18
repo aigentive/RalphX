@@ -1992,6 +1992,25 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("shows merged publication state instead of stale blocked PR supervision", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 91,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "needs_agent",
+        prSupervisionStatus: "blocked",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-publish-confirm")).toHaveTextContent(
+      "Merged"
+    );
+    expect(screen.queryByTestId("agents-pr-supervision-status")).not.toBeInTheDocument();
+    expect(screen.queryByText("PR supervision blocked")).not.toBeInTheDocument();
+  });
+
   it("locks the base update action while agent repair is pending", async () => {
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",

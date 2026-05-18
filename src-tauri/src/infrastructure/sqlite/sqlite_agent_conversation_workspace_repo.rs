@@ -498,6 +498,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let pr_url = pr_url.map(str::to_string);
         let pr_status = pr_status.map(str::to_string);
         let push_status = push_status.map(str::to_string);
+        let terminal_pr_status = matches!(pr_status.as_deref(), Some("merged" | "closed"));
         let updated_at = Utc::now().to_rfc3339();
         self.db
             .run(move |conn| {
@@ -507,6 +508,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          publication_pr_url = ?3,
                          publication_pr_status = ?4,
                          publication_push_status = ?5,
+                         pr_supervision_status = CASE WHEN ?7 THEN NULL ELSE pr_supervision_status END,
+                         pr_supervision_summary = CASE WHEN ?7 THEN NULL ELSE pr_supervision_summary END,
+                         pr_supervision_updated_at = CASE WHEN ?7 THEN ?6 ELSE pr_supervision_updated_at END,
                          updated_at = ?6
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -515,7 +519,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_url,
                         pr_status,
                         push_status,
-                        updated_at
+                        updated_at,
+                        terminal_pr_status
                     ],
                 )?;
                 Ok(())
