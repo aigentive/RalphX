@@ -383,6 +383,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   conversationId={selectedConversationId}
                   workspace={activeWorkspace}
                   isFocusedChildChat={isFocusedChildChat}
+                  isAgentGenerating={composerProps.agentStatus === "generating"}
                   pauseHydration={isComposerHydrationPaused}
                   onOpenFile={onOpenPublishFile}
                   onPreloadPublishPane={onPreloadArtifacts}

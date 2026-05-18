@@ -1,4 +1,4 @@
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { diffApi } from "@/api/diff";
@@ -18,10 +18,13 @@ import {
   useAgentWorkspaceChangeSummary,
 } from "./useAgentWorkspaceChangeSummary";
 
+const ACTIVE_AGENT_REVIEW_REFRESH_MS = 2_500;
+
 interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
   workspace: AgentConversationWorkspace | null;
   isFocusedChildChat: boolean;
+  isAgentGenerating?: boolean;
   pauseHydration?: boolean;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
@@ -64,6 +67,7 @@ export function AgentsComposerWorkspaceChangesCard({
   conversationId,
   workspace,
   isFocusedChildChat,
+  isAgentGenerating = false,
   pauseHydration = false,
   onOpenFile,
   onPreloadPublishPane,
@@ -77,6 +81,7 @@ export function AgentsComposerWorkspaceChangesCard({
   return (
     <AgentsComposerWorkspaceChangesCardContent
       conversationId={conversationId}
+      isAgentGenerating={isAgentGenerating}
       pauseHydration={pauseHydration}
       onOpenFile={onOpenFile}
       onPreloadPublishPane={onPreloadPublishPane}
@@ -86,16 +91,20 @@ export function AgentsComposerWorkspaceChangesCard({
 
 function AgentsComposerWorkspaceChangesCardContent({
   conversationId,
+  isAgentGenerating,
   pauseHydration,
   onOpenFile,
   onPreloadPublishPane,
 }: {
   conversationId: string;
+  isAgentGenerating: boolean;
   pauseHydration: boolean;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadPublishPane: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const isReviewRefreshInFlight = useRef(false);
+  const reviewRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
   const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
   const [canHydrateReview, setCanHydrateReview] = useState(false);
   useEffect(() => {
@@ -116,6 +125,31 @@ function AgentsComposerWorkspaceChangesCardContent({
     enabled: canHydrateReview,
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
+  useEffect(() => {
+    reviewRefetchRef.current = reviewQuery.refetch;
+  }, [reviewQuery.refetch]);
+  useEffect(() => {
+    if (!canHydrateReview || !isAgentGenerating) {
+      isReviewRefreshInFlight.current = false;
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      if (isReviewRefreshInFlight.current) {
+        return;
+      }
+      const refetchReview = reviewRefetchRef.current;
+      if (!refetchReview) {
+        return;
+      }
+      isReviewRefreshInFlight.current = true;
+      void refetchReview().finally(() => {
+        isReviewRefreshInFlight.current = false;
+      });
+    }, ACTIVE_AGENT_REVIEW_REFRESH_MS);
+
+    return () => window.clearInterval(timer);
+  }, [canHydrateReview, conversationId, isAgentGenerating]);
   const review = reviewQuery.data ?? null;
   const commits = useMemo(() => mapReviewCommitsToDiffViewerCommits(review), [review]);
   const summary = useAgentWorkspaceChangeSummary({ conversationId, review });
