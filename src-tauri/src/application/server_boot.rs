@@ -3,11 +3,13 @@ use std::sync::Arc;
 use crate::domain::agents::STANDARD_AGENT_HARNESSES;
 use tracing::{info, warn};
 
+use tauri::Manager;
+
 use crate::application::harness_runtime_registry::{
     resolve_startup_harness_integration, run_startup_harness_integration,
 };
 use crate::application::runtime_wiring::build_http_app_state;
-use crate::application::TeamStateTracker;
+use crate::application::{HttpShutdownHandle, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::http_server;
 use crate::AppState;
@@ -22,13 +24,24 @@ pub(crate) fn start_server_boot(
     // Create a second AppState sharing the Tauri AppState's DB connection,
     // plus shared in-memory state (question_state, permission_state, message_queue)
     // so MCP handlers and Tauri commands operate on the same data.
-    let http_app_state = build_http_app_state(app_state, app_handle)
+    let http_app_state = build_http_app_state(app_state, app_handle.clone())
         .expect("Failed to initialize AppState for HTTP server");
+
+    // Build a shutdown trigger and register it as managed state so the
+    // Tauri `RunEvent::ExitRequested` handler can fire it at app exit. The
+    // server task itself owns a clone wired into axum's graceful shutdown.
+    let shutdown = HttpShutdownHandle::new();
+    app_handle.manage(shutdown.clone());
+
     // Spawn HTTP server with pre-cloned state
     tauri::async_runtime::spawn(async move {
-        if let Err(e) =
-            http_server::start_http_server(http_app_state, http_execution_state, http_team_tracker)
-                .await
+        if let Err(e) = http_server::start_http_server(
+            http_app_state,
+            http_execution_state,
+            http_team_tracker,
+            shutdown,
+        )
+        .await
         {
             tracing::error!("HTTP server failed: {}", e);
         }

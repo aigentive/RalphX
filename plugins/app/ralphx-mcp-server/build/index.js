@@ -11,6 +11,9 @@
  * - Filters available tools based on agent type (hard enforcement)
  * - Each agent only sees tools appropriate for its role
  */
+// Side-effect import — installs the keep-alive dispatcher BEFORE any other
+// module can issue a fetch(). Must stay first.
+import "./keep-alive.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
