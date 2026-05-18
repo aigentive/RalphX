@@ -6272,6 +6272,7 @@ mod tests {
         retarget_existing_workspace_pr_base_if_needed,
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
+        schedule_pr_supervision_recovery_for_conversation_id,
         send_agent_workspace_publish_repair_message_for_target,
         set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
@@ -6295,6 +6296,7 @@ mod tests {
     use crate::application::agent_conversation_workspace_base::{
         BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
     };
+    use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
         chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
@@ -6317,8 +6319,9 @@ mod tests {
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::{
-        GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrStatus as GithubPrStatus,
-        RunningAgentKey, RunningAgentRegistry,
+        GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrMergeStateStatus,
+        PrMergeableState, PrStatus as GithubPrStatus, PrSyncState, RunningAgentKey,
+        RunningAgentRegistry,
     };
     use crate::error::AppError;
     use crate::tests::mock_github_service::MockGithubService;
@@ -7259,6 +7262,19 @@ mod tests {
         );
     }
 
+    async fn wait_for_pr_sync_state_calls(github: &MockGithubService, expected: u32) {
+        for _ in 0..100 {
+            if github.state().check_pr_sync_state_calls >= expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "expected at least {expected} PR sync-state lookups, got {}",
+            github.state().check_pr_sync_state_calls
+        );
+    }
+
     #[tokio::test]
     async fn workspace_load_external_pr_reconciliation_schedules_for_reconcilable_workspace() {
         let mut state = AppState::new_test();
@@ -7360,6 +7376,61 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].step, "external_pr_closed");
+    }
+
+    #[tokio::test]
+    async fn run_completed_pr_supervision_recovery_rearms_blocked_workspace() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "pr-supervision-command-recovery",
+            true,
+            Some(257),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_push_status = Some("failed".to_string());
+        workspace.pr_supervision_status = Some("blocked".to_string());
+        workspace.pr_autofix_enabled = true;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace update should persist");
+        let head_sha = git(Path::new(&workspace.worktree_path), &["rev-parse", "HEAD"]);
+        github.will_return_sync_state(PrSyncState {
+            status: GithubPrStatus::Open,
+            merge_state_status: Some(PrMergeStateStatus::Clean),
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: workspace.branch_name.clone(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head_sha),
+            base_ref_oid: None,
+        });
+
+        schedule_pr_supervision_recovery_for_conversation_id(
+            &state,
+            conversation_id.clone(),
+            AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+            true,
+        )
+        .await
+        .expect("recovery scheduling should succeed");
+
+        wait_for_pr_sync_state_calls(&github, 1).await;
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+        assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
     }
 
     fn git(repo: &Path, args: &[&str]) -> String {

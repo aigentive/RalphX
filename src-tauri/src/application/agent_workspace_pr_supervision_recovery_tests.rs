@@ -1,19 +1,22 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::agent_workspace_pr_supervision_recovery::{
-    recover_agent_workspace_pr_supervision, AgentWorkspacePrSupervisionRecoveryDeps,
-    AgentWorkspacePrSupervisionRecoveryOutcome, AgentWorkspacePrSupervisionRecoveryTrigger,
+    pr_supervision_recovery_schedule_skip_reason, recover_agent_workspace_pr_supervision,
+    recover_recent_agent_workspace_pr_supervision_on_startup,
+    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryOutcome,
+    AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentRun, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, Project, ProjectId,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::domain::services::github_service::{
     PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
 };
@@ -104,6 +107,23 @@ fn open_sync_state(branch_name: &str, head_sha: &str) -> PrSyncState {
     }
 }
 
+fn recovery_deps(
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    project_repo: Arc<MemoryProjectRepository>,
+    github: Arc<MockGithubService>,
+    agent_run_repo: Arc<MemoryAgentRunRepository>,
+) -> AgentWorkspacePrSupervisionRecoveryDeps {
+    AgentWorkspacePrSupervisionRecoveryDeps {
+        workspace_repo: workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+        project_repo,
+        github: github as Arc<dyn GithubServiceTrait>,
+        pr_poller_registry: None,
+        chat_service: None,
+        agent_run_repo,
+        app_handle: None,
+    }
+}
+
 async fn setup_recovery_workspace(
     name: &str,
 ) -> (
@@ -131,6 +151,79 @@ async fn setup_recovery_workspace(
         .await
         .expect("read workspace head");
     (temp_dir, project, workspace, head_sha)
+}
+
+#[test]
+fn schedule_skip_reason_covers_recoverable_and_terminal_workspace_shapes() {
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("schedule-skip-base"),
+        ProjectId::from_string("project-schedule-skip".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/test/schedule-skip".to_string(),
+        "/tmp/schedule-skip".to_string(),
+    );
+    workspace.publication_pr_number = Some(41);
+    workspace.publication_push_status = Some("failed".to_string());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_autofix_enabled = true;
+    assert_eq!(pr_supervision_recovery_schedule_skip_reason(&workspace), None);
+
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    assert_eq!(pr_supervision_recovery_schedule_skip_reason(&workspace), None);
+
+    workspace.publication_push_status = Some("pushed".to_string());
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&workspace),
+        Some("workspace_push_not_recoverable")
+    );
+
+    let mut inactive = workspace.clone();
+    inactive.status = AgentConversationWorkspaceStatus::Archived;
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&inactive),
+        Some("workspace_not_active")
+    );
+
+    let mut chat_mode = workspace.clone();
+    chat_mode.mode = AgentConversationWorkspaceMode::Chat;
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&chat_mode),
+        Some("workspace_not_edit_mode")
+    );
+
+    let mut plan_owned = workspace.clone();
+    plan_owned.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-owned"));
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&plan_owned),
+        Some("workspace_linked_to_plan_branch")
+    );
+
+    let mut missing_pr = workspace.clone();
+    missing_pr.publication_pr_number = None;
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&missing_pr),
+        Some("missing_pr_number")
+    );
+
+    let mut terminal = workspace.clone();
+    terminal.publication_pr_status = Some("merged".to_string());
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&terminal),
+        Some("workspace_terminal")
+    );
+
+    let mut disabled = workspace;
+    disabled.pr_autofix_enabled = false;
+    disabled.pr_auto_merge_desired = false;
+    assert_eq!(
+        pr_supervision_recovery_schedule_skip_reason(&disabled),
+        Some("pr_supervision_disabled")
+    );
 }
 
 #[tokio::test]
@@ -194,6 +287,51 @@ async fn recovers_blocked_pr_supervision_when_remote_head_matches_local_workspac
 }
 
 #[tokio::test]
+async fn recovers_blocked_pr_supervision_as_draft_when_remote_pr_is_draft() {
+    let (_temp_dir, project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-draft").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let mut sync_state = open_sync_state(&workspace.branch_name, &head_sha);
+    sync_state.is_draft = true;
+    github.will_return_sync_state(sync_state);
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            project_repo,
+            github,
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("recover draft supervision");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Recovered {
+            pr_number: 257,
+            head_sha,
+        }
+    );
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("draft"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+}
+
+#[tokio::test]
 async fn skips_blocked_pr_supervision_recovery_when_worktree_is_dirty() {
     let (_temp_dir, project, workspace, _head_sha) =
         setup_recovery_workspace("pr-supervision-dirty").await;
@@ -240,4 +378,263 @@ async fn skips_blocked_pr_supervision_recovery_when_worktree_is_dirty() {
         .expect("workspace should still exist");
     assert_eq!(updated.publication_push_status.as_deref(), Some("failed"));
     assert_eq!(updated.pr_supervision_status.as_deref(), Some("blocked"));
+}
+
+#[tokio::test]
+async fn recovery_noops_when_workspace_is_missing_or_startup_has_no_candidates() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let github = Arc::new(MockGithubService::new());
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::clone(&project_repo),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        ChatConversationId::new(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+    )
+    .await
+    .expect("missing workspace should be a skip");
+
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("workspace_missing")
+    );
+
+    recover_recent_agent_workspace_pr_supervision_on_startup(
+        recovery_deps(
+            workspace_repo,
+            project_repo,
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+}
+
+#[tokio::test]
+async fn skips_recovery_before_git_when_workspace_or_project_state_blocks_it() {
+    let (_temp_dir, mut project, workspace, _head_sha) =
+        setup_recovery_workspace("pr-supervision-project-skips").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let github = Arc::new(MockGithubService::new());
+
+    let active_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    active_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("seed active run");
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project.clone()])),
+            Arc::clone(&github),
+            active_run_repo,
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("active run skip");
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("active_agent_run")
+    );
+
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::new()),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("missing project skip");
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("project_missing")
+    );
+
+    project.archived_at = Some(chrono::Utc::now());
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::new(MemoryProjectRepository::with_projects(vec![project.clone()])),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id.clone(),
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("archived project skip");
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("project_archived")
+    );
+
+    project.archived_at = None;
+    project.github_pr_enabled = false;
+    let outcome = recover_agent_workspace_pr_supervision(
+        recovery_deps(
+            workspace_repo,
+            Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+    )
+    .await
+    .expect("disabled PR skip");
+    assert_eq!(
+        outcome,
+        AgentWorkspacePrSupervisionRecoveryOutcome::Skipped("github_pr_disabled")
+    );
+    assert_eq!(github.state().check_pr_sync_state_calls, 0);
+}
+
+#[tokio::test]
+async fn skips_recovery_when_remote_pr_sync_state_no_longer_matches_workspace() {
+    let cases = [
+        (
+            "pr-supervision-closed",
+            {
+                let mut sync = open_sync_state("ralphx/test/pr-supervision-closed", "unused");
+                sync.status = PrStatus::Closed;
+                sync
+            },
+            "pr_not_open",
+        ),
+        (
+            "pr-supervision-branch-mismatch",
+            open_sync_state("ralphx/test/different-branch", "unused"),
+            "pr_head_branch_mismatch",
+        ),
+        (
+            "pr-supervision-missing-head",
+            {
+                let mut sync = open_sync_state("ralphx/test/pr-supervision-missing-head", "unused");
+                sync.head_ref_oid = None;
+                sync
+            },
+            "pr_head_sha_missing",
+        ),
+        (
+            "pr-supervision-sha-mismatch",
+            open_sync_state("ralphx/test/pr-supervision-sha-mismatch", "remote-sha"),
+            "pr_head_sha_mismatch",
+        ),
+    ];
+
+    for (name, mut sync_state, expected_reason) in cases {
+        let (_temp_dir, project, workspace, head_sha) = setup_recovery_workspace(name).await;
+        if sync_state.head_ref_name == format!("ralphx/test/{name}") {
+            sync_state.head_ref_oid = sync_state.head_ref_oid.map(|_| {
+                if expected_reason == "pr_head_sha_mismatch" {
+                    "remote-sha".to_string()
+                } else {
+                    head_sha.clone()
+                }
+            });
+        }
+        let conversation_id = workspace.conversation_id.clone();
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+        let github = Arc::new(MockGithubService::new());
+        github.will_return_sync_state(sync_state);
+
+        let outcome = recover_agent_workspace_pr_supervision(
+            recovery_deps(
+                workspace_repo,
+                Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+                github,
+                Arc::new(MemoryAgentRunRepository::new()),
+            ),
+            conversation_id,
+            AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        )
+        .await
+        .expect("sync mismatch skip");
+
+        assert_eq!(
+            outcome,
+            AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(expected_reason)
+        );
+    }
+}
+
+#[tokio::test]
+async fn startup_recovery_processes_candidates_and_skips_blocked_projects() {
+    let (_temp_dir, project, workspace, head_sha) =
+        setup_recovery_workspace("pr-supervision-startup").await;
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project.clone()]));
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+
+    recover_recent_agent_workspace_pr_supervision_on_startup(
+        recovery_deps(
+            Arc::clone(&workspace_repo),
+            Arc::clone(&project_repo),
+            Arc::clone(&github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    assert_eq!(github.state().check_pr_sync_state_calls, 1);
+
+    let (_blocked_temp, blocked_project, blocked_workspace, _blocked_head) =
+        setup_recovery_workspace("pr-supervision-startup-blocked").await;
+    let blocked_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    blocked_workspace_repo
+        .create_or_update(blocked_workspace)
+        .await
+        .expect("seed blocked workspace");
+    let blocked_github = Arc::new(MockGithubService::new());
+    let blocked_ids = Arc::new(HashSet::from([blocked_project.id.clone()]));
+
+    recover_recent_agent_workspace_pr_supervision_on_startup(
+        recovery_deps(
+            blocked_workspace_repo,
+            Arc::new(MemoryProjectRepository::with_projects(vec![blocked_project])),
+            Arc::clone(&blocked_github),
+            Arc::new(MemoryAgentRunRepository::new()),
+        ),
+        blocked_ids,
+    )
+    .await;
+
+    assert_eq!(blocked_github.state().check_pr_sync_state_calls, 0);
 }
