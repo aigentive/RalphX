@@ -880,6 +880,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         project.clone(),
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
         Arc::new(MockChatService::new()),
     );
 
@@ -962,6 +963,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         project,
         repo_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
         Arc::new(MockChatService::new()),
     );
 
