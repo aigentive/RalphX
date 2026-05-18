@@ -15,7 +15,9 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     ChatConversationId, ProjectId,
 };
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
+};
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -50,6 +52,7 @@ pub(crate) struct AgentWorkspaceExternalPrReconciliationDeps {
     pub github: Arc<dyn GithubServiceTrait>,
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     pub chat_service: Option<Arc<dyn ChatService>>,
+    pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub app_handle: Option<AppHandle>,
 }
 
@@ -186,6 +189,7 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
                 project.clone(),
                 Path::new(&project.working_directory).to_path_buf(),
                 Arc::clone(&deps.workspace_repo),
+                Arc::clone(&deps.agent_run_repo),
                 Arc::clone(chat_service),
             );
         }

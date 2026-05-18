@@ -441,6 +441,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
         Arc::clone(&pr_poller_registry),
+        Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
         Arc::clone(&blocked_git_project_ids),
     )
@@ -458,6 +459,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 github: github_service,
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
+                agent_run_repo: Arc::clone(&agent_run_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);

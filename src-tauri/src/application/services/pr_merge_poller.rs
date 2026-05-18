@@ -25,7 +25,9 @@ use crate::domain::entities::{
     ChatConversationId,
 };
 use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, PlanBranchRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+};
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
     PrReviewFeedback,
@@ -130,6 +132,7 @@ impl PrPollerRegistry {
         project: Project,
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         chat_service: Arc<dyn ChatService>,
     ) {
         use dashmap::mapref::entry::Entry;
@@ -171,6 +174,7 @@ impl PrPollerRegistry {
                 stopping,
                 semaphore,
                 workspace_repo,
+                agent_run_repo,
                 chat_service,
             )
             .await;
@@ -785,6 +789,7 @@ async fn agent_workspace_poll_loop(
     stopping: Arc<DashMap<ChatConversationId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
 ) {
     let interval = Duration::from_secs(60);
@@ -893,6 +898,7 @@ async fn agent_workspace_poll_loop(
                     pr_number,
                     &conversation_id,
                     Arc::clone(&workspace_repo),
+                    Some(Arc::clone(&agent_run_repo)),
                     Arc::clone(&chat_service),
                 )
                 .await
@@ -1176,6 +1182,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     pr_number: i64,
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
@@ -1192,6 +1199,17 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         && !workspace.pr_auto_merge_desired
         && workspace.pr_auto_merge_current.is_none()
     {
+        return Ok(false);
+    }
+
+    if agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await? {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            publication_push_status = workspace.publication_push_status.as_deref(),
+            pr_supervision_status = workspace.pr_supervision_status.as_deref(),
+            "Agent workspace PR poller: skipping autofix route because repair is already active"
+        );
         return Ok(false);
     }
 
@@ -1286,6 +1304,30 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         .await?;
 
     Ok(true)
+}
+
+async fn agent_workspace_pr_autofix_repair_in_flight(
+    workspace: &AgentConversationWorkspace,
+    agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
+) -> crate::AppResult<bool> {
+    if matches!(
+        workspace.publication_push_status.as_deref(),
+        Some("needs_agent")
+    ) || matches!(
+        workspace.pr_supervision_status.as_deref(),
+        Some("fixing" | "publishing")
+    ) {
+        return Ok(true);
+    }
+
+    let Some(agent_run_repo) = agent_run_repo else {
+        return Ok(false);
+    };
+
+    Ok(agent_run_repo
+        .get_active_for_conversation(&workspace.conversation_id)
+        .await?
+        .is_some())
 }
 
 async fn sync_agent_workspace_auto_merge_preference(

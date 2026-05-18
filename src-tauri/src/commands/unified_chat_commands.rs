@@ -649,6 +649,7 @@ fn schedule_external_pr_reconciliation_for_workspace(
             github,
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
+            agent_run_repo: Arc::clone(&state.agent_run_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -4907,6 +4908,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         project.clone(),
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
 

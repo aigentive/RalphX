@@ -15,7 +15,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
 use crate::domain::services::{PrBranchMatch, PrStatus};
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryProjectRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository, MemoryProjectRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -81,6 +81,7 @@ async fn deps_with_workspace(
             github,
             pr_poller_registry: None,
             chat_service: None,
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
         },
         workspace_repo,
@@ -348,6 +349,7 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         github: github.clone(),
         pr_poller_registry: None,
         chat_service: None,
+        agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         app_handle: None,
     };
     assert_eq!(
@@ -495,6 +497,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         github: github.clone(),
         pr_poller_registry: None,
         chat_service: None,
+        agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         app_handle: None,
     };
 

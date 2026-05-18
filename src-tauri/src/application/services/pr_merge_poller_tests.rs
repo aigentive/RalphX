@@ -22,12 +22,12 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSessionId, PlanBranchId, Project, TaskId,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
+use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::domain::services::github_service::{
     PrAutoMergeRequest, PrHealth, PrHealthCheck, PrIssueCommentSummary, PrMergeStateStatus,
     PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback, PrSyncState,
@@ -35,7 +35,8 @@ use crate::domain::services::github_service::{
 use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryPlanBranchRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryPlanBranchRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -386,6 +387,7 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -481,6 +483,7 @@ async fn supervised_agent_workspace_pr_autofix_skips_duplicate_fingerprint() {
         101,
         &conversation_id,
         workspace_repo,
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -488,6 +491,67 @@ async fn supervised_agent_workspace_pr_autofix_skips_duplicate_fingerprint() {
 
     assert!(!routed);
     assert!(chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_skips_when_fixer_run_active() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-active-run-conversation",
+        "project-active-run",
+        worktree.path(),
+    );
+    workspace.pr_supervision_status = Some("monitoring".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let agent_run_repo: Arc<dyn AgentRunRepository> =
+        Arc::new(MemoryAgentRunRepository::new());
+    agent_run_repo
+        .create(AgentRun::new(conversation_id.clone()))
+        .await
+        .expect("active run should persist");
+
+    let mut health = open_pr_health("new-issue-head");
+    health.sync_state.merge_state_status = Some(PrMergeStateStatus::Blocked);
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Some(agent_run_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("active fixer guard should not error");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(
+        events.is_empty(),
+        "active fixer should not append another publication event"
+    );
 }
 
 #[tokio::test]
@@ -517,6 +581,7 @@ async fn supervised_agent_workspace_pr_autofix_marks_healthy_pr_monitoring() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        None,
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await
@@ -1155,6 +1220,7 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
         project,
         repo.path().to_path_buf(),
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MockChatService::new()),
     );
     tokio::time::timeout(Duration::from_secs(20), async {
