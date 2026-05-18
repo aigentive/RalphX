@@ -285,6 +285,32 @@ impl AgentWorkspacePrDescription {
     }
 }
 
+#[cfg(test)]
+mod pr_comment_evidence_tests {
+    use super::{pr_comment_body_excerpt, pr_comment_body_sha256};
+
+    #[test]
+    fn pr_comment_body_excerpt_respects_tiny_limits() {
+        assert_eq!(pr_comment_body_excerpt("abcdef", 0), "");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 2), "..");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 3), "...");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 5), "ab...");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 6), "abcdef");
+    }
+
+    #[test]
+    fn pr_comment_body_sha256_is_stable() {
+        assert_eq!(
+            pr_comment_body_sha256("coverage"),
+            pr_comment_body_sha256("coverage")
+        );
+        assert_ne!(
+            pr_comment_body_sha256("coverage"),
+            pr_comment_body_sha256("different")
+        );
+    }
+}
+
 impl AgentConversationWorkspacePublicationEvent {
     pub fn new(
         conversation_id: ChatConversationId,

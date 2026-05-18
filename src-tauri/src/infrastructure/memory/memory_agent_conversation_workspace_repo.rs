@@ -660,6 +660,22 @@ mod tests {
         ))
         .await
         .unwrap();
+        repo.upsert_pr_comment_evidence(
+            &conversation_id,
+            vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+                267,
+                "comment-1".to_string(),
+                Some("codecov".to_string()),
+                "Patch coverage is below target.".to_string(),
+                Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                true,
+                true,
+            )],
+        )
+        .await
+        .unwrap();
 
         repo.delete(&conversation_id).await.unwrap();
 
@@ -668,6 +684,11 @@ mod tests {
             .await
             .unwrap();
         assert!(events.is_empty());
+        let comments = repo
+            .list_pr_comment_evidence(&conversation_id, 267, 10)
+            .await
+            .unwrap();
+        assert!(comments.is_empty());
     }
 
     fn candidate_workspace(id: &str) -> AgentConversationWorkspace {
