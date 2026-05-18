@@ -36,6 +36,7 @@ pub struct AgentProviderSettingsResponse {
     pub status: String,
     pub error: Option<String>,
     pub missing_core_exec_features: Vec<String>,
+    pub supported_efforts: Option<Vec<String>>,
     pub updated_at: String,
 }
 
@@ -245,6 +246,7 @@ fn to_response(
         status,
         error: probe.error,
         missing_core_exec_features: probe.missing_core_exec_features,
+        supported_efforts: probe.supported_efforts,
         updated_at: settings.updated_at.to_rfc3339(),
     }
 }
@@ -259,6 +261,7 @@ pub(crate) fn provider_settings_snapshot_probe(
             probe_succeeded: false,
             available: true,
             missing_core_exec_features: Vec::new(),
+            supported_efforts: None,
             error: None,
         };
     }
@@ -269,6 +272,7 @@ pub(crate) fn provider_settings_snapshot_probe(
         probe_succeeded: false,
         available: false,
         missing_core_exec_features: Vec::new(),
+        supported_efforts: None,
         error: Some(format!(
             "{} is disabled. Enable and validate it in Settings before use.",
             settings.provider
@@ -357,6 +361,7 @@ async fn read_provider_settings_with_stored_and_probes(
                     probe_succeeded: false,
                     available: false,
                     missing_core_exec_features: Vec::new(),
+                    supported_efforts: None,
                     error: Some(format!("{provider} probe unavailable")),
                 });
             to_response(settings, probe)

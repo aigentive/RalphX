@@ -7,6 +7,7 @@
 // crash recovery, and cancellation.
 
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,9 +26,13 @@ use crate::domain::entities::{
 };
 use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, PlanBranchRepository};
-use crate::domain::services::github_service::{PrReviewCommentFeedback, PrReviewFeedback};
+use crate::domain::services::github_service::{
+    PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
+    PrReviewFeedback,
+};
 use crate::domain::services::{GithubServiceTrait, PrStatus};
 use crate::error::AppError;
+use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER;
 
 // ────────────────────────────────────────────────────────────────────
 // Rate limit state shared across all pollers in the registry
@@ -882,6 +887,37 @@ async fn agent_workspace_poll_loop(
                     );
                 }
 
+                match route_agent_workspace_pr_autofix_if_needed(
+                    Arc::clone(&github),
+                    &working_dir,
+                    pr_number,
+                    &conversation_id,
+                    Arc::clone(&workspace_repo),
+                    Arc::clone(&chat_service),
+                )
+                .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            conversation_id = conversation_id.as_str(),
+                            pr_number,
+                            "Agent workspace PR poller: supervised PR issue routed to fixer agent"
+                        );
+                        active.remove(&conversation_id);
+                        stopping.remove(&conversation_id);
+                        return;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = conversation_id.as_str(),
+                            pr_number,
+                            error = %error,
+                            "Agent workspace PR poller: failed to inspect supervised PR health"
+                        );
+                    }
+                }
+
                 match route_agent_workspace_review_feedback_if_present(
                     Arc::clone(&github),
                     &working_dir,
@@ -977,14 +1013,8 @@ fn agent_workspace_pr_polling_is_current(
         && workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number == Some(pr_number)
-        && matches!(
-            workspace.publication_push_status.as_deref(),
-            None | Some("pushed")
-        )
-        && !matches!(
-            workspace.publication_pr_status.as_deref(),
-            Some("closed") | Some("merged")
-        )
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
 }
 
 async fn mark_agent_workspace_pr_open(
@@ -1124,6 +1154,466 @@ async fn route_review_feedback_if_present(
     Ok(true)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentWorkspacePrAutofixIssueKind {
+    Review,
+    Checks,
+    Coverage,
+    Mergeability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentWorkspacePrAutofixIssue {
+    kind: AgentWorkspacePrAutofixIssueKind,
+    summary: String,
+    details: Vec<String>,
+    classification: String,
+}
+
+async fn route_agent_workspace_pr_autofix_if_needed(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+
+    if !workspace.pr_autofix_enabled
+        && !workspace.pr_auto_merge_desired
+        && workspace.pr_auto_merge_current.is_none()
+    {
+        return Ok(false);
+    }
+
+    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let auto_merge_current = sync_agent_workspace_auto_merge_preference(
+        Arc::clone(&github),
+        working_dir,
+        pr_number,
+        &workspace,
+        &health,
+        Arc::clone(&workspace_repo),
+    )
+    .await?;
+
+    if !workspace.pr_autofix_enabled {
+        return Ok(false);
+    }
+
+    let Some(issue) = classify_agent_workspace_pr_autofix_issue(pr_number, &health) else {
+        let auto_merge_pending = workspace.pr_auto_merge_desired && !auto_merge_current;
+        if !auto_merge_pending
+            && (workspace.pr_supervision_status.as_deref() != Some("monitoring")
+                || workspace.pr_auto_merge_current != Some(auto_merge_current))
+        {
+            workspace_repo
+                .update_pr_auto_merge_state(
+                    conversation_id,
+                    Some(auto_merge_current),
+                    Some("monitoring"),
+                    Some("RalphX is monitoring PR health."),
+                )
+                .await?;
+        }
+        return Ok(false);
+    };
+
+    let already_routed = workspace_repo
+        .list_publication_events(conversation_id)
+        .await?
+        .into_iter()
+        .any(|event| event.classification.as_deref() == Some(issue.classification.as_str()));
+    if already_routed {
+        return Ok(false);
+    }
+
+    let message = build_agent_workspace_pr_autofix_message(pr_number, &workspace, &issue);
+    chat_service
+        .send_message(
+            ChatContextType::Project,
+            workspace.project_id.as_str(),
+            &message,
+            SendMessageOptions {
+                conversation_id_override: Some(workspace.conversation_id.clone()),
+                agent_name_override: Some(AGENT_WORKSPACE_PR_FIXER.to_string()),
+                working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+
+    let pr_status = if issue.kind == AgentWorkspacePrAutofixIssueKind::Review {
+        Some("changes_requested")
+    } else {
+        Some("open")
+    };
+    workspace_repo
+        .update_publication(
+            conversation_id,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.as_deref(),
+            pr_status,
+            Some("needs_agent"),
+        )
+        .await?;
+    workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            Some(auto_merge_current),
+            Some("fixing"),
+            Some(&issue.summary),
+        )
+        .await?;
+    workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix",
+            "needs_agent",
+            issue.summary,
+            Some(issue.classification),
+        ))
+        .await?;
+
+    Ok(true)
+}
+
+async fn sync_agent_workspace_auto_merge_preference(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    workspace: &AgentConversationWorkspace,
+    health: &PrHealth,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+) -> crate::AppResult<bool> {
+    let remote_current = health.auto_merge_request.is_some();
+    let mut current = remote_current;
+
+    if workspace.pr_auto_merge_desired && !remote_current {
+        let enable_result = async {
+            if health.sync_state.is_draft {
+                github.mark_pr_ready(working_dir, pr_number).await?;
+            }
+            github
+                .enable_pr_auto_merge(working_dir, pr_number, &workspace.pr_auto_merge_method)
+                .await
+        }
+        .await;
+
+        match enable_result {
+            Ok(()) => {
+                current = true;
+                workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(true),
+                        Some("monitoring"),
+                        Some("GitHub auto-merge is enabled; RalphX is monitoring PR health."),
+                    )
+                    .await?;
+            }
+            Err(error) => {
+                workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(false),
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge could not be enabled yet: {error}"
+                        )),
+                    )
+                    .await?;
+            }
+        }
+    } else if !workspace.pr_auto_merge_desired && remote_current {
+        match github.disable_pr_auto_merge(working_dir, pr_number).await {
+            Ok(()) => {
+                current = false;
+                workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(false),
+                        None,
+                        Some("GitHub auto-merge is disabled."),
+                    )
+                    .await?;
+            }
+            Err(error) => {
+                workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(true),
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge could not be disabled yet: {error}"
+                        )),
+                    )
+                    .await?;
+            }
+        }
+    } else if workspace.pr_auto_merge_current != Some(remote_current) {
+        workspace_repo
+            .update_pr_auto_merge_state(
+                &workspace.conversation_id,
+                Some(remote_current),
+                None,
+                None,
+            )
+            .await?;
+    }
+
+    Ok(current)
+}
+
+fn classify_agent_workspace_pr_autofix_issue(
+    pr_number: i64,
+    health: &PrHealth,
+) -> Option<AgentWorkspacePrAutofixIssue> {
+    let review_decision = health
+        .review_decision
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if review_decision == "changes_requested" {
+        let details = vec!["GitHub review decision is CHANGES_REQUESTED".to_string()];
+        return Some(AgentWorkspacePrAutofixIssue {
+            kind: AgentWorkspacePrAutofixIssueKind::Review,
+            summary: format!("PR #{pr_number} has requested changes"),
+            classification: agent_workspace_pr_autofix_event_classification(
+                pr_number, health, "review", &details,
+            ),
+            details,
+        });
+    }
+
+    let failing_checks: Vec<String> = health
+        .checks
+        .iter()
+        .filter(|check| agent_workspace_check_is_failing(check))
+        .map(format_agent_workspace_health_check)
+        .collect();
+    if !failing_checks.is_empty() {
+        return Some(AgentWorkspacePrAutofixIssue {
+            kind: AgentWorkspacePrAutofixIssueKind::Checks,
+            summary: format!(
+                "PR #{pr_number} has {} failing check{}",
+                failing_checks.len(),
+                if failing_checks.len() == 1 { "" } else { "s" }
+            ),
+            classification: agent_workspace_pr_autofix_event_classification(
+                pr_number,
+                health,
+                "checks",
+                &failing_checks,
+            ),
+            details: failing_checks,
+        });
+    }
+
+    let codecov_comments: Vec<String> = health
+        .issue_comments
+        .iter()
+        .filter(|comment| {
+            comment.is_codecov && agent_workspace_codecov_comment_is_actionable(&comment.body)
+        })
+        .map(|comment| {
+            let author = comment.author.as_deref().unwrap_or("codecov");
+            format!(
+                "@{author}: {}",
+                compact_pr_feedback_text(&comment.body, 240)
+            )
+        })
+        .collect();
+    if !codecov_comments.is_empty() {
+        return Some(AgentWorkspacePrAutofixIssue {
+            kind: AgentWorkspacePrAutofixIssueKind::Coverage,
+            summary: format!("PR #{pr_number} has actionable Codecov feedback"),
+            classification: agent_workspace_pr_autofix_event_classification(
+                pr_number,
+                health,
+                "coverage",
+                &codecov_comments,
+            ),
+            details: codecov_comments,
+        });
+    }
+
+    let mut mergeability_details = Vec::new();
+    match health.sync_state.merge_state_status.as_ref() {
+        Some(PrMergeStateStatus::Behind) => {
+            mergeability_details.push("PR branch is behind its base".to_string());
+        }
+        Some(PrMergeStateStatus::Dirty) => {
+            mergeability_details.push("PR branch has merge conflicts".to_string());
+        }
+        Some(PrMergeStateStatus::Blocked) => {
+            mergeability_details.push("PR is blocked from merging".to_string());
+        }
+        _ => {}
+    }
+    if matches!(
+        health.sync_state.mergeable.as_ref(),
+        Some(PrMergeableState::Conflicting)
+    ) {
+        mergeability_details.push("PR is reported as conflicting".to_string());
+    }
+    if !mergeability_details.is_empty() {
+        return Some(AgentWorkspacePrAutofixIssue {
+            kind: AgentWorkspacePrAutofixIssueKind::Mergeability,
+            summary: format!("PR #{pr_number} has mergeability blockers"),
+            classification: agent_workspace_pr_autofix_event_classification(
+                pr_number,
+                health,
+                "mergeability",
+                &mergeability_details,
+            ),
+            details: mergeability_details,
+        });
+    }
+
+    None
+}
+
+fn agent_workspace_check_is_failing(check: &PrHealthCheck) -> bool {
+    check
+        .conclusion
+        .as_deref()
+        .or(check.status.as_deref())
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "failure"
+                    | "failed"
+                    | "error"
+                    | "cancelled"
+                    | "canceled"
+                    | "timed_out"
+                    | "timedout"
+                    | "action_required"
+                    | "startup_failure"
+                    | "stale"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn agent_workspace_codecov_comment_is_actionable(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    body.contains("fail")
+        || body.contains("threshold")
+        || body.contains("target")
+        || body.contains("decreased")
+        || body.contains("patch coverage")
+}
+
+fn compact_pr_feedback_text(body: &str, max_chars: usize) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{truncated}...")
+}
+
+fn format_agent_workspace_health_check(check: &PrHealthCheck) -> String {
+    let status = check
+        .conclusion
+        .as_deref()
+        .or(check.status.as_deref())
+        .unwrap_or("unknown");
+    match check.details_url.as_deref() {
+        Some(url) if !url.trim().is_empty() => format!("{} ({status}) - {url}", check.name),
+        _ => format!("{} ({status})", check.name),
+    }
+}
+
+fn agent_workspace_pr_autofix_event_classification(
+    pr_number: i64,
+    health: &PrHealth,
+    kind: &str,
+    details: &[String],
+) -> String {
+    let head = health
+        .sync_state
+        .head_ref_oid
+        .as_deref()
+        .unwrap_or("unknown-head");
+    let mut hasher = Sha256::new();
+    hasher.update(pr_number.to_string());
+    hasher.update(b"\0");
+    hasher.update(head);
+    hasher.update(b"\0");
+    hasher.update(kind);
+    for detail in details {
+        hasher.update(b"\0");
+        hasher.update(detail);
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    let head_short: String = head
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .take(12)
+        .collect();
+    format!(
+        "github_pr_autofix:{pr_number}:{}:{}",
+        if head_short.is_empty() {
+            "unknown"
+        } else {
+            head_short.as_str()
+        },
+        &digest[..16]
+    )
+}
+
+fn build_agent_workspace_pr_autofix_message(
+    pr_number: i64,
+    workspace: &AgentConversationWorkspace,
+    issue: &AgentWorkspacePrAutofixIssue,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "RalphX PR supervision detected a merge-blocking issue on GitHub PR #{pr_number} for this agent workspace.\n\n"
+    ));
+    out.push_str(
+        "Please fix the PR in the current workspace branch, commit any focused changes, then call `complete_agent_workspace_pr_fix`.\n\n",
+    );
+    out.push_str(&format!(
+        "Conversation ID: {}\n",
+        workspace.conversation_id.as_str()
+    ));
+    out.push_str(&format!("Workspace branch: {}\n", workspace.branch_name));
+    if let Some(pr_url) = workspace.publication_pr_url.as_deref() {
+        out.push_str(&format!("Pull request: {pr_url}\n"));
+    }
+    out.push_str(&format!("Detected issue: {}\n", issue.summary));
+    out.push_str(&format!("Fingerprint: {}\n", issue.classification));
+
+    if !issue.details.is_empty() {
+        out.push_str("\nDetails:\n");
+        for detail in &issue.details {
+            out.push_str("- ");
+            out.push_str(detail);
+            out.push('\n');
+        }
+    }
+
+    out.push_str(
+        "\nStart by calling `get_agent_workspace_pr_fix_context` with the conversation ID above.",
+    );
+    out
+}
+
 async fn route_agent_workspace_review_feedback_if_present(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -1160,16 +1650,22 @@ async fn route_agent_workspace_review_feedback_if_present(
         })?;
 
     let message = build_agent_workspace_pr_review_message(pr_number, &workspace, &feedback);
+    let agent_name = if workspace.pr_autofix_enabled {
+        AGENT_WORKSPACE_PR_FIXER
+    } else {
+        agent_name_for_workspace_mode(workspace.mode)
+    };
     chat_service
         .send_message(
             ChatContextType::Project,
             workspace.project_id.as_str(),
             &message,
             SendMessageOptions {
-                conversation_id_override: Some(workspace.conversation_id),
-                agent_name_override: Some(
-                    agent_name_for_workspace_mode(workspace.mode).to_string(),
-                ),
+                conversation_id_override: Some(workspace.conversation_id.clone()),
+                agent_name_override: Some(agent_name.to_string()),
+                working_directory_override: workspace
+                    .pr_autofix_enabled
+                    .then(|| PathBuf::from(&workspace.worktree_path)),
                 ..Default::default()
             },
         )
@@ -1185,6 +1681,16 @@ async fn route_agent_workspace_review_feedback_if_present(
             Some("needs_agent"),
         )
         .await?;
+    if workspace.pr_autofix_enabled {
+        workspace_repo
+            .update_pr_auto_merge_state(
+                conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("fixing"),
+                Some("GitHub requested changes routed to the PR fixer."),
+            )
+            .await?;
+    }
     workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             conversation_id.clone(),
@@ -1217,6 +1723,11 @@ fn build_agent_workspace_pr_review_message(
     out.push_str(
         "Please address this review in the current workspace branch, commit any fixes if needed, and report what changed.\n\n",
     );
+    if workspace.pr_autofix_enabled {
+        out.push_str(
+            "Start by calling `get_agent_workspace_pr_fix_context`; after committing the fix, call `complete_agent_workspace_pr_fix`.\n\n",
+        );
+    }
     out.push_str(&format!("Review author: @{}\n", feedback.author));
     if let Some(submitted_at) = feedback.submitted_at.as_deref() {
         out.push_str(&format!("Submitted: {submitted_at}\n"));

@@ -13,12 +13,13 @@
  * WKWebView CSS: explicit background-color / border-color with shallow-chain tokens.
  */
 
+import { useEffect, useRef } from "react";
 import { Copy, ChevronRight, Maximize2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { FileChange, FileDiff, DiffRefKind } from "@/api/diff";
+import type { FileChange, FileDiff, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
 
@@ -36,10 +37,14 @@ export interface AgentsPublishFileDiffProps {
   refKind?: DiffRefKind | undefined;
   /** Whether this file is in the viewport (±200px) — controls body hydration. */
   shouldHydrate: boolean;
+  /** GitHub PR review/check annotations for this file. */
+  annotations?: PrDiffAnnotation[] | undefined;
   /** Whether the user has clicked "Show anyway" for a generated file. */
   isShowAnywayOverridden: boolean;
   /** Called when the user clicks "Show anyway" on a generated-file placeholder. */
   onShowAnyway: () => void;
+  /** Focus the path control after an external jump request opens this file. */
+  isFocusTarget?: boolean;
 }
 
 function statusLetter(status: FileChange["status"]): string {
@@ -75,19 +80,29 @@ export function AgentsPublishFileDiff({
   conversationId,
   refKind,
   shouldHydrate,
+  annotations = [],
   isShowAnywayOverridden,
   onShowAnyway,
+  isFocusTarget = false,
 }: AgentsPublishFileDiffProps) {
   const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
   const showGeneratedPlaceholder = file.isGenerated && !isShowAnywayOverridden;
+  const pathButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (isFocusTarget) {
+      pathButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, [isFocusTarget]);
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border"
+      className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border"
       data-testid={`publish-file-diff-${file.path}`}
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-subtle)",
+        boxShadow: isFocusTarget ? "0 0 0 1px var(--accent-border)" : undefined,
       }}
     >
       {/* Header — always renders synchronously */}
@@ -130,6 +145,7 @@ export function AgentsPublishFileDiff({
         <Tooltip>
           <TooltipTrigger asChild>
             <button
+              ref={pathButtonRef}
               type="button"
               data-testid="file-diff-path-toggle"
               aria-label={isExpanded ? "Collapse file" : "Expand file"}
@@ -182,6 +198,19 @@ export function AgentsPublishFileDiff({
           </span>
         )}
 
+        {annotations.length > 0 && (
+          <span
+            data-testid="file-diff-annotation-count"
+            className="shrink-0 rounded border px-1.5 py-0.5 text-[0.6875rem] font-medium"
+            style={{
+              borderColor: "var(--status-warning-border)",
+              color: "var(--status-warning)",
+            }}
+          >
+            {annotations.length}
+          </span>
+        )}
+
         {/* Open fullscreen */}
         <Tooltip>
           <TooltipTrigger asChild>
@@ -205,7 +234,7 @@ export function AgentsPublishFileDiff({
       {/* Body — only mounted when expanded */}
       {isExpanded && (
         <div
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          className="flex min-h-0 flex-col"
           style={{ minHeight: "60px" }}
         >
           {showGeneratedPlaceholder ? (
@@ -284,6 +313,8 @@ export function AgentsPublishFileDiff({
                   conversationId={conversationId}
                   filePath={file.path}
                   refKind={refKind}
+                  scrollContainer={false}
+                  annotations={annotations}
                 />
               )}
 

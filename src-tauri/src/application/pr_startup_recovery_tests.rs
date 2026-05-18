@@ -437,6 +437,16 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
         Err(repo_error())
     }
 
+    async fn update_pr_supervision_preferences(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _autofix_enabled: bool,
+        _auto_merge_desired: bool,
+        _auto_merge_method: &str,
+    ) -> AppResult<()> {
+        Err(repo_error())
+    }
+
     async fn update_status(
         &self,
         _conversation_id: &ChatConversationId,

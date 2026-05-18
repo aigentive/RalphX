@@ -11,19 +11,18 @@ use crate::application::{GitService, TaskTransitionService};
 use crate::domain::entities::{
     InternalStatus, Review, ReviewNote, ReviewOutcome, ReviewerType, TaskId,
 };
+use crate::domain::review::{
+    apply_review_outcome, build_ai_review_note, build_followup_activity_event,
+    build_review_issue_entities, build_review_note_issues, build_unrelated_drift_followup_draft,
+    complete_review_response_message, count_revision_cycles,
+    matching_unrelated_drift_followup_session_id, parse_review_decision, parse_review_issues,
+    pending_review_or_new, review_note_content, should_spawn_unrelated_drift_followup,
+    update_review_scope_metadata, validate_complete_review_policy, RawReviewIssueInput,
+};
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::{
     deferred_merge_cleanup, set_no_code_changes_metadata, set_pending_cleanup_metadata,
-};
-use crate::domain::review::{
-    apply_review_outcome, build_ai_review_note, build_followup_activity_event,
-    build_unrelated_drift_followup_draft, build_review_issue_entities,
-    build_review_note_issues, complete_review_response_message, count_revision_cycles,
-    matching_unrelated_drift_followup_session_id, parse_review_decision, parse_review_issues,
-    pending_review_or_new, review_note_content,
-    should_spawn_unrelated_drift_followup, update_review_scope_metadata,
-    validate_complete_review_policy, RawReviewIssueInput,
 };
 use crate::domain::tools::complete_review::{ReviewToolOutcome, ScopeDriftClassification};
 use crate::http_server::handlers::session_linking::create_child_session_impl;

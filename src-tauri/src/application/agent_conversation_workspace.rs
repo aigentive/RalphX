@@ -12,6 +12,7 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
+    is_terminal_publication_pr_status,
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
     IdeationAnalysisBaseRefKind, Project, Task,
 };
@@ -267,6 +268,14 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         publication_pr_url: None,
         publication_pr_status: None,
         publication_push_status: None,
+        pr_autofix_enabled: false,
+        pr_auto_merge_desired: false,
+        pr_auto_merge_method:
+            crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
+        pr_auto_merge_current: None,
+        pr_supervision_status: None,
+        pr_supervision_summary: None,
+        pr_supervision_updated_at: None,
         status: crate::domain::entities::AgentConversationWorkspaceStatus::Active,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -441,7 +450,7 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
 }
 
 pub fn is_terminal_agent_conversation_publication_status(status: Option<&str>) -> bool {
-    matches!(status, Some("merged" | "closed"))
+    is_terminal_publication_pr_status(status)
 }
 
 fn log_agent_workspace_phase(

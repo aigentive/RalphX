@@ -438,6 +438,10 @@ pub struct GitRuntimeConfig {
     pub workspace_review_cache_ttl_ms: u64,
     /// Short TTL for precomputed agent workspace PR descriptions, in milliseconds.
     pub workspace_pr_description_cache_ttl_ms: u64,
+    /// Short TTL for live GitHub PR annotation payloads, in milliseconds.
+    pub workspace_pr_annotations_cache_ttl_ms: u64,
+    /// Maximum annotated check runs to query for per-run annotations on one PR payload.
+    pub workspace_pr_annotations_check_run_fetch_limit: u64,
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
@@ -470,6 +474,8 @@ impl Default for GitRuntimeConfig {
             workspace_freshness_cache_ttl_ms: 2_000,
             workspace_review_cache_ttl_ms: 2_000,
             workspace_pr_description_cache_ttl_ms: 300_000,
+            workspace_pr_annotations_cache_ttl_ms: 30_000,
+            workspace_pr_annotations_check_run_fetch_limit: 10,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
             agent_kill_settle_secs: 0,
@@ -805,6 +811,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.workspace_pr_description_cache_ttl_ms,
         "RALPHX_GIT_WORKSPACE_PR_DESCRIPTION_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.workspace_pr_annotations_cache_ttl_ms,
+        "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.workspace_pr_annotations_check_run_fetch_limit,
+        "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT"
     );
     env_u64!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,

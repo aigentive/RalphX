@@ -2,6 +2,7 @@
 // Uses the claude CLI for agent interactions
 
 mod agent_config;
+pub mod cli_capabilities;
 pub mod agent_names;
 mod claude_code_client;
 pub mod effort_resolver;
@@ -36,6 +37,11 @@ pub use claude_code_client::ClaudeCodeClient;
 pub use claude_code_client::{
     StreamEvent as ClientStreamEvent, StreamingSpawnResult, TeammateContext, TeammateSpawnConfig,
     TeammateSpawnResult,
+};
+pub use cli_capabilities::{
+    clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
+    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
+    probe_claude_cli_cached, ClaudeCliCapabilities,
 };
 
 // Re-export stream processor types for use by services
@@ -242,6 +248,10 @@ fn apply_common_spawn_env_to_std(cmd: &mut std::process::Command) {
     cmd.env(
         "TAURI_API_URL",
         crate::utils::backend_endpoint::backend_http_base_url(),
+    );
+    cmd.env(
+        "RALPHX_AGENT_SCREENSHOT_DIR",
+        crate::utils::runtime_log_paths::agent_screenshot_dir(),
     );
     crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd);
 }
@@ -582,11 +592,7 @@ fn build_base_cli_command_inner_with_runtime_context(
 
     // Capture Claude's internal debug log per spawn for post-mortem analysis.
     // This is critical when the process exits 0 with no stdout/stderr.
-    let debug_path = std::env::temp_dir().join(format!(
-        "ralphx-claude-debug-{}-{}.log",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
+    let debug_path = crate::utils::runtime_log_paths::claude_debug_log_file();
     if let Some(path_str) = debug_path.to_str() {
         cmd.args(["--debug-file", path_str]);
         tracing::debug!(path = %debug_path.display(), "Enabled Claude debug file");
@@ -611,7 +617,16 @@ fn build_base_cli_command_inner_with_runtime_context(
             &effort_resolved
         }
     };
-    cmd.args(["--effort", effort]);
+    let normalized_effort = normalize_claude_effort_for_cli_path(cli_path, effort);
+    if normalized_effort != effort {
+        tracing::warn!(
+            requested_effort = effort,
+            effective_effort = %normalized_effort,
+            cli_path = %cli_path.display(),
+            "Normalized Claude CLI effort for installed CLI capability"
+        );
+    }
+    cmd.args(["--effort", normalized_effort.as_str()]);
 
     // Model for this agent — use explicit override when provided, otherwise resolve from agent config.
     let model_resolved;
@@ -976,7 +991,7 @@ pub(crate) fn build_mcp_config_with_runtime_context(
         args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
         args_vec.push("--trace-dir".to_string());
         args_vec.push(
-            crate::utils::runtime_log_paths::mcp_proxy_trace_dir()
+            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
                 .to_string_lossy()
                 .into_owned(),
         );
@@ -1730,7 +1745,7 @@ pub async fn register_mcp_server(cli_path: &Path, plugin_dir: &Path) -> Result<(
         "args": [
             mcp_server_path_str,
             "--trace-dir",
-            crate::utils::runtime_log_paths::mcp_proxy_trace_dir().to_string_lossy()
+            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir().to_string_lossy()
         ]
     });
 
@@ -1993,6 +2008,16 @@ mod tests {
 
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
+
+        let screenshot_dir = command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "RALPHX_AGENT_SCREENSHOT_DIR")
+                    .then(|| value.map(|path| path.to_string_lossy().into_owned()))?
+            })
+            .expect("RALPHX_AGENT_SCREENSHOT_DIR should be explicitly set");
+        assert!(screenshot_dir.contains("screenshots"));
     }
 
     #[test]

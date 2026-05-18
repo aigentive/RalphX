@@ -19,11 +19,13 @@ import {
   restoreConversation,
   getAgentRunStatus,
   getAgentConversationWorkspaceFreshness,
+  openAgentConversationWorkspace,
   listAgentConversationWorkspacePublicationEvents,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
+  setAgentConversationWorkspacePrSupervision,
   startAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
@@ -1099,6 +1101,19 @@ describe("chat api", () => {
     });
   });
 
+  it("opens an agent conversation workspace when Tauri returns null for Rust unit", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await expect(
+      openAgentConversationWorkspace("conversation-1", "cursor")
+    ).resolves.toBeUndefined();
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "open_agent_conversation_workspace",
+      { conversationId: "conversation-1", targetId: "cursor" }
+    );
+  });
+
   it("lists grouped agent sidebar conversations", async () => {
     mockInvoke.mockResolvedValue({
       groups: [
@@ -1356,6 +1371,62 @@ describe("chat api", () => {
         baseCommit: "new-base",
         publicationPushStatus: "refreshed",
       },
+    });
+  });
+
+  it("updates PR supervision preferences for an agent conversation workspace", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      mode: "edit",
+      base_ref_kind: "project_default",
+      base_ref: "main",
+      base_display_name: "Project default (main)",
+      base_commit: "base-sha",
+      branch_name: "ralphx/demo/agent-conversation-1",
+      worktree_path: "/tmp/ralphx/conversation-1",
+      linked_ideation_session_id: null,
+      linked_plan_branch_id: null,
+      publication_pr_number: 78,
+      publication_pr_url: "https://github.com/mock/project/pull/78",
+      publication_pr_status: "open",
+      publication_push_status: "pushed",
+      pr_autofix_enabled: true,
+      pr_auto_merge_desired: true,
+      pr_auto_merge_method: "squash",
+      pr_auto_merge_current: null,
+      pr_supervision_status: "monitoring",
+      pr_supervision_summary: "RalphX PR supervision is enabled.",
+      pr_supervision_updated_at: "2026-05-17T10:00:00Z",
+      status: "active",
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:01:00Z",
+    });
+
+    const result = await setAgentConversationWorkspacePrSupervision(
+      "conversation-1",
+      {
+        autoFixEnabled: true,
+        autoMergeDesired: true,
+      }
+    );
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "set_agent_conversation_workspace_pr_supervision",
+      {
+        conversationId: "conversation-1",
+        input: {
+          autoFixEnabled: true,
+          autoMergeDesired: true,
+        },
+      }
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      prAutofixEnabled: true,
+      prAutoMergeDesired: true,
+      prAutoMergeMethod: "squash",
+      prSupervisionStatus: "monitoring",
     });
   });
 
@@ -1741,6 +1812,9 @@ describe("chat api", () => {
     );
     expect(chatApi.precomputeAgentConversationWorkspacePrDescription).toBe(
       precomputeAgentConversationWorkspacePrDescription
+    );
+    expect(chatApi.setAgentConversationWorkspacePrSupervision).toBe(
+      setAgentConversationWorkspacePrSupervision
     );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
     expect(chatApi.archiveConversation).toBe(archiveConversation);

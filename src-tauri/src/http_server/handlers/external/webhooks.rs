@@ -63,9 +63,9 @@ pub async fn register_webhook_http(
         .map(|ids| ids.iter().map(|id| id.to_string()).collect())
         .unwrap_or_default();
 
-    let svc = crate::application::WebhookService::new(
-        Arc::clone(&state.app_state.webhook_registration_repo),
-    );
+    let svc = crate::application::WebhookService::new(Arc::clone(
+        &state.app_state.webhook_registration_repo,
+    ));
 
     let registration = svc
         .register(
@@ -124,9 +124,9 @@ pub async fn unregister_webhook_http(
         .map(|s| s.to_string())
         .unwrap_or_default();
 
-    let svc = crate::application::WebhookService::new(
-        Arc::clone(&state.app_state.webhook_registration_repo),
-    );
+    let svc = crate::application::WebhookService::new(Arc::clone(
+        &state.app_state.webhook_registration_repo,
+    ));
 
     let found = svc
         .unregister(&webhook_id, &api_key_id)
@@ -163,9 +163,9 @@ pub async fn list_webhooks_http(
         .map(|s| s.to_string())
         .unwrap_or_default();
 
-    let svc = crate::application::WebhookService::new(
-        Arc::clone(&state.app_state.webhook_registration_repo),
-    );
+    let svc = crate::application::WebhookService::new(Arc::clone(
+        &state.app_state.webhook_registration_repo,
+    ));
 
     let registrations = svc.list(&api_key_id).await.map_err(|e| {
         error!("Failed to list webhooks: {}", e);
@@ -182,8 +182,7 @@ pub async fn list_webhooks_http(
                 .event_types
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok());
-            let project_ids: Vec<String> =
-                serde_json::from_str(&r.project_ids).unwrap_or_default();
+            let project_ids: Vec<String> = serde_json::from_str(&r.project_ids).unwrap_or_default();
             WebhookSummary {
                 id: r.id,
                 url: r.url,
@@ -210,9 +209,9 @@ pub async fn get_webhook_health_http(
         .map(|s| s.to_string())
         .unwrap_or_default();
 
-    let svc = crate::application::WebhookService::new(
-        Arc::clone(&state.app_state.webhook_registration_repo),
-    );
+    let svc = crate::application::WebhookService::new(Arc::clone(
+        &state.app_state.webhook_registration_repo,
+    ));
 
     let registrations = svc.list(&api_key_id).await.map_err(|e| {
         error!("Failed to get webhook health: {}", e);

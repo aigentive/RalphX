@@ -59,7 +59,9 @@ pub async fn external_task_transition_http(
 
     let mut transition_service_builder = state
         .app_state
-        .build_transition_service_with_execution_state(std::sync::Arc::clone(&state.execution_state));
+        .build_transition_service_with_execution_state(std::sync::Arc::clone(
+            &state.execution_state,
+        ));
 
     if let Some(ref pub_) = state.app_state.webhook_publisher {
         transition_service_builder = transition_service_builder
@@ -248,8 +250,8 @@ pub async fn get_task_diff_http(
     scope: ProjectScope,
     Path(id): Path<String>,
 ) -> Result<Json<TaskDiffResponse>, StatusCode> {
-    use std::path::PathBuf;
     use crate::application::GitService;
+    use std::path::PathBuf;
 
     let task_id = crate::domain::entities::TaskId::from_string(id);
 
@@ -301,7 +303,11 @@ pub async fn get_task_diff_http(
     let stats = GitService::get_diff_stats(&working_path, base_branch)
         .await
         .map_err(|e| {
-            error!("Failed to get diff stats for task {}: {}", task_id.as_str(), e);
+            error!(
+                "Failed to get diff stats for task {}: {}",
+                task_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -345,7 +351,11 @@ pub async fn get_task_review_summary_http(
         .get_notes_by_task_id(&task_id)
         .await
         .map_err(|e| {
-            error!("Failed to get review notes for task {}: {}", task_id.as_str(), e);
+            error!(
+                "Failed to get review notes for task {}: {}",
+                task_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -401,7 +411,11 @@ pub async fn get_merge_pipeline_http(
         .get_by_project(&project_id)
         .await
         .map_err(|e| {
-            error!("Failed to get tasks for project {}: {}", project_id.as_str(), e);
+            error!(
+                "Failed to get tasks for project {}: {}",
+                project_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -490,10 +504,13 @@ pub async fn review_action_http(
 
     let mut transition_service_builder = state
         .app_state
-        .build_transition_service_with_execution_state(std::sync::Arc::clone(&state.execution_state));
+        .build_transition_service_with_execution_state(std::sync::Arc::clone(
+            &state.execution_state,
+        ));
 
     if let Some(ref pub_) = state.app_state.webhook_publisher {
-        transition_service_builder = transition_service_builder.with_webhook_publisher_for_emitter(std::sync::Arc::clone(pub_));
+        transition_service_builder = transition_service_builder
+            .with_webhook_publisher_for_emitter(std::sync::Arc::clone(pub_));
     }
 
     let transition_service = transition_service_builder
@@ -503,7 +520,11 @@ pub async fn review_action_http(
         .transition_task(&task_id, target_status)
         .await
         .map_err(|e| {
-            error!("Failed to transition task {} for review action: {}", task_id.as_str(), e);
+            error!(
+                "Failed to transition task {} for review action: {}",
+                task_id.as_str(),
+                e
+            );
             StatusCode::UNPROCESSABLE_ENTITY
         })?;
 

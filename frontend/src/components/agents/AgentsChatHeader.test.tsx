@@ -1,14 +1,22 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
 import { useChatStore } from "@/stores/chatStore";
+import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
+import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+  },
+}));
 
 function conversationStats(
   overrides: Partial<ConversationStatsResponse> = {},
@@ -65,6 +73,8 @@ function conversationStats(
 describe("AgentsChatHeader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    window.localStorage.clear();
     useChatStore.setState({ agentStatus: {}, isSending: {} });
   });
 
@@ -476,6 +486,7 @@ describe("AgentsChatHeader", () => {
   it("shows a commit and publish shortcut for editable workspaces", () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     const openPublishPane = vi.fn();
+    const openWorkspaceTarget = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ id: "conversation-1" })}
@@ -504,15 +515,190 @@ describe("AgentsChatHeader", () => {
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onPublishWorkspace={publish}
         onOpenPublishPane={openPublishPane}
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "file-manager", label: "Finder", kind: "fileManager" },
+        ]}
+        onOpenWorkspaceTarget={openWorkspaceTarget}
         onToggleArtifacts={vi.fn()}
         onSelectArtifact={vi.fn()}
       />
     );
 
+    const openWorkspace = screen.getByTestId("agents-open-workspace");
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Cursor"
+    );
+    const publishWorkspace = screen.getByTestId("agents-publish-workspace");
+    expect(
+      openWorkspace.compareDocumentPosition(publishWorkspace) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    fireEvent.click(openWorkspace);
+    expect(openWorkspaceTarget).toHaveBeenCalledWith("cursor");
+
     fireEvent.click(screen.getByTestId("agents-publish-workspace"));
 
     expect(openPublishPane).toHaveBeenCalledTimes(1);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("opens a selected workspace target from the header dropdown", () => {
+    const openWorkspaceTarget = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "file-manager", label: "Finder", kind: "fileManager" },
+        ]}
+        onOpenWorkspaceTarget={openWorkspaceTarget}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("agents-open-workspace-options"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Finder" }));
+
+    expect(openWorkspaceTarget).toHaveBeenCalledWith("file-manager");
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Finder"
+    );
+
+    fireEvent.click(screen.getByTestId("agents-open-workspace"));
+    expect(openWorkspaceTarget).toHaveBeenLastCalledWith("file-manager");
+    expect(window.localStorage.getItem("ralphx:agents:preferred-workspace-open-target")).toBe(
+      "file-manager"
+    );
+  });
+
+  it("shows an opening state while launching a workspace target", () => {
+    const openWorkspaceTarget = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        workspaceOpenTargets={[
+          { id: "cursor", label: "Cursor", kind: "editor" },
+          { id: "file-manager", label: "Finder", kind: "fileManager" },
+        ]}
+        openingWorkspaceTargetId="file-manager"
+        onOpenWorkspaceTarget={openWorkspaceTarget}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const openWorkspace = screen.getByTestId("agents-open-workspace");
+    expect(openWorkspace).toBeDisabled();
+    expect(openWorkspace).toHaveAttribute("aria-busy", "true");
+    expect(openWorkspace).toHaveTextContent("Opening");
+    expect(screen.getByTestId("agents-open-workspace-current-target")).toHaveTextContent(
+      "Finder"
+    );
+    expect(screen.getByTestId("agents-open-workspace-options")).toBeDisabled();
+  });
+
+  it("keeps the workspace opening state visible briefly after the launcher returns", async () => {
+    let resolveOpenWorkspace: (() => void) | null = null;
+    vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+      { id: "file-manager", label: "Finder", kind: "fileManager" },
+    ]);
+    const openWorkspace = vi
+      .spyOn(chatApi, "openAgentConversationWorkspace")
+      .mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveOpenWorkspace = resolve;
+          }),
+      );
+
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const openButton = await screen.findByTestId("agents-open-workspace");
+
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(openButton);
+      await Promise.resolve();
+    });
+
+    expect(openWorkspace).toHaveBeenCalledWith("conversation-1", "cursor");
+    expect(openButton).toBeDisabled();
+    expect(openButton).toHaveTextContent("Opening");
+
+    await act(async () => {
+      resolveOpenWorkspace?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2499);
+    });
+    expect(openButton).toBeDisabled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(openButton).not.toBeDisabled();
+  });
+
+  it("clears the workspace opening state immediately when launch fails", async () => {
+    vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    vi.spyOn(chatApi, "openAgentConversationWorkspace").mockRejectedValue(
+      new Error("Cursor failed")
+    );
+
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "conversation-1" })}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const openButton = await screen.findByTestId("agents-open-workspace");
+    fireEvent.click(openButton);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Cursor failed"));
+    expect(openButton).not.toBeDisabled();
+    expect(openButton).toHaveTextContent("Open");
   });
 
   it("shows the commit and publish shortcut for ideation workspaces linked to execution branches", () => {

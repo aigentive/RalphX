@@ -90,7 +90,11 @@ pub async fn get_pipeline_overview_http(
         .get_by_project(&project_id)
         .await
         .map_err(|e| {
-            error!("Failed to get tasks for project {}: {}", project_id.as_str(), e);
+            error!(
+                "Failed to get tasks for project {}: {}",
+                project_id.as_str(),
+                e
+            );
             HttpError::from(StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
@@ -135,8 +139,9 @@ pub async fn get_pipeline_overview_http(
 
     // If `since` is provided, compute changed_tasks (tasks with updated_at > since)
     let changed_tasks = if let Some(since_str) = params.since {
-        let since = chrono::DateTime::parse_from_rfc3339(&since_str)
-            .map_err(|_| HttpError::validation(format!("Invalid `since` timestamp: {since_str}")))?;
+        let since = chrono::DateTime::parse_from_rfc3339(&since_str).map_err(|_| {
+            HttpError::validation(format!("Invalid `since` timestamp: {since_str}"))
+        })?;
         let filtered: Vec<ChangedTask> = tasks
             .iter()
             .filter(|t| t.updated_at > since.with_timezone(&chrono::Utc))
@@ -180,9 +185,7 @@ pub async fn poll_events_http(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    project
-        .assert_project_scope(&scope)
-        .map_err(|e| e.status)?;
+    project.assert_project_scope(&scope).map_err(|e| e.status)?;
 
     let cursor = params.cursor.unwrap_or(0);
     let limit = params.limit.unwrap_or(50).clamp(1, 200);
@@ -198,10 +201,8 @@ pub async fn poll_events_http(
                  FROM external_events \
                  WHERE project_id = ?1 AND id > ?2"
                 .to_string();
-            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-                Box::new(project_id_str.clone()),
-                Box::new(cursor),
-            ];
+            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
+                vec![Box::new(project_id_str.clone()), Box::new(cursor)];
             if let Some(ref et) = event_type_filter {
                 sql.push_str(" AND event_type = ?3");
                 params_vec.push(Box::new(et.clone()));

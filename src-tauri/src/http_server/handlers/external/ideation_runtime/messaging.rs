@@ -39,7 +39,11 @@ pub async fn ideation_message_http(
         .get_by_id(&session_id)
         .await
         .map_err(|e| {
-            error!("Failed to get ideation session {}: {}", session_id.as_str(), e);
+            error!(
+                "Failed to get ideation session {}: {}",
+                session_id.as_str(),
+                e
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Failed to get ideation session"})),
@@ -69,23 +73,25 @@ pub async fn ideation_message_http(
     let session_id_str = session_id.as_str().to_string();
     let current_phase = session.external_activity_phase.clone();
 
-    let maybe_transition_to_planning = |
-        repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository>,
-        sid: IdeationSessionId,
-        phase: Option<String>,
-    | {
-        if phase.as_deref() == Some("created") {
-            tokio::spawn(async move {
-                if let Err(e) = repo.update_external_activity_phase(&sid, Some("planning")).await {
-                    error!(
-                        "Failed to set activity phase 'planning' for session {}: {}",
-                        sid.as_str(),
-                        e
-                    );
-                }
-            });
-        }
-    };
+    let maybe_transition_to_planning =
+        |repo: Arc<dyn crate::domain::repositories::IdeationSessionRepository>,
+         sid: IdeationSessionId,
+         phase: Option<String>| {
+            if phase.as_deref() == Some("created") {
+                tokio::spawn(async move {
+                    if let Err(e) = repo
+                        .update_external_activity_phase(&sid, Some("planning"))
+                        .await
+                    {
+                        error!(
+                            "Failed to set activity phase 'planning' for session {}: {}",
+                            sid.as_str(),
+                            e
+                        );
+                    }
+                });
+            }
+        };
 
     let last_read = session.external_last_read_message_id.as_deref();
     match state
@@ -102,8 +108,8 @@ pub async fn ideation_message_http(
                     "unread_count": unread_count,
                     "hint": format!(
                         "You have {} unread message(s) (user or orchestrator) that you have not yet read. \
-Call v1_get_ideation_messages with offset=0 (default) to advance your read cursor to the latest message, \
-then retry sending.",
+                Call v1_get_ideation_messages with offset=0 (default) to advance your read cursor to the latest message, \
+                then retry sending.",
                         unread_count
                     ),
                     "next_action": "fetch_messages"
@@ -170,8 +176,10 @@ then retry sending.",
         }
     }
 
-    let agent_key =
-        crate::domain::services::running_agent_registry::RunningAgentKey::new("ideation", &session_id_str);
+    let agent_key = crate::domain::services::running_agent_registry::RunningAgentKey::new(
+        "ideation",
+        &session_id_str,
+    );
     if state
         .app_state
         .running_agent_registry
@@ -197,10 +205,11 @@ then retry sending.",
             ));
         }
 
-        state
-            .app_state
-            .message_queue
-            .queue(ChatContextType::Ideation, &session_id_str, req.message.clone());
+        state.app_state.message_queue.queue(
+            ChatContextType::Ideation,
+            &session_id_str,
+            req.message.clone(),
+        );
         maybe_transition_to_planning(
             Arc::clone(&state.app_state.ideation_session_repo),
             IdeationSessionId::from_string(session_id_str.clone()),
@@ -280,8 +289,7 @@ then retry sending.",
         queued_as_pending: None,
         next_action: "poll_status".to_string(),
         hint: Some(
-            "Wait for agent to respond. Poll v1_get_ideation_status (5-10s interval)"
-                .to_string(),
+            "Wait for agent to respond. Poll v1_get_ideation_status (5-10s interval)".to_string(),
         ),
     }))
 }

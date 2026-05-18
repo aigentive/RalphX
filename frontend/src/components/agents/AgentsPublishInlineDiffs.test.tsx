@@ -5,11 +5,82 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+type MockListRange = { startIndex: number; endIndex: number };
+
+const virtuosoMockState = vi.hoisted(() => ({
+  range: null as MockListRange | null,
+  rangeChanged: null as ((range: MockListRange) => void) | null,
+  scrollToIndex: vi.fn(),
+}));
+
+vi.mock("react-virtuoso", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+
+  type VirtuosoMockProps = {
+    data?: unknown[];
+    itemContent?: (index: number, item: unknown) => React.ReactNode;
+    computeItemKey?: (index: number, item: unknown) => React.Key;
+    rangeChanged?: (range: MockListRange) => void;
+    className?: string;
+    style?: React.CSSProperties;
+    "data-testid"?: string;
+  };
+
+  const Virtuoso = React.forwardRef<unknown, VirtuosoMockProps>(function MockVirtuoso(
+    props,
+    ref,
+  ) {
+    const data = props.data ?? [];
+    const startIndex = virtuosoMockState.range?.startIndex ?? 0;
+    const endIndex = virtuosoMockState.range?.endIndex ?? data.length - 1;
+    const visibleItems = data
+      .map((item, index) => ({ item, index }))
+      .slice(startIndex, endIndex + 1);
+
+    React.useImperativeHandle(
+      ref,
+      () => ({
+        scrollToIndex: virtuosoMockState.scrollToIndex,
+      }),
+      [],
+    );
+
+    React.useEffect(() => {
+      virtuosoMockState.rangeChanged = props.rangeChanged ?? null;
+      return () => {
+        if (virtuosoMockState.rangeChanged === props.rangeChanged) {
+          virtuosoMockState.rangeChanged = null;
+        }
+      };
+    }, [props.rangeChanged]);
+
+    return (
+      <div
+        data-testid={props["data-testid"] ?? "mock-virtuoso"}
+        data-count={data.length}
+        className={props.className}
+        style={props.style}
+      >
+        {visibleItems.map(({ item, index }) => (
+          <div
+            key={props.computeItemKey?.(index, item) ?? index}
+            data-testid={`mock-virtuoso-item-${index}`}
+          >
+            {props.itemContent?.(index, item)}
+          </div>
+        ))}
+      </div>
+    );
+  });
+
+  return { Virtuoso };
+});
 
 // Stub child components
 vi.mock("./AgentsPublishDiffFilter", () => ({
@@ -17,6 +88,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     mode,
     onModeChange,
     uncommittedCount,
+    supportsWorktreeModes,
   }: {
     mode: string;
     onModeChange: (m: string) => void;
@@ -24,8 +96,14 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     stagedCount?: number;
     unstagedCount?: number;
     commits: unknown[];
+    supportsWorktreeModes?: boolean;
   }) => (
-    <div data-testid="mock-diff-filter" data-mode={mode} data-count={uncommittedCount}>
+    <div
+      data-testid="mock-diff-filter"
+      data-mode={mode}
+      data-count={uncommittedCount}
+      data-supports-worktree-modes={String(supportsWorktreeModes)}
+    >
       <button onClick={() => onModeChange("uncommitted")}>Uncommitted</button>
       <button onClick={() => onModeChange("sha-abc")}>Commit sha-abc</button>
       <button onClick={() => onModeChange("staged")}>Staged</button>
@@ -45,6 +123,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     refKind,
     conversationId,
     shouldHydrate,
+    annotations,
     isShowAnywayOverridden,
     onShowAnyway,
   }: {
@@ -58,6 +137,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     refKind?: { kind: string };
     conversationId?: string;
     shouldHydrate: boolean;
+    annotations?: unknown[];
     isShowAnywayOverridden: boolean;
     onShowAnyway: () => void;
   }) => (
@@ -68,6 +148,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-ref-kind={refKind?.kind}
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
+      data-annotation-count={String(annotations?.length ?? 0)}
       data-show-anyway-overridden={String(isShowAnywayOverridden)}
     >
       <button onClick={() => onCopyPath(file.path)}>copy</button>
@@ -117,57 +198,15 @@ vi.mock("@/api/diff", () => ({
   },
 }));
 
-// ── IntersectionObserver shim for jsdom ──────────────────────────────────────
-// Captures callbacks so tests can simulate intersection events.
-// Installed at module level so the guard `typeof IntersectionObserver === "undefined"`
-// in AgentsPublishInlineDiffs doesn't skip the effect.
-const ioCallbacks: IntersectionObserverCallback[] = [];
-const ioObservedElements: Element[] = [];
-
-class IOStub implements IntersectionObserver {
-  readonly root: Element | null = null;
-  readonly rootMargin = "200px";
-  readonly thresholds: ReadonlyArray<number> = [];
-  observe = vi.fn((el: Element) => {
-    ioObservedElements.push(el);
+function fireVirtualRange(startIndex: number, endIndex: number) {
+  act(() => {
+    virtuosoMockState.range = { startIndex, endIndex };
+    virtuosoMockState.rangeChanged?.({ startIndex, endIndex });
   });
-  unobserve = vi.fn();
-  disconnect = vi.fn(() => {
-    ioObservedElements.splice(0);
-  });
-  takeRecords = vi.fn(() => [] as IntersectionObserverEntry[]);
-  constructor(cb: IntersectionObserverCallback) {
-    ioCallbacks.push(cb);
-  }
-}
-
-(globalThis as unknown as { IntersectionObserver: typeof IntersectionObserver }).IntersectionObserver =
-  IOStub as unknown as typeof IntersectionObserver;
-
-/** Fire an intersection event for the element at `elementIdx` in `ioObservedElements`. */
-function fireIntersection(elementIdx: number, isIntersecting: boolean) {
-  const cb = ioCallbacks[ioCallbacks.length - 1];
-  if (!cb) throw new Error("No IntersectionObserver callback registered");
-  const target = ioObservedElements[elementIdx];
-  if (!target) throw new Error(`No observed element at index ${elementIdx}`);
-  cb(
-    [
-      {
-        isIntersecting,
-        target,
-        boundingClientRect: {} as DOMRectReadOnly,
-        intersectionRatio: isIntersecting ? 1 : 0,
-        intersectionRect: {} as DOMRectReadOnly,
-        rootBounds: null,
-        time: 0,
-      } as IntersectionObserverEntry,
-    ],
-    {} as IntersectionObserver,
-  );
 }
 
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
-import type { FileChange } from "@/api/diff";
+import type { FileChange, PrDiffAnnotation } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import type { AgentWorkspaceReview } from "@/api/diff";
 
@@ -210,12 +249,36 @@ const makeCommit = (sha: string): DiffViewerCommit => ({
   date: new Date("2026-01-01"),
 });
 
+const makeAnnotation = (
+  path: string | null,
+  overrides: Partial<PrDiffAnnotation> = {},
+): PrDiffAnnotation => ({
+  id: `annotation-${path ?? "none"}`,
+  source: "check_run",
+  path,
+  side: "right",
+  startLine: 1,
+  endLine: 1,
+  startColumn: null,
+  endColumn: null,
+  level: "failure",
+  status: "failure",
+  title: "CodeQL warning",
+  message: "Validate externally influenced paths.",
+  author: null,
+  checkName: "CodeQL",
+  url: null,
+  isOutdated: false,
+  createdAt: null,
+  ...overrides,
+});
+
 describe("AgentsPublishInlineDiffs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset IO state between tests to avoid cross-test pollution
-    ioCallbacks.splice(0);
-    ioObservedElements.splice(0);
+    virtuosoMockState.range = null;
+    virtuosoMockState.rangeChanged = null;
+    virtuosoMockState.scrollToIndex.mockClear();
     const makeHunkDiff = (filePath: string) => ({
       filePath,
       language: "typescript",
@@ -317,6 +380,69 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
       expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toBeInTheDocument();
+    });
+
+    it("renders file cards through the virtualized list", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("inline-diffs-virtual-list")).toHaveAttribute(
+        "data-count",
+        "2",
+      );
+    });
+
+    it("constrains the virtualized file list to vertical scrolling", () => {
+      const changes = [
+        makeFileChange(
+          "src/really/deep/path/that/should/not/create/a/horizontal/list/scroller/Foo.tsx",
+        ),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      const list = screen.getByTestId("inline-diffs-virtual-list");
+      expect(screen.getByTestId("agents-publish-inline-diffs")).toHaveClass(
+        "overflow-x-hidden",
+      );
+      expect(list).toHaveClass("overflow-x-hidden");
+      expect(list).toHaveStyle({ overflowX: "hidden" });
+      expect(screen.getByTestId("mock-virtuoso-item-0").firstElementChild).toHaveClass(
+        "overflow-x-hidden",
+      );
+    });
+
+    it("only renders the active virtual range of file cards", () => {
+      virtuosoMockState.range = { startIndex: 0, endIndex: 0 };
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toBeInTheDocument();
+      expect(screen.queryByTestId("mock-file-diff-src-Bar.tsx")).toBeNull();
     });
 
     it("shows file count in sticky bar", () => {
@@ -444,7 +570,7 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("mode=uncommitted — diff fetching", () => {
-    it("fetches uncommitted diff for each expanded file", async () => {
+    it("does not fetch uncommitted diff before the virtual range hydrates a file", async () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
         withProviders(
@@ -456,9 +582,45 @@ describe("AgentsPublishInlineDiffs", () => {
           />,
         ),
       );
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
+    });
+
+    it("fetches uncommitted diff for each hydrated expanded file", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-42"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      fireVirtualRange(0, 0);
       await waitFor(() =>
         expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-42", "src/Foo.tsx"),
       );
+    });
+
+    it("does not fetch off-range expanded files", async () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-42"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-42", "src/Foo.tsx"),
+      );
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-42", "src/Bar.tsx");
     });
 
     it("passes diff data to file card after fetch", async () => {
@@ -473,11 +635,40 @@ describe("AgentsPublishInlineDiffs", () => {
           />,
         ),
       );
+      fireVirtualRange(0, 0);
       await waitFor(() =>
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
           "data-diff-status",
           "loaded",
         ),
+      );
+    });
+
+    it("passes matching GitHub annotations to head-mode file cards", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[
+              makeAnnotation("src/Foo.tsx"),
+              makeAnnotation(null),
+              makeAnnotation("src/Other.tsx"),
+            ]}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-annotation-count",
+        "1",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-annotation-count",
+        "0",
       );
     });
   });
@@ -501,6 +692,17 @@ describe("AgentsPublishInlineDiffs", () => {
       await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
       await waitFor(() =>
         expect(mockGetCommitFiles).toHaveBeenCalledWith("conv-1", "sha-abc"),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
+        expect(mockGetCommitDiff).toHaveBeenCalledWith(
+          "conv-1",
+          "sha-abc",
+          "src/CommitOnly.tsx",
+        ),
       );
     });
 
@@ -655,6 +857,10 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       await user.click(screen.getByRole("button", { name: "Staged" }));
       await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
         expect(mockGetStagedFileDiff).toHaveBeenCalledWith("conv-1", "src/StagedFile.tsx"),
       );
     });
@@ -678,6 +884,32 @@ describe("AgentsPublishInlineDiffs", () => {
         expect(card).toHaveAttribute("data-ref-kind", "staged");
         expect(card).toHaveAttribute("data-conversation-id", "conv-1");
       });
+    });
+
+    it("does not pass PR annotations to staged file cards", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetStagedFiles.mockResolvedValue([makeFileChange("src/Foo.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[makeAnnotation("src/Foo.tsx")]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-annotation-count",
+          "0",
+        ),
+      );
     });
   });
 
@@ -757,12 +989,42 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       await user.click(screen.getByRole("button", { name: "Unstaged" }));
       await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
         expect(mockGetUnstagedFileDiff).toHaveBeenCalledWith("conv-1", "src/UnstagedFile.tsx"),
       );
     });
   });
 
   describe("mode=cumulative — diff fetching", () => {
+    it("uses read-only cumulative mode when historical review cannot inspect a worktree", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={{ ...makeReview(changes), supportsWorktreeModes: false }}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "cumulative",
+      );
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-supports-worktree-modes",
+        "false",
+      );
+      await waitFor(() => expect(mockGetCumulativeFiles).toHaveBeenCalledWith("conv-1"));
+      expect(mockGetStagedFiles).not.toHaveBeenCalled();
+      expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
+    });
+
     it("fetches cumulative file changes when mode switches to cumulative", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
@@ -861,7 +1123,37 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       await user.click(screen.getByRole("button", { name: "All commits" }));
       await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CumulativeFile.tsx")).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
         expect(mockGetCumulativeFileDiff).toHaveBeenCalledWith("conv-1", "src/CumulativeFile.tsx"),
+      );
+    });
+
+    it("passes matching GitHub annotations to cumulative file cards", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/Foo.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+            annotations={[makeAnnotation("src/Foo.tsx")]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-annotation-count",
+          "1",
+        ),
       );
     });
   });
@@ -904,11 +1196,6 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("jump-to-file", () => {
-    beforeEach(() => {
-      // scrollIntoView is not implemented in jsdom — provide a spy
-      HTMLElement.prototype.scrollIntoView = vi.fn();
-    });
-
     it("renders jump-to-file button in sticky bar", () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -963,11 +1250,9 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.queryByTestId("jump-to-file-item-src/Bar.tsx")).toBeNull();
     });
 
-    it("calls scrollIntoView when a file is selected from the jump popover", async () => {
-      const scrollIntoView = vi.fn();
-      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    it("scrolls the virtual list when a file is selected from the jump popover", async () => {
       const user = userEvent.setup();
-      const changes = [makeFileChange("src/Foo.tsx")];
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(
         withProviders(
           <AgentsPublishInlineDiffs
@@ -979,8 +1264,65 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       await user.click(screen.getByTestId("inline-diffs-jump-to-file"));
-      await user.click(screen.getByTestId("jump-to-file-item-src/Foo.tsx"));
-      expect(scrollIntoView).toHaveBeenCalled();
+      await user.click(screen.getByTestId("jump-to-file-item-src/Bar.tsx"));
+      expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+        align: "start",
+        behavior: "auto",
+        index: 1,
+      });
+    });
+
+    it("scrolls and expands a file from an external focus request", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+          client,
+        ),
+      );
+
+      await user.click(screen.getByTestId("inline-diffs-collapse-all"));
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-expanded",
+        "false",
+      );
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            focusRequest={{
+              conversationId: "conv-1",
+              filePath: "src/Bar.tsx",
+              mode: "uncommitted",
+              requestId: 1,
+            }}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-expanded",
+        "true",
+      );
     });
 
     it("closes jump popover after selecting a file", async () => {
@@ -1003,7 +1345,7 @@ describe("AgentsPublishInlineDiffs", () => {
     });
   });
 
-  describe("lazy hydration — IntersectionObserver", () => {
+  describe("lazy hydration — virtual range", () => {
     it("initially passes shouldHydrate=false for all files", () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1020,7 +1362,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(card).toHaveAttribute("data-should-hydrate", "false");
     });
 
-    it("sets shouldHydrate=true when IntersectionObserver fires for a file", async () => {
+    it("sets shouldHydrate=true when the virtual range includes a file", async () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
         withProviders(
@@ -1033,8 +1375,7 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
 
-      // IO effect has run and observed the wrapper element
-      fireIntersection(0, true);
+      fireVirtualRange(0, 0);
 
       await waitFor(() => {
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
@@ -1044,8 +1385,8 @@ describe("AgentsPublishInlineDiffs", () => {
       });
     });
 
-    it("does NOT set shouldHydrate=true when isIntersecting=false", async () => {
-      const changes = [makeFileChange("src/Foo.tsx")];
+    it("keeps off-range files out of the rendered and fetched range", async () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(
         withProviders(
           <AgentsPublishInlineDiffs
@@ -1057,14 +1398,16 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
 
-      fireIntersection(0, false);
+      fireVirtualRange(0, 0);
 
-      // Wait a tick — state should NOT change
-      await new Promise((r) => setTimeout(r, 10));
-      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
-        "data-should-hydrate",
-        "false",
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
       );
+      expect(screen.queryByTestId("mock-file-diff-src-Bar.tsx")).toBeNull();
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-1", "src/Bar.tsx");
     });
 
     it("resets shouldHydrate to false when mode changes", async () => {
@@ -1081,8 +1424,7 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
 
-      // First fire intersection so file is hydrated
-      fireIntersection(0, true);
+      fireVirtualRange(0, 0);
       await waitFor(() => {
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
           "data-should-hydrate",
@@ -1147,6 +1489,31 @@ describe("AgentsPublishInlineDiffs", () => {
           "true",
         );
       });
+    });
+
+    it("does not fetch a generated file diff until Show anyway is selected", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx", { isGenerated: true })];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      fireVirtualRange(0, 0);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
+
+      await user.click(screen.getByTestId("show-anyway-src-Foo.tsx"));
+
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
+      );
     });
 
     it("show-anyway override is per-file and does not affect other files", async () => {

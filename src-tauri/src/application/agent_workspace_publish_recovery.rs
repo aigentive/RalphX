@@ -8,6 +8,8 @@ use crate::error::AppResult;
 
 const STALE_REPAIR_RECOVERED_STEP: &str = "stale_repair_recovered";
 const STALE_NEEDS_AGENT_CLASSIFICATION: &str = "stale_needs_agent";
+const STALE_PR_AUTOFIX_SUMMARY: &str =
+    "Recovered stale PR autofix state; no active fixer run is running.";
 
 pub async fn recover_stale_agent_workspace_publish_repairs_on_startup(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
@@ -130,6 +132,16 @@ pub async fn recover_stale_publish_repair_for_workspace(
             Some("failed"),
         )
         .await?;
+    if workspace.pr_autofix_enabled {
+        workspace_repo
+            .update_pr_auto_merge_state(
+                &workspace.conversation_id,
+                workspace.pr_auto_merge_current,
+                Some("blocked"),
+                Some(STALE_PR_AUTOFIX_SUMMARY),
+            )
+            .await?;
+    }
     workspace_repo
         .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
             workspace.conversation_id,
@@ -259,6 +271,43 @@ mod tests {
             .expect("recover stale repair");
 
         assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    }
+
+    #[tokio::test]
+    async fn recovers_stale_supervised_autofix_workspace_as_blocked() {
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+        let conversation_id =
+            ChatConversationId::from_string("44444444-4444-4444-4444-444444444444");
+        let mut workspace = needs_agent_workspace(conversation_id);
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_current = Some(true);
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+        create_failed_run(&agent_run_repo, conversation_id).await;
+
+        let recovered = recover_stale_agent_workspace_publish_repairs(
+            Arc::clone(&workspace_repo) as Arc<dyn AgentConversationWorkspaceRepository>,
+            Arc::clone(&agent_run_repo) as Arc<dyn AgentRunRepository>,
+        )
+        .await
+        .expect("recover stale repair");
+
+        assert_eq!(recovered, 1);
+        let refreshed = workspace_repo
+            .get_by_conversation_id(&workspace.conversation_id)
+            .await
+            .expect("load workspace")
+            .expect("workspace exists");
+        assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+        assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("blocked"));
+        assert_eq!(
+            refreshed.pr_supervision_summary.as_deref(),
+            Some(STALE_PR_AUTOFIX_SUMMARY)
+        );
+        assert_eq!(refreshed.pr_auto_merge_current, Some(true));
     }
 
     #[tokio::test]

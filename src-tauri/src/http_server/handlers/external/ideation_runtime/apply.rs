@@ -115,7 +115,9 @@ pub async fn external_apply_proposals(
         }
 
         // Stop and archive any running verification child agents (best-effort).
-        stop_verification_children(&result.session_id, &state.app_state).await.ok();
+        stop_verification_children(&result.session_id, &state.app_state)
+            .await
+            .ok();
     }
 
     tracing::info!(

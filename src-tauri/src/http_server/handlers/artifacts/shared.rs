@@ -38,10 +38,12 @@ pub enum EditError {
 pub fn apply_edits(content: &str, edits: &[PlanEdit]) -> Result<String, EditError> {
     let mut result = content.to_string();
     for (i, edit) in edits.iter().enumerate() {
-        let pos = result.find(&edit.old_text).ok_or_else(|| EditError::AnchorNotFound {
-            edit_index: i,
-            old_text_preview: edit.old_text.chars().take(80).collect(),
-        })?;
+        let pos = result
+            .find(&edit.old_text)
+            .ok_or_else(|| EditError::AnchorNotFound {
+                edit_index: i,
+                old_text_preview: edit.old_text.chars().take(80).collect(),
+            })?;
 
         if result[pos + edit.old_text.len()..].contains(&edit.old_text) {
             return Err(EditError::AmbiguousAnchor {
@@ -200,5 +202,11 @@ pub(super) fn finalize_plan_update(
         false
     };
 
-    Ok((created, old_id, owning_sessions, linked_proposal_ids, verification_reset))
+    Ok((
+        created,
+        old_id,
+        owning_sessions,
+        linked_proposal_ids,
+        verification_reset,
+    ))
 }

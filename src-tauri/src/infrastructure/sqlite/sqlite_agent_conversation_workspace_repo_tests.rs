@@ -2,7 +2,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
-    ProjectId,
+    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -272,6 +272,15 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     published.publication_pr_status = Some("open".to_string());
     repo.create_or_update(published.clone()).await.unwrap();
 
+    let refreshed_id =
+        ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    seed_conversation(&db, &refreshed_id);
+    let mut refreshed = make_workspace(refreshed_id);
+    refreshed.publication_pr_number = Some(78);
+    refreshed.publication_pr_status = Some("open".to_string());
+    refreshed.publication_push_status = Some("refreshed".to_string());
+    repo.create_or_update(refreshed.clone()).await.unwrap();
+
     let archived_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     seed_conversation(&db, &archived_id);
     let mut archived = make_workspace(archived_id);
@@ -316,9 +325,17 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, published.conversation_id);
-    assert_eq!(workspaces[0].publication_pr_number, Some(72));
+    assert_eq!(workspaces.len(), 2);
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == published.conversation_id)
+    );
+    assert!(
+        workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshed.conversation_id)
+    );
 }
 
 #[tokio::test]
@@ -403,4 +420,32 @@ async fn list_active_needs_agent_workspaces_filters_to_open_active_workspaces() 
         workspaces[0].publication_push_status.as_deref(),
         Some("needs_agent")
     );
+}
+
+#[tokio::test]
+async fn pr_supervision_preferences_round_trip() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let workspace = make_workspace(conversation_id.clone());
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_pr_supervision_preferences(&conversation_id, true, true, "squash")
+        .await
+        .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert!(updated.pr_autofix_enabled);
+    assert!(updated.pr_auto_merge_desired);
+    assert_eq!(
+        updated.pr_auto_merge_method,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+    );
+    assert_eq!(
+        updated.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
+    assert!(updated.pr_supervision_updated_at.is_some());
 }

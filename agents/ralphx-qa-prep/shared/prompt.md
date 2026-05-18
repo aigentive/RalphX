@@ -75,7 +75,7 @@ Return a JSON object with this structure:
         "agent-browser wait --load",
         "agent-browser snapshot -i -c",
         "agent-browser is visible [data-testid='task-board']",
-        "agent-browser screenshot .artifacts/screenshots/task-board.png"
+        "agent-browser screenshot \"$RALPHX_AGENT_SCREENSHOT_DIR/task-board.png\""
       ],
       "expected": "Task board visible with all columns"
     }
@@ -90,7 +90,7 @@ Return a JSON object with this structure:
 agent-browser open http://localhost:1420
 agent-browser wait --load
 agent-browser is visible [data-testid='element']
-agent-browser screenshot .artifacts/screenshots/element-visible.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/element-visible.png"
 ```
 
 ### Click Interaction
@@ -98,7 +98,7 @@ agent-browser screenshot .artifacts/screenshots/element-visible.png
 agent-browser click [data-testid='button']
 agent-browser wait 500
 agent-browser is visible [data-testid='result']
-agent-browser screenshot .artifacts/screenshots/click-result.png
+agent-browser screenshot "$RALPHX_AGENT_SCREENSHOT_DIR/click-result.png"
 ```
 
 ### Form Input

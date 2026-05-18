@@ -19,9 +19,11 @@ const {
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
+  getWorkspacePrAnnotationsMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
+  setWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
   loadBranchBaseOptionsMock,
@@ -47,9 +49,11 @@ const {
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
+  getWorkspacePrAnnotationsMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
+  setWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
@@ -82,6 +86,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getWorkspaceFreshnessMock(...args),
       updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
         updateWorkspaceFromBaseMock(...args),
+      setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
+        setWorkspacePrSupervisionMock(...args),
       precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
         precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
@@ -104,6 +110,8 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitChangesMock(...args),
     getAgentConversationWorkspaceCommitFileDiff: (...args: unknown[]) =>
       getWorkspaceCommitDiffMock(...args),
+    getAgentConversationWorkspacePrAnnotations: (...args: unknown[]) =>
+      getWorkspacePrAnnotationsMock(...args),
   },
 }));
 
@@ -373,6 +381,12 @@ describe("AgentsArtifactPane", () => {
       newTotalLines: 1,
       isBinary: false,
     });
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [],
+      sourcesUnavailable: [],
+    });
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -394,6 +408,27 @@ describe("AgentsArtifactPane", () => {
       targetRef: "origin/main",
       baseCommit: "base-sha",
     });
+    setWorkspacePrSupervisionMock.mockImplementation(
+      async (
+        conversationId: string,
+        input: { autoFixEnabled: boolean; autoMergeDesired: boolean }
+      ) =>
+        workspace({
+          mode: "edit",
+          conversationId,
+          publicationPrNumber: 90,
+          publicationPrUrl: "https://github.com/mock/project/pull/90",
+          publicationPrStatus: "open",
+          publicationPushStatus: "pushed",
+          prAutofixEnabled: input.autoFixEnabled,
+          prAutoMergeDesired: input.autoMergeDesired,
+          prAutoMergeMethod: "squash",
+          prSupervisionStatus:
+            input.autoFixEnabled || input.autoMergeDesired
+              ? "monitoring"
+              : "disabled",
+        })
+    );
     precomputePrDescriptionMock.mockClear();
     precomputePrDescriptionMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -586,6 +621,29 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("persists PR supervision switches from the publish pane", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+      }),
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-pr-autofix-switch"));
+
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenCalledWith("conversation-1", {
+        autoFixEnabled: true,
+        autoMergeDesired: false,
+        autoMergeMethod: "squash",
+      })
+    );
   });
 
   it("surfaces git auth repair actions in the publish pane", () => {
@@ -1390,11 +1448,46 @@ describe("AgentsArtifactPane", () => {
     const publishButton = await screen.findByTestId("agents-publish-confirm");
     await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
-    expect(screen.getByText("Workspace is published and current.")).toBeInTheDocument();
+    await screen.findByText("1 changed file published for review.");
 
     fireEvent.click(publishButton);
 
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("keeps the inline review diff visible after a PR has been opened", async () => {
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Published.tsx",
+          status: "modified",
+          additions: 4,
+          deletions: 1,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "base-sha",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        publicationPrStatus: "open",
+      }),
+    );
+
+    await screen.findByTestId("agents-publish-inline-diffs-section");
+    await waitFor(() =>
+      expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("1"),
+    );
+    expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1");
   });
 
   it("keeps publish enabled for a pushed current branch until a PR exists", async () => {
@@ -2033,6 +2126,84 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
     expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
+  });
+
+  it("shows synced GitHub PR annotation count for published workspaces", async () => {
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [
+        {
+          id: "review-comment:1",
+          source: "review_comment",
+          path: "frontend/src/App.tsx",
+          side: "right",
+          startLine: 1,
+          endLine: 1,
+          startColumn: null,
+          endColumn: null,
+          level: "comment",
+          status: null,
+          title: null,
+          message: "Please adjust this line.",
+          author: "octocat",
+          checkName: null,
+          url: null,
+          isOutdated: false,
+          createdAt: null,
+        },
+      ],
+      sourcesUnavailable: [],
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      }),
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("agents-pr-annotations-summary")).toHaveTextContent(
+          "1 GitHub annotation synced",
+        ),
+      deferredHydrationTimeout,
+    );
+    expect(getWorkspacePrAnnotationsMock).toHaveBeenCalledWith("conversation-1");
+  });
+
+  it("shows partial GitHub PR annotation unavailability for published workspaces", async () => {
+    getWorkspacePrAnnotationsMock.mockResolvedValue({
+      prNumber: 78,
+      headSha: null,
+      annotations: [],
+      sourcesUnavailable: [
+        {
+          source: "check_runs",
+          reason: "Missing checks permission",
+        },
+      ],
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+      }),
+    );
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("agents-pr-annotations-summary")).toHaveTextContent(
+          "GitHub annotations partially unavailable",
+        ),
+      deferredHydrationTimeout,
+    );
   });
 
   it("hides the publish pipeline after agent repair terminal state", () => {

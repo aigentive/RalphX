@@ -44,7 +44,11 @@ pub async fn get_ideation_status_http(
         .get_by_id(&session_id)
         .await
         .map_err(|e| {
-            error!("Failed to get ideation session {}: {}", session_id.as_str(), e);
+            error!(
+                "Failed to get ideation session {}: {}",
+                session_id.as_str(),
+                e
+            );
             HttpError {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
                 message: Some("Failed to get ideation session".to_string()),
@@ -55,10 +59,12 @@ pub async fn get_ideation_status_http(
             message: Some("Session not found".to_string()),
         })?;
 
-    session.assert_project_scope(&scope).map_err(|e| HttpError {
-        status: e.status,
-        message: e.message,
-    })?;
+    session
+        .assert_project_scope(&scope)
+        .map_err(|e| HttpError {
+            status: e.status,
+            message: e.message,
+        })?;
 
     let proposal_count = state
         .app_state

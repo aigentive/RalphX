@@ -21,6 +21,7 @@ type AgentsSidebarShellProps = Omit<
 
 interface AgentsShellLayoutProps {
   children: ReactNode;
+  footer?: ReactNode;
   isSidebarCollapsed: boolean;
   isSidebarOverlayOpen: boolean;
   onCloseSidebarOverlay: () => void;
@@ -33,6 +34,7 @@ interface AgentsShellLayoutProps {
 
 export function AgentsShellLayout({
   children,
+  footer,
   isSidebarCollapsed,
   isSidebarOverlayOpen,
   onCloseSidebarOverlay,
@@ -174,12 +176,23 @@ export function AgentsShellLayout({
         )}
 
         <div
-          ref={splitContainerRef}
-          className="relative flex-1 min-w-0 h-full flex overflow-hidden"
+          className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden"
           style={{ backgroundColor: "var(--app-content-bg)" }}
-          data-testid="agents-split-container"
+          data-testid="agents-content-column"
         >
-          {children}
+          <div
+            ref={splitContainerRef}
+            className="relative flex min-h-0 w-full flex-1 overflow-hidden"
+            style={{ backgroundColor: "var(--app-content-bg)" }}
+            data-testid="agents-split-container"
+          >
+            {children}
+          </div>
+          {footer !== undefined && footer !== null ? (
+            <div data-testid="agents-footer-shell" className="shrink-0">
+              {footer}
+            </div>
+          ) : null}
         </div>
       </section>
       </AgentsSidebarVisibilityProvider>

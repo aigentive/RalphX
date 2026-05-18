@@ -119,4 +119,74 @@ describe("useAgentsActiveComposerControls", () => {
 
     expect(refetchQueries).not.toHaveBeenCalled();
   });
+
+  it("normalizes active model changes against provider-supported efforts", () => {
+    const setRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          normalizedActiveRuntime: {
+            provider: "claude",
+            modelId: "sonnet",
+            effort: "medium",
+          },
+          setRuntimeForConversation,
+        }),
+      ),
+    );
+
+    act(() => {
+      result.current.handleActiveModelChange("opus", [
+        "low",
+        "medium",
+        "high",
+        "max",
+      ]);
+    });
+
+    expect(setRuntimeForConversation).toHaveBeenCalledWith(
+      "conversation-1",
+      "project-1",
+      {
+        provider: "claude",
+        modelId: "opus",
+        effort: "high",
+      },
+    );
+  });
+
+  it("normalizes active effort changes against provider-supported efforts", () => {
+    const setRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          normalizedActiveRuntime: {
+            provider: "claude",
+            modelId: "opus",
+            effort: "high",
+          },
+          setRuntimeForConversation,
+        }),
+      ),
+    );
+
+    act(() => {
+      result.current.handleActiveEffortChange("xhigh", [
+        "low",
+        "medium",
+        "high",
+        "max",
+      ]);
+    });
+
+    expect(setRuntimeForConversation).toHaveBeenCalledWith(
+      "conversation-1",
+      "project-1",
+      {
+        provider: "claude",
+        modelId: "opus",
+        effort: "high",
+      },
+    );
+  });
 });

@@ -1448,6 +1448,8 @@ export const chatApi = {
   archiveConversation,
   restoreConversation,
   getAgentConversationWorkspace,
+  listWorkspaceOpenTargets,
+  openAgentConversationWorkspace,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents,
@@ -1456,6 +1458,7 @@ export const chatApi = {
   updateAgentConversationWorkspaceFromBase,
   precomputeAgentConversationWorkspacePrDescription,
   publishAgentConversationWorkspace,
+  setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
   getAgentRunStatus,
   getAgentRunningStates,
@@ -1537,9 +1540,24 @@ export interface AgentConversationWorkspace {
   publicationPrUrl: string | null;
   publicationPrStatus: string | null;
   publicationPushStatus: string | null;
+  prAutofixEnabled?: boolean;
+  prAutoMergeDesired?: boolean;
+  prAutoMergeMethod?: string;
+  prAutoMergeCurrent?: boolean | null;
+  prSupervisionStatus?: string | null;
+  prSupervisionSummary?: string | null;
+  prSupervisionUpdatedAt?: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type WorkspaceOpenTargetKind = "editor" | "fileManager";
+
+export interface WorkspaceOpenTarget {
+  id: string;
+  label: string;
+  kind: WorkspaceOpenTargetKind;
 }
 
 export interface StartAgentConversationInput {
@@ -1628,6 +1646,12 @@ export interface UpdateAgentConversationWorkspaceFromBaseResult {
   effectiveBaseDisplayName: string | null;
 }
 
+export interface SetAgentConversationWorkspacePrSupervisionInput {
+  autoFixEnabled: boolean;
+  autoMergeDesired: boolean;
+  autoMergeMethod?: string | null;
+}
+
 const SendAgentMessageResponseSchema = z.object({
   conversation_id: z.string(),
   agent_run_id: z.string(),
@@ -1657,6 +1681,13 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   publication_pr_url: z.string().nullable(),
   publication_pr_status: z.string().nullable(),
   publication_push_status: z.string().nullable(),
+  pr_autofix_enabled: z.boolean().optional().default(false),
+  pr_auto_merge_desired: z.boolean().optional().default(false),
+  pr_auto_merge_method: z.string().optional().default("squash"),
+  pr_auto_merge_current: z.boolean().nullable().optional().default(null),
+  pr_supervision_status: z.string().nullable().optional().default(null),
+  pr_supervision_summary: z.string().nullable().optional().default(null),
+  pr_supervision_updated_at: z.string().nullable().optional().default(null),
   status: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -1720,6 +1751,11 @@ const AgentConversationWorkspaceFreshnessResponseSchema = z.object({
   effective_base_ref: z.string().nullable().optional().default(null),
   effective_base_display_name: z.string().nullable().optional().default(null),
   base_block_reason: z.string().nullable().optional().default(null),
+});
+const WorkspaceOpenTargetResponseSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.enum(["editor", "fileManager"]),
 });
 
 const StartAgentConversationResponseSchema = z.object({
@@ -1816,6 +1852,13 @@ function transformAgentConversationWorkspace(
     publicationPrUrl: raw.publication_pr_url,
     publicationPrStatus: raw.publication_pr_status,
     publicationPushStatus: raw.publication_push_status,
+    prAutofixEnabled: raw.pr_autofix_enabled,
+    prAutoMergeDesired: raw.pr_auto_merge_desired,
+    prAutoMergeMethod: raw.pr_auto_merge_method,
+    prAutoMergeCurrent: raw.pr_auto_merge_current,
+    prSupervisionStatus: raw.pr_supervision_status,
+    prSupervisionSummary: raw.pr_supervision_summary,
+    prSupervisionUpdatedAt: raw.pr_supervision_updated_at,
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -1949,6 +1992,25 @@ export async function getAgentConversationWorkspace(
   return raw ? transformAgentConversationWorkspace(raw) : null;
 }
 
+export async function listWorkspaceOpenTargets(): Promise<WorkspaceOpenTarget[]> {
+  return typedInvoke(
+    "list_workspace_open_targets",
+    {},
+    z.array(WorkspaceOpenTargetResponseSchema)
+  );
+}
+
+export async function openAgentConversationWorkspace(
+  conversationId: string,
+  targetId: string
+): Promise<void> {
+  await typedInvoke(
+    "open_agent_conversation_workspace",
+    { conversationId, targetId },
+    z.null()
+  );
+}
+
 export async function listAgentConversationWorkspacesByProject(
   projectId: string
 ): Promise<AgentConversationWorkspace[]> {
@@ -2053,6 +2115,25 @@ export async function publishAgentConversationWorkspace(
     PublishAgentConversationWorkspaceResponseSchema
   );
   return transformPublishAgentConversationWorkspaceResponse(raw);
+}
+
+export async function setAgentConversationWorkspacePrSupervision(
+  conversationId: string,
+  input: SetAgentConversationWorkspacePrSupervisionInput
+): Promise<AgentConversationWorkspace> {
+  const raw = await typedInvoke(
+    "set_agent_conversation_workspace_pr_supervision",
+    {
+      conversationId,
+      input: {
+        autoFixEnabled: input.autoFixEnabled,
+        autoMergeDesired: input.autoMergeDesired,
+        ...(input.autoMergeMethod ? { autoMergeMethod: input.autoMergeMethod } : {}),
+      },
+    },
+    AgentConversationWorkspaceResponseSchema
+  );
+  return transformAgentConversationWorkspace(raw);
 }
 
 export async function precomputeAgentConversationWorkspacePrDescription(

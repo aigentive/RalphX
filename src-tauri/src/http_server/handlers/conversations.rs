@@ -12,7 +12,9 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 use super::*;
-use crate::domain::entities::{AgentRunId, ChatContextType, ChatConversationId, DelegatedSessionId};
+use crate::domain::entities::{
+    AgentRunId, ChatContextType, ChatConversationId, DelegatedSessionId,
+};
 use crate::domain::services::RunningAgentKey;
 
 #[derive(Clone)]
@@ -83,23 +85,24 @@ async fn load_delegated_task_snapshot(
         .ok()
         .flatten()?;
 
-    let delegated_conversation = if let Some(conversation_id) = task.delegated_conversation_id.as_deref() {
-        state
-            .app_state
-            .chat_conversation_repo
-            .get_by_id(&ChatConversationId::from_string(conversation_id))
-            .await
-            .ok()
-            .flatten()
-    } else {
-        state
-            .app_state
-            .chat_conversation_repo
-            .get_active_for_context(ChatContextType::Delegation, delegated_session_id)
-            .await
-            .ok()
-            .flatten()
-    };
+    let delegated_conversation =
+        if let Some(conversation_id) = task.delegated_conversation_id.as_deref() {
+            state
+                .app_state
+                .chat_conversation_repo
+                .get_by_id(&ChatConversationId::from_string(conversation_id))
+                .await
+                .ok()
+                .flatten()
+        } else {
+            state
+                .app_state
+                .chat_conversation_repo
+                .get_active_for_context(ChatContextType::Delegation, delegated_session_id)
+                .await
+                .ok()
+                .flatten()
+        };
 
     let latest_run = if let Some(agent_run_id) = task.delegated_agent_run_id.as_deref() {
         state
@@ -146,7 +149,9 @@ async fn load_delegated_task_snapshot(
         provider_profile: latest_run
             .as_ref()
             .and_then(|run| run.provider_profile.clone()),
-        logical_model: latest_run.as_ref().and_then(|run| run.logical_model.clone()),
+        logical_model: latest_run
+            .as_ref()
+            .and_then(|run| run.logical_model.clone()),
         effective_model_id: latest_run
             .as_ref()
             .and_then(|run| run.effective_model_id.clone()),
@@ -159,9 +164,7 @@ async fn load_delegated_task_snapshot(
         approval_policy: latest_run
             .as_ref()
             .and_then(|run| run.approval_policy.clone()),
-        sandbox_mode: latest_run
-            .as_ref()
-            .and_then(|run| run.sandbox_mode.clone()),
+        sandbox_mode: latest_run.as_ref().and_then(|run| run.sandbox_mode.clone()),
         total_tokens: latest_run.as_ref().and_then(|run| {
             delegated_total_tokens(
                 run.input_tokens,
@@ -175,7 +178,9 @@ async fn load_delegated_task_snapshot(
             .and_then(|run| delegated_duration_ms(&run.started_at, run.completed_at)),
         input_tokens: latest_run.as_ref().and_then(|run| run.input_tokens),
         output_tokens: latest_run.as_ref().and_then(|run| run.output_tokens),
-        cache_creation_tokens: latest_run.as_ref().and_then(|run| run.cache_creation_tokens),
+        cache_creation_tokens: latest_run
+            .as_ref()
+            .and_then(|run| run.cache_creation_tokens),
         cache_read_tokens: latest_run.as_ref().and_then(|run| run.cache_read_tokens),
         estimated_usd: latest_run.as_ref().and_then(|run| run.estimated_usd),
     })
@@ -256,8 +261,7 @@ pub async fn get_conversation_active_state(
 
     // Build response
     let response = if let Some(cached_state) = cached_state {
-        let mut delegated_snapshot_cache =
-            HashMap::<String, Option<DelegatedTaskSnapshot>>::new();
+        let mut delegated_snapshot_cache = HashMap::<String, Option<DelegatedTaskSnapshot>>::new();
         let mut streaming_tasks = Vec::with_capacity(cached_state.streaming_tasks.len());
         for task in cached_state
             .streaming_tasks
@@ -266,7 +270,9 @@ pub async fn get_conversation_active_state(
         {
             let mut active_task = task;
             if let Some(delegated_session_id) = active_task.delegated_session_id.clone() {
-                let snapshot = if let Some(snapshot) = delegated_snapshot_cache.get(&delegated_session_id) {
+                let snapshot = if let Some(snapshot) =
+                    delegated_snapshot_cache.get(&delegated_session_id)
+                {
                     snapshot.clone()
                 } else {
                     let snapshot = load_delegated_task_snapshot(&state, &active_task).await;

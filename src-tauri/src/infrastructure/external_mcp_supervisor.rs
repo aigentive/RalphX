@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use crate::infrastructure::agents::claude::ExternalMcpConfig;
-use crate::infrastructure::tool_paths::resolve_ps_cli_path;
+use crate::infrastructure::tool_paths::{resolve_lsof_cli_path, resolve_ps_cli_path};
 use crate::utils::backend_endpoint::backend_http_base_url;
 
 pub const TAURI_MCP_BYPASS_TOKEN_ENV: &str = "RALPHX_TAURI_MCP_BYPASS_TOKEN";
@@ -590,7 +590,7 @@ impl ExternalMcpSupervisor {
     // ── PID file ──────────────────────────────────────────────────────────
 
     fn pid_file_path(&self) -> PathBuf {
-        self.app_data_dir.join("external_mcp.pid")
+        external_mcp_pid_file_path(&self.app_data_dir, self.config.port)
     }
 
     fn write_pid_file(&self, pid: u32) {
@@ -607,7 +607,7 @@ impl ExternalMcpSupervisor {
         let pid_path = self.pid_file_path();
         if let Ok(contents) = std::fs::read_to_string(&pid_path) {
             if let Ok(pid) = contents.trim().parse::<i32>() {
-                if is_external_mcp_process(pid) {
+                if is_external_mcp_process(pid, self.config.port) {
                     tracing::warn!("Found orphaned external MCP process (PID {}), killing", pid);
                     let pgid = Pid::from_raw(pid);
                     let _ = killpg(pgid, Signal::SIGTERM);
@@ -662,23 +662,81 @@ async fn http_get_status(host: &str, port: u16, path: &str) -> Result<u16, std::
     Ok(status)
 }
 
-/// Check whether a PID belongs to an external-mcp Node process.
-fn is_external_mcp_process(pid: i32) -> bool {
+pub(crate) fn external_mcp_pid_file_name(port: u16) -> String {
+    format!("external_mcp_{port}.pid")
+}
+
+pub(crate) fn external_mcp_pid_file_path(app_data_dir: &Path, port: u16) -> PathBuf {
+    app_data_dir.join(external_mcp_pid_file_name(port))
+}
+
+pub(crate) fn command_matches_external_mcp_process_for_port(command: &str, port: u16) -> bool {
+    let is_external_mcp = command_mentions_external_mcp_runtime(command);
+    if !is_external_mcp {
+        return false;
+    }
+
+    let external_port = format!("EXTERNAL_MCP_PORT={port}");
+    let ralphx_port = format!("RALPHX_EXTERNAL_MCP_PORT={port}");
+    command.contains(&external_port) || command.contains(&ralphx_port)
+}
+
+pub(crate) fn command_mentions_external_mcp_runtime(command: &str) -> bool {
+    command.contains("ralphx-external-mcp") || command.contains("ralphx_external_mcp")
+}
+
+pub(crate) fn external_mcp_process_matches_expected_port(
+    command: &str,
+    pid: i32,
+    expected_port: u16,
+) -> bool {
+    let is_external_mcp = command_mentions_external_mcp_runtime(command);
+    is_external_mcp
+        && (command_matches_external_mcp_process_for_port(command, expected_port)
+            || process_listens_on_port(pid, expected_port))
+}
+
+/// Check whether a PID belongs to this supervisor's external-MCP Node process.
+pub(crate) fn is_external_mcp_process(pid: i32, expected_port: u16) -> bool {
     if pid <= 0 {
         return false;
     }
 
     let pid_arg = pid.to_string();
     let output = std::process::Command::new(resolve_ps_cli_path())
-        .args(["-p", pid_arg.as_str(), "-o", "command="])
+        .args(["eww", "-p", pid_arg.as_str(), "-o", "command="])
         .output();
 
     if let Ok(o) = output {
         let cmd = String::from_utf8_lossy(&o.stdout);
-        return cmd.contains("external-mcp") || cmd.contains("external_mcp");
+        return external_mcp_process_matches_expected_port(&cmd, pid, expected_port);
     }
 
     false
+}
+
+pub(crate) fn process_listens_on_port(pid: i32, expected_port: u16) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    let pid_arg = pid.to_string();
+    let port_arg = format!("-iTCP:{expected_port}");
+    let output = std::process::Command::new(resolve_lsof_cli_path())
+        .args([
+            "-nP",
+            "-a",
+            "-p",
+            pid_arg.as_str(),
+            port_arg.as_str(),
+            "-sTCP:LISTEN",
+        ])
+        .output();
+
+    match output {
+        Ok(o) => o.status.success() && !o.stdout.is_empty(),
+        Err(_) => false,
+    }
 }
 
 /// Returns true if a process with the given PID still exists.

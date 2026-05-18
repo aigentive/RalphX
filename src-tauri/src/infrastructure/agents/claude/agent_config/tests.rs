@@ -2,8 +2,9 @@ use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
 use crate::infrastructure::agents::claude::agent_names::{
     SHORT_CHAT_PROJECT, SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER,
-    SHORT_AGENT_WORKSPACE_REPAIR, SHORT_GENERAL_EXPLORER, SHORT_GENERAL_WORKER,
-    SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC, SHORT_IDEATION_SPECIALIST_BACKEND,
+    SHORT_AGENT_WORKSPACE_REPAIR, SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_GENERAL_EXPLORER,
+    SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
+    SHORT_IDEATION_SPECIALIST_BACKEND,
     SHORT_IDEATION_SPECIALIST_CODE_QUALITY, SHORT_IDEATION_SPECIALIST_FRONTEND,
     SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD,
     SHORT_IDEATION_TEAM_MEMBER, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
@@ -142,6 +143,7 @@ fn test_all_agent_names_are_known() {
         SHORT_GENERAL_EXPLORER,
         SHORT_GENERAL_WORKER,
         SHORT_AGENT_WORKSPACE_REPAIR,
+        SHORT_AGENT_WORKSPACE_PR_FIXER,
         SHORT_WORKER,
         SHORT_CODER,
         SHORT_REVIEWER,
@@ -2881,6 +2883,35 @@ agents:
         parsed.claude.default_effort, "high",
         "default_effort should be carried through to ClaudeRuntimeConfig"
     );
+}
+
+#[test]
+fn test_xhigh_effort_carried_through_to_claude_runtime_config() {
+    let yaml = r#"
+claude:
+  mcp_server_name: ralphx
+  permission_mode: default
+  dangerously_skip_permissions: false
+  permission_prompt_tool: permission_request
+  default_effort: xhigh
+agents:
+  - name: test-agent
+    effort: xhigh
+    tools:
+      extends: base_tools
+    mcp_tools: []
+    preapproved_cli_tools: []
+    system_prompt_file: plugins/app/agents/worker.md
+"#;
+    let parsed = parse_config(yaml).expect("config should parse");
+    let agent = parsed
+        .agents
+        .iter()
+        .find(|agent| agent.name == "test-agent")
+        .expect("test-agent should exist");
+
+    assert_eq!(parsed.claude.default_effort, "xhigh");
+    assert_eq!(agent.effort.as_deref(), Some("xhigh"));
 }
 
 #[test]

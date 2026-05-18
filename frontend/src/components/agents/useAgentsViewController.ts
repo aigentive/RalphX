@@ -27,6 +27,8 @@ import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
+import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getFocusedArtifactIdeationSessionId,
   latestVerificationChildSessionIdQueryKey,
@@ -47,6 +49,8 @@ export function useAgentsViewController({
 }: UseAgentsViewControllerParams) {
   const queryClient = useQueryClient();
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
+  const [publishFocusRequest, setPublishFocusRequest] =
+    useState<AgentPublishFocusRequest | null>(null);
   const [lastVerificationFocus, setLastVerificationFocus] = useState<Extract<
     AgentsChatFocus,
     { type: "verification" }
@@ -121,6 +125,7 @@ export function useAgentsViewController({
   useEffect(() => {
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
+    setPublishFocusRequest(null);
   }, [selectedConversationId]);
   useEffect(() => {
     if (!selectedConversationId || activeConversation?.contextType !== "project") {
@@ -371,6 +376,21 @@ export function useAgentsViewController({
     selectedConversationId,
     setArtifactPaneVisibility,
   });
+  const handleOpenPublishFile = useCallback(
+    (filePath: string, mode: DiffFilterMode) => {
+      if (!selectedConversationId) {
+        return;
+      }
+      setPublishFocusRequest((current) => ({
+        conversationId: selectedConversationId,
+        filePath,
+        mode,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      openArtifactTab(selectedConversationId, "publish");
+    },
+    [openArtifactTab, selectedConversationId],
+  );
   // Switching artifact tabs no longer touches the chat focus. The user
   // toggles between workspace and child chats explicitly via the composer
   // chat-focus pill.
@@ -471,6 +491,7 @@ export function useAgentsViewController({
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
       onOpenPublishPane: handleOpenPublishPane,
+      onOpenPublishFile: handleOpenPublishFile,
       onPreloadArtifacts: handlePreloadArtifacts,
       onPublishWorkspace: handlePublishWorkspace,
       onRenameConversation: handleRenameConversation,
@@ -508,6 +529,7 @@ export function useAgentsViewController({
       isArtifactResizing,
       openArtifactTab,
       panelDockElement: terminalPanelDockElement,
+      publishFocusRequest,
       publishingConversationId,
       selectedConversationId,
       setArtifactPaneVisibility,

@@ -49,15 +49,10 @@ pub async fn list_projects_http(
     State(state): State<HttpServerState>,
     scope: ProjectScope,
 ) -> Result<Json<ListProjectsResponse>, StatusCode> {
-    let projects = state
-        .app_state
-        .project_repo
-        .get_all()
-        .await
-        .map_err(|e| {
-            error!("Failed to list projects: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let projects = state.app_state.project_repo.get_all().await.map_err(|e| {
+        error!("Failed to list projects: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let mut summaries = Vec::new();
     for project in &projects {
@@ -84,7 +79,9 @@ pub async fn list_projects_http(
         });
     }
 
-    Ok(Json(ListProjectsResponse { projects: summaries }))
+    Ok(Json(ListProjectsResponse {
+        projects: summaries,
+    }))
 }
 
 /// GET /api/external/project/:id/status
@@ -108,9 +105,7 @@ pub async fn get_project_status_http(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     // Enforce project scope
-    project
-        .assert_project_scope(&scope)
-        .map_err(|e| e.status)?;
+    project.assert_project_scope(&scope).map_err(|e| e.status)?;
 
     // Load all tasks for project
     let tasks = state
@@ -119,7 +114,11 @@ pub async fn get_project_status_http(
         .get_by_project(&project_id)
         .await
         .map_err(|e| {
-            error!("Failed to get tasks for project {}: {}", project_id.as_str(), e);
+            error!(
+                "Failed to get tasks for project {}: {}",
+                project_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -170,11 +169,7 @@ pub async fn get_project_status_http(
     }
 
     // Count running agents for this project by iterating the registry
-    let all_running = state
-        .app_state
-        .running_agent_registry
-        .list_all()
-        .await;
+    let all_running = state.app_state.running_agent_registry.list_all().await;
     let running_agents = all_running
         .iter()
         .filter(|(key, _)| {

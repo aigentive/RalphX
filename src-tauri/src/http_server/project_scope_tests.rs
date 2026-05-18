@@ -8,7 +8,9 @@
 use axum::http::StatusCode;
 
 use crate::domain::entities::types::ProjectId;
-use crate::http_server::project_scope::{parse_project_scope_header, ProjectScope, ProjectScopeGuard};
+use crate::http_server::project_scope::{
+    parse_project_scope_header, ProjectScope, ProjectScopeGuard,
+};
 
 // ============================================================================
 // Helpers
@@ -22,9 +24,9 @@ fn make_task(project_id: &str) -> crate::domain::entities::task::Task {
 }
 
 fn make_session(project_id: &str) -> crate::domain::entities::ideation::IdeationSession {
-    crate::domain::entities::ideation::IdeationSession::new(
-        ProjectId::from_string(project_id.to_string()),
-    )
+    crate::domain::entities::ideation::IdeationSession::new(ProjectId::from_string(
+        project_id.to_string(),
+    ))
 }
 
 fn make_project(id: &str) -> crate::domain::entities::project::Project {
@@ -145,9 +147,15 @@ fn allowed_when_project_in_scope() {
 #[test]
 fn forbidden_when_project_not_in_scope() {
     let task = make_task("proj-abc");
-    let err = task.assert_project_scope(&scoped(&["proj-other"])).unwrap_err();
+    let err = task
+        .assert_project_scope(&scoped(&["proj-other"]))
+        .unwrap_err();
     assert_eq!(err.status, StatusCode::FORBIDDEN);
-    assert!(err.message.as_deref().unwrap_or("").contains("does not have access"));
+    assert!(err
+        .message
+        .as_deref()
+        .unwrap_or("")
+        .contains("does not have access"));
 }
 
 #[test]
@@ -174,8 +182,12 @@ fn ideation_session_scope_guard() {
     let session = make_session("proj-session");
     assert_eq!(session.project_id().as_str(), "proj-session");
 
-    assert!(session.assert_project_scope(&scoped(&["proj-other"])).is_err());
-    assert!(session.assert_project_scope(&scoped(&["proj-session"])).is_ok());
+    assert!(session
+        .assert_project_scope(&scoped(&["proj-other"]))
+        .is_err());
+    assert!(session
+        .assert_project_scope(&scoped(&["proj-session"]))
+        .is_ok());
     assert!(session.assert_project_scope(&unrestricted()).is_ok());
 }
 
@@ -185,7 +197,9 @@ fn project_scope_guard_uses_own_id() {
     assert_eq!(project.project_id().as_str(), "proj-xyz");
 
     assert!(project.assert_project_scope(&scoped(&["proj-xyz"])).is_ok());
-    assert!(project.assert_project_scope(&scoped(&["proj-other"])).is_err());
+    assert!(project
+        .assert_project_scope(&scoped(&["proj-other"]))
+        .is_err());
     assert!(project.assert_project_scope(&unrestricted()).is_ok());
 }
 
@@ -194,8 +208,12 @@ fn review_scope_guard() {
     let review = make_review("proj-review", "task-001");
     assert_eq!(review.project_id().as_str(), "proj-review");
 
-    assert!(review.assert_project_scope(&scoped(&["proj-review"])).is_ok());
-    assert!(review.assert_project_scope(&scoped(&["proj-other"])).is_err());
+    assert!(review
+        .assert_project_scope(&scoped(&["proj-review"]))
+        .is_ok());
+    assert!(review
+        .assert_project_scope(&scoped(&["proj-other"]))
+        .is_err());
 }
 
 #[test]

@@ -666,6 +666,78 @@ fn parse_unified_diff_binary_file_returns_empty() {
     assert!(hunks.is_empty());
 }
 
+#[test]
+fn file_changes_from_unified_diff_tracks_counts_and_statuses() {
+    let raw = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ pub fn answer() -> u8 {
+-    41
++    42
+ }
++// done
+diff --git a/old.txt b/old.txt
+deleted file mode 100644
+--- a/old.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-old
+";
+
+    let changes = DiffService::new().get_file_changes_from_unified_diff(raw);
+
+    assert_eq!(changes.len(), 2);
+    let deleted = changes
+        .iter()
+        .find(|change| change.path == "old.txt")
+        .expect("deleted file should be listed");
+    assert!(matches!(deleted.status, FileChangeStatus::Deleted));
+    assert_eq!(deleted.additions, 0);
+    assert_eq!(deleted.deletions, 1);
+
+    let modified = changes
+        .iter()
+        .find(|change| change.path == "src/lib.rs")
+        .expect("modified file should be listed");
+    assert!(matches!(modified.status, FileChangeStatus::Modified));
+    assert_eq!(modified.additions, 2);
+    assert_eq!(modified.deletions, 1);
+}
+
+#[test]
+fn file_diff_from_unified_diff_returns_single_file_hunks() {
+    let raw = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index abc..def 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ pub fn answer() -> u8 {
+-    41
++    42
+ }
++// done
+";
+
+    let diff = DiffService::new()
+        .get_file_diff_from_unified_diff(raw, "src/lib.rs")
+        .expect("patch-backed file diff should parse");
+
+    assert_eq!(diff.file_path, "src/lib.rs");
+    assert_eq!(diff.language, "rust");
+    assert_eq!(diff.hunks.len(), 1);
+    assert_eq!(diff.old_total_lines, 3);
+    assert_eq!(diff.new_total_lines, 4);
+    assert!(diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .any(|line| line.content.contains("42")));
+}
+
 // =============================================================================
 // validate_diff_file_path unit tests
 // =============================================================================

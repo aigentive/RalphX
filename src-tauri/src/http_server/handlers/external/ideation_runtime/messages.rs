@@ -53,7 +53,11 @@ pub async fn get_ideation_messages_http(
         .get_by_id(&session_id)
         .await
         .map_err(|e| {
-            error!("Failed to get ideation session {}: {}", session_id.as_str(), e);
+            error!(
+                "Failed to get ideation session {}: {}",
+                session_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -67,7 +71,11 @@ pub async fn get_ideation_messages_http(
         .get_recent_by_session_paginated(&session_id, fetch_limit, params.offset)
         .await
         .map_err(|e| {
-            error!("Failed to get messages for session {}: {}", session_id.as_str(), e);
+            error!(
+                "Failed to get messages for session {}: {}",
+                session_id.as_str(),
+                e
+            );
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 

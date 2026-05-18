@@ -1,9 +1,9 @@
 use super::*;
+use crate::application::ideation_service::build_default_ideation_session_title;
 use crate::application::ideation_workspace::{
     prepare_ideation_analysis_state, prepare_ideation_analysis_state_from_agent_workspace,
     IdeationAnalysisBaseSelection,
 };
-use crate::application::ideation_service::build_default_ideation_session_title;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
     IdeationAnalysisState, Project,
@@ -200,10 +200,12 @@ pub async fn start_ideation_http(
             message: Some("Project not found".to_string()),
         })?;
 
-    project.assert_project_scope(&scope).map_err(|e| HttpError {
-        status: e.status,
-        message: e.message,
-    })?;
+    project
+        .assert_project_scope(&scope)
+        .map_err(|e| HttpError {
+            status: e.status,
+            message: e.message,
+        })?;
 
     let parent_workspace_binding = resolve_parent_workspace_binding(
         &state,
@@ -362,10 +364,17 @@ pub async fn start_ideation_http(
     if let Some(ref idem_key) = req.idempotency_key {
         session_builder.idempotency_key = Some(idem_key.clone());
     }
-    let created = match state.app_state.ideation_session_repo.create(session_builder).await {
+    let created = match state
+        .app_state
+        .ideation_session_repo
+        .create(session_builder)
+        .await
+    {
         Ok(session) => session,
         Err(e)
-            if e.to_string().to_lowercase().contains(SQLITE_UNIQUE_VIOLATION)
+            if e.to_string()
+                .to_lowercase()
+                .contains(SQLITE_UNIQUE_VIOLATION)
                 && api_key_id.is_some()
                 && req.idempotency_key.is_some() =>
         {
@@ -450,7 +459,10 @@ pub async fn start_ideation_http(
         let repo = Arc::clone(&state.app_state.ideation_session_repo);
         let sid = IdeationSessionId::from_string(session_id_str.clone());
         tokio::spawn(async move {
-            if let Err(e) = repo.update_external_activity_phase(&sid, Some("created")).await {
+            if let Err(e) = repo
+                .update_external_activity_phase(&sid, Some("created"))
+                .await
+            {
                 error!(
                     "Failed to set activity phase 'created' for session {}: {}",
                     sid.as_str(),
@@ -536,9 +548,8 @@ pub async fn start_ideation_http(
             Ok(result) if result.was_queued => {
                 if result.queued_as_pending {
                     pending_initial_prompt = Some(prompt_str.clone());
-                    agent_spawn_blocked_reason = Some(
-                        "execution paused; ideation prompt saved for resume".to_string(),
-                    );
+                    agent_spawn_blocked_reason =
+                        Some("execution paused; ideation prompt saved for resume".to_string());
                 } else {
                     agent_spawned = true;
                 }

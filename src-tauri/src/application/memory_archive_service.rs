@@ -22,8 +22,7 @@ pub struct MemoryArchiveService {
     archive_repo: Arc<dyn MemoryArchiveRepository>,
     entry_repo: Arc<dyn MemoryEntryRepository>,
     project_repo: Arc<dyn ProjectRepository>,
-    #[allow(dead_code)]
-    project_root: PathBuf,
+    archive_root: PathBuf,
 }
 
 impl MemoryArchiveService {
@@ -32,13 +31,27 @@ impl MemoryArchiveService {
         archive_repo: Arc<dyn MemoryArchiveRepository>,
         entry_repo: Arc<dyn MemoryEntryRepository>,
         project_repo: Arc<dyn ProjectRepository>,
-        project_root: PathBuf,
+    ) -> Self {
+        Self::new_with_archive_root(
+            archive_repo,
+            entry_repo,
+            project_repo,
+            crate::utils::runtime_log_paths::memory_archive_dir(),
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_archive_root(
+        archive_repo: Arc<dyn MemoryArchiveRepository>,
+        entry_repo: Arc<dyn MemoryEntryRepository>,
+        project_repo: Arc<dyn ProjectRepository>,
+        archive_root: PathBuf,
     ) -> Self {
         Self {
             archive_repo,
             entry_repo,
             project_repo,
-            project_root,
+            archive_root,
         }
     }
 
@@ -52,8 +65,8 @@ impl MemoryArchiveService {
             None => return Ok(false), // No jobs available
         };
 
-        // Look up the project to get its root path
-        let project = self
+        // Keep the project existence check, but write snapshots to RalphX-owned storage.
+        let _project = self
             .project_repo
             .get_by_id(&job.project_id)
             .await?
@@ -64,25 +77,18 @@ impl MemoryArchiveService {
                 ))
             })?;
 
-        let project_root = PathBuf::from(&project.working_directory);
-
         // Process the job based on type
         let result = match &job.payload {
             ArchiveJobPayload::MemorySnapshot(payload) => {
-                self.generate_memory_snapshot(&job.project_id, payload, &project_root)
+                self.generate_memory_snapshot(&job.project_id, payload)
                     .await
             }
             ArchiveJobPayload::RuleSnapshot(payload) => {
-                self.generate_rule_snapshot(&job.project_id, payload, &project_root)
-                    .await
+                self.generate_rule_snapshot(&job.project_id, payload).await
             }
             ArchiveJobPayload::FullRebuild(payload) => {
-                self.generate_full_rebuild(
-                    &job.project_id,
-                    payload.include_rule_snapshots,
-                    &project_root,
-                )
-                .await
+                self.generate_full_rebuild(&job.project_id, payload.include_rule_snapshots)
+                    .await
             }
         };
 
@@ -105,12 +111,10 @@ impl MemoryArchiveService {
     /// Generate a per-memory snapshot
     async fn generate_memory_snapshot(
         &self,
-        _project_id: &ProjectId,
+        project_id: &ProjectId,
         payload: &MemorySnapshotPayload,
-        project_root: &Path,
     ) -> AppResult<()> {
         // TODO(WP2): Check project_memory_settings.archive_enabled before generating
-        // TODO(WP2): Respect custom archive_path from settings
         // Get the memory entry
         let entry = self
             .entry_repo
@@ -123,8 +127,8 @@ impl MemoryArchiveService {
         // Generate snapshot content
         let content = self.format_memory_snapshot(&entry)?;
 
-        // Write to file: .claude/memory-archive/memories/<memory_id>.md
-        let output_path = self.get_memory_snapshot_path(project_root, &payload.memory_id)?;
+        // Write to RalphX-owned archive storage, not the target project checkout.
+        let output_path = self.get_memory_snapshot_path(project_id, &payload.memory_id)?;
         self.write_snapshot_file(&output_path, &content)?;
 
         Ok(())
@@ -135,7 +139,6 @@ impl MemoryArchiveService {
         &self,
         project_id: &ProjectId,
         payload: &RuleSnapshotPayload,
-        project_root: &Path,
     ) -> AppResult<()> {
         // TODO(WP2): Check project_memory_settings.retain_rule_snapshots before generating
         // Get all memories linked to this rule file (scope_key represents the rule file path)
@@ -154,10 +157,10 @@ impl MemoryArchiveService {
         // Generate snapshot content with reconstructed full text from DB
         let content = self.format_rule_snapshot(&payload.scope_key, &entries)?;
 
-        // Write to file: .claude/memory-archive/rules/<scope_key>/<timestamp>.md
+        // Write to RalphX-owned archive storage, not the target project checkout.
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let output_path =
-            self.get_rule_snapshot_path(project_root, &payload.scope_key, &timestamp)?;
+            self.get_rule_snapshot_path(project_id, &payload.scope_key, &timestamp)?;
         self.write_snapshot_file(&output_path, &content)?;
 
         Ok(())
@@ -168,10 +171,8 @@ impl MemoryArchiveService {
         &self,
         project_id: &ProjectId,
         include_rule_snapshots: bool,
-        project_root: &Path,
     ) -> AppResult<()> {
         // TODO(WP2): Check project_memory_settings for archive_enabled, custom path
-        // TODO(WP7): Add auto-commit logic if archive_auto_commit is true
         // Get all memories for the project
         let entries = self.entry_repo.get_by_project(project_id).await?;
 
@@ -185,9 +186,9 @@ impl MemoryArchiveService {
         // Generate consolidated snapshot content
         let content = self.format_project_snapshot(project_id, &entries)?;
 
-        // Write to file: .claude/memory-archive/projects/<project_id>/<timestamp>.md
+        // Write to RalphX-owned archive storage, not the target project checkout.
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let output_path = self.get_project_snapshot_path(project_root, project_id, &timestamp)?;
+        let output_path = self.get_project_snapshot_path(project_id, &timestamp)?;
         self.write_snapshot_file(&output_path, &content)?;
 
         // Optionally generate rule snapshots too
@@ -208,7 +209,7 @@ impl MemoryArchiveService {
                     rule_entries.iter().map(|e| (*e).clone()).collect();
                 let content = self.format_rule_snapshot(&rule_file, &cloned_entries)?;
                 let output_path =
-                    self.get_rule_snapshot_path(project_root, &rule_file, &timestamp)?;
+                    self.get_rule_snapshot_path(project_id, &rule_file, &timestamp)?;
                 self.write_snapshot_file(&output_path, &content)?;
             }
         }
@@ -348,53 +349,61 @@ impl MemoryArchiveService {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// Get the output path for a memory snapshot
-    fn get_memory_snapshot_path(&self, project_root: &Path, memory_id: &str) -> AppResult<PathBuf> {
-        let path = project_root
-            .join(".claude/memory-archive/memories")
-            .join(format!("{}.md", memory_id));
-        Ok(path)
+    fn get_memory_snapshot_path(
+        &self,
+        project_id: &ProjectId,
+        memory_id: &str,
+    ) -> AppResult<PathBuf> {
+        Ok(self.archive_root.join(
+            crate::utils::runtime_log_paths::memory_archive_memory_snapshot_relative_file(
+                project_id.as_str(),
+                memory_id,
+            ),
+        ))
     }
 
     /// Get the output path for a rule snapshot
     fn get_rule_snapshot_path(
         &self,
-        project_root: &Path,
+        project_id: &ProjectId,
         scope_key: &str,
         timestamp: &str,
     ) -> AppResult<PathBuf> {
-        // Replace path separators in scope_key to create safe directory structure
-        let safe_scope = scope_key.replace(['/', '\\'], "_");
-        let path = project_root
-            .join(".claude/memory-archive/rules")
-            .join(&safe_scope)
-            .join(format!("{}.md", timestamp));
-        Ok(path)
+        Ok(self.archive_root.join(
+            crate::utils::runtime_log_paths::memory_archive_rule_snapshot_relative_file(
+                project_id.as_str(),
+                scope_key,
+                timestamp,
+            ),
+        ))
     }
 
     /// Get the output path for a project snapshot
     fn get_project_snapshot_path(
         &self,
-        project_root: &Path,
         project_id: &ProjectId,
         timestamp: &str,
     ) -> AppResult<PathBuf> {
-        let path = project_root
-            .join(".claude/memory-archive/projects")
-            .join(project_id.as_str())
-            .join(format!("{}.md", timestamp));
-        Ok(path)
+        Ok(self.archive_root.join(
+            crate::utils::runtime_log_paths::memory_archive_project_snapshot_relative_file(
+                project_id.as_str(),
+                timestamp,
+            ),
+        ))
     }
 
     /// Write snapshot content to file
     fn write_snapshot_file(&self, path: &Path, content: &str) -> AppResult<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
+            // codeql[rust/path-injection]
             std::fs::create_dir_all(parent).map_err(|e| {
                 AppError::Infrastructure(format!("Failed to create directory: {}", e))
             })?;
         }
 
         // Write file
+        // codeql[rust/path-injection]
         std::fs::write(path, content).map_err(|e| {
             AppError::Infrastructure(format!("Failed to write snapshot file: {}", e))
         })?;

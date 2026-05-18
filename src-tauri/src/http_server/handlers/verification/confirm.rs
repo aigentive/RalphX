@@ -1,5 +1,5 @@
-use super::*;
 use super::helpers::spawn_verification_agent;
+use super::*;
 
 pub async fn confirm_verification(
     State(state): State<HttpServerState>,

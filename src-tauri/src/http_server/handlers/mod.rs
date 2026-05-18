@@ -2,14 +2,14 @@ use crate::application::chat_service::chat_service_context::build_initial_prompt
 use crate::domain::entities::ChatContextType;
 use crate::infrastructure::agents::claude::format_stream_json_input;
 
-pub mod api_keys;
 pub mod agent_workspaces;
-pub mod coordination;
-pub mod external;
-pub mod external_auth;
+pub mod api_keys;
 pub mod artifacts;
 pub mod conversations;
+pub mod coordination;
 pub mod execution;
+pub mod external;
+pub mod external_auth;
 pub mod git;
 pub mod ideation;
 pub mod internal;
@@ -26,15 +26,15 @@ pub mod teams;
 pub mod verification;
 pub mod worker;
 
-pub use api_keys::*;
 pub use agent_workspaces::*;
+pub use api_keys::*;
+pub use artifacts::*;
+pub use conversations::*;
 pub use coordination::*;
+pub use execution::*;
 pub use external::*;
 #[allow(unused_imports)]
 pub use external_auth::*;
-pub use artifacts::*;
-pub use conversations::*;
-pub use execution::*;
 pub use git::*;
 pub use ideation::*;
 pub use internal::*;

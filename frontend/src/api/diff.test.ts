@@ -116,6 +116,80 @@ describe("diff api", () => {
       ],
       baseRef: "origin/main",
       headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+  });
+
+  it("loads and transforms GitHub PR annotation payloads", async () => {
+    mockInvoke.mockResolvedValue({
+      pr_number: 78,
+      head_sha: "head-sha",
+      annotations: [
+        {
+          id: "code-scanning:7",
+          source: "code_scanning",
+          path: "src/lib.rs",
+          side: "right",
+          start_line: 22,
+          end_line: 23,
+          start_column: 5,
+          end_column: 12,
+          level: "high",
+          status: "open",
+          title: "Filesystem path injection",
+          message: "This path depends on user input.",
+          author: null,
+          check_name: "CodeQL",
+          url: "https://github.com/owner/repo/security/code-scanning/7",
+          is_outdated: false,
+          created_at: "2026-04-22T08:00:00Z",
+        },
+      ],
+      sources_unavailable: [
+        {
+          source: "check_runs",
+          reason: "Missing checks permission",
+        },
+      ],
+    });
+
+    const annotations =
+      await diffApi.getAgentConversationWorkspacePrAnnotations("conversation-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_workspace_pr_annotations",
+      { conversationId: "conversation-1" }
+    );
+    expect(annotations).toEqual({
+      prNumber: 78,
+      headSha: "head-sha",
+      annotations: [
+        {
+          id: "code-scanning:7",
+          source: "code_scanning",
+          path: "src/lib.rs",
+          side: "right",
+          startLine: 22,
+          endLine: 23,
+          startColumn: 5,
+          endColumn: 12,
+          level: "high",
+          status: "open",
+          title: "Filesystem path injection",
+          message: "This path depends on user input.",
+          author: null,
+          checkName: "CodeQL",
+          url: "https://github.com/owner/repo/security/code-scanning/7",
+          isOutdated: false,
+          createdAt: "2026-04-22T08:00:00Z",
+        },
+      ],
+      sourcesUnavailable: [
+        {
+          source: "check_runs",
+          reason: "Missing checks permission",
+        },
+      ],
     });
   });
 
@@ -281,6 +355,7 @@ describe("diff api", () => {
       commits: [],
       base_ref: "base-sha",
       head_ref: "feature/publish",
+      supports_worktree_modes: false,
     });
 
     expect(review).toEqual({
@@ -296,6 +371,7 @@ describe("diff api", () => {
       commits: [],
       baseRef: "base-sha",
       headRef: "feature/publish",
+      supportsWorktreeModes: false,
     });
   });
 

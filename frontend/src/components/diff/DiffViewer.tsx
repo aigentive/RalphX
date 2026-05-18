@@ -22,7 +22,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DiffRefKind } from "@/api/diff";
+import type { DiffRefKind, PrDiffAnnotation } from "@/api/diff";
 
 // Import types and utilities from separate file
 import {
@@ -53,6 +53,7 @@ export function DiffViewer({
   changes,
   commits,
   commitFiles: commitFilesProp = [],
+  annotations = [],
   onFetchDiff,
   onFetchCommitFiles,
   onOpenInIDE,
@@ -86,6 +87,19 @@ export function DiffViewer({
     () => (selectedCommit ? { kind: "commit", sha: selectedCommit.sha } : undefined),
     [selectedCommit]
   );
+  const annotationsByPath = useMemo(() => {
+    const map = new Map<string, PrDiffAnnotation[]>();
+    for (const annotation of annotations) {
+      if (!annotation.path) continue;
+      const existing = map.get(annotation.path);
+      if (existing) {
+        existing.push(annotation);
+      } else {
+        map.set(annotation.path, [annotation]);
+      }
+    }
+    return map;
+  }, [annotations]);
 
   // Handle tab change
   const handleTabChange = useCallback((value: string) => {
@@ -290,6 +304,9 @@ export function DiffViewer({
               filePath={selectedFilePath}
               {...(onOpenInIDE !== undefined && { onOpenInIDE })}
               {...(conversationId !== undefined && { conversationId, refKind: changesTabRefKind })}
+              annotations={
+                selectedFilePath ? annotationsByPath.get(selectedFilePath) ?? [] : []
+              }
             />
           </div>
         </TabsContent>

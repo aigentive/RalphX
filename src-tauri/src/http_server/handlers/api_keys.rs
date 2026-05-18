@@ -7,7 +7,10 @@ use axum::{
 };
 
 use super::*;
-use crate::domain::entities::{ApiKey, ApiKeyId, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX, PERMISSION_READ, PERMISSION_WRITE};
+use crate::domain::entities::{
+    ApiKey, ApiKeyId, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX, PERMISSION_READ,
+    PERMISSION_WRITE,
+};
 use crate::domain::repositories::ApiKeyRepository;
 use crate::domain::services::api_key_service::{ApiKeyService, KeySource};
 
@@ -135,14 +138,18 @@ pub async fn create_api_key(
 pub async fn list_api_keys(
     State(state): State<HttpServerState>,
 ) -> Result<Json<ListApiKeysResponse>, StatusCode> {
-    let keys = state.app_state.api_key_repo
+    let keys = state
+        .app_state
+        .api_key_repo
         .list()
         .await
         .map_err(|e| internal_error("Failed to list API keys", e))?;
 
     let mut key_infos = Vec::with_capacity(keys.len());
     for key in keys {
-        let project_ids = state.app_state.api_key_repo
+        let project_ids = state
+            .app_state
+            .api_key_repo
             .get_projects(&key.id)
             .await
             .unwrap_or_default();
@@ -159,7 +166,10 @@ pub async fn list_api_keys(
     }
 
     let count = key_infos.len();
-    Ok(Json(ListApiKeysResponse { keys: key_infos, count }))
+    Ok(Json(ListApiKeysResponse {
+        keys: key_infos,
+        count,
+    }))
 }
 
 /// DELETE /api/auth/keys/:id — Revoke an API key
@@ -232,7 +242,9 @@ pub async fn update_api_key_projects(
 ) -> Result<Json<SuccessResponse>, StatusCode> {
     let key_id = ApiKeyId::from_string(id);
 
-    let key = state.app_state.api_key_repo
+    let key = state
+        .app_state
+        .api_key_repo
         .get_by_id(&key_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -241,7 +253,9 @@ pub async fn update_api_key_projects(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    state.app_state.api_key_repo
+    state
+        .app_state
+        .api_key_repo
         .set_projects(&key_id, &req.project_ids)
         .await
         .map_err(|e| internal_error("Failed to update API key projects", e))?;
@@ -311,7 +325,9 @@ pub async fn validate_api_key(
     let key = resolve_key_from_headers(state.app_state.api_key_repo.as_ref(), &headers).await?;
 
     // Fetch project associations synchronously before spawning background tasks
-    let project_ids = state.app_state.api_key_repo
+    let project_ids = state
+        .app_state
+        .api_key_repo
         .get_projects(&key.id)
         .await
         .unwrap_or_default();
@@ -321,7 +337,9 @@ pub async fn validate_api_key(
     let key_id_clone = key.id.clone();
     tokio::spawn(async move {
         let _ = repo.update_last_used(&key_id_clone, &now).await;
-        let _ = repo.log_audit(key_id_clone.as_str(), "validate_key", None, true, None).await;
+        let _ = repo
+            .log_audit(key_id_clone.as_str(), "validate_key", None, true, None)
+            .await;
     });
 
     Ok(Json(ExternalValidateKeyResponse {
@@ -432,9 +450,7 @@ pub async fn validate_key(
             // Update last_used_at in the background (non-blocking; ignore errors)
             let repo = state.app_state.api_key_repo.clone();
             let key_id = key.id.clone();
-            let now = chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%SZ")
-                .to_string();
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
             tokio::spawn(async move {
                 let _ = repo.update_last_used(&key_id, &now).await;
             });

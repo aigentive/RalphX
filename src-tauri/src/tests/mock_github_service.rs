@@ -8,7 +8,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrBranchMatch, PrReviewFeedback, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrDiffAnnotations, PrHealth, PrReviewFeedback, PrStatus,
+    PrSyncState,
 };
 use crate::error::AppError;
 use crate::AppResult;
@@ -25,10 +26,16 @@ pub struct MockGithubState {
     pub check_pr_sync_state_result: Option<AppResult<PrSyncState>>,
     pub check_pr_review_feedback_result: Option<AppResult<Option<PrReviewFeedback>>>,
     pub check_pr_review_feedback_delay_ms: u64,
+    pub fetch_pr_diff_annotations_result: Option<AppResult<PrDiffAnnotations>>,
+    pub fetch_pr_diff_annotations_delay_ms: u64,
+    pub fetch_pr_health_result: Option<AppResult<PrHealth>>,
+    pub enable_pr_auto_merge_result: Option<AppResult<()>>,
+    pub disable_pr_auto_merge_result: Option<AppResult<()>>,
     pub push_branch_result: Option<AppResult<()>>,
     pub close_pr_result: Option<AppResult<()>>,
     pub delete_remote_branch_result: Option<AppResult<()>>,
     pub fetch_remote_result: Option<AppResult<()>>,
+    pub get_pr_diff_patch_result: Option<AppResult<String>>,
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
 
@@ -42,10 +49,15 @@ pub struct MockGithubState {
     pub check_pr_review_feedback_calls: u32,
     pub active_check_pr_review_feedback_calls: u32,
     pub max_concurrent_check_pr_review_feedback_calls: u32,
+    pub fetch_pr_diff_annotations_calls: u32,
+    pub fetch_pr_health_calls: u32,
+    pub enable_pr_auto_merge_calls: u32,
+    pub disable_pr_auto_merge_calls: u32,
     pub push_branch_calls: u32,
     pub close_pr_calls: u32,
     pub delete_remote_branch_calls: u32,
     pub fetch_remote_calls: u32,
+    pub get_pr_diff_patch_calls: u32,
     pub find_pr_by_head_branch_calls: u32,
     pub find_latest_pr_by_head_branch_calls: u32,
 
@@ -59,12 +71,18 @@ pub struct MockGithubState {
     pub last_check_pr_status_number: Option<i64>,
     pub last_check_pr_sync_state_number: Option<i64>,
     pub last_check_pr_review_feedback_number: Option<i64>,
+    pub last_fetch_pr_diff_annotations_number: Option<i64>,
+    pub last_fetch_pr_health_number: Option<i64>,
+    pub last_enable_pr_auto_merge_args: Option<(i64, String)>,
+    pub last_disable_pr_auto_merge_number: Option<i64>,
     pub last_push_branch_name: Option<String>,
     pub last_close_pr_number: Option<i64>,
     pub last_delete_remote_branch_name: Option<String>,
     /// All branches passed to delete_remote_branch (accumulated across all calls).
     pub all_deleted_remote_branch_names: Vec<String>,
     pub last_fetch_remote_branch_name: Option<String>,
+    pub last_get_pr_diff_patch_number: Option<i64>,
+    pub last_get_pr_diff_patch_url: Option<String>,
     pub last_find_pr_by_head_branch_name: Option<String>,
     pub last_find_latest_pr_by_head_branch_name: Option<String>,
 }
@@ -121,6 +139,19 @@ impl MockGithubService {
     #[allow(dead_code)]
     pub fn with_review_feedback_delay_ms(&self, delay_ms: u64) {
         self.state().check_pr_review_feedback_delay_ms = delay_ms;
+    }
+
+    /// Shorthand: configure PR diff annotations returned by fetch_pr_diff_annotations.
+    #[allow(dead_code)]
+    pub fn will_return_pr_diff_annotations(&self, annotations: PrDiffAnnotations) {
+        self.state().fetch_pr_diff_annotations_result = Some(Ok(annotations));
+    }
+
+    /// Shorthand: add an artificial delay to annotation fetches so tests can
+    /// observe command-level request coalescing.
+    #[allow(dead_code)]
+    pub fn with_pr_diff_annotations_delay_ms(&self, delay_ms: u64) {
+        self.state().fetch_pr_diff_annotations_delay_ms = delay_ms;
     }
 
     /// Shorthand: configure any method to fail with the given message (Infrastructure error).
@@ -268,6 +299,67 @@ impl GithubServiceTrait for MockGithubService {
         result.unwrap_or(Ok(None))
     }
 
+    async fn fetch_pr_diff_annotations(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrDiffAnnotations> {
+        let (delay_ms, result) = {
+            let mut s = self.state.lock().expect("lock poisoned");
+            s.fetch_pr_diff_annotations_calls += 1;
+            s.last_fetch_pr_diff_annotations_number = Some(pr_number);
+            (
+                s.fetch_pr_diff_annotations_delay_ms,
+                s.fetch_pr_diff_annotations_result.take(),
+            )
+        };
+
+        if delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        result.unwrap_or_else(|| Ok(PrDiffAnnotations::empty(pr_number)))
+    }
+
+    async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
+        let configured = {
+            let mut s = self.state.lock().expect("lock poisoned");
+            s.fetch_pr_health_calls += 1;
+            s.last_fetch_pr_health_number = Some(pr_number);
+            s.fetch_pr_health_result.take()
+        };
+        if let Some(result) = configured {
+            return result;
+        }
+        let sync_state = self.check_pr_sync_state(working_dir, pr_number).await?;
+        Ok(PrHealth {
+            sync_state,
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        })
+    }
+
+    async fn enable_pr_auto_merge(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        method: &str,
+    ) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.enable_pr_auto_merge_calls += 1;
+        s.last_enable_pr_auto_merge_args = Some((pr_number, method.to_string()));
+        s.enable_pr_auto_merge_result.take().unwrap_or(Ok(()))
+    }
+
+    async fn disable_pr_auto_merge(&self, _working_dir: &Path, pr_number: i64) -> AppResult<()> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.disable_pr_auto_merge_calls += 1;
+        s.last_disable_pr_auto_merge_number = Some(pr_number);
+        s.disable_pr_auto_merge_result.take().unwrap_or(Ok(()))
+    }
+
     async fn push_branch(&self, _working_dir: &Path, branch: &str) -> AppResult<()> {
         let mut s = self.state.lock().expect("lock poisoned");
         s.push_branch_calls += 1;
@@ -295,6 +387,21 @@ impl GithubServiceTrait for MockGithubService {
         s.fetch_remote_calls += 1;
         s.last_fetch_remote_branch_name = Some(branch.to_string());
         s.fetch_remote_result.take().unwrap_or(Ok(()))
+    }
+
+    async fn get_pr_diff_patch(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+        pr_url: Option<&str>,
+    ) -> AppResult<String> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.get_pr_diff_patch_calls += 1;
+        s.last_get_pr_diff_patch_number = Some(pr_number);
+        s.last_get_pr_diff_patch_url = pr_url.map(str::to_string);
+        s.get_pr_diff_patch_result
+            .take()
+            .unwrap_or_else(|| Ok(String::new()))
     }
 
     async fn find_pr_by_head_branch(

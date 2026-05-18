@@ -92,4 +92,69 @@ describe("agentOptions", () => {
       effort: "xhigh",
     });
   });
+
+  it("intersects model efforts with provider CLI capabilities", () => {
+    const legacyClaudeEfforts = ["low", "medium", "high", "max"];
+
+    expect(
+      agentEffortOptionsForModel("claude", "opus", undefined, legacyClaudeEfforts).map(
+        (option) => option.id,
+      ),
+    ).toEqual(["low", "medium", "high", "max"]);
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "opus",
+          effort: "xhigh",
+        },
+        undefined,
+        legacyClaudeEfforts,
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "high",
+    });
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "opus",
+          effort: "max",
+        },
+        undefined,
+        legacyClaudeEfforts,
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "opus",
+      effort: "max",
+    });
+  });
+
+  it("uses provider effort capabilities for typed custom models", () => {
+    const providerEfforts = ["high", "max"];
+
+    expect(
+      agentEffortOptionsForModel("claude", "custom-claude-model", undefined, providerEfforts).map(
+        (option) => option.id,
+      ),
+    ).toEqual(["high", "max"]);
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "custom-claude-model",
+          effort: "retired-effort",
+        },
+        undefined,
+        providerEfforts,
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "custom-claude-model",
+      effort: "high",
+    });
+  });
 });

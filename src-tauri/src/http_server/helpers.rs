@@ -6,23 +6,27 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
 use crate::application::git_service::GitService;
-use crate::commands::ideation_commands::{apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse};
-use crate::domain::services::{check_proposal_verification_gate, resolve_effective_gate_policy, ProposalOperation};
+use crate::application::{AppState, CreateProposalOptions, UpdateProposalOptions, UpdateSource};
+use crate::commands::ideation_commands::{
+    apply_proposals_core, is_local_proposal, ApplyProposalsInput, TaskProposalResponse,
+};
 use crate::domain::entities::{
     AcceptanceStatus, Artifact, ArtifactContent, ArtifactSummary, ArtifactType, Complexity,
     IdeationSession, IdeationSessionId, IdeationSessionStatus, InternalStatus, Priority,
-    ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal,
-    TaskProposalId, ValidationCacheData, ValidationCacheMetadata,
+    ProposalCategory, ScopeDriftStatus, TaskContext, TaskId, TaskProposal, TaskProposalId,
+    ValidationCacheData, ValidationCacheMetadata,
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
+use crate::domain::services::{
+    check_proposal_verification_gate, resolve_effective_gate_policy, ProposalOperation,
+};
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync;
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,
     SqliteTaskProposalRepository as ProposalRepo,
 };
-use crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync;
 use ralphx_domain::repositories::IdeationSessionRepository;
 use tauri::Emitter;
 
@@ -99,7 +103,9 @@ pub fn parse_artifact_type(s: &str) -> Result<ArtifactType, String> {
 
 fn normalize_affected_paths(raw: &str) -> Result<Vec<String>, AppError> {
     let paths: Vec<String> = serde_json::from_str(raw).map_err(|e| {
-        AppError::Validation(format!("affected_paths must be a JSON array of strings: {e}"))
+        AppError::Validation(format!(
+            "affected_paths must be a JSON array of strings: {e}"
+        ))
     })?;
     let normalized = paths
         .into_iter()
@@ -125,7 +131,10 @@ fn validate_affected_paths_json(raw: Option<&String>) -> AppResult<()> {
 }
 
 fn proposal_requires_affected_paths(category: ProposalCategory) -> bool {
-    !matches!(category, ProposalCategory::Research | ProposalCategory::Design)
+    !matches!(
+        category,
+        ProposalCategory::Research | ProposalCategory::Design
+    )
 }
 
 // ============================================================================
@@ -356,7 +365,6 @@ pub async fn create_proposal_impl(
         );
     }
 
-
     // Process depends_on deps in separate db.run() calls (AD5: deadlock avoidance)
     // Each dep: validate session membership + cycle check + insert + emit
     let mut dep_errors: Vec<String> = Vec::new();
@@ -374,7 +382,10 @@ pub async fn create_proposal_impl(
                 continue;
             }
             Ok(None) => {
-                dep_errors.push(format!("Dep on {} rejected: proposal not found", dep_id.as_str()));
+                dep_errors.push(format!(
+                    "Dep on {} rejected: proposal not found",
+                    dep_id.as_str()
+                ));
                 continue;
             }
             Ok(Some(p)) => p,
@@ -382,12 +393,18 @@ pub async fn create_proposal_impl(
 
         // Session membership check
         if dep_proposal.session_id != session_id_clone {
-            dep_errors.push(format!("Dep on {} rejected: not in same session", dep_id.as_str()));
+            dep_errors.push(format!(
+                "Dep on {} rejected: not in same session",
+                dep_id.as_str()
+            ));
             continue;
         }
         // Self-dependency check
         if dep_proposal.id == proposal_id_clone {
-            dep_errors.push(format!("Dep on {} rejected: self-dependency not allowed", dep_id.as_str()));
+            dep_errors.push(format!(
+                "Dep on {} rejected: self-dependency not allowed",
+                dep_id.as_str()
+            ));
             continue;
         }
 
@@ -398,11 +415,18 @@ pub async fn create_proposal_impl(
             .await
         {
             Err(e) => {
-                dep_errors.push(format!("Dep on {} rejected: cycle check failed: {}", dep_id.as_str(), e));
+                dep_errors.push(format!(
+                    "Dep on {} rejected: cycle check failed: {}",
+                    dep_id.as_str(),
+                    e
+                ));
                 continue;
             }
             Ok(true) => {
-                dep_errors.push(format!("Dep on {} rejected: would create cycle", dep_id.as_str()));
+                dep_errors.push(format!(
+                    "Dep on {} rejected: would create cycle",
+                    dep_id.as_str()
+                ));
                 continue;
             }
             Ok(false) => {}
@@ -415,7 +439,11 @@ pub async fn create_proposal_impl(
             .await
         {
             Err(e) => {
-                dep_errors.push(format!("Dep on {} rejected: insert failed: {}", dep_id.as_str(), e));
+                dep_errors.push(format!(
+                    "Dep on {} rejected: insert failed: {}",
+                    dep_id.as_str(),
+                    e
+                ));
                 continue;
             }
             Ok(_) => {
@@ -466,7 +494,11 @@ pub async fn update_proposal_impl(
     proposal_id: &TaskProposalId,
     options: UpdateProposalOptions,
 ) -> AppResult<(TaskProposal, Vec<String>)> {
-    if let Some(raw) = options.affected_paths.as_ref().and_then(|value| value.as_ref()) {
+    if let Some(raw) = options
+        .affected_paths
+        .as_ref()
+        .and_then(|value| value.as_ref())
+    {
         validate_affected_paths_json(Some(raw))?;
     }
     let pid = proposal_id.as_str().to_string();
@@ -605,7 +637,6 @@ pub async fn update_proposal_impl(
         );
     }
 
-
     // Process add_depends_on and add_blocks deps in separate db.run() calls (AD5: deadlock avoidance)
     let mut dep_errors: Vec<String> = Vec::new();
     let had_dep_changes = !options.add_depends_on.is_empty() || !options.add_blocks.is_empty();
@@ -619,27 +650,78 @@ pub async fn update_proposal_impl(
         let sid = session_id_for_deps.clone();
 
         let dep_proposal = match state.task_proposal_repo.get_by_id(&dep_id).await {
-            Err(e) => { dep_errors.push(format!("add_depends_on {} rejected: {}", dep_id.as_str(), e)); continue; }
-            Ok(None) => { dep_errors.push(format!("add_depends_on {} rejected: proposal not found", dep_id.as_str())); continue; }
+            Err(e) => {
+                dep_errors.push(format!(
+                    "add_depends_on {} rejected: {}",
+                    dep_id.as_str(),
+                    e
+                ));
+                continue;
+            }
+            Ok(None) => {
+                dep_errors.push(format!(
+                    "add_depends_on {} rejected: proposal not found",
+                    dep_id.as_str()
+                ));
+                continue;
+            }
             Ok(Some(p)) => p,
         };
 
         if dep_proposal.session_id != sid {
-            dep_errors.push(format!("add_depends_on {} rejected: not in same session", dep_id.as_str())); continue;
+            dep_errors.push(format!(
+                "add_depends_on {} rejected: not in same session",
+                dep_id.as_str()
+            ));
+            continue;
         }
         if dep_proposal.id == pid {
-            dep_errors.push(format!("add_depends_on {} rejected: self-dependency", dep_id.as_str())); continue;
+            dep_errors.push(format!(
+                "add_depends_on {} rejected: self-dependency",
+                dep_id.as_str()
+            ));
+            continue;
         }
 
-        match state.proposal_dependency_repo.would_create_cycle(&pid, &dep_id).await {
-            Err(e) => { dep_errors.push(format!("add_depends_on {} rejected: cycle check failed: {}", dep_id.as_str(), e)); continue; }
-            Ok(true) => { dep_errors.push(format!("add_depends_on {} rejected: would create cycle", dep_id.as_str())); continue; }
+        match state
+            .proposal_dependency_repo
+            .would_create_cycle(&pid, &dep_id)
+            .await
+        {
+            Err(e) => {
+                dep_errors.push(format!(
+                    "add_depends_on {} rejected: cycle check failed: {}",
+                    dep_id.as_str(),
+                    e
+                ));
+                continue;
+            }
+            Ok(true) => {
+                dep_errors.push(format!(
+                    "add_depends_on {} rejected: would create cycle",
+                    dep_id.as_str()
+                ));
+                continue;
+            }
             Ok(false) => {}
         }
 
-        match state.proposal_dependency_repo.add_dependency(&pid, &dep_id, None, Some("agent")).await {
-            Err(e) => { dep_errors.push(format!("add_depends_on {} rejected: insert failed: {}", dep_id.as_str(), e)); continue; }
-            Ok(_) => { emit_dependency_added(state, pid.as_str(), dep_id.as_str()); }
+        match state
+            .proposal_dependency_repo
+            .add_dependency(&pid, &dep_id, None, Some("agent"))
+            .await
+        {
+            Err(e) => {
+                dep_errors.push(format!(
+                    "add_depends_on {} rejected: insert failed: {}",
+                    dep_id.as_str(),
+                    e
+                ));
+                continue;
+            }
+            Ok(_) => {
+                emit_dependency_added(state, pid.as_str(), dep_id.as_str());
+            }
         }
     }
 
@@ -650,29 +732,80 @@ pub async fn update_proposal_impl(
         let sid = session_id_for_deps.clone();
 
         let dep_proposal = match state.task_proposal_repo.get_by_id(&blocker_id).await {
-            Err(e) => { dep_errors.push(format!("add_blocks {} rejected: {}", blocker_id.as_str(), e)); continue; }
-            Ok(None) => { dep_errors.push(format!("add_blocks {} rejected: proposal not found", blocker_id.as_str())); continue; }
+            Err(e) => {
+                dep_errors.push(format!(
+                    "add_blocks {} rejected: {}",
+                    blocker_id.as_str(),
+                    e
+                ));
+                continue;
+            }
+            Ok(None) => {
+                dep_errors.push(format!(
+                    "add_blocks {} rejected: proposal not found",
+                    blocker_id.as_str()
+                ));
+                continue;
+            }
             Ok(Some(p)) => p,
         };
 
         if dep_proposal.session_id != sid {
-            dep_errors.push(format!("add_blocks {} rejected: not in same session", blocker_id.as_str())); continue;
+            dep_errors.push(format!(
+                "add_blocks {} rejected: not in same session",
+                blocker_id.as_str()
+            ));
+            continue;
         }
         if dep_proposal.id == pid {
-            dep_errors.push(format!("add_blocks {} rejected: self-dependency", blocker_id.as_str())); continue;
+            dep_errors.push(format!(
+                "add_blocks {} rejected: self-dependency",
+                blocker_id.as_str()
+            ));
+            continue;
         }
 
         // For add_blocks: blocker depends on pid, so cycle check is would_create_cycle(blocker, pid)
-        match state.proposal_dependency_repo.would_create_cycle(&blocker_id, &pid).await {
-            Err(e) => { dep_errors.push(format!("add_blocks {} rejected: cycle check failed: {}", blocker_id.as_str(), e)); continue; }
-            Ok(true) => { dep_errors.push(format!("add_blocks {} rejected: would create cycle", blocker_id.as_str())); continue; }
+        match state
+            .proposal_dependency_repo
+            .would_create_cycle(&blocker_id, &pid)
+            .await
+        {
+            Err(e) => {
+                dep_errors.push(format!(
+                    "add_blocks {} rejected: cycle check failed: {}",
+                    blocker_id.as_str(),
+                    e
+                ));
+                continue;
+            }
+            Ok(true) => {
+                dep_errors.push(format!(
+                    "add_blocks {} rejected: would create cycle",
+                    blocker_id.as_str()
+                ));
+                continue;
+            }
             Ok(false) => {}
         }
 
         // Insert: blocker depends on pid (reversed)
-        match state.proposal_dependency_repo.add_dependency(&blocker_id, &pid, None, Some("agent")).await {
-            Err(e) => { dep_errors.push(format!("add_blocks {} rejected: insert failed: {}", blocker_id.as_str(), e)); continue; }
-            Ok(_) => { emit_dependency_added(state, blocker_id.as_str(), pid.as_str()); }
+        match state
+            .proposal_dependency_repo
+            .add_dependency(&blocker_id, &pid, None, Some("agent"))
+            .await
+        {
+            Err(e) => {
+                dep_errors.push(format!(
+                    "add_blocks {} rejected: insert failed: {}",
+                    blocker_id.as_str(),
+                    e
+                ));
+                continue;
+            }
+            Ok(_) => {
+                emit_dependency_added(state, blocker_id.as_str(), pid.as_str());
+            }
         }
     }
 
@@ -730,10 +863,8 @@ pub async fn archive_proposal_impl(
             let session_id = IdeationSessionId::from_string(session_id_str);
 
             // Guard: reject mutations on Archived/Accepted sessions (bug fix: HTTP delete was ungated)
-            let session =
-                SessionRepo::get_by_id_sync(conn, session_id.as_str())?.ok_or_else(|| {
-                    AppError::NotFound(format!("Session {} not found", session_id))
-                })?;
+            let session = SessionRepo::get_by_id_sync(conn, session_id.as_str())?
+                .ok_or_else(|| AppError::NotFound(format!("Session {} not found", session_id)))?;
             assert_session_mutable(&session)?;
 
             // Verification gate: block delete if verification in progress or needs revision
@@ -784,7 +915,6 @@ pub async fn archive_proposal_impl(
             serde_json::json!({ "proposalId": proposal_id.as_str() }),
         );
     }
-
 
     Ok(session_id)
 }
@@ -886,7 +1016,12 @@ pub async fn finalize_proposals_impl(
             .ideation_settings_repo
             .get_settings()
             .await
-            .map_err(|e| AppError::Database(format!("Failed to fetch ideation settings for acceptance gate: {}", e)))?;
+            .map_err(|e| {
+                AppError::Database(format!(
+                    "Failed to fetch ideation settings for acceptance gate: {}",
+                    e
+                ))
+            })?;
         let effective_policy = resolve_effective_gate_policy(&ideation_settings, session.origin);
         if effective_policy.require_accept_for_finalize {
             // Set acceptance_status to Pending (CAS: only if currently None)
@@ -1155,10 +1290,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
     let mut blocked_by: Vec<crate::domain::entities::TaskDependencySummary> = Vec::new();
     for blocker_id in &blocker_ids {
         if let Some(blocker_task) = state.task_repo.get_by_id(blocker_id).await? {
-            if !blocker_task
-                .internal_status
-                .is_active_dependency_blocker()
-            {
+            if !blocker_task.internal_status.is_active_dependency_blocker() {
                 continue;
             }
             blocked_by.push(crate::domain::entities::TaskDependencySummary {

@@ -77,6 +77,26 @@ describe("AgentsShellLayout", () => {
     expect(splitContainer.style.backgroundColor).toBe("var(--app-content-bg)");
   });
 
+  it("renders an optional footer below the split content and outside the sidebar", () => {
+    render(
+      <AgentsShellLayout
+        {...buildProps({
+          footer: <div data-testid="agents-execution-footer">footer</div>,
+        })}
+      />
+    );
+
+    const contentColumn = screen.getByTestId("agents-content-column");
+    const splitContainer = screen.getByTestId("agents-split-container");
+    const footerShell = screen.getByTestId("agents-footer-shell");
+    const sidebarContainer = screen.getByTestId("agents-sidebar-container");
+
+    expect(contentColumn).toContainElement(splitContainer);
+    expect(contentColumn).toContainElement(footerShell);
+    expect(footerShell).toContainElement(screen.getByTestId("agents-execution-footer"));
+    expect(sidebarContainer).not.toContainElement(footerShell);
+  });
+
   it("uses an animated transition when suppressSidebarTransition is false", () => {
     render(<AgentsShellLayout {...buildProps()} />);
 

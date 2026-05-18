@@ -91,6 +91,13 @@ pub struct AgentConversationWorkspace {
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
+    pub pr_autofix_enabled: bool,
+    pub pr_auto_merge_desired: bool,
+    pub pr_auto_merge_method: String,
+    pub pr_auto_merge_current: Option<bool>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_summary: Option<String>,
+    pub pr_supervision_updated_at: Option<DateTime<Utc>>,
     pub status: AgentConversationWorkspaceStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -125,6 +132,13 @@ impl AgentConversationWorkspace {
             publication_pr_url: None,
             publication_pr_status: None,
             publication_push_status: None,
+            pr_autofix_enabled: false,
+            pr_auto_merge_desired: false,
+            pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
+            pr_auto_merge_current: None,
+            pr_supervision_status: None,
+            pr_supervision_summary: None,
+            pr_supervision_updated_at: None,
             status: AgentConversationWorkspaceStatus::Active,
             created_at: now,
             updated_at: now,
@@ -134,7 +148,25 @@ impl AgentConversationWorkspace {
     pub fn is_execution_owned(&self) -> bool {
         self.linked_plan_branch_id.is_some()
     }
+
+    pub fn has_terminal_publication_pr_status(&self) -> bool {
+        is_terminal_publication_pr_status(self.publication_pr_status.as_deref())
+    }
+
+    pub fn has_pr_status_pollable_push_status(&self) -> bool {
+        is_pr_status_pollable_push_status(self.publication_push_status.as_deref())
+    }
 }
+
+pub fn is_terminal_publication_pr_status(status: Option<&str>) -> bool {
+    matches!(status, Some("merged" | "closed"))
+}
+
+pub fn is_pr_status_pollable_push_status(status: Option<&str>) -> bool {
+    matches!(status, None | Some("pushed" | "refreshed"))
+}
+
+pub const DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD: &str = "squash";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentConversationWorkspacePublicationEvent {

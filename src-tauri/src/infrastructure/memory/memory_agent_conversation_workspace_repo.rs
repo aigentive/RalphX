@@ -8,6 +8,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrDescription, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -146,6 +147,61 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(())
     }
 
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.pr_autofix_enabled = autofix_enabled;
+            workspace.pr_auto_merge_desired = auto_merge_desired;
+            let method = auto_merge_method.trim();
+            workspace.pr_auto_merge_method = if method.is_empty() {
+                DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()
+            } else {
+                method.to_string()
+            };
+            workspace.pr_supervision_status = Some(
+                if autofix_enabled || auto_merge_desired {
+                    "monitoring"
+                } else {
+                    "disabled"
+                }
+                .to_string(),
+            );
+            workspace.pr_supervision_summary = (autofix_enabled || auto_merge_desired)
+                .then(|| "RalphX PR supervision is enabled.".to_string());
+            let now = Utc::now();
+            workspace.pr_supervision_updated_at = Some(now);
+            workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
+    async fn update_pr_auto_merge_state(
+        &self,
+        conversation_id: &ChatConversationId,
+        auto_merge_current: Option<bool>,
+        status: Option<&str>,
+        summary: Option<&str>,
+    ) -> AppResult<()> {
+        if let Some(workspace) = self.workspaces.write().await.get_mut(conversation_id) {
+            workspace.pr_auto_merge_current = auto_merge_current;
+            if let Some(status) = status {
+                workspace.pr_supervision_status = Some(status.to_string());
+            }
+            if let Some(summary) = summary {
+                workspace.pr_supervision_summary = Some(summary.to_string());
+            }
+            let now = Utc::now();
+            workspace.pr_supervision_updated_at = Some(now);
+            workspace.updated_at = now;
+        }
+        Ok(())
+    }
+
     async fn update_status(
         &self,
         conversation_id: &ChatConversationId,
@@ -229,14 +285,8 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
         && workspace.mode == AgentConversationWorkspaceMode::Edit
         && workspace.linked_plan_branch_id.is_none()
         && workspace.publication_pr_number.is_some()
-        && matches!(
-            workspace.publication_push_status.as_deref(),
-            None | Some("pushed")
-        )
-        && !matches!(
-            workspace.publication_pr_status.as_deref(),
-            Some("closed") | Some("merged")
-        )
+        && workspace.has_pr_status_pollable_push_status()
+        && !workspace.has_terminal_publication_pr_status()
 }
 
 fn is_active_direct_external_pr_reconciliation_candidate(
@@ -380,6 +430,32 @@ mod tests {
             format!("ralphx/demo/agent-{id}"),
             format!("/tmp/ralphx-demo-{id}"),
         )
+    }
+
+    #[tokio::test]
+    async fn active_direct_published_workspaces_include_refreshed_prs_for_status_polling() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let mut pushed = candidate_workspace("pushed");
+        pushed.publication_pr_number = Some(12);
+        pushed.publication_pr_status = Some("open".to_string());
+        pushed.publication_push_status = Some("pushed".to_string());
+        let mut refreshed = candidate_workspace("refreshed");
+        refreshed.publication_pr_number = Some(13);
+        refreshed.publication_pr_status = Some("open".to_string());
+        refreshed.publication_push_status = Some("refreshed".to_string());
+
+        repo.create_or_update(pushed.clone()).await.unwrap();
+        repo.create_or_update(refreshed.clone()).await.unwrap();
+
+        let workspaces = repo.list_active_direct_published_workspaces().await.unwrap();
+
+        assert_eq!(workspaces.len(), 2);
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == pushed.conversation_id));
+        assert!(workspaces
+            .iter()
+            .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
     }
 
     #[tokio::test]

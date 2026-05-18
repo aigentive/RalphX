@@ -234,15 +234,16 @@ describe("safeTrace — file logging", () => {
             process.chdir(originalCwd);
         }
     });
-    it("does not use a configured trace dir as a filesystem root", () => {
+    it("uses configured app-owned trace dir when it is outside the target project", () => {
         const traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-mcp-trace-root-"));
         const traceDir = path.join(traceRoot, "logs", "mcp-proxy");
         const targetProject = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-target-project-"));
+        fs.mkdirSync(traceDir, { recursive: true });
         process.env.RALPHX_MCP_TRACE_DIR = traceDir;
         process.env.RALPHX_WORKING_DIRECTORY = targetProject;
         const logPath = getTraceLogPath();
-        expect(logPath.startsWith(traceDir + path.sep)).toBe(false);
-        expect(fs.existsSync(traceDir)).toBe(false);
+        expect(logPath.startsWith(fs.realpathSync.native(traceDir) + path.sep)).toBe(true);
+        expect(fs.existsSync(traceDir)).toBe(true);
         expect(fs.existsSync(path.join(targetProject, ".artifacts"))).toBe(false);
     });
     it("continues without throwing when configured trace dir cannot be created", () => {
@@ -294,6 +295,38 @@ describe("safeTrace — file logging", () => {
         finally {
             process.chdir(originalCwd);
         }
+    });
+    it("rejects trace dir overrides without the fixed mcp-proxy leaf", () => {
+        const traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-mcp-trace-root-"));
+        const unsafeTraceDir = path.join(traceRoot, "logs", "custom-leaf");
+        process.env.RALPHX_MCP_TRACE_DIR = unsafeTraceDir;
+        safeTrace("tool.request");
+        const logPath = getTraceLogPath();
+        expect(logPath.startsWith(unsafeTraceDir + path.sep)).toBe(false);
+        expect(fs.existsSync(unsafeTraceDir)).toBe(false);
+    });
+    it("rejects relative trace dir overrides", () => {
+        const unsafeTraceDir = path.join("relative", "logs", "mcp-proxy");
+        process.env.RALPHX_MCP_TRACE_DIR = unsafeTraceDir;
+        safeTrace("tool.request");
+        const logPath = getTraceLogPath();
+        expect(logPath.startsWith(unsafeTraceDir + path.sep)).toBe(false);
+        expect(fs.existsSync(unsafeTraceDir)).toBe(false);
+    });
+    it("rejects trace dir overrides symlinked into the target working directory", () => {
+        const traceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-mcp-trace-root-"));
+        const targetProject = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-target-project-"));
+        const logsDir = path.join(traceRoot, "logs");
+        const unsafeTraceDir = path.join(logsDir, "mcp-proxy");
+        fs.mkdirSync(logsDir, { recursive: true });
+        fs.symlinkSync(targetProject, unsafeTraceDir, "dir");
+        process.env.RALPHX_MCP_TRACE_DIR = unsafeTraceDir;
+        process.env.RALPHX_WORKING_DIRECTORY = targetProject;
+        safeTrace("tool.request");
+        const logPath = getTraceLogPath();
+        expect(logPath.startsWith(targetProject + path.sep)).toBe(false);
+        expect(logPath.startsWith(unsafeTraceDir + path.sep)).toBe(false);
+        expect(fs.existsSync(path.join(targetProject, ".artifacts"))).toBe(false);
     });
     it("normalizes non-allowlisted event names", () => {
         safeTrace("tool.request:user-supplied");

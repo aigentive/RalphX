@@ -22,7 +22,9 @@ import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js'
 import {
   callAgentWorkspaceTool,
   callCheckAgentWorkspacePublishReadinessTool,
+  callCompleteAgentWorkspacePrFixTool,
   callCompleteAgentWorkspaceRepairTool,
+  callGetAgentWorkspacePrFixContextTool,
   callGetAgentWorkspacePublishStatusTool,
   callPublishAgentWorkspaceTool,
   callSubmitAgentWorkspacePrDescriptionTool,
@@ -52,6 +54,7 @@ import {
   PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
   REVIEWER,
   GENERAL_WORKER,
+  AGENT_WORKSPACE_PR_FIXER,
   WORKER,
   MERGER,
   CHAT_PROJECT,
@@ -1295,6 +1298,40 @@ describe('agent workspace publish tools', () => {
   });
 });
 
+describe('agent workspace PR fix tools', () => {
+  const allTools = getAllTools();
+  const prFixTools = [
+    'get_agent_workspace_pr_fix_context',
+    'complete_agent_workspace_pr_fix',
+  ];
+
+  it.each(prFixTools)('%s should exist in ALL_TOOLS', (toolName) => {
+    expect(allTools.find((t) => t.name === toolName)).toBeDefined();
+  });
+
+  it('requires a conversation id and summary when completing a PR fix', () => {
+    const tool = allTools.find((t) => t.name === 'complete_agent_workspace_pr_fix');
+
+    expect(tool?.inputSchema.type).toBe('object');
+    expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('summary');
+    expect(tool?.inputSchema.properties).toHaveProperty('blocker');
+    expect(tool?.inputSchema.required).toEqual(
+      expect.arrayContaining(['conversation_id', 'summary'])
+    );
+  });
+
+  it('exposes PR fix tools only through the PR fixer canonical metadata', () => {
+    setAgentType(AGENT_WORKSPACE_PR_FIXER);
+
+    const toolNames = getFilteredTools().map((tool) => tool.name);
+    expect(new Set(toolNames)).toEqual(new Set(loadCanonicalMcpTools(AGENT_WORKSPACE_PR_FIXER)));
+    for (const toolName of prFixTools) {
+      expect(toolNames).toContain(toolName);
+    }
+  });
+});
+
 describe('agent workspace PR description tool', () => {
   const allTools = getAllTools();
   const tool = allTools.find((t) => t.name === 'submit_agent_workspace_pr_description');
@@ -1391,6 +1428,37 @@ describe('agent workspace publish tool transport', () => {
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/publish', {});
   });
 
+  it('routes PR fix context reads to the agent workspace endpoint', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callGetAgentWorkspacePrFixContextTool(callTauriGet, {
+        conversation_id: 'conversation-1',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauriGet).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-1/pr-fix-context'
+    );
+  });
+
+  it('routes PR fix completion to the agent workspace endpoint', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCompleteAgentWorkspacePrFixTool(callTauri, {
+        conversation_id: 'conversation-1',
+        summary: 'Fixed failing tests',
+        blocker: 'Needs maintainer decision',
+      })
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/complete-pr-fix', {
+      summary: 'Fixed failing tests',
+      blocker: 'Needs maintainer decision',
+    });
+  });
+
   it.each([
     [
       'get_agent_workspace_publish_status',
@@ -1415,6 +1483,21 @@ describe('agent workspace publish tool transport', () => {
       },
     ],
     ['publish_agent_workspace', 'post', 'agent-workspaces/conversation-1/publish', {}],
+    [
+      'get_agent_workspace_pr_fix_context',
+      'get',
+      'agent-workspaces/conversation-1/pr-fix-context',
+      undefined,
+    ],
+    [
+      'complete_agent_workspace_pr_fix',
+      'post',
+      'agent-workspaces/conversation-1/complete-pr-fix',
+      {
+        summary: 'Resolved conflicts',
+        blocker: 'Needs maintainer decision',
+      },
+    ],
     [
       'complete_agent_workspace_repair',
       'post',
@@ -1449,6 +1532,7 @@ describe('agent workspace publish tool transport', () => {
         resolved_base_ref: 'main',
         resolved_base_commit: 'b'.repeat(40),
         summary: 'Resolved conflicts',
+        blocker: 'Needs maintainer decision',
         title: 'Generated title',
         body_markdown: '## Summary\n\nGenerated body',
       };

@@ -14,22 +14,22 @@ use crate::infrastructure::sqlite::SqliteIdeationSessionRepository as SessionRep
 
 use super::super::types::{
     AutoAcceptVerificationRequest, ConfirmVerificationRequest, ConfirmationStatusResponse,
-    DismissVerificationRequest, HttpError, HttpServerState,
-    PendingVerificationConfirmationItem, PendingVerificationConfirmationsResponse,
-    SpecialistEntryResponse, SpecialistsResponse, VerificationActionResponse,
+    DismissVerificationRequest, HttpError, HttpServerState, PendingVerificationConfirmationItem,
+    PendingVerificationConfirmationsResponse, SpecialistEntryResponse, SpecialistsResponse,
+    VerificationActionResponse,
 };
 
 mod auto_accept;
-mod confirmation_status;
 mod confirm;
+mod confirmation_status;
 mod dismiss;
 mod helpers;
 mod pending_confirmations;
 mod specialist_registry;
 
 pub use auto_accept::set_auto_accept_verification;
-pub use confirmation_status::get_confirmation_status;
 pub use confirm::confirm_verification;
+pub use confirmation_status::get_confirmation_status;
 pub use dismiss::dismiss_verification;
 pub use helpers::handle_verification_spawn_failure as handle_spawn_failure;
 pub use helpers::spawn_verification_agent;

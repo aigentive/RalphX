@@ -68,9 +68,7 @@ pub async fn update_global_settings(
         .set_global_ideation_max(updated.global_ideation_max);
     state
         .execution_state
-        .set_allow_ideation_borrow_idle_execution(
-            updated.allow_ideation_borrow_idle_execution,
-        );
+        .set_allow_ideation_borrow_idle_execution(updated.allow_ideation_borrow_idle_execution);
 
     Ok(Json(GlobalSettingsHttpResponse {
         global_max_concurrent: updated.global_max_concurrent,

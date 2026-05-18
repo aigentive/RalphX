@@ -36,6 +36,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
@@ -53,6 +54,12 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
   getWorkspaceCommitDiffMock: vi.fn(),
+  getWorkspaceStagedChangesMock: vi.fn(),
+  getWorkspaceUnstagedChangesMock: vi.fn(),
+  getWorkspaceCumulativeChangesMock: vi.fn(),
+  getWorkspaceStagedDiffMock: vi.fn(),
+  getWorkspaceUnstagedDiffMock: vi.fn(),
+  getWorkspaceCumulativeDiffMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
@@ -124,6 +131,7 @@ const {
   listAgentConversationWorkspacesByProjectMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  setAgentConversationWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   switchAgentConversationModeMock,
   sendAgentMessageMock,
@@ -141,6 +149,12 @@ const {
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
   getWorkspaceCommitDiffMock,
+  getWorkspaceStagedChangesMock,
+  getWorkspaceUnstagedChangesMock,
+  getWorkspaceCumulativeChangesMock,
+  getWorkspaceStagedDiffMock,
+  getWorkspaceUnstagedDiffMock,
+  getWorkspaceCumulativeDiffMock,
   toastErrorMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
@@ -397,6 +411,8 @@ vi.mock("@/api/chat", () => ({
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
+      setAgentConversationWorkspacePrSupervisionMock(...args),
     precomputeAgentConversationWorkspacePrDescription: (...args: unknown[]) =>
       precomputePrDescriptionMock(...args),
     switchAgentConversationMode: (...args: unknown[]) =>
@@ -442,6 +458,18 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceCommitChangesMock(...args),
     getAgentConversationWorkspaceCommitFileDiff: (...args: unknown[]) =>
       getWorkspaceCommitDiffMock(...args),
+    getAgentConversationWorkspaceStagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceStagedChangesMock(...args),
+    getAgentConversationWorkspaceUnstagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceUnstagedChangesMock(...args),
+    getAgentConversationWorkspaceCumulativeFileChanges: (...args: unknown[]) =>
+      getWorkspaceCumulativeChangesMock(...args),
+    getAgentConversationWorkspaceStagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceStagedDiffMock(...args),
+    getAgentConversationWorkspaceUnstagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceUnstagedDiffMock(...args),
+    getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
+      getWorkspaceCumulativeDiffMock(...args),
   },
 }));
 
@@ -543,6 +571,7 @@ vi.mock("./AgentsArtifactPane", () => {
     conversation,
     activeTab,
     focusedIdeationSessionId,
+    publishFocusRequest,
     onClose,
     onFocusVerificationSession,
     onPublishWorkspace,
@@ -550,6 +579,7 @@ vi.mock("./AgentsArtifactPane", () => {
     conversation: AgentConversation | null;
     activeTab?: string;
     focusedIdeationSessionId?: string | null;
+    publishFocusRequest?: { filePath: string; mode: string } | null;
     onClose?: () => void;
     onFocusVerificationSession?: (parentSessionId: string, childSessionId: string) => void;
     onPublishWorkspace?: (conversationId: string) => Promise<void>;
@@ -558,6 +588,8 @@ vi.mock("./AgentsArtifactPane", () => {
       data-testid="agents-artifact-pane"
       data-active-tab={activeTab ?? ""}
       data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
+      data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
+      data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
     >
       {onClose ? (
         <button type="button" data-testid="agents-artifact-pane-close" onClick={onClose}>
@@ -841,9 +873,13 @@ export function resetAgentSessionState(
   });
 }
 
-export function renderAgentsView() {
+export function renderAgentsView(options: { footer?: ReactNode } = {}) {
   return renderWithProviders(
-    <AgentsView projectId="project-1" onCreateProject={vi.fn()} />
+    <AgentsView
+      projectId="project-1"
+      onCreateProject={vi.fn()}
+      {...(options.footer !== undefined ? { footer: options.footer } : {})}
+    />
   );
 }
 
@@ -869,6 +905,7 @@ export function setupAgentsViewTest() {
   listAgentConversationWorkspacesByProjectMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  setAgentConversationWorkspacePrSupervisionMock.mockReset();
   switchAgentConversationModeMock.mockReset();
   sendAgentMessageMock.mockReset();
   createConversationMock.mockReset();
@@ -934,6 +971,12 @@ export function setupAgentsViewTest() {
   getWorkspaceCommitsMock.mockResolvedValue([]);
   getWorkspaceCommitChangesMock.mockResolvedValue([]);
   getWorkspaceCommitDiffMock.mockResolvedValue("");
+  getWorkspaceStagedChangesMock.mockResolvedValue([]);
+  getWorkspaceUnstagedChangesMock.mockResolvedValue([]);
+  getWorkspaceCumulativeChangesMock.mockResolvedValue([]);
+  getWorkspaceStagedDiffMock.mockResolvedValue("");
+  getWorkspaceUnstagedDiffMock.mockResolvedValue("");
+  getWorkspaceCumulativeDiffMock.mockResolvedValue("");
   precomputePrDescriptionMock.mockResolvedValue({
     conversationId: "conversation-1",
     status: "skipped",
@@ -967,6 +1010,33 @@ export function setupAgentsViewTest() {
     prNumber: 42,
     prUrl: "https://github.com/mock/project/pull/42",
   });
+  setAgentConversationWorkspacePrSupervisionMock.mockImplementation(
+    async (conversationId: string, input: { autoFixEnabled: boolean; autoMergeDesired: boolean }) => ({
+      conversationId,
+      projectId: "project-1",
+      mode: "edit",
+      baseRefKind: "project_default",
+      baseRef: "main",
+      baseDisplayName: "Project default (main)",
+      baseCommit: null,
+      branchName: `ralphx/demo/agent-${conversationId}`,
+      worktreePath: `/tmp/ralphx/${conversationId}`,
+      linkedIdeationSessionId: null,
+      linkedPlanBranchId: null,
+      publicationPrNumber: 42,
+      publicationPrUrl: "https://github.com/mock/project/pull/42",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      prAutofixEnabled: input.autoFixEnabled,
+      prAutoMergeDesired: input.autoMergeDesired,
+      prAutoMergeMethod: "squash",
+      prSupervisionStatus:
+        input.autoFixEnabled || input.autoMergeDesired ? "monitoring" : "disabled",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }),
+  );
   switchAgentConversationModeMock.mockResolvedValue({
     conversation: conversation({
       id: "conversation-1",

@@ -69,6 +69,34 @@ impl GitService {
         .await
     }
 
+    pub(crate) fn pull_request_head_review_ref(pr_number: i64) -> Option<String> {
+        (pr_number > 0).then(|| format!("refs/ralphx/pr-heads/{pr_number}"))
+    }
+
+    pub(crate) async fn fetch_pull_request_head_for_review(
+        repo: &Path,
+        pr_number: i64,
+    ) -> AppResult<Option<String>> {
+        let Some(dest_ref) = Self::pull_request_head_review_ref(pr_number) else {
+            return Ok(None);
+        };
+
+        let had_existing_ref = Self::ref_exists(repo, &dest_ref).await?;
+        let source_ref = format!("refs/pull/{pr_number}/head");
+        let refspec = format!("+{source_ref}:{dest_ref}");
+        let outcome =
+            Self::fetch_origin_with_lock(repo, &["fetch", "origin", &refspec], FetchLockMode::Wait)
+                .await?;
+
+        if (matches!(outcome, FetchOriginOutcome::Fetched) || had_existing_ref)
+            && Self::ref_exists(repo, &dest_ref).await?
+        {
+            return Ok(Some(dest_ref));
+        }
+
+        Ok(None)
+    }
+
     async fn fetch_origin_with_lock(
         repo: &Path,
         args: &[&str],

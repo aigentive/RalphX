@@ -25,8 +25,8 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
 
 use crate::application::agent_conversation_workspace::{
-    agent_name_for_workspace_mode, prepare_agent_conversation_workspace,
-    prepare_agent_conversation_workspace_with_setup_mode,
+    agent_name_for_workspace_mode, is_terminal_agent_conversation_publication_status,
+    prepare_agent_conversation_workspace, prepare_agent_conversation_workspace_with_setup_mode,
     resolve_agent_conversation_workspace_path_for_send,
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceSetupMode,
@@ -75,6 +75,7 @@ use crate::domain::entities::{
     AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
     ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
     IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     AgentWorkspacePrPublisher, ComposerProjectReference, QueuedMessage, RunningAgentKey,
@@ -193,11 +194,26 @@ pub struct AgentConversationWorkspaceResponse {
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
     pub publication_push_status: Option<String>,
+    pub pr_autofix_enabled: bool,
+    pub pr_auto_merge_desired: bool,
+    pub pr_auto_merge_method: String,
+    pub pr_auto_merge_current: Option<bool>,
+    pub pr_supervision_status: Option<String>,
+    pub pr_supervision_summary: Option<String>,
+    pub pr_supervision_updated_at: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
     pub mode_switch_locked: bool,
     pub mode_switch_lock_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationWorkspacePrSupervisionInput {
+    pub auto_fix_enabled: bool,
+    pub auto_merge_desired: bool,
+    pub auto_merge_method: Option<String>,
 }
 
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
@@ -222,6 +238,15 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             publication_pr_url: workspace.publication_pr_url,
             publication_pr_status: workspace.publication_pr_status,
             publication_push_status: workspace.publication_push_status,
+            pr_autofix_enabled: workspace.pr_autofix_enabled,
+            pr_auto_merge_desired: workspace.pr_auto_merge_desired,
+            pr_auto_merge_method: workspace.pr_auto_merge_method,
+            pr_auto_merge_current: workspace.pr_auto_merge_current,
+            pr_supervision_status: workspace.pr_supervision_status,
+            pr_supervision_summary: workspace.pr_supervision_summary,
+            pr_supervision_updated_at: workspace
+                .pr_supervision_updated_at
+                .map(|value| value.to_rfc3339()),
             status: workspace.status.to_string(),
             created_at: workspace.created_at.to_rfc3339(),
             updated_at: workspace.updated_at.to_rfc3339(),
@@ -856,6 +881,32 @@ impl AgentConversationWorkspaceFreshnessResponse {
             base_status: BaseStatus::Valid.as_str().to_string(),
             effective_base_ref: Some(base_ref),
             effective_base_display_name: base_display_name,
+            base_block_reason: None,
+        }
+    }
+
+    fn from_terminal_publication(
+        conversation_id: String,
+        freshness_scope: AgentWorkspaceFreshnessScope,
+        workspace: &AgentConversationWorkspace,
+    ) -> Self {
+        let target_base_commit = workspace.base_commit.clone().unwrap_or_default();
+        Self {
+            conversation_id,
+            freshness_scope: freshness_scope.as_str().to_string(),
+            base_ref: workspace.base_ref.clone(),
+            base_display_name: workspace.base_display_name.clone(),
+            target_ref: workspace.branch_name.clone(),
+            captured_base_commit: workspace.base_commit.clone(),
+            target_base_commit,
+            is_base_ahead: false,
+            has_uncommitted_changes: false,
+            unpublished_commit_count: Some(0),
+            remote_refreshed: false,
+            worktree_status_checked: false,
+            base_status: BaseStatus::Valid.as_str().to_string(),
+            effective_base_ref: Some(workspace.base_ref.clone()),
+            effective_base_display_name: workspace.base_display_name.clone(),
             base_block_reason: None,
         }
     }
@@ -3098,6 +3149,154 @@ pub async fn get_agent_conversation_workspace(
     }
 }
 
+fn normalize_agent_workspace_auto_merge_method(
+    method: Option<String>,
+) -> Result<String, String> {
+    let method = method
+        .unwrap_or_else(|| DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let method = if method.is_empty() {
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string()
+    } else {
+        method
+    };
+    match method.as_str() {
+        "squash" | "merge" | "rebase" => Ok(method),
+        _ => Err(format!(
+            "Unsupported auto-merge method '{method}'. Use squash, merge, or rebase."
+        )),
+    }
+}
+
+/// Update PR supervision preferences for a project-backed agent conversation.
+#[tauri::command]
+pub async fn set_agent_conversation_workspace_pr_supervision(
+    conversation_id: String,
+    input: AgentConversationWorkspacePrSupervisionInput,
+    state: State<'_, AppState>,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    set_agent_conversation_workspace_pr_supervision_for_state(conversation_id, input, state.inner())
+        .await
+}
+
+pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
+    conversation_id: String,
+    input: AgentConversationWorkspacePrSupervisionInput,
+    state: &AppState,
+) -> Result<AgentConversationWorkspaceResponse, String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let auto_merge_method =
+        normalize_agent_workspace_auto_merge_method(input.auto_merge_method)?;
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("Agent conversation workspace not found".to_string());
+    };
+
+    if workspace.has_terminal_publication_pr_status() {
+        return Err("PR supervision cannot be changed for a closed or merged PR".to_string());
+    }
+
+    let _workspace_changed_guard = state
+        .app_handle
+        .as_ref()
+        .map(|app| emit_workspace_changed_when_done(app, &conversation_id));
+
+    state
+        .agent_conversation_workspace_repo
+        .update_pr_supervision_preferences(
+            &conversation_id,
+            input.auto_fix_enabled,
+            input.auto_merge_desired,
+            &auto_merge_method,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let (Some(github), Some(pr_number)) = (
+        state.github_service.as_ref(),
+        workspace.publication_pr_number,
+    ) {
+        if input.auto_merge_desired {
+            if workspace.publication_pr_status.as_deref() == Some("draft") {
+                github
+                    .mark_pr_ready(Path::new(&workspace.worktree_path), pr_number)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            github
+                .enable_pr_auto_merge(
+                    Path::new(&workspace.worktree_path),
+                    pr_number,
+                    &auto_merge_method,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &conversation_id,
+                    Some(true),
+                    Some("monitoring"),
+                    Some("GitHub auto-merge is enabled for this PR."),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+        } else if workspace.pr_auto_merge_current == Some(true) {
+            github
+                .disable_pr_auto_merge(Path::new(&workspace.worktree_path), pr_number)
+                .await
+                .map_err(|e| e.to_string())?;
+            state
+                .agent_conversation_workspace_repo
+                .update_pr_auto_merge_state(
+                    &conversation_id,
+                    Some(false),
+                    Some("monitoring"),
+                    Some("GitHub auto-merge is disabled for this PR."),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_supervision",
+            if input.auto_fix_enabled || input.auto_merge_desired {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            if input.auto_fix_enabled && input.auto_merge_desired {
+                "RalphX will monitor PR failures/reviews and request GitHub auto-merge when possible."
+            } else if input.auto_fix_enabled {
+                "RalphX will monitor PR failures/reviews and request fixes when needed."
+            } else if input.auto_merge_desired {
+                "RalphX will request GitHub auto-merge when possible."
+            } else {
+                "RalphX PR supervision is disabled."
+            },
+            Some("pr_supervision_preferences".to_string()),
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let updated = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    agent_workspace_response_for_state(state, updated).await
+}
+
 /// Schedule a background publication reconciliation for a project-backed agent conversation.
 #[tauri::command]
 pub async fn reconcile_agent_conversation_workspace_publication(
@@ -3375,6 +3574,16 @@ async fn get_agent_conversation_workspace_freshness_for_state(
         "stale_publish_repair",
         phase_started_at,
     );
+    if is_terminal_agent_conversation_publication_status(workspace.publication_pr_status.as_deref())
+    {
+        return Ok(
+            AgentConversationWorkspaceFreshnessResponse::from_terminal_publication(
+                conversation_id.as_str(),
+                freshness_scope,
+                &workspace,
+            ),
+        );
+    }
 
     let phase_started_at = Instant::now();
     let project = state
@@ -5985,8 +6194,8 @@ pub async fn update_agent_conversation_title(
 mod tests {
     use super::{
         agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
-        agent_workspace_post_repair_action_from_events, apply_base_resolution_to_publish_target,
-        agent_workspace_response_for_state,
+        agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
+        apply_base_resolution_to_publish_target,
         build_agent_workspace_publish_repair_message_for_target,
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
@@ -6005,19 +6214,21 @@ mod tests {
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
         send_agent_workspace_publish_repair_message_for_target,
+        set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
         spawn_deferred_agent_workspace_repair_message, store_agent_workspace_freshness,
         switch_agent_conversation_mode_for_state, try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
-        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePublishTarget,
-        AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
-        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
-        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
-        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
-        AgentWorkspaceRepairRuntimeOverrides, DelegatedToolRuntimeSnapshot,
-        SwitchAgentConversationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
+        AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
+        AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
+        AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
+        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
+        AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
+        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
+        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
+        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
@@ -6043,6 +6254,7 @@ mod tests {
         ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
         ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
         MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::{
@@ -6216,6 +6428,13 @@ mod tests {
             publication_pr_url: None,
             publication_pr_status: None,
             publication_push_status: None,
+            pr_autofix_enabled: false,
+            pr_auto_merge_desired: false,
+            pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
+            pr_auto_merge_current: None,
+            pr_supervision_status: None,
+            pr_supervision_summary: None,
+            pr_supervision_updated_at: None,
             status: "active".to_string(),
             created_at: "2026-04-28T12:00:00+00:00".to_string(),
             updated_at: "2026-04-28T12:00:00+00:00".to_string(),
@@ -6270,6 +6489,13 @@ mod tests {
             publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
             publication_pr_status: Some("open".to_string()),
             publication_push_status: Some("needs_agent".to_string()),
+            pr_autofix_enabled: false,
+            pr_auto_merge_desired: false,
+            pr_auto_merge_method: DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
+            pr_auto_merge_current: None,
+            pr_supervision_status: None,
+            pr_supervision_summary: None,
+            pr_supervision_updated_at: None,
             status: "missing".to_string(),
             created_at: "2026-04-28T12:00:00+00:00".to_string(),
             updated_at: "2026-04-28T12:00:00+00:00".to_string(),
@@ -6624,6 +6850,175 @@ mod tests {
                 && event.summary.contains("Failed to send base update failure")
                 && event.classification.as_deref() == Some("operational")
         }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_enable_marks_draft_ready_and_enables_auto_merge() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(251);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/251".to_string());
+        workspace.publication_pr_status = Some("draft".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let response = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: true,
+                auto_merge_method: Some(" ReBase ".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect("PR supervision should enable");
+
+        assert!(response.pr_autofix_enabled);
+        assert!(response.pr_auto_merge_desired);
+        assert_eq!(response.pr_auto_merge_method, "rebase");
+        assert_eq!(response.pr_auto_merge_current, Some(true));
+        assert_eq!(
+            response.pr_supervision_status.as_deref(),
+            Some("monitoring")
+        );
+        assert!(response
+            .pr_supervision_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("auto-merge is enabled"));
+
+        let github_state = github.state();
+        assert_eq!(github_state.mark_pr_ready_calls, 1);
+        assert_eq!(github_state.last_mark_pr_ready_number, Some(251));
+        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        assert_eq!(
+            github_state.last_enable_pr_auto_merge_args.as_ref(),
+            Some(&(251, "rebase".to_string()))
+        );
+        drop(github_state);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "pr_supervision"
+                && event.status == "enabled"
+                && event.classification.as_deref() == Some("pr_supervision_preferences")
+        }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_disable_turns_off_existing_auto_merge() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(252);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_desired = true;
+        workspace.pr_auto_merge_current = Some(true);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let response = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: false,
+                auto_merge_desired: false,
+                auto_merge_method: None,
+            },
+            &state,
+        )
+        .await
+        .expect("PR supervision should disable");
+
+        assert!(!response.pr_autofix_enabled);
+        assert!(!response.pr_auto_merge_desired);
+        assert_eq!(
+            response.pr_auto_merge_method,
+            DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+        );
+        assert_eq!(response.pr_auto_merge_current, Some(false));
+        assert_eq!(
+            response.pr_supervision_status.as_deref(),
+            Some("monitoring")
+        );
+        assert!(response
+            .pr_supervision_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("auto-merge is disabled"));
+
+        let github_state = github.state();
+        assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
+        assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(252));
+        drop(github_state);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "pr_supervision"
+                && event.status == "disabled"
+                && event.summary == "RalphX PR supervision is disabled."
+        }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_rejects_terminal_pr_and_invalid_merge_method() {
+        let state = AppState::new_test();
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(253);
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let terminal_error = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: false,
+                auto_merge_method: Some("squash".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect_err("terminal PR supervision should be rejected");
+        assert!(terminal_error.contains("closed or merged PR"));
+
+        let method_error = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: true,
+                auto_merge_method: Some("octopus".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect_err("invalid auto-merge method should be rejected before workspace load");
+        assert!(method_error.contains("Unsupported auto-merge method"));
     }
 
     #[tokio::test]
@@ -7796,6 +8191,51 @@ mod tests {
         assert_eq!(second.freshness_scope, "local");
         assert_eq!(second.target_base_commit, first.target_base_commit);
         assert_eq!(second.target_ref, first.target_ref);
+    }
+
+    #[tokio::test]
+    async fn workspace_freshness_command_treats_merged_missing_workspace_as_terminal() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "freshness-merged-missing",
+            true,
+            Some(243),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        workspace.publication_pr_status = Some("merged".to_string());
+        workspace.publication_push_status = Some("pushed".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should update");
+        std::fs::remove_dir_all(&worktree_path).expect("worktree should be removed");
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_agent_conversation_workspace_freshness(
+            conversation_id.as_str(),
+            Some("local".to_string()),
+            app.state(),
+        )
+        .await
+        .expect("terminal workspace freshness should not require the removed worktree");
+
+        assert_eq!(response.freshness_scope, "local");
+        assert_eq!(response.base_status, "valid");
+        assert_eq!(response.unpublished_commit_count, Some(0));
+        assert!(!response.remote_refreshed);
+        assert!(!response.worktree_status_checked);
     }
 
     #[tokio::test]

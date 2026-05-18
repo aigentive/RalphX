@@ -82,6 +82,24 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         push_status: Option<&str>,
     ) -> AppResult<()>;
 
+    async fn update_pr_supervision_preferences(
+        &self,
+        conversation_id: &ChatConversationId,
+        autofix_enabled: bool,
+        auto_merge_desired: bool,
+        auto_merge_method: &str,
+    ) -> AppResult<()>;
+
+    async fn update_pr_auto_merge_state(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _auto_merge_current: Option<bool>,
+        _status: Option<&str>,
+        _summary: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn update_status(
         &self,
         conversation_id: &ChatConversationId,

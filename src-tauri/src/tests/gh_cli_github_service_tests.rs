@@ -6,9 +6,13 @@
 use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableState, PrStatus};
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
-    parse_pr_create_output, parse_pr_create_plain_output, parse_pr_review_decision_output,
-    parse_pr_review_feedback_output, parse_pr_status_output, parse_pr_sync_state_output,
-    sanitize_stderr_line, scrub_token_urls,
+    parse_check_run_annotations_output, parse_check_runs_output,
+    parse_code_scanning_alert_annotations_output, parse_pr_annotation_head_sha_output,
+    parse_pr_create_output, parse_pr_create_plain_output,
+    parse_pr_health_output, parse_pr_review_comment_annotations_output,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_status_output,
+    parse_pr_sync_state_output, sanitize_stderr_line, scrub_token_urls,
+    CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -177,6 +181,65 @@ fn parse_pr_sync_state_preserves_unknown_merge_state_conservatively() {
 }
 
 #[test]
+fn parse_pr_health_collects_rollup_comments_and_auto_merge() {
+    let view_json = r#"{
+        "state": "OPEN",
+        "mergeStateStatus": "UNSTABLE",
+        "mergeable": "MERGEABLE",
+        "isDraft": false,
+        "headRefName": "feature/pr-autofix",
+        "baseRefName": "main",
+        "headRefOid": "head-sha",
+        "baseRefOid": "base-sha",
+        "mergedAt": null,
+        "mergeCommit": null,
+        "reviewDecision": "CHANGES_REQUESTED",
+        "autoMergeRequest": {
+            "mergeMethod": "SQUASH",
+            "enabledBy": {"login": "maintainer"}
+        },
+        "statusCheckRollup": [
+            {
+                "__typename": "CheckRun",
+                "name": "CodeQL",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/owner/repo/actions/runs/1"
+            },
+            {
+                "__typename": "StatusContext",
+                "context": "codecov/project",
+                "state": "FAILURE",
+                "targetUrl": "https://codecov.io/gh/owner/repo/pull/7"
+            }
+        ]
+    }"#;
+    let comments_json = r#"[[
+        {
+            "id": 7001,
+            "body": "Codecov report: project coverage is below threshold.",
+            "html_url": "https://github.com/owner/repo/pull/7#issuecomment-7001",
+            "created_at": "2026-05-17T10:00:00Z",
+            "user": {"login": "codecov-commenter"}
+        }
+    ]]"#;
+
+    let health = parse_pr_health_output(view_json, comments_json).unwrap();
+
+    assert_eq!(health.sync_state.merge_state_status, Some(PrMergeStateStatus::Unstable));
+    assert_eq!(health.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
+    assert_eq!(health.checks.len(), 2);
+    assert_eq!(health.checks[0].name, "CodeQL");
+    assert_eq!(health.checks[1].name, "codecov/project");
+    assert_eq!(
+        health.auto_merge_request.as_ref().and_then(|request| request.merge_method.as_deref()),
+        Some("squash")
+    );
+    assert_eq!(health.issue_comments.len(), 1);
+    assert!(health.issue_comments[0].is_codecov);
+}
+
+#[test]
 fn parse_pr_review_decision_detects_requested_changes() {
     assert!(parse_pr_review_decision_output(r#"{"reviewDecision":"CHANGES_REQUESTED"}"#).unwrap());
     assert!(!parse_pr_review_decision_output(r#"{"reviewDecision":"APPROVED"}"#).unwrap());
@@ -264,6 +327,260 @@ fn parse_pr_review_feedback_ignores_resolved_requested_changes() {
 
     let feedback = parse_pr_review_feedback_output(reviews, "[]").unwrap();
     assert!(feedback.is_none());
+}
+
+#[test]
+fn parse_pr_review_comment_annotations_preserves_line_metadata() {
+    let comments = r#"[
+        [
+            {
+                "id": 201,
+                "path": "src/lib.rs",
+                "start_line": 15,
+                "line": 17,
+                "side": "RIGHT",
+                "body": "Nil case is still uncovered.",
+                "html_url": "https://github.com/owner/repo/pull/1#discussion_r201",
+                "created_at": "2026-04-22T08:00:00Z",
+                "user": {"login": "bob"}
+            },
+            {
+                "id": 202,
+                "path": "src/old.rs",
+                "line": null,
+                "original_line": 3,
+                "side": "LEFT",
+                "body": "Outdated comment.",
+                "user": {"login": "alice"}
+            }
+        ]
+    ]"#;
+
+    let annotations = parse_pr_review_comment_annotations_output(68, comments).unwrap();
+
+    assert_eq!(annotations.len(), 2);
+    assert_eq!(annotations[0].id, "review-comment:201");
+    assert_eq!(annotations[0].source, "review_comment");
+    assert_eq!(annotations[0].path.as_deref(), Some("src/lib.rs"));
+    assert_eq!(annotations[0].side.as_deref(), Some("right"));
+    assert_eq!(annotations[0].start_line, Some(15));
+    assert_eq!(annotations[0].end_line, Some(17));
+    assert_eq!(annotations[0].author.as_deref(), Some("bob"));
+    assert!(!annotations[0].is_outdated);
+    assert_eq!(annotations[1].path.as_deref(), Some("src/old.rs"));
+    assert_eq!(annotations[1].start_line, Some(3));
+    assert!(annotations[1].is_outdated);
+}
+
+#[test]
+fn parse_pr_annotation_head_sha_output_reads_head_ref_oid() {
+    let head_sha = parse_pr_annotation_head_sha_output(
+        r#"{"headRefOid":"d55a463ab09e880f9e5efa5260d4fa36307591a1"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        head_sha.as_deref(),
+        Some("d55a463ab09e880f9e5efa5260d4fa36307591a1")
+    );
+}
+
+#[test]
+fn parse_pr_annotation_head_sha_output_returns_none_for_missing_or_blank_sha() {
+    assert!(parse_pr_annotation_head_sha_output(r#"{}"#)
+        .unwrap()
+        .is_none());
+    assert!(
+        parse_pr_annotation_head_sha_output(r#"{"headRefOid":"  "}"#)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn parse_check_runs_output_accepts_single_object_and_skips_missing_ids() {
+    let runs = parse_check_runs_output(
+        r#"{
+            "check_runs": [
+                {"name": "missing id", "annotations_count": 10},
+                {"id": 902, "status": "queued"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, 902);
+    assert_eq!(runs[0].name, "GitHub check");
+    assert_eq!(runs[0].status.as_deref(), Some("queued"));
+    assert_eq!(runs[0].annotations_count, 0);
+}
+
+#[test]
+fn parse_check_run_annotations_normalizes_check_failures() {
+    let runs = parse_check_runs_output(
+        r#"[
+            {
+                "check_runs": [
+                    {
+                        "id": 901,
+                        "name": "CodeQL",
+                        "conclusion": "failure",
+                        "status": "completed",
+                        "html_url": "https://github.com/owner/repo/runs/901",
+                        "annotations_count": 1
+                    }
+                ]
+            }
+        ]"#,
+    )
+    .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].name, "CodeQL");
+    assert_eq!(runs[0].annotations_count, 1);
+
+    let annotations = parse_check_run_annotations_output(
+        &runs[0],
+        r#"[
+            [
+                {
+                    "path": "src/lib.rs",
+                    "start_line": 44,
+                    "end_line": 45,
+                    "annotation_level": "failure",
+                    "title": "Path injection",
+                    "message": "Validate externally influenced paths before use.",
+                    "blob_href": "https://github.com/owner/repo/blob/head/src/lib.rs#L44"
+                }
+            ]
+        ]"#,
+    )
+    .unwrap();
+
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].id, "check-run:901:0");
+    assert_eq!(annotations[0].source, "check_run");
+    assert_eq!(annotations[0].check_name.as_deref(), Some("CodeQL"));
+    assert_eq!(annotations[0].path.as_deref(), Some("src/lib.rs"));
+    assert_eq!(annotations[0].start_line, Some(44));
+    assert_eq!(annotations[0].end_line, Some(45));
+    assert_eq!(annotations[0].level, "failure");
+}
+
+#[test]
+fn parse_check_run_annotations_uses_raw_details_and_run_url_fallbacks() {
+    let run = CheckRunAnnotationSource {
+        id: 902,
+        name: "lint".to_string(),
+        conclusion: None,
+        status: Some("completed".to_string()),
+        html_url: Some("https://github.com/owner/repo/runs/902".to_string()),
+        annotations_count: 1,
+    };
+
+    let annotations = parse_check_run_annotations_output(
+        &run,
+        r#"[
+            {
+                "path": "src/main.rs",
+                "start_line": 8,
+                "raw_details": "clippy reported a lint"
+            }
+        ]"#,
+    )
+    .unwrap();
+
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].id, "check-run:902:0");
+    assert_eq!(annotations[0].end_line, Some(8));
+    assert_eq!(annotations[0].level, "warning");
+    assert_eq!(annotations[0].status.as_deref(), Some("completed"));
+    assert_eq!(annotations[0].message, "clippy reported a lint");
+    assert_eq!(
+        annotations[0].url.as_deref(),
+        Some("https://github.com/owner/repo/runs/902")
+    );
+}
+
+#[test]
+fn parse_code_scanning_alert_annotations_normalizes_codeql_locations() {
+    let annotations = parse_code_scanning_alert_annotations_output(
+        r#"[
+            [
+                {
+                    "number": 7,
+                    "created_at": "2026-04-22T08:00:00Z",
+                    "html_url": "https://github.com/owner/repo/security/code-scanning/7",
+                    "state": "open",
+                    "rule": {
+                        "id": "rust/path-injection",
+                        "severity": "error",
+                        "security_severity_level": "high",
+                        "description": "Filesystem path injection"
+                    },
+                    "tool": {"name": "CodeQL"},
+                    "most_recent_instance": {
+                        "message": {"text": "This path depends on user input."},
+                        "location": {
+                            "path": "src-tauri/src/lib.rs",
+                            "start_line": 22,
+                            "end_line": 23,
+                            "start_column": 5,
+                            "end_column": 12
+                        }
+                    }
+                }
+            ]
+        ]"#,
+    )
+    .unwrap();
+
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].id, "code-scanning:7");
+    assert_eq!(annotations[0].source, "code_scanning");
+    assert_eq!(annotations[0].check_name.as_deref(), Some("CodeQL"));
+    assert_eq!(annotations[0].path.as_deref(), Some("src-tauri/src/lib.rs"));
+    assert_eq!(annotations[0].start_line, Some(22));
+    assert_eq!(annotations[0].end_line, Some(23));
+    assert_eq!(annotations[0].level, "high");
+    assert_eq!(annotations[0].message, "This path depends on user input.");
+}
+
+#[test]
+fn parse_code_scanning_alert_annotations_falls_back_to_rule_name_and_skips_missing_instances() {
+    let annotations = parse_code_scanning_alert_annotations_output(
+        r#"[
+            {
+                "number": 1,
+                "rule": {"description": "No instance"}
+            },
+            {
+                "number": "A-2",
+                "html_url": "https://github.com/owner/repo/security/code-scanning/2",
+                "state": "open",
+                "rule": {
+                    "name": "Unchecked path construction"
+                },
+                "most_recent_instance": {
+                    "location": {
+                        "path": "src-tauri/src/main.rs",
+                        "start_line": 31
+                    }
+                }
+            }
+        ]"#,
+    )
+    .unwrap();
+
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].id, "code-scanning:A-2");
+    assert_eq!(
+        annotations[0].title.as_deref(),
+        Some("Unchecked path construction")
+    );
+    assert_eq!(annotations[0].message, "Unchecked path construction");
+    assert_eq!(annotations[0].level, "warning");
+    assert_eq!(annotations[0].check_name.as_deref(), Some("Code scanning"));
+    assert_eq!(annotations[0].end_line, Some(31));
 }
 
 // ── sanitize_stderr_line ───────────────────────────────────────────────────
@@ -615,7 +932,40 @@ mod mock_roundtrip {
             vec![vec!["pr", "edit", "68", "--base", "main"]
                 .into_iter()
                 .map(str::to_string)
-                .collect::<Vec<_>>()]
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_pr_diff_patch_uses_pr_url_and_disables_color() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let patch = service
+            .get_pr_diff_patch(
+                Path::new("/tmp"),
+                68,
+                Some("https://github.com/owner/repo/pull/68"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(patch, "diff --git a/src/lib.rs b/src/lib.rs");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "diff",
+                "https://github.com/owner/repo/pull/68",
+                "--patch",
+                "--color",
+                "never",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
         );
     }
 
@@ -744,6 +1094,339 @@ mod mock_roundtrip {
             .map(str::to_string)
             .collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_health_uses_view_and_issue_comments_api() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(vec![r#"{
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "mergeable": "MERGEABLE",
+                "isDraft": false,
+                "headRefName": "feature",
+                "baseRefName": "main",
+                "statusCheckRollup": [],
+                "autoMergeRequest": null,
+                "reviewDecision": "APPROVED"
+            }"#.to_string()]),
+            Ok(vec!["[]".to_string()]),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let health = service.fetch_pr_health(Path::new("/tmp"), 68).await.unwrap();
+
+        assert_eq!(health.sync_state.head_ref_name, "feature");
+        assert_eq!(health.review_decision.as_deref(), Some("APPROVED"));
+        let calls = runner.gh_calls();
+        assert_eq!(
+            calls[0],
+            vec![
+                "pr",
+                "view",
+                "68",
+                "--json",
+                "state,mergeStateStatus,mergeable,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,reviewDecision,statusCheckRollup,autoMergeRequest",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls[1],
+            vec![
+                "api",
+                "repos/{owner}/{repo}/issues/68/comments",
+                "--paginate",
+                "--slurp",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_merge_commands_use_selected_method() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![]), Ok(vec![])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        service
+            .enable_pr_auto_merge(Path::new("/tmp"), 68, "squash")
+            .await
+            .unwrap();
+        service
+            .disable_pr_auto_merge(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            runner.gh_calls(),
+            vec![
+                vec!["pr", "merge", "68", "--auto", "--squash"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+                vec!["pr", "merge", "68", "--disable-auto"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_diff_annotations_collects_review_and_check_run_annotations() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Ok(vec![r#"[[
+                    {
+                        "id": 1001,
+                        "path": "src/lib.rs",
+                        "line": 10,
+                        "side": "RIGHT",
+                        "body": "This still needs a guard.",
+                        "user": {"login": "octocat"}
+                    }
+                ]]"#
+            .to_string()]),
+            Ok(vec![r#"[[
+                    {
+                        "number": 9,
+                        "html_url": "https://github.com/owner/repo/security/code-scanning/9",
+                        "state": "open",
+                        "rule": {
+                            "id": "rust/path-injection",
+                            "severity": "error",
+                            "security_severity_level": "high",
+                            "description": "Filesystem path injection"
+                        },
+                        "tool": {"name": "CodeQL"},
+                        "most_recent_instance": {
+                            "message": {"text": "This path depends on user input."},
+                            "location": {
+                                "path": "src/lib.rs",
+                                "start_line": 12,
+                                "end_line": 12
+                            }
+                        }
+                    }
+                ]]"#
+            .to_string()]),
+            Ok(vec![r#"{"headRefOid":"abc123"}"#.to_string()]),
+            Ok(vec![r#"[{
+                    "check_runs": [
+                        {
+                            "id": 42,
+                            "name": "CodeQL",
+                            "conclusion": "failure",
+                            "status": "completed",
+                            "html_url": "https://github.com/owner/repo/runs/42",
+                            "annotations_count": 1
+                        }
+                    ]
+                }]"#
+            .to_string()]),
+            Ok(vec![r#"[[
+                    {
+                        "path": "src/lib.rs",
+                        "start_line": 11,
+                        "end_line": 11,
+                        "annotation_level": "failure",
+                        "title": "Path injection",
+                        "message": "Validate before use."
+                    }
+                ]]"#
+            .to_string()]),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let payload = service
+            .fetch_pr_diff_annotations(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(payload.pr_number, 68);
+        assert_eq!(payload.head_sha.as_deref(), Some("abc123"));
+        assert_eq!(payload.annotations.len(), 3);
+        assert!(payload
+            .annotations
+            .iter()
+            .any(|annotation| annotation.source == "review_comment"));
+        assert!(payload
+            .annotations
+            .iter()
+            .any(|annotation| annotation.source == "check_run"));
+        assert!(payload
+            .annotations
+            .iter()
+            .any(|annotation| annotation.source == "code_scanning"));
+
+        let calls = runner.gh_calls();
+        assert_eq!(calls.len(), 5);
+        assert_eq!(
+            calls[0],
+            vec![
+                "api",
+                "repos/{owner}/{repo}/pulls/68/comments",
+                "--paginate",
+                "--slurp",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls[1],
+            vec![
+                "api",
+                "repos/{owner}/{repo}/code-scanning/alerts?state=open&pr=68&per_page=100",
+                "--paginate",
+                "--slurp",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls[2],
+            vec!["pr", "view", "68", "--json", "headRefOid"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls[3],
+            vec![
+                "api",
+                "repos/{owner}/{repo}/commits/abc123/check-runs",
+                "--paginate",
+                "--slurp",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            calls[4],
+            vec![
+                "api",
+                "repos/{owner}/{repo}/check-runs/42/annotations",
+                "--paginate",
+                "--slurp",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_diff_annotations_caps_check_run_annotation_fanout() {
+        let check_runs = (0..11)
+            .map(|idx| {
+                format!(
+                    r#"{{
+                        "id": {},
+                        "name": "check-{}",
+                        "conclusion": "failure",
+                        "status": "completed",
+                        "annotations_count": 1
+                    }}"#,
+                    100 + idx,
+                    idx
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut gh_results = vec![
+            Ok(vec!["[]".to_string()]),
+            Ok(vec!["[]".to_string()]),
+            Ok(vec![r#"{"headRefOid":"abc123"}"#.to_string()]),
+            Ok(vec![format!(r#"[{{"check_runs":[{check_runs}]}}]"#)]),
+        ];
+        for idx in 0..10 {
+            gh_results.push(Ok(vec![format!(
+                r#"[[
+                    {{
+                        "path": "src/lib.rs",
+                        "start_line": {},
+                        "end_line": {},
+                        "annotation_level": "failure",
+                        "message": "failure {idx}"
+                    }}
+                ]]"#,
+                20 + idx,
+                20 + idx
+            )]));
+        }
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(gh_results));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let payload = service
+            .fetch_pr_diff_annotations(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(payload.annotations.len(), 10);
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "check_run_annotations"
+                && source
+                    .reason
+                    .contains("Skipped annotations for 1 additional check runs")
+        }));
+        let calls = runner.gh_calls();
+        assert_eq!(calls.len(), 14);
+        assert!(calls.iter().any(|call| {
+            call == &vec![
+                "api".to_string(),
+                "repos/{owner}/{repo}/check-runs/109/annotations".to_string(),
+                "--paginate".to_string(),
+                "--slurp".to_string(),
+            ]
+        }));
+        assert!(!calls.iter().any(|call| {
+            call == &vec![
+                "api".to_string(),
+                "repos/{owner}/{repo}/check-runs/110/annotations".to_string(),
+                "--paginate".to_string(),
+                "--slurp".to_string(),
+            ]
+        }));
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_diff_annotations_records_partial_failures_and_missing_head_sha() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![
+            Err(AppError::Infrastructure("comments denied".to_string())),
+            Ok(vec!["not json".to_string()]),
+            Ok(vec![r#"{}"#.to_string()]),
+        ]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let payload = service
+            .fetch_pr_diff_annotations(Path::new("/tmp"), 68)
+            .await
+            .unwrap();
+
+        assert_eq!(payload.pr_number, 68);
+        assert!(payload.head_sha.is_none());
+        assert!(payload.annotations.is_empty());
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "review_comments" && source.reason.contains("comments denied")
+        }));
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "code_scanning"
+                && source
+                    .reason
+                    .contains("Failed to parse gh code scanning alerts JSON")
+        }));
+        assert!(payload.sources_unavailable.iter().any(|source| {
+            source.source == "check_runs"
+                && source
+                    .reason
+                    .contains("Pull request head SHA was unavailable")
+        }));
+        assert_eq!(runner.gh_calls().len(), 3);
     }
 
     #[tokio::test]

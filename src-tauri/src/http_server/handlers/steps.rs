@@ -181,8 +181,7 @@ pub async fn complete_step_http(
                         all_steps.len(),
                         response.task_id
                     );
-                    let key =
-                        InteractiveProcessKey::new("task_execution", &response.task_id);
+                    let key = InteractiveProcessKey::new("task_execution", &response.task_id);
                     if state
                         .app_state
                         .interactive_process_registry
@@ -295,8 +294,7 @@ pub async fn skip_step_http(
                         all_steps.len(),
                         response.task_id
                     );
-                    let key =
-                        InteractiveProcessKey::new("task_execution", &response.task_id);
+                    let key = InteractiveProcessKey::new("task_execution", &response.task_id);
                     if state
                         .app_state
                         .interactive_process_registry

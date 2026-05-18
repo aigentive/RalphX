@@ -23,3 +23,5 @@
 | `rm` | worktree cleanup fallback |
 | `ps`, `lsof`, `pgrep`, `pkill` | process inspection and cleanup |
 | `tasklist`, `taskkill` | Windows process inspection and cleanup |
+| `open`, `explorer.exe`, `xdg-open` | Agents workspace Open menu file-manager launch |
+| `cursor`, `trae`, `kiro`, `code`, `code-insiders`, `codium`, `zed`, `zeditor`, `agy`, JetBrains launcher names | Agents workspace Open menu editor launch |

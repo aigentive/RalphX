@@ -32,19 +32,23 @@ import {
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
+import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import {
   AGENT_CONVERSATION_MODE_OPTIONS,
 } from "./agentConversationMode";
+import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
   agentEffortOptions,
   agentModelOptions,
+  normalizeRuntimeSelection,
 } from "./agentOptions";
 import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
 import {
   buildAgentProviderAvailabilityOptions,
   getProviderAvailabilityMessage,
+  supportedEffortsForProvider,
 } from "./agentProviderAvailability";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import { AGENTS_CHAT_MIN_WIDTH } from "./AgentsArtifactPaneRegion";
@@ -86,14 +90,21 @@ interface AgentsActiveConversationPanelProps {
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
-  onActiveEffortChange: (effort: string) => void;
-  onActiveModelChange: (modelId: string) => void;
+  onActiveEffortChange: (
+    effort: string,
+    providerSupportedEfforts?: readonly string[] | null
+  ) => void;
+  onActiveModelChange: (
+    modelId: string,
+    providerSupportedEfforts?: readonly string[] | null
+  ) => void;
   onAgentUserMessageSent: (event: {
     content: string;
     result: { conversationId: string };
   }) => void;
   onFocusIdeationSession: (sessionId: string) => void;
   onOpenPublishPane: () => void;
+  onOpenPublishFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadArtifacts: () => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
@@ -129,6 +140,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onFocusIdeationSession,
   onOpenPublishPane,
+  onOpenPublishFile,
   onPreloadArtifacts,
   onPublishWorkspace,
   onRenameConversation,
@@ -165,6 +177,23 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const workspaceProviderSupportedEfforts = useMemo(
+    () =>
+      supportedEffortsForProvider(
+        providerOptions,
+        normalizedActiveRuntime.provider
+      ),
+    [normalizedActiveRuntime.provider, providerOptions]
+  );
+  const selectableWorkspaceRuntime = useMemo(
+    () =>
+      normalizeRuntimeSelection(
+        normalizedActiveRuntime,
+        modelRegistry,
+        workspaceProviderSupportedEfforts
+      ),
+    [modelRegistry, normalizedActiveRuntime, workspaceProviderSupportedEfforts]
+  );
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -248,20 +277,22 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     };
   }, [chatFocus.type, chatFocusOptions, onSelectChatFocus]);
   const workspaceModelOptions = useMemo(
-    () => agentModelOptions(normalizedActiveRuntime.provider, modelRegistry),
-    [modelRegistry, normalizedActiveRuntime.provider]
+    () => agentModelOptions(selectableWorkspaceRuntime.provider, modelRegistry),
+    [modelRegistry, selectableWorkspaceRuntime.provider]
   );
   const workspaceEffortOptions = useMemo(
     () =>
       agentEffortOptions(
-        normalizedActiveRuntime.provider,
-        normalizedActiveRuntime.modelId,
-        modelRegistry
+        selectableWorkspaceRuntime.provider,
+        selectableWorkspaceRuntime.modelId,
+        modelRegistry,
+        workspaceProviderSupportedEfforts
       ),
     [
       modelRegistry,
-      normalizedActiveRuntime.modelId,
-      normalizedActiveRuntime.provider,
+      selectableWorkspaceRuntime.modelId,
+      selectableWorkspaceRuntime.provider,
+      workspaceProviderSupportedEfforts,
     ]
   );
   const modeOptions = useMemo(() => {
@@ -328,6 +359,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               "shrink-0 bg-transparent px-4 pb-4 pt-3",
             renderComposer: (composerProps: IntegratedChatComposerRenderProps) => (
               <>
+                <AgentsComposerWorkspaceChangesCard
+                  conversationId={selectedConversationId}
+                  workspace={activeWorkspace}
+                  isFocusedChildChat={isFocusedChildChat}
+                  onOpenFile={onOpenPublishFile}
+                  onPreloadPublishPane={onPreloadArtifacts}
+                />
                 <AgentComposerSurface
                   dataTestId="agents-conversation-composer"
                   actionTestId="agents-conversation-submit"
@@ -407,16 +445,24 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                           ),
                         },
                         model: {
-                          value: normalizedActiveRuntime.modelId,
-                          onValueChange: onActiveModelChange,
+                          value: selectableWorkspaceRuntime.modelId,
+                          onValueChange: (modelId) =>
+                            onActiveModelChange(
+                              modelId,
+                              workspaceProviderSupportedEfforts
+                            ),
                           options: workspaceModelOptions,
                           disabled: Boolean(workspaceProviderStatusMessage),
                           allowCustomValue: true,
                           customPlaceholder: "Custom model ID",
                         },
                         effort: {
-                          value: normalizedActiveRuntime.effort,
-                          onValueChange: onActiveEffortChange,
+                          value: selectableWorkspaceRuntime.effort,
+                          onValueChange: (effort) =>
+                            onActiveEffortChange(
+                              effort,
+                              workspaceProviderSupportedEfforts
+                            ),
                           options: workspaceEffortOptions,
                           disabled: Boolean(workspaceProviderStatusMessage),
                           testId: "agents-conversation-effort",
