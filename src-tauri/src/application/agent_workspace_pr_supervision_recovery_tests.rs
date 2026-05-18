@@ -6,9 +6,8 @@ use crate::application::agent_conversation_workspace::resolve_agent_conversation
 use crate::application::agent_workspace_pr_supervision_recovery::{
     pr_supervision_recovery_schedule_skip_reason, recover_agent_workspace_pr_supervision,
     recover_recent_agent_workspace_pr_supervision_on_startup,
-    schedule_agent_workspace_pr_supervision_recovery,
-    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryOutcome,
-    AgentWorkspacePrSupervisionRecoveryTrigger,
+    schedule_agent_workspace_pr_supervision_recovery, AgentWorkspacePrSupervisionRecoveryDeps,
+    AgentWorkspacePrSupervisionRecoveryOutcome, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
@@ -448,6 +447,78 @@ async fn recovers_blocked_pr_supervision_as_draft_when_remote_pr_is_draft() {
 }
 
 #[tokio::test]
+async fn marks_terminal_pr_status_during_blocked_pr_supervision_recovery() {
+    let cases = [
+        (
+            "pr-supervision-terminal-merged",
+            PrStatus::Merged {
+                merge_commit_sha: Some("merge-sha".to_string()),
+            },
+            "merged",
+            "pr_merged",
+        ),
+        (
+            "pr-supervision-terminal-closed",
+            PrStatus::Closed,
+            "closed",
+            "pr_closed",
+        ),
+    ];
+
+    for (name, remote_status, expected_status, expected_step) in cases {
+        let (_temp_dir, project, workspace, head_sha) = setup_recovery_workspace(name).await;
+        let conversation_id = workspace.conversation_id.clone();
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+        let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+        let github = Arc::new(MockGithubService::new());
+        let mut sync_state = open_sync_state(&workspace.branch_name, &head_sha);
+        sync_state.status = remote_status;
+        github.will_return_sync_state(sync_state);
+
+        let outcome = recover_agent_workspace_pr_supervision(
+            recovery_deps(
+                Arc::clone(&workspace_repo),
+                project_repo,
+                github,
+                Arc::new(MemoryAgentRunRepository::new()),
+            ),
+            conversation_id.clone(),
+            AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        )
+        .await
+        .expect("terminal PR status should update workspace");
+
+        assert_eq!(
+            outcome,
+            AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+                pr_number: 257,
+                pr_status: expected_status.to_string(),
+            }
+        );
+        let updated = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should still exist");
+        assert_eq!(
+            updated.publication_pr_status.as_deref(),
+            Some(expected_status)
+        );
+        assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+        assert!(updated.pr_supervision_status.is_none());
+        let events = workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| event.step == expected_step));
+    }
+}
+
+#[tokio::test]
 async fn skips_recovery_when_workspace_path_validation_fails_before_github_sync() {
     let (_temp_dir, project, mut workspace, _head_sha) =
         setup_recovery_workspace("pr-supervision-branch-validation").await;
@@ -660,15 +731,6 @@ async fn skips_recovery_before_git_when_workspace_or_project_state_blocks_it() {
 #[tokio::test]
 async fn skips_recovery_when_remote_pr_sync_state_no_longer_matches_workspace() {
     let cases = [
-        (
-            "pr-supervision-closed",
-            {
-                let mut sync = open_sync_state("ralphx/test/pr-supervision-closed", "unused");
-                sync.status = PrStatus::Closed;
-                sync
-            },
-            "pr_not_open",
-        ),
         (
             "pr-supervision-branch-mismatch",
             open_sync_state("ralphx/test/different-branch", "unused"),

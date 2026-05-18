@@ -504,3 +504,36 @@ async fn pr_supervision_preferences_round_trip() {
     );
     assert!(updated.pr_supervision_updated_at.is_some());
 }
+
+#[tokio::test]
+async fn terminal_publication_update_clears_stale_pr_supervision_state() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_pr_number = Some(91);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("failed".to_string());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary = Some("CI checks failed".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_publication(
+        &conversation_id,
+        Some(91),
+        Some("https://github.com/owner/repo/pull/91"),
+        Some("merged"),
+        Some("pushed"),
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert!(updated.pr_supervision_status.is_none());
+    assert!(updated.pr_supervision_summary.is_none());
+}

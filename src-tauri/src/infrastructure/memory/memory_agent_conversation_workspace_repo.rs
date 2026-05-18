@@ -159,7 +159,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.publication_pr_url = pr_url.map(str::to_string);
             workspace.publication_pr_status = pr_status.map(str::to_string);
             workspace.publication_push_status = push_status.map(str::to_string);
-            workspace.updated_at = Utc::now();
+            let now = Utc::now();
+            if matches!(pr_status, Some("merged" | "closed")) {
+                workspace.pr_supervision_status = None;
+                workspace.pr_supervision_summary = None;
+                workspace.pr_supervision_updated_at = Some(now);
+            }
+            workspace.updated_at = now;
         }
         Ok(())
     }
