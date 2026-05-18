@@ -19,6 +19,7 @@ const {
   artifactPaneModuleLoadedMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
+  getWorkspaceReviewMock,
   integratedChatPanelRenderMock,
   preloadAgentTerminalExperienceMock,
   preloadAgentsArtifactPaneMock,
@@ -259,6 +260,37 @@ describe("AgentsView performance", () => {
 
     expect(preloadAgentsArtifactPaneMock).not.toHaveBeenCalled();
     await waitFor(() => expect(preloadAgentsArtifactPaneMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("loads the composer diff summary after focused input is idle", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const textbox = await screen.findByPlaceholderText(
+      "Ask the agent to plan, build, debug, or review something"
+    );
+    fireEvent.focus(textbox);
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+
+    fireEvent.change(textbox, { target: { value: "typing while summary waits" } });
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+
+    expect(getWorkspaceReviewMock).not.toHaveBeenCalled();
+
+    await waitFor(
+      () => expect(getWorkspaceReviewMock).toHaveBeenCalledTimes(1),
+      { timeout: 2_000 }
+    );
   });
 
 });

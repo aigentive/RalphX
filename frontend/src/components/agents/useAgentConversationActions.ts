@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { chatApi } from "@/api/chat";
 import { executionApi } from "@/api/execution";
 import { ideationApi } from "@/api/ideation";
+import { chatKeys } from "@/hooks/useChat";
 import { projectsApi } from "@/api/projects";
 import { projectKeys } from "@/hooks/useProjects";
 import type { Project } from "@/types/project";
@@ -32,6 +33,7 @@ interface UseAgentConversationActionsArgs {
   selectedConversationId: string | null;
   selectedProjectId: string | null;
   setActiveConversation: (storeKey: string, conversationId: string | null) => void;
+  setOptimisticConversationsById: Dispatch<SetStateAction<Record<string, AgentConversation>>>;
   setFocusedProject: (projectId: string | null) => void;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
 }
@@ -52,6 +54,7 @@ export function useAgentConversationActions({
   selectedConversationId,
   selectedProjectId,
   setActiveConversation,
+  setOptimisticConversationsById,
   setFocusedProject,
   setOptimisticSelectedConversationId,
 }: UseAgentConversationActionsArgs) {
@@ -61,11 +64,16 @@ export function useAgentConversationActions({
         selectedProjectId === conversationProjectId &&
         selectedConversationId === conversation.id
       ) {
-        clearAgentConversationSelection();
         return;
       }
 
+      queryClient.setQueryData(chatKeys.conversationSummary(conversation.id), conversation);
       setOptimisticSelectedConversationId(conversation.id);
+      setOptimisticConversationsById((current) =>
+        current[conversation.id] === conversation
+          ? current
+          : { ...current, [conversation.id]: conversation }
+      );
       selectConversation(conversationProjectId, conversation.id);
       setActiveConversation(
         getAgentConversationStoreKey(conversation),
@@ -76,12 +84,12 @@ export function useAgentConversationActions({
       }
     },
     [
-      clearAgentConversationSelection,
       queryClient,
       selectConversation,
       selectedConversationId,
       selectedProjectId,
       setActiveConversation,
+      setOptimisticConversationsById,
       setOptimisticSelectedConversationId,
     ]
   );

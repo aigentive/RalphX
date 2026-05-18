@@ -13,6 +13,8 @@ import {
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
 
+const deferredHydrationTimeout = { timeout: 3_000 };
+
 const {
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
@@ -73,7 +75,11 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId("agents-composer-workspace-changes");
+    await screen.findByTestId(
+      "agents-composer-workspace-changes",
+      undefined,
+      deferredHydrationTimeout,
+    );
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "2 files",
     );
@@ -119,7 +125,11 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId("agents-composer-workspace-changes");
+    await screen.findByTestId(
+      "agents-composer-workspace-changes",
+      undefined,
+      deferredHydrationTimeout,
+    );
     fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-count"));
     fireEvent.click(screen.getByTestId("agents-composer-workspace-file-src/Foo.tsx"));
 

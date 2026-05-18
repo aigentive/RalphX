@@ -424,6 +424,24 @@ export function useConversation(
   return query;
 }
 
+export function useConversationSummary(
+  conversationId: string | null,
+  options?: { enabled?: boolean }
+) {
+  const canFetchConversation = !!conversationId && !isOptimisticConversationId(conversationId);
+  return useQuery<ChatConversation | null, Error>({
+    queryKey: chatKeys.conversationSummary(conversationId ?? ""),
+    queryFn: () => {
+      if (!conversationId) {
+        throw new Error("Conversation ID is required");
+      }
+      return chatApi.getConversationSummary(conversationId);
+    },
+    enabled: (options?.enabled ?? true) && canFetchConversation,
+    staleTime: 30 * 1000,
+  });
+}
+
 export function useConversationHistoryWindow(
   conversationId: string | null,
   options?: { enabled?: boolean; pageSize?: number; maxPages?: number }

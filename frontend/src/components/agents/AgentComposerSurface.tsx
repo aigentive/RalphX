@@ -156,6 +156,7 @@ export interface AgentComposerSurfaceProps {
   agentStatus?: AgentStatus;
   value?: string;
   onChange?: (value: string) => void;
+  onFocusChange?: (focused: boolean) => void;
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
@@ -190,6 +191,7 @@ export function AgentComposerSurface({
   agentStatus = "idle",
   value: controlledValue,
   onChange: onChangeProp,
+  onFocusChange,
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
@@ -451,8 +453,14 @@ export function AgentComposerSurface({
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={handleKeyDown}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
+          onFocus={() => {
+            setIsFocused(true);
+            onFocusChange?.(true);
+          }}
+          onBlur={() => {
+            setIsFocused(false);
+            onFocusChange?.(false);
+          }}
           disabled={isReadOnly || (isSubmitting && !canQueue)}
           placeholder={effectivePlaceholder}
           className="block min-h-[116px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"

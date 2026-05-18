@@ -362,6 +362,7 @@ export function useAgentsViewController({
     selectedProjectId,
     setActiveConversation,
     setFocusedProject,
+    setOptimisticConversationsById,
     setOptimisticSelectedConversationId,
   });
 
