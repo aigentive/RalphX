@@ -1,4 +1,4 @@
-import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { diffApi } from "@/api/diff";
@@ -103,8 +103,6 @@ function AgentsComposerWorkspaceChangesCardContent({
   onPreloadPublishPane: () => void;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const isReviewRefreshInFlight = useRef(false);
-  const reviewRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
   const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
   const [canHydrateReview, setCanHydrateReview] = useState(false);
   useEffect(() => {
@@ -119,42 +117,46 @@ function AgentsComposerWorkspaceChangesCardContent({
 
     return () => window.clearTimeout(timer);
   }, [canScheduleReviewHydration, conversationId, pauseHydration]);
-  const reviewQuery = useQuery({
+  const {
+    data: reviewData,
+    isSuccess: isReviewSuccess,
+    refetch: refetchReview,
+  } = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId),
     enabled: canHydrateReview,
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
   useEffect(() => {
-    reviewRefetchRef.current = reviewQuery.refetch;
-  }, [reviewQuery.refetch]);
-  useEffect(() => {
     if (!canHydrateReview || !isAgentGenerating) {
-      isReviewRefreshInFlight.current = false;
       return;
     }
 
-    const timer = window.setInterval(() => {
-      if (isReviewRefreshInFlight.current) {
-        return;
-      }
-      const refetchReview = reviewRefetchRef.current;
-      if (!refetchReview) {
-        return;
-      }
-      isReviewRefreshInFlight.current = true;
-      void refetchReview().finally(() => {
-        isReviewRefreshInFlight.current = false;
-      });
-    }, ACTIVE_AGENT_REVIEW_REFRESH_MS);
+    let cancelled = false;
+    let timer: number | undefined;
+    const scheduleReviewRefresh = () => {
+      timer = window.setTimeout(() => {
+        void refetchReview().finally(() => {
+          if (!cancelled) {
+            scheduleReviewRefresh();
+          }
+        });
+      }, ACTIVE_AGENT_REVIEW_REFRESH_MS);
+    };
 
-    return () => window.clearInterval(timer);
-  }, [canHydrateReview, conversationId, isAgentGenerating]);
-  const review = reviewQuery.data ?? null;
+    scheduleReviewRefresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [canHydrateReview, conversationId, isAgentGenerating, refetchReview]);
+  const review = reviewData ?? null;
   const commits = useMemo(() => mapReviewCommitsToDiffViewerCommits(review), [review]);
   const summary = useAgentWorkspaceChangeSummary({ conversationId, review });
   const shouldShow =
-    reviewQuery.isSuccess &&
+    isReviewSuccess &&
     (summary.workspaceChangeCount > 0 || summary.currentFiles.length > 0);
 
   if (!shouldShow) {
