@@ -80,3 +80,7 @@ pub fn send_signal_to_group(pid: u32, signal: nix::sys::signal::Signal) {
 /// No-op stub on Windows so callers can stay platform-neutral.
 #[cfg(not(unix))]
 pub fn send_signal_to_group(_pid: u32, _signal: ()) {}
+
+#[cfg(test)]
+#[path = "spawn_isolation_tests.rs"]
+mod tests;
