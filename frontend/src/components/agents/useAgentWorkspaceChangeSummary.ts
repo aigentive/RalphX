@@ -25,7 +25,7 @@ export interface AgentWorkspaceChangeSummaryState {
   isCumulativeMode: boolean;
   commitSha: string | undefined;
   supportsWorktreeModes: boolean;
-  uncommittedCount: number;
+  workspaceChangeCount: number;
   stagedCount: number | undefined;
   unstagedCount: number | undefined;
   totalAdditions: number;
@@ -166,7 +166,7 @@ export function useAgentWorkspaceChangeSummary({
     isCumulativeMode,
     commitSha,
     supportsWorktreeModes,
-    uncommittedCount: review?.changes.length ?? 0,
+    workspaceChangeCount: review?.changes.length ?? 0,
     stagedCount: stagedFilesQuery.data?.length,
     unstagedCount: unstagedFilesQuery.data?.length,
     totalAdditions,

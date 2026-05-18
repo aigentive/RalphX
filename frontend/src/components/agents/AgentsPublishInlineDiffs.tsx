@@ -5,7 +5,7 @@
  * Receives (conversationId, review, commits) from parent — no re-fetching at parent level.
  *
  * Fetch contract:
- *   - Uncommitted mode: per-file diff via getAgentConversationWorkspaceFileDiff
+ *   - Workspace changes mode: per-file diff via getAgentConversationWorkspaceFileDiff
  *   - Commit mode: file list via getAgentConversationWorkspaceCommitFileChanges,
  *                  then per-file diff via getAgentConversationWorkspaceCommitFileDiff
  *   - Diffs fetched for hydrated expanded files only; off-range/collapsed cards pay zero query cost.
@@ -51,6 +51,7 @@ export interface AgentsPublishInlineDiffsProps {
   error?: unknown;
   onOpenInDialog?: ((filePath: string) => void) | undefined;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
+  workspaceChangeLabel?: string | undefined;
 }
 
 interface AgentsPublishVirtualFileRowProps {
@@ -120,6 +121,7 @@ export function AgentsPublishInlineDiffs({
   error,
   onOpenInDialog,
   focusRequest,
+  workspaceChangeLabel,
 }: AgentsPublishInlineDiffsProps) {
   // Set of collapsed file paths; empty = all expanded (default).
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -152,7 +154,7 @@ export function AgentsPublishInlineDiffs({
     supportsWorktreeModes,
     totalAdditions,
     totalDeletions,
-    uncommittedCount,
+    workspaceChangeCount,
     unstagedCount,
   } = useAgentWorkspaceChangeSummary({ conversationId, review });
   const canRenderPrAnnotations = refKind.kind === "head" || refKind.kind === "cumulative_head";
@@ -244,7 +246,7 @@ export function AgentsPublishInlineDiffs({
     [bufferedVisiblePathSet, expandedFiles, userShowAnywayPaths],
   );
 
-  // ── Uncommitted diffs ─────────────────────────────────────────────────
+  // ── Workspace-change diffs ─────────────────────────────────────────────
   const uncommittedDiffQueries = useQueries({
     queries: (!isCommitMode && !isStagedMode && !isUnstagedMode && !isCumulativeMode
       ? fetchableFiles
@@ -514,7 +516,8 @@ export function AgentsPublishInlineDiffs({
       >
         <AgentsPublishDiffFilter
           mode={effectiveMode}
-          uncommittedCount={uncommittedCount}
+          workspaceChangeCount={workspaceChangeCount}
+          {...(workspaceChangeLabel !== undefined && { workspaceChangeLabel })}
           {...(stagedCount !== undefined && { stagedCount })}
           {...(unstagedCount !== undefined && { unstagedCount })}
           commits={commits}

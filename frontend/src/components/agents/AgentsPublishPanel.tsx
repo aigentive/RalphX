@@ -945,6 +945,7 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              {...(isPublishCurrent && { workspaceChangeLabel: "Published changes" })}
             />
           </section>
         )}
