@@ -22,6 +22,16 @@ coverage:
           - "!src-tauri/src/application/startup_pipeline.rs"
           - "!src-tauri/src/application/startup_pipeline_launch.rs"
           - "!src-tauri/src/application/startup_transition_factory.rs"
+          # Tauri RunEvent / HTTP-server boot glue — same composition-root pattern.
+          # The Exit-arm body needs the full production AppState AND a non-async
+          # caller context (tauri::async_runtime::block_on panics inside
+          # #[tokio::test]); the ExitRequested arm's `api: ExitRequestApi` field
+          # has no public constructor in Tauri 2.x. The actual decision logic is
+          # extracted into pub(crate) `trigger_http_shutdown` + `HttpShutdownHandle`,
+          # both unit-tested in `application/shutdown_tests.rs` and
+          # `application/http_shutdown_tests.rs`.
+          - "!src-tauri/src/application/shutdown.rs"
+          - "!src-tauri/src/application/server_boot.rs"
           # Pure trait/module export glue has no runtime branch to exercise directly.
           # Implementations and call sites carry the behavioral coverage.
           - "!src-tauri/src/domain/repositories/orphan_worktree_cleanup_marker_repository.rs"

@@ -14,6 +14,7 @@
  *   - Token bucket rate limiting per key + IP-based auth throttle
  *   - X-RalphX-Project-Scope header injected for backend enforcement
  */
+import "./keep-alive.js";
 import type { Server as HttpServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import type { ExternalMcpConfig } from "./types.js";

@@ -41,6 +41,7 @@ pub async fn start_http_server(
     app_state: Arc<AppState>,
     execution_state: Arc<ExecutionState>,
     team_tracker: TeamStateTracker,
+    shutdown: crate::application::HttpShutdownHandle,
 ) -> AppResult<()> {
     // Build TeamService for HTTP handlers (wraps tracker with DB persistence + events)
     let team_service = {
@@ -534,10 +535,22 @@ pub async fn start_http_server(
 
     tracing::info!(url = %backend_http_base_url(), "MCP HTTP server listening");
 
-    axum::serve(listener, app).await.map_err(|e| {
-        crate::error::AppError::Infrastructure(format!("HTTP server crashed: {}", e))
-    })?;
+    // Graceful shutdown: when triggered, axum stops accepting new connections,
+    // closes idle keep-alive sockets, and lets in-flight requests drain. The
+    // Tauri shutdown handler fires this on `RunEvent::ExitRequested` so
+    // sockets close cleanly before the process is reaped — reduces orphaned
+    // TIME_WAIT pileups that exhaust the macOS ephemeral port pool.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown.wait_for_shutdown().await;
+            tracing::info!("MCP HTTP server received graceful shutdown signal");
+        })
+        .await
+        .map_err(|e| {
+            crate::error::AppError::Infrastructure(format!("HTTP server crashed: {}", e))
+        })?;
 
+    tracing::info!("MCP HTTP server shut down cleanly");
     Ok(())
 }
 

@@ -12,6 +12,10 @@ EXTERNAL_MCP_DIR="$PLUGIN_DIR/ralphx-external-mcp"
 SEEDED_DB_MARKER="$SRC_TAURI_DIR/.ralphx-dev-fresh-db-snapshot"
 SEEDED_DB_CLEANUP_ENABLED=0
 VITE_PORT=1420
+# Playwright (npm run test:visual) auto-spawns Vite on 5173. Agents commonly
+# run visual tests in worktrees; surfacing leaks there too prevents cross-
+# worktree ephemeral-port exhaustion.
+VITE_WEB_MODE_PORT=5173
 TAURI_BACKEND_PORT="${RALPHX_BACKEND_PORT:-3857}"
 EXTERNAL_MCP_PORT="${RALPHX_EXTERNAL_MCP_PORT:-3858}"
 
@@ -489,12 +493,16 @@ fi
 # These do not block dev-fresh on their own, but they can make the next Vite
 # bind fail with EADDRINUSE on IPv6 ::1 even though no LISTEN socket exists.
 warn_on_stuck_time_waits "$VITE_PORT" "Vite dev server"
+warn_on_stuck_time_waits "$VITE_WEB_MODE_PORT" "Vite web-mode (Playwright)"
 warn_on_stuck_time_waits "$TAURI_BACKEND_PORT" "Tauri backend"
 warn_on_stuck_time_waits "$EXTERNAL_MCP_PORT" "external MCP"
 
 export RALPHX_BACKEND_PORT="$TAURI_BACKEND_PORT"
 export TAURI_API_URL="http://127.0.0.1:$TAURI_BACKEND_PORT"
-export VITE_RALPHX_BACKEND_URL="http://localhost:$TAURI_BACKEND_PORT"
+# Use 127.0.0.1 (not localhost) — Node 22 / macOS resolves `localhost` AAAA-first
+# to ::1 while the backend binds IPv4 only. The IPv4/IPv6 mismatch can cause
+# connection refused + retry storms that create TIME_WAIT pileups.
+export VITE_RALPHX_BACKEND_URL="http://127.0.0.1:$TAURI_BACKEND_PORT"
 export RALPHX_EXTERNAL_MCP_PORT="$EXTERNAL_MCP_PORT"
 
 verify_tauri_package_alignment

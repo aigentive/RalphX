@@ -14,6 +14,9 @@
  *   - Token bucket rate limiting per key + IP-based auth throttle
  *   - X-RalphX-Project-Scope header injected for backend enforcement
  */
+// Side-effect import — installs the keep-alive dispatcher BEFORE any other
+// module can issue a fetch() against the Tauri backend. Must stay first.
+import "./keep-alive.js";
 import { realpathSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";

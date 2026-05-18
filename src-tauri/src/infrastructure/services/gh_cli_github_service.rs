@@ -1153,7 +1153,7 @@ pub(crate) fn parse_pr_sync_state_output(json_str: &str) -> AppResult<PrSyncStat
 }
 
 fn parse_pr_sync_state_value(v: &Value, context: &str) -> AppResult<PrSyncState> {
-    let status = parse_pr_status_value(&v)?;
+    let status = parse_pr_status_value(v)?;
     let head_ref_name = required_string(v, "headRefName", context)?;
     let base_ref_name = required_string(v, "baseRefName", context)?;
 
