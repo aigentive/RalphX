@@ -47,7 +47,3 @@ impl Default for HttpShutdownHandle {
         Self::new()
     }
 }
-
-#[cfg(test)]
-#[path = "http_shutdown_tests.rs"]
-mod tests;

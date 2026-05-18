@@ -34,7 +34,11 @@ pub fn handle_run_event<R: tauri::Runtime>(
     }
 }
 
-fn trigger_http_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+/// `pub(crate)` so the sidecar test in `shutdown_tests.rs` can exercise the
+/// handle-present vs handle-missing branches directly without having to
+/// construct a `RunEvent::ExitRequested` (whose `api` field has no public
+/// constructor in Tauri 2.x).
+pub(crate) fn trigger_http_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     if let Some(handle) = app_handle.try_state::<HttpShutdownHandle>() {
         handle.trigger();
         tracing::info!("Triggered HTTP server graceful shutdown");

@@ -15,6 +15,10 @@ pub mod agent_client_bundle;
 pub mod app_setup;
 pub mod app_state;
 pub mod http_shutdown;
+#[cfg(test)]
+mod http_shutdown_tests;
+#[cfg(test)]
+mod shutdown_tests;
 pub mod ideation_harness_availability;
 pub mod ideation_workspace;
 pub mod apply_service;

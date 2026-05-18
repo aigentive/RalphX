@@ -1,4 +1,4 @@
-use super::HttpShutdownHandle;
+use crate::application::HttpShutdownHandle;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -42,4 +42,26 @@ async fn trigger_is_idempotent() {
     handle.trigger();
     handle.trigger();
     handle.trigger();
+}
+
+#[tokio::test]
+async fn default_constructs_independent_handle() {
+    // Default() must produce a fresh, independent Notify — not share state with
+    // another instance's. This guards against an accidental `Default for Arc<Notify>`
+    // that would alias all default handles together.
+    let a = HttpShutdownHandle::default();
+    let b = HttpShutdownHandle::default();
+
+    let waiter_a = a.wait_for_shutdown();
+    let task_a = tokio::spawn(waiter_a);
+
+    // Trigger b — a's waiter must NOT fire.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    b.trigger();
+
+    let result = timeout(Duration::from_millis(50), task_a).await;
+    assert!(
+        result.is_err(),
+        "waiter on `a` should still be pending after triggering `b`"
+    );
 }
