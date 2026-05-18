@@ -22,8 +22,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSessionId, PlanBranchId, Project, TaskId,
 };
@@ -510,8 +510,7 @@ async fn supervised_agent_workspace_pr_autofix_skips_when_fixer_run_active() {
         .await
         .expect("workspace should persist");
 
-    let agent_run_repo: Arc<dyn AgentRunRepository> =
-        Arc::new(MemoryAgentRunRepository::new());
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
     agent_run_repo
         .create(AgentRun::new(conversation_id.clone()))
         .await
@@ -552,6 +551,82 @@ async fn supervised_agent_workspace_pr_autofix_skips_when_fixer_run_active() {
         events.is_empty(),
         "active fixer should not append another publication event"
     );
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_skips_when_workspace_already_needs_agent() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-needs-agent-conversation",
+        "project-needs-agent",
+        worktree.path(),
+    );
+    workspace.publication_push_status = Some("needs_agent".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("queued-fix-head")));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("queued fixer guard should not error");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_skips_when_supervision_status_is_repairing() {
+    for status in ["fixing", "publishing"] {
+        let worktree = tempfile::tempdir().expect("worktree path");
+        let mut workspace = supervised_workspace(
+            &format!("autofix-{status}-conversation"),
+            &format!("project-{status}"),
+            worktree.path(),
+        );
+        workspace.pr_supervision_status = Some(status.to_string());
+        let conversation_id = workspace.conversation_id.clone();
+        let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+            Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(open_pr_health("repairing-head")));
+        let chat = Arc::new(MockChatService::new());
+
+        let routed = super::route_agent_workspace_pr_autofix_if_needed(
+            github as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            101,
+            &conversation_id,
+            Arc::clone(&workspace_repo),
+            None,
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        )
+        .await
+        .expect("repairing status guard should not error");
+
+        assert!(!routed, "status {status} should not route another fixer");
+        assert!(chat.get_sent_messages().await.is_empty());
+    }
 }
 
 #[tokio::test]
