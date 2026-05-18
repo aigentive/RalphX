@@ -80,6 +80,7 @@ describe("AgentsView publish", () => {
       undefined,
       deferredHydrationTimeout,
     );
+    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Workspace changes");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "2 files",
     );

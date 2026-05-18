@@ -87,12 +87,14 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
   AgentsPublishDiffFilter: ({
     mode,
     onModeChange,
-    uncommittedCount,
+    workspaceChangeCount,
+    workspaceChangeLabel,
     supportsWorktreeModes,
   }: {
     mode: string;
     onModeChange: (m: string) => void;
-    uncommittedCount: number;
+    workspaceChangeCount: number;
+    workspaceChangeLabel?: string;
     stagedCount?: number;
     unstagedCount?: number;
     commits: unknown[];
@@ -101,10 +103,13 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     <div
       data-testid="mock-diff-filter"
       data-mode={mode}
-      data-count={uncommittedCount}
+      data-count={workspaceChangeCount}
+      data-label={workspaceChangeLabel ?? ""}
       data-supports-worktree-modes={String(supportsWorktreeModes)}
     >
-      <button onClick={() => onModeChange("uncommitted")}>Uncommitted</button>
+      <button onClick={() => onModeChange("uncommitted")}>
+        {workspaceChangeLabel ?? "Workspace changes"}
+      </button>
       <button onClick={() => onModeChange("sha-abc")}>Commit sha-abc</button>
       <button onClick={() => onModeChange("staged")}>Staged</button>
       <button onClick={() => onModeChange("unstaged")}>Unstaged</button>
@@ -351,7 +356,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-diff-filter")).toBeInTheDocument();
     });
 
-    it("passes uncommittedCount from review.changes.length to filter", () => {
+    it("passes workspaceChangeCount from review.changes.length to filter", () => {
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(
         withProviders(
@@ -366,7 +371,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-count", "2");
     });
 
-    it("renders a file card for each change in review.changes (uncommitted mode)", () => {
+    it("renders a file card for each change in review.changes (workspace changes mode)", () => {
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(
         withProviders(
@@ -570,7 +575,7 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("mode=uncommitted — diff fetching", () => {
-    it("does not fetch uncommitted diff before the virtual range hydrates a file", async () => {
+    it("does not fetch workspace diff before the virtual range hydrates a file", async () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
         withProviders(
@@ -586,7 +591,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
     });
 
-    it("fetches uncommitted diff for each hydrated expanded file", async () => {
+    it("fetches workspace diff for each hydrated expanded file", async () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
         withProviders(
@@ -726,7 +731,7 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() =>
         expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toBeInTheDocument(),
       );
-      // Uncommitted file no longer shown
+      // Workspace-change file no longer shown
       expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
     });
 
@@ -749,7 +754,7 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
-      // File count reflects commit list (2), not uncommitted list (1)
+      // File count reflects commit list (2), not workspace-change list (1)
       await waitFor(() =>
         expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("2"),
       );
@@ -773,7 +778,7 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
-      // Totals reflect commit file (7/3), not uncommitted file (99/88)
+      // Totals reflect commit file (7/3), not workspace-change file (99/88)
       await waitFor(() =>
         expect(screen.getByTestId("inline-diffs-additions")).toHaveTextContent("+7"),
       );
@@ -799,7 +804,7 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() => expect(mockGetStagedFiles).toHaveBeenCalledWith("conv-1"));
     });
 
-    it("renders staged file list (not uncommitted list) when mode is staged", async () => {
+    it("renders staged file list (not workspace-change list) when mode is staged", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -931,7 +936,7 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() => expect(mockGetUnstagedFiles).toHaveBeenCalledWith("conv-1"));
     });
 
-    it("renders unstaged file list (not uncommitted list) when mode is unstaged", async () => {
+    it("renders unstaged file list (not workspace-change list) when mode is unstaged", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1042,7 +1047,7 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() => expect(mockGetCumulativeFiles).toHaveBeenCalledWith("conv-1"));
     });
 
-    it("renders cumulative file list (not uncommitted list) when mode is cumulative", async () => {
+    it("renders cumulative file list (not workspace-change list) when mode is cumulative", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1435,9 +1440,9 @@ describe("AgentsPublishInlineDiffs", () => {
       // Switch mode → hydratedPaths should reset
       await user.click(screen.getByRole("button", { name: "Staged" }));
 
-      // The uncommitted file card is no longer in DOM (mode changed to staged)
+      // The workspace-change file card is no longer in DOM (mode changed to staged)
       // but the reset itself can be verified: if we switch back, shouldHydrate is false again
-      await user.click(screen.getByRole("button", { name: "Uncommitted" }));
+      await user.click(screen.getByRole("button", { name: "Workspace changes" }));
       await waitFor(() => {
         // The card is re-rendered after mode switch; hydratedPaths was cleared
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(

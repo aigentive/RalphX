@@ -121,7 +121,7 @@ function AgentsComposerWorkspaceChangesCardContent({
   const summary = useAgentWorkspaceChangeSummary({ conversationId, review });
   const shouldShow =
     reviewQuery.isSuccess &&
-    (summary.uncommittedCount > 0 || summary.currentFiles.length > 0);
+    (summary.workspaceChangeCount > 0 || summary.currentFiles.length > 0);
 
   if (!shouldShow) {
     return null;
@@ -151,7 +151,7 @@ function AgentsComposerWorkspaceChangesCardContent({
       >
         <AgentsPublishDiffFilter
           mode={summary.effectiveMode}
-          uncommittedCount={summary.uncommittedCount}
+          workspaceChangeCount={summary.workspaceChangeCount}
           {...(summary.stagedCount !== undefined && { stagedCount: summary.stagedCount })}
           {...(summary.unstagedCount !== undefined && { unstagedCount: summary.unstagedCount })}
           commits={commits}

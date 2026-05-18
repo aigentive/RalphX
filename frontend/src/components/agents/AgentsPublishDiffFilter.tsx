@@ -2,10 +2,10 @@
  * AgentsPublishDiffFilter
  *
  * Popover-based diff mode selector for the inline diff view.
- * Trigger: shows current mode label ("Uncommitted (N files)" / "abc1234 – message").
+ * Trigger: shows current mode label ("Workspace changes (N files)" / "abc1234 - message").
  * Content:
  *   VIEW section:
- *   - Radio "Uncommitted (N files)"
+ *   - Radio "Workspace changes (N files)"
  *   - Radio "Unstaged"  (lazy count — shown when selected)
  *   - Radio "Staged"    (lazy count — shown when selected)
  *   - Radio "All commits (N commits)"
@@ -34,7 +34,9 @@ export type DiffFilterMode = "uncommitted" | "staged" | "unstaged" | "cumulative
 
 export interface AgentsPublishDiffFilterProps {
   mode: DiffFilterMode;
-  uncommittedCount: number;
+  workspaceChangeCount: number;
+  /** Label for the base-to-HEAD workspace diff represented by the internal "uncommitted" mode. */
+  workspaceChangeLabel?: string;
   /** Staged file count — provided lazily by parent when staged mode is active. */
   stagedCount?: number;
   /** Unstaged file count — provided lazily by parent when unstaged mode is active. */
@@ -93,13 +95,14 @@ function FilterRadioRow({
 
 function getTriggerLabel(
   mode: DiffFilterMode,
-  uncommittedCount: number,
+  workspaceChangeCount: number,
+  workspaceChangeLabel: string,
   commits: DiffViewerCommit[],
   stagedCount?: number,
   unstagedCount?: number,
 ): string {
   if (mode === "uncommitted") {
-    return `Uncommitted (${uncommittedCount} ${uncommittedCount === 1 ? "file" : "files"})`;
+    return `${workspaceChangeLabel} (${workspaceChangeCount} ${workspaceChangeCount === 1 ? "file" : "files"})`;
   }
   if (mode === "staged") {
     return stagedCount !== undefined
@@ -128,7 +131,8 @@ function getTriggerLabel(
 
 export function AgentsPublishDiffFilter({
   mode,
-  uncommittedCount,
+  workspaceChangeCount,
+  workspaceChangeLabel = "Workspace changes",
   stagedCount,
   unstagedCount,
   commits,
@@ -158,7 +162,14 @@ export function AgentsPublishDiffFilter({
     setOpen(false);
   };
 
-  const triggerLabel = getTriggerLabel(mode, uncommittedCount, commits, stagedCount, unstagedCount);
+  const triggerLabel = getTriggerLabel(
+    mode,
+    workspaceChangeCount,
+    workspaceChangeLabel,
+    commits,
+    stagedCount,
+    unstagedCount,
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen} modal={false}>
@@ -206,8 +217,8 @@ export function AgentsPublishDiffFilter({
                   onClick={() => handleSelect("uncommitted")}
                   testId="diff-filter-option-uncommitted"
                 >
-                  Uncommitted ({uncommittedCount}{" "}
-                  {uncommittedCount === 1 ? "file" : "files"})
+                  {workspaceChangeLabel} ({workspaceChangeCount}{" "}
+                  {workspaceChangeCount === 1 ? "file" : "files"})
                 </FilterRadioRow>
                 <FilterRadioRow
                   selected={mode === "unstaged"}

@@ -1,6 +1,6 @@
 /**
  * AgentsPublishDiffFilter tests
- * Popover-based diff mode selector: "Uncommitted (N files)" radio + "Specific Commit" collapsible.
+ * Popover-based diff mode selector: "Workspace changes (N files)" radio + "Specific Commit" collapsible.
  * "All commits" mode is intentionally omitted in v1.
  */
 
@@ -38,7 +38,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -47,19 +47,35 @@ describe("AgentsPublishDiffFilter", () => {
       expect(screen.getByTestId("diff-filter-trigger")).toBeInTheDocument();
     });
 
-    it("shows 'Uncommitted (N files)' label when mode is uncommitted", () => {
+    it("shows workspace changes label when mode is uncommitted", () => {
       render(
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={3}
+            workspaceChangeCount={3}
             commits={[]}
             onModeChange={onModeChange}
           />,
         ),
       );
-      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Uncommitted");
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Workspace changes");
       expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("3");
+    });
+
+    it("uses a custom workspace changes label for published branches", () => {
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            workspaceChangeCount={2}
+            workspaceChangeLabel="Published changes"
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Published changes");
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("2");
     });
 
     it("shows short SHA label when a specific commit is selected", () => {
@@ -68,7 +84,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="abc1234def5678"
-            uncommittedCount={0}
+            workspaceChangeCount={0}
             commits={[commit]}
             onModeChange={onModeChange}
           />,
@@ -82,7 +98,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="staged"
-            uncommittedCount={0}
+            workspaceChangeCount={0}
             stagedCount={4}
             commits={[]}
             onModeChange={onModeChange}
@@ -98,7 +114,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="staged"
-            uncommittedCount={0}
+            workspaceChangeCount={0}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -112,7 +128,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="unstaged"
-            uncommittedCount={0}
+            workspaceChangeCount={0}
             unstagedCount={2}
             commits={[]}
             onModeChange={onModeChange}
@@ -128,7 +144,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="cumulative"
-            uncommittedCount={0}
+            workspaceChangeCount={0}
             commits={[makeCommit(), makeCommit({ sha: "bbb222", shortSha: "bbb222" })]}
             onModeChange={onModeChange}
           />,
@@ -146,7 +162,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -156,13 +172,13 @@ describe("AgentsPublishDiffFilter", () => {
       expect(screen.getByTestId("diff-filter-popover")).toBeInTheDocument();
     });
 
-    it("shows Uncommitted radio option in popover", async () => {
+    it("shows workspace changes radio option in popover", async () => {
       const user = userEvent.setup();
       render(
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -170,6 +186,9 @@ describe("AgentsPublishDiffFilter", () => {
       );
       await user.click(screen.getByTestId("diff-filter-trigger"));
       expect(screen.getByTestId("diff-filter-option-uncommitted")).toBeInTheDocument();
+      expect(screen.getByTestId("diff-filter-option-uncommitted")).toHaveTextContent(
+        "Workspace changes",
+      );
     });
 
     it("shows Specific Commit collapsible section", async () => {
@@ -178,7 +197,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[makeCommit()]}
             onModeChange={onModeChange}
           />,
@@ -194,7 +213,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -210,7 +229,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -226,7 +245,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[makeCommit()]}
             onModeChange={onModeChange}
           />,
@@ -242,7 +261,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="cumulative"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[makeCommit()]}
             supportsWorktreeModes={false}
             onModeChange={onModeChange}
@@ -258,13 +277,13 @@ describe("AgentsPublishDiffFilter", () => {
   });
 
   describe("mode selection", () => {
-    it("calls onModeChange('uncommitted') when Uncommitted radio is clicked", async () => {
+    it("calls onModeChange('uncommitted') when workspace changes radio is clicked", async () => {
       const user = userEvent.setup();
       render(
         withProviders(
           <AgentsPublishDiffFilter
             mode="abc1234def5678"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[makeCommit({ sha: "abc1234def5678", shortSha: "abc1234" })]}
             onModeChange={onModeChange}
           />,
@@ -282,7 +301,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[commit]}
             onModeChange={onModeChange}
           />,
@@ -301,7 +320,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -318,7 +337,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[]}
             onModeChange={onModeChange}
           />,
@@ -335,7 +354,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={[makeCommit()]}
             onModeChange={onModeChange}
           />,
@@ -356,7 +375,7 @@ describe("AgentsPublishDiffFilter", () => {
         withProviders(
           <AgentsPublishDiffFilter
             mode="uncommitted"
-            uncommittedCount={5}
+            workspaceChangeCount={5}
             commits={commits}
             onModeChange={onModeChange}
           />,

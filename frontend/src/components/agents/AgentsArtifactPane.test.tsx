@@ -1449,6 +1449,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
     await screen.findByText("1 changed file published for review.");
+    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Published changes");
 
     fireEvent.click(publishButton);
 
