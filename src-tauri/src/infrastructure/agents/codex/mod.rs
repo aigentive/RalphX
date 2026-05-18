@@ -26,7 +26,7 @@ use crate::infrastructure::agents::mcp_runtime_context::{
 use crate::infrastructure::external_mcp_supervisor::{
     ensure_tauri_mcp_bypass_token, TAURI_MCP_BYPASS_TOKEN_ENV,
 };
-pub use codex_cli_client::CodexCliClient;
+pub use codex_cli_client::{kill_all_tracked_processes, CodexCliClient};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexCliCapabilities {
@@ -698,6 +698,11 @@ fn configure_spawn(cmd: &mut tokio::process::Command, cwd: Option<&Path>) {
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdin(std::process::Stdio::piped());
     crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    // Put Codex (and its descendants — MCP server, any subprocesses it
+    // spawns) into their own process group so the Tauri exit handler can
+    // SIGTERM the whole tree without risking the app itself. See
+    // `crate::infrastructure::agents::spawn_isolation`.
+    crate::infrastructure::agents::spawn_isolation::install_setsid_pre_exec_tokio(cmd);
 }
 
 fn require_capability(supported: bool, capability: &str) -> Result<(), String> {
