@@ -9,6 +9,8 @@ import {
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { useChatStore } from "@/stores/chatStore";
+
 import { useAgentTerminalStore } from "./agentTerminalStore";
 import {
   conversationFixture as conversation,
@@ -17,6 +19,7 @@ import {
 
 const {
   artifactPaneModuleLoadedMock,
+  getAgentRunningStatesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   getWorkspaceReviewMock,
@@ -292,5 +295,69 @@ describe("AgentsView performance", () => {
       { timeout: 2_000 }
     );
   });
+
+  it("refreshes the composer diff summary while the edit agent is generating", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    getWorkspaceReviewMock
+      .mockResolvedValueOnce({
+        changes: [],
+        commits: [],
+        baseRef: "main",
+        headRef: "HEAD",
+        supportsWorktreeModes: true,
+      })
+      .mockResolvedValue({
+        changes: [
+          {
+            path: "src/live-change.ts",
+            status: "modified",
+            additions: 12,
+            deletions: 3,
+            isGenerated: false,
+          },
+        ],
+        commits: [],
+        baseRef: "main",
+        headRef: "HEAD",
+        supportsWorktreeModes: true,
+      });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+    getAgentRunningStatesMock.mockResolvedValue({ "conversation-1": true });
+    useChatStore
+      .getState()
+      .setAgentStatus("project:conversation-1", "generating");
+
+    renderAgentsView();
+
+    expect(screen.getByTestId("agents-conversation-submit")).toHaveTextContent("Stop");
+
+    await waitFor(() => expect(getWorkspaceReviewMock).toHaveBeenCalledTimes(1), {
+      timeout: 3_000,
+    });
+    expect(
+      screen.queryByTestId("agents-composer-workspace-changes")
+    ).not.toBeInTheDocument();
+
+    await waitFor(
+      () => expect(getWorkspaceReviewMock.mock.calls.length).toBeGreaterThanOrEqual(2),
+      { timeout: 5_000 },
+    );
+    await screen.findByTestId("agents-composer-workspace-changes");
+    expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
+      "1 file",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-additions")).toHaveTextContent(
+      "+12",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-deletions")).toHaveTextContent(
+      "−3",
+    );
+  }, 10_000);
 
 });
