@@ -62,6 +62,39 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(),
 }));
 
+// Mock Tauri's webview drag/drop API.
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: vi.fn(() => Promise.resolve(() => {})),
+  }),
+}));
+
+// Mock Tauri's filesystem plugin for tests that render native-drop-aware UI.
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  readTextFile: vi.fn(() => Promise.reject(new Error("[test] readTextFile not mocked"))),
+  readFile: vi.fn(() => Promise.reject(new Error("[test] readFile not mocked"))),
+  writeTextFile: vi.fn(() => Promise.resolve()),
+  writeFile: vi.fn(() => Promise.resolve()),
+  exists: vi.fn(() => Promise.resolve(false)),
+  stat: vi.fn(() =>
+    Promise.resolve({
+      size: 0,
+      isFile: true,
+      isDirectory: false,
+      isSymlink: false,
+      mtimeMs: null,
+      atimeMs: null,
+      birthtimeMs: null,
+      readonly: false,
+    }),
+  ),
+  mkdir: vi.fn(() => Promise.resolve()),
+  readDir: vi.fn(() => Promise.resolve([])),
+  remove: vi.fn(() => Promise.resolve()),
+  rename: vi.fn(() => Promise.resolve()),
+  copyFile: vi.fn(() => Promise.resolve()),
+}));
+
 // Reset all mocks between tests
 afterEach(() => {
   vi.clearAllMocks();
