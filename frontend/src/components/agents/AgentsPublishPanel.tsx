@@ -937,7 +937,7 @@ export function AgentPublishPanel({
               conversationId={conversationId ?? ""}
               review={reviewQuery.data ?? null}
               commits={commits}
-              isLoading={Boolean(conversationId) && reviewQuery.isLoading}
+              isLoading={Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading)}
               annotations={prAnnotations}
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}

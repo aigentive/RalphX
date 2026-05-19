@@ -1177,6 +1177,37 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       expect(screen.getByTestId("inline-diffs-loading")).toBeInTheDocument();
     });
+
+    it("shows loading skeleton while cumulative files query is pending for a merged workspace with empty review changes", async () => {
+      let resolveCumulative!: (value: unknown[]) => void;
+      mockGetCumulativeFiles.mockReturnValue(
+        new Promise((resolve) => {
+          resolveCumulative = resolve;
+        }),
+      );
+      const review = { ...makeReview([]), supportsWorktreeModes: false as const };
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-merged"
+            review={review}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+      expect(screen.getByTestId("inline-diffs-loading")).toBeInTheDocument();
+      expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
+
+      await act(async () => {
+        resolveCumulative([makeFileChange("src/MergedFile.tsx")]);
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-MergedFile.tsx")).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId("inline-diffs-loading")).toBeNull();
+      expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
+    });
   });
 
   describe("openInDialog", () => {

@@ -146,7 +146,7 @@ export function useAgentWorkspaceChangeSummary({
       : isUnstagedMode
         ? unstagedFilesQuery.isLoading
         : isCumulativeMode
-          ? cumulativeFilesQuery.isLoading
+          ? (cumulativeFilesQuery.isPending && !cumulativeFilesQuery.isError)
           : false;
 
   const totalAdditions = currentFiles.reduce((sum, file) => sum + file.additions, 0);
