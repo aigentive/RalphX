@@ -535,15 +535,17 @@ export function SimpleDiffView({
     return (
       <div
         key={`gap-${gapKey}`}
-        className="px-3 py-1.5"
-        style={{ borderBottom: "1px solid var(--overlay-faint)" }}
+        data-testid="diff-gap"
       >
         {/* Error state */}
         {state === "error" && (
           <div
             data-testid="gap-error"
-            className="flex items-center gap-2 text-[0.6875rem]"
-            style={{ color: "var(--text-muted)" }}
+            className="flex items-center gap-2 px-3 py-1.5 text-[0.6875rem]"
+            style={{
+              borderBottom: "1px solid var(--overlay-faint)",
+              color: "var(--text-muted)",
+            }}
           >
             <span>Could not load context lines.</span>
             <button
@@ -562,8 +564,11 @@ export function SimpleDiffView({
         {state === "loading" && (
           <div
             data-testid="gap-loading"
-            className="text-[0.6875rem]"
-            style={{ color: "var(--text-muted)" }}
+            className="px-3 py-1.5 text-[0.6875rem]"
+            style={{
+              borderBottom: "1px solid var(--overlay-faint)",
+              color: "var(--text-muted)",
+            }}
           >
             Loading…
           </div>
@@ -586,24 +591,32 @@ export function SimpleDiffView({
                 })
               )
             )}
-            <button
-              type="button"
-              aria-label="Hide unchanged lines"
-              className="mt-1 text-[0.6875rem] hover:underline"
-              style={{ color: "var(--text-muted)" }}
-              onClick={() => collapseGap(gapKey)}
+            <div
+              data-testid="diff-gap-control"
+              style={{ borderBottom: "1px solid var(--overlay-faint)" }}
             >
-              Hide unchanged lines
-            </button>
+              <button
+                type="button"
+                aria-label="Hide unchanged lines"
+                className="block px-3 py-1.5 text-[0.6875rem] hover:underline"
+                style={{ color: "var(--text-muted)" }}
+                onClick={() => collapseGap(gapKey)}
+              >
+                Hide unchanged lines
+              </button>
+            </div>
           </>
         )}
 
         {/* Collapsed or not-yet-fetched */}
         {(!hasData || isCollapsed) && state !== "loading" && state !== "error" && (
-          <>
+          <div
+            data-testid="diff-gap-control"
+            style={{ borderBottom: "1px solid var(--overlay-faint)" }}
+          >
             {hiddenAnnotations.length > 0 && (
               <div
-                className="mb-1 text-[0.6875rem] font-medium"
+                className="px-3 pt-1.5 text-[0.6875rem] font-medium"
                 data-testid="diff-hidden-annotations"
                 style={{ color: "var(--status-warning)" }}
               >
@@ -619,7 +632,7 @@ export function SimpleDiffView({
                     ? `Show ${hiddenAnnotations.length} hidden annotations in ${gapCount} unchanged lines`
                     : `Show ${gapCount} unchanged lines`
                 }
-                className="text-[0.6875rem] hover:underline"
+                className="block px-3 py-1.5 text-[0.6875rem] hover:underline"
                 style={{ color: "var(--text-muted)" }}
                 onClick={() => expandGap(gapKey, fromNewLine, toNewLine)}
               >
@@ -629,13 +642,13 @@ export function SimpleDiffView({
               </button>
             ) : (
               <span
-                className="text-[0.6875rem]"
+                className="block px-3 py-1.5 text-[0.6875rem]"
                 style={{ color: "var(--text-muted)" }}
               >
                 {gapCount} unchanged lines
               </span>
             )}
-          </>
+          </div>
         )}
       </div>
     );

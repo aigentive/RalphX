@@ -519,6 +519,44 @@ describe("SimpleDiffView", () => {
       expect(screen.getByText("fetched line B")).toBeInTheDocument();
     });
 
+    it("keeps expanded range rows outside the padded gap control", async () => {
+      mockGetRange.mockResolvedValue([
+        { lineNum: 4, content: "aligned fetched line" },
+      ]);
+      const user = userEvent.setup();
+      const hunks: DiffHunk[] = [
+        makeHunk({ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3 }),
+        makeHunk({
+          oldStart: 10,
+          oldLines: 3,
+          newStart: 10,
+          newLines: 3,
+          header: "@@ -10,3 +10,3 @@",
+          lines: [makeDiffLine({ kind: "addition", content: "later", oldLineNum: null, newLineNum: 10 })],
+        }),
+      ];
+
+      render(
+        <SimpleDiffView
+          hunks={hunks}
+          oldTotalLines={15}
+          newTotalLines={15}
+          {...rangeProps}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: /show 6 unchanged lines/i }));
+      await waitFor(() => expect(screen.getByText("aligned fetched line")).toBeInTheDocument());
+
+      const fetchedLine = screen.getByText("aligned fetched line");
+      const hideButton = screen.getByRole("button", { name: /hide unchanged lines/i });
+      const gapControl = hideButton.closest("[data-testid='diff-gap-control']");
+      expect(fetchedLine.closest("[data-testid='diff-gap-control']")).toBeNull();
+      expect(gapControl).not.toBeNull();
+      expect(gapControl).not.toHaveClass("px-3");
+      expect(hideButton).toHaveClass("px-3", "py-1.5");
+    });
+
     it("does NOT re-fetch when the same gap is clicked again (cache hit)", async () => {
       mockGetRange.mockResolvedValue([
         { lineNum: 4, content: "cached line" },
