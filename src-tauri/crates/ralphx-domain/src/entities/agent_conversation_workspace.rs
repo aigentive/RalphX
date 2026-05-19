@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::entities::{
@@ -185,6 +186,93 @@ pub struct AgentWorkspacePrDescription {
     pub body_markdown: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrCommentEvidence {
+    pub conversation_id: ChatConversationId,
+    pub pr_number: i64,
+    pub comment_id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub body_excerpt: String,
+    pub body_sha256: String,
+    pub url: Option<String>,
+    pub github_created_at: Option<String>,
+    pub github_updated_at: Option<String>,
+    pub is_codecov: bool,
+    pub is_bot: bool,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub last_included_at: Option<DateTime<Utc>>,
+    pub last_read_at: Option<DateTime<Utc>>,
+    pub edit_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspacePrCommentEvidenceUpsert {
+    pub pr_number: i64,
+    pub comment_id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub body_excerpt: String,
+    pub body_sha256: String,
+    pub url: Option<String>,
+    pub github_created_at: Option<String>,
+    pub github_updated_at: Option<String>,
+    pub is_codecov: bool,
+    pub is_bot: bool,
+}
+
+impl AgentWorkspacePrCommentEvidenceUpsert {
+    pub fn new(
+        pr_number: i64,
+        comment_id: String,
+        author: Option<String>,
+        body: String,
+        url: Option<String>,
+        github_created_at: Option<String>,
+        github_updated_at: Option<String>,
+        is_codecov: bool,
+        is_bot: bool,
+    ) -> Self {
+        let body_excerpt = pr_comment_body_excerpt(&body, 480);
+        let body_sha256 = pr_comment_body_sha256(&body);
+        Self {
+            pr_number,
+            comment_id,
+            author,
+            body,
+            body_excerpt,
+            body_sha256,
+            url,
+            github_created_at,
+            github_updated_at,
+            is_codecov,
+            is_bot,
+        }
+    }
+}
+
+pub fn pr_comment_body_sha256(body: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+pub fn pr_comment_body_excerpt(body: &str, max_chars: usize) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let truncated: String = compact.chars().take(max_chars - 3).collect();
+    format!("{truncated}...")
+}
+
 impl AgentWorkspacePrDescription {
     pub fn new(title: Option<String>, body_markdown: String) -> Self {
         Self {
@@ -194,6 +282,32 @@ impl AgentWorkspacePrDescription {
             }),
             body_markdown,
         }
+    }
+}
+
+#[cfg(test)]
+mod pr_comment_evidence_tests {
+    use super::{pr_comment_body_excerpt, pr_comment_body_sha256};
+
+    #[test]
+    fn pr_comment_body_excerpt_respects_tiny_limits() {
+        assert_eq!(pr_comment_body_excerpt("abcdef", 0), "");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 2), "..");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 3), "...");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 5), "ab...");
+        assert_eq!(pr_comment_body_excerpt("abcdef", 6), "abcdef");
+    }
+
+    #[test]
+    fn pr_comment_body_sha256_is_stable() {
+        assert_eq!(
+            pr_comment_body_sha256("coverage"),
+            pr_comment_body_sha256("coverage")
+        );
+        assert_ne!(
+            pr_comment_body_sha256("coverage"),
+            pr_comment_body_sha256("different")
+        );
     }
 }
 
