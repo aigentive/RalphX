@@ -393,6 +393,7 @@ fn test_remove_stale_drops_old_messages() {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            composer_project_references: Vec::new(),
         });
         q.push(QueuedMessage {
             id: "fresh-1".to_string(),
@@ -402,6 +403,7 @@ fn test_remove_stale_drops_old_messages() {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            composer_project_references: Vec::new(),
         });
     }
 
@@ -493,6 +495,29 @@ fn test_queue_with_overrides_preserves_metadata_and_timestamp() {
 }
 
 #[test]
+fn test_queue_with_overrides_preserves_composer_project_references() {
+    let queue = MessageQueue::new();
+    let references = vec![ComposerProjectReference {
+        path: "src/main.ts".to_string(),
+        kind: Some(ComposerProjectReferenceKind::File),
+    }];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Read @src/main.ts".to_string(),
+        None,
+        None,
+        None,
+        references.clone(),
+    );
+
+    assert_eq!(queued.composer_project_references, references);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.composer_project_references, references);
+}
+
+#[test]
 fn test_queue_standard_has_no_overrides() {
     let queue = MessageQueue::new();
     let queued = queue.queue(
@@ -503,6 +528,7 @@ fn test_queue_standard_has_no_overrides() {
     assert_eq!(queued.metadata_override, None);
     assert_eq!(queued.created_at_override, None);
     assert_eq!(queued.harness_override, None);
+    assert!(queued.composer_project_references.is_empty());
 }
 
 #[test]
@@ -521,6 +547,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            composer_project_references: Vec::new(),
         });
     }
 

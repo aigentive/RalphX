@@ -4,6 +4,7 @@ import { PauseCircle, Sparkles } from "lucide-react";
 import type {
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
+  ComposerProjectReference,
 } from "@/api/chat";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
@@ -71,6 +72,7 @@ interface AgentsStartComposerProps {
     mode: AgentConversationWorkspaceMode;
     base: AgentConversationBaseSelection | null;
     files: File[];
+    composerProjectReferences?: ComposerProjectReference[] | undefined;
   }) => Promise<void>;
 }
 
@@ -515,7 +517,10 @@ export function AgentsStartComposer({
     setAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
   };
 
-  const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (message) => {
+  const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
+    message,
+    options,
+  ) => {
     if (!projectId) {
       setError("Project is required");
       return;
@@ -539,6 +544,9 @@ export function AgentsStartComposer({
         mode,
         base: selectedStartFrom?.selection ?? fallbackStartFrom,
         files: attachments.map((attachment) => attachment.file),
+        ...(options?.projectReferences?.length
+          ? { composerProjectReferences: options.projectReferences }
+          : {}),
       });
       setContent("");
       setAttachments([]);

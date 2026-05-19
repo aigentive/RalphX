@@ -1739,6 +1739,27 @@ describe("chat api", () => {
     });
   });
 
+  it("sends unified agent message with structured composer references", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Read @src/main.ts", undefined, undefined, {
+      composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Read @src/main.ts",
+        composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      },
+    });
+  });
+
   it("lists queued messages", async () => {
     mockInvoke.mockResolvedValueOnce([{ id: "q1", content: "queued", created_at: "2026-01-24T10:00:00Z", is_editing: false }]);
 

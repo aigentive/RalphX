@@ -12,6 +12,7 @@
 // - ExecutionChatService (task_execution context)
 
 pub(crate) mod chat_service_context;
+mod chat_service_composer_references;
 mod chat_service_errors;
 mod chat_service_handlers;
 mod chat_service_helpers;
@@ -62,8 +63,8 @@ use crate::domain::repositories::{
     TaskStepRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey,
-    RunningAgentRegistry,
+    is_process_alive, kill_process, ComposerProjectReference, MessageQueue, QueuedMessage,
+    RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
@@ -231,6 +232,28 @@ fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
     } else {
         Some(value.to_string())
     }
+}
+
+fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
+    let metadata = strip_resume_in_place_metadata(options.metadata.clone());
+    if options.composer_project_references.is_empty() {
+        return metadata;
+    }
+
+    let references = serde_json::to_value(&options.composer_project_references).ok()?;
+    let mut value = match metadata {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::json!({ "raw_metadata": raw })),
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    };
+    if !value.is_object() {
+        value = serde_json::json!({ "metadata": value });
+    }
+    let Some(object) = value.as_object_mut() else {
+        return Some(value.to_string());
+    };
+    object.insert("composer_project_references".to_string(), references);
+    Some(value.to_string())
 }
 
 fn runtime_context_id_for_send(
@@ -487,6 +510,8 @@ pub struct SendMessageOptions {
     pub approval_policy_override: Option<String>,
     /// Optional explicit sandbox-mode override for this send.
     pub sandbox_mode_override: Option<String>,
+    /// Structured composer project references for runtime-only prompt expansion.
+    pub composer_project_references: Vec<ComposerProjectReference>,
     /// Start a fresh provider-native session even when the conversation has a stored
     /// provider session or an idle interactive process.
     pub force_new_provider_session: bool,
@@ -809,14 +834,17 @@ impl<R: Runtime> AppChatService<R> {
         options: &SendMessageOptions,
         conversation_id: Option<String>,
     ) -> QueuedMessage {
-        let queued = self.message_queue.queue_with_overrides(
-            context_type,
-            context_id,
-            message.to_string(),
-            options.metadata.clone(),
-            options.created_at.map(|ts| ts.to_rfc3339()),
-            options.harness_override,
-        );
+        let queued = self
+            .message_queue
+            .queue_with_overrides_and_project_references(
+                context_type,
+                context_id,
+                message.to_string(),
+                options.metadata.clone(),
+                options.created_at.map(|ts| ts.to_rfc3339()),
+                options.harness_override,
+                options.composer_project_references.clone(),
+            );
         self.emit_event(
             "agent:message_queued",
             AgentMessageQueuedPayload {
@@ -1885,6 +1913,56 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    async fn composer_reference_runtime_message(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        message: &str,
+        references: &[ComposerProjectReference],
+        conversation_id_override: Option<&ChatConversationId>,
+        working_directory_override: Option<&PathBuf>,
+    ) -> String {
+        if let Some(working_directory) = working_directory_override {
+            return chat_service_composer_references::expand_project_references_for_prompt(
+                message,
+                references,
+                working_directory,
+            );
+        }
+
+        if let Some(conversation_id) = conversation_id_override {
+            if let Ok(Some(workspace)) = self
+                .load_agent_conversation_workspace(context_type, conversation_id)
+                .await
+            {
+                if let Ok(working_directory) = self
+                    .resolve_agent_workspace_working_directory(&workspace)
+                    .await
+                {
+                    return chat_service_composer_references::expand_project_references_for_prompt(
+                        message,
+                        references,
+                        &working_directory,
+                    );
+                }
+            }
+        }
+
+        match self
+            .resolve_working_directory(context_type, context_id)
+            .await
+        {
+            Ok(working_directory) => {
+                chat_service_composer_references::expand_project_references_for_prompt(
+                    message,
+                    references,
+                    &working_directory,
+                )
+            }
+            Err(_) => message.to_string(),
+        }
+    }
+
     /// Fetch entity status for context types that support it
     /// Used for dynamic agent resolution based on entity state
     async fn get_entity_status(
@@ -2155,14 +2233,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             );
 
             // Build the prompt with context wrapping, then format as stream-json input.
-            // The interactive process uses `-p - --input-format stream-json`, so each
-            // message must be a single-line JSON object.
             // Session history is NOT injected here — the agent is already running and
-            // has live context. History injection is only for new process spawns.
+            // has live context.
+            let runtime_message = self
+                .composer_reference_runtime_message(
+                    context_type,
+                    context_id,
+                    message,
+                    &options.composer_project_references,
+                    options.conversation_id_override.as_ref(),
+                    options.working_directory_override.as_ref(),
+                )
+                .await;
             let stdin_prompt = chat_service_context::build_initial_prompt(
                 context_type,
                 context_id,
-                message,
+                &runtime_message,
                 &[],
                 0,
             );
@@ -2235,8 +2321,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     };
 
                     let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
-                    let persisted_metadata =
-                        strip_resume_in_place_metadata(options.metadata.clone());
+                    let persisted_metadata = persisted_user_metadata(&options);
 
                     // Store user message for conversation history
                     if !resume_in_place {
@@ -2816,7 +2901,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // so that effective_model_id / effective_model_label can be included in the payload.
 
         let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
-        let persisted_metadata = strip_resume_in_place_metadata(options.metadata.clone());
+        let persisted_metadata = persisted_user_metadata(&options);
 
         // 4. Store user message
         if !resume_in_place {
@@ -3232,10 +3317,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             elapsed_ms = post_gate_started.elapsed().as_millis() as u64,
             "chat_service.send_message pre-spawn preparation completed"
         );
+        let runtime_message =
+            chat_service_composer_references::expand_project_references_for_prompt(
+                message,
+                &options.composer_project_references,
+                &working_directory,
+            );
         let (selected_cli_path, child, interactive_process_registry) = match self
             .spawn_process_for_harness(
                 &conversation,
-                message,
+                &runtime_message,
                 Some(resolved_agent_name.as_str()),
                 context_type,
                 context_id,
@@ -4124,8 +4215,64 @@ mod agent_workspace_send_tests {
         AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
         MessageRole, Project, ProjectId, TaskId,
     };
-    use crate::domain::services::RunningAgentKey;
+    use crate::domain::services::{
+        ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
+    };
     use std::sync::Arc;
+
+    #[test]
+    fn persisted_user_metadata_strips_resume_flag_and_embeds_composer_references() {
+        let metadata = super::persisted_user_metadata(&SendMessageOptions {
+            metadata: Some(r#"{"resume_in_place":true,"source":"composer"}"#.to_string()),
+            composer_project_references: vec![ComposerProjectReference {
+                path: "src/main.ts".to_string(),
+                kind: Some(ComposerProjectReferenceKind::File),
+            }],
+            ..Default::default()
+        })
+        .expect("metadata");
+        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
+
+        assert_eq!(value.get("resume_in_place"), None);
+        assert_eq!(value["source"], "composer");
+        assert_eq!(value["composer_project_references"][0]["path"], "src/main.ts");
+        assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    }
+
+    #[test]
+    fn persisted_user_metadata_wraps_scalar_and_raw_metadata_with_references() {
+        let scalar = super::persisted_user_metadata(&SendMessageOptions {
+            metadata: Some("42".to_string()),
+            composer_project_references: vec![ComposerProjectReference {
+                path: "README.md".to_string(),
+                kind: None,
+            }],
+            ..Default::default()
+        })
+        .expect("scalar metadata");
+        let scalar_value: serde_json::Value = serde_json::from_str(&scalar).expect("json");
+        assert_eq!(scalar_value["metadata"], 42);
+        assert_eq!(
+            scalar_value["composer_project_references"][0]["path"],
+            "README.md"
+        );
+
+        let raw = super::persisted_user_metadata(&SendMessageOptions {
+            metadata: Some("not-json".to_string()),
+            composer_project_references: vec![ComposerProjectReference {
+                path: "src/lib.rs".to_string(),
+                kind: None,
+            }],
+            ..Default::default()
+        })
+        .expect("raw metadata");
+        let raw_value: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(raw_value["raw_metadata"], "not-json");
+        assert_eq!(
+            raw_value["composer_project_references"][0]["path"],
+            "src/lib.rs"
+        );
+    }
 
     #[tokio::test]
     async fn interactive_stdin_send_returns_registered_process_run_id() {

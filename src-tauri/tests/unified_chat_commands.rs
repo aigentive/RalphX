@@ -2064,6 +2064,7 @@ mod ipc_contract {
         assert_eq!(input.logical_effort, Some(LogicalEffort::XHigh));
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
+        assert!(input.composer_project_references.is_empty());
     }
 
     #[tokio::test]
@@ -2106,6 +2107,7 @@ mod ipc_contract {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                composer_project_references: Vec::new(),
             },
             app.state::<AppState>(),
             app.state::<Arc<ExecutionState>>(),

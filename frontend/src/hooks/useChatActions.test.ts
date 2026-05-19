@@ -205,7 +205,14 @@ describe("useChatActions", () => {
 
       // Should use direct API, NOT the mutation
       expect(mutateAsync).not.toHaveBeenCalled();
-      expect(mockSendAgentMessage).toHaveBeenCalledWith("review", "task-42", "looks good", undefined, undefined);
+      expect(mockSendAgentMessage).toHaveBeenCalledWith(
+        "review",
+        "task-42",
+        "looks good",
+        undefined,
+        undefined,
+        undefined
+      );
       expect(mockActions.setSending).toHaveBeenCalledWith("review:task-42", true);
       expect(mockInvalidateQueries).toHaveBeenCalled();
     });
@@ -555,6 +562,7 @@ describe("useChatActions", () => {
         "merge",
         "task-99",
         "merge it",
+        undefined,
         undefined,
         undefined
       );

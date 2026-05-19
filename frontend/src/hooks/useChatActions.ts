@@ -24,7 +24,11 @@ import { ideationApi } from "@/api/ideation";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
-import type { SendAgentMessageResult } from "@/api/chat";
+import type {
+  ComposerProjectReference,
+  SendAgentMessageOptions,
+  SendAgentMessageResult,
+} from "@/api/chat";
 
 // ============================================================================
 // Types
@@ -46,19 +50,19 @@ interface UseChatActionsProps {
   /** Send message mutation from useChat or useTaskChat */
   sendMessage: {
     isPending: boolean;
-    mutateAsync: (params: { content: string; attachmentIds?: string[]; target?: string }) => Promise<SendAgentMessageResult>;
+    mutateAsync: (params: {
+      content: string;
+      attachmentIds?: string[];
+      target?: string;
+      composerProjectReferences?: ComposerProjectReference[];
+    }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
   activeConversationId?: string | null | undefined;
   /** Current message count (for first-message detection in ideation) */
   messageCount?: number;
   /** Explicit send options used by externally-owned session lists. */
-  sendOptions?: {
-    conversationId?: string | null;
-    providerHarness?: string | null;
-    modelId?: string | null;
-    logicalEffort?: string | null;
-  } | undefined;
+  sendOptions?: SendAgentMessageOptions | undefined;
   /** Optional callback after a user message is accepted by the backend. */
   onUserMessageSent?: ((payload: {
     content: string;
@@ -101,7 +105,12 @@ export function useChatActions({
 
   // ── Send ─────────────────────────────────────────────────────────
   const handleSend = useCallback(
-    async (content: string, attachmentIds?: string[], target?: string) => {
+    async (
+      content: string,
+      attachmentIds?: string[],
+      target?: string,
+      composerOptions?: { projectReferences?: ComposerProjectReference[] },
+    ) => {
       if (!content.trim() || sendMessage.isPending) return;
 
       // Capture first message state before sending (for auto-naming trigger)
@@ -130,7 +139,16 @@ export function useChatActions({
                 messageId: message.id,
               };
             }
-            const result = await chatApi.sendAgentMessage(contextType, agentContextId, content, attachmentIds, target);
+            const result = await chatApi.sendAgentMessage(
+              contextType,
+              agentContextId,
+              content,
+              attachmentIds,
+              target,
+              composerOptions?.projectReferences?.length
+                ? { composerProjectReferences: composerOptions.projectReferences }
+                : undefined,
+            );
             sentResult = result;
 
             queryClient.invalidateQueries({
@@ -153,12 +171,20 @@ export function useChatActions({
             setSending(storeContextKey, false);
           }
         } else {
-          const params: { content: string; attachmentIds?: string[]; target?: string } = { content };
+          const params: {
+            content: string;
+            attachmentIds?: string[];
+            target?: string;
+            composerProjectReferences?: ComposerProjectReference[];
+          } = { content };
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
           }
           if (target !== undefined) {
             params.target = target;
+          }
+          if (composerOptions?.projectReferences?.length) {
+            params.composerProjectReferences = composerOptions.projectReferences;
           }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;

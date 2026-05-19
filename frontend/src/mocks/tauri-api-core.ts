@@ -459,6 +459,67 @@ const commandHandlers: Record<
 
   // Project commands
   list_projects: async () => mockProjectsApi.list(),
+  search_agent_composer_entries: async (args) => {
+    const input = args.input as { query?: string; limit?: number } | undefined;
+    const query = input?.query?.toLowerCase() ?? "";
+    const entries = [
+      { path: "src/main.tsx", kind: "file", parentPath: "src" },
+      { path: "src/components", kind: "directory", parentPath: "src" },
+      {
+        path: "src/components/agents/AgentComposerSurface.tsx",
+        kind: "file",
+        parentPath: "src/components/agents",
+      },
+      { path: "src-tauri/src/lib.rs", kind: "file", parentPath: "src-tauri/src" },
+    ].filter((entry) => entry.path.toLowerCase().includes(query));
+    return {
+      entries: entries.slice(0, input?.limit ?? 80),
+      truncated: false,
+    };
+  },
+  list_agent_composer_skills: async () => ({
+    skills: [
+      {
+        id: "internal:workspace-swe",
+        name: "workspace-swe",
+        displayName: null,
+        description: "Apply RalphX workspace engineering guidance.",
+        source: "ralphx-internal",
+        providerHarness: null,
+        scope: "RalphX",
+        invocationKind: "internal-directive",
+        invocationValue: "workspace-swe",
+        enabled: true,
+        sourcePath: "plugins/app/skills/workspace-swe/SKILL.md",
+      },
+      {
+        id: "claude:project:review",
+        name: "review",
+        displayName: null,
+        description: "Claude project review skill.",
+        source: "harness-native",
+        providerHarness: "claude",
+        scope: "project",
+        invocationKind: "harness-native-token",
+        invocationValue: "/review",
+        enabled: true,
+        sourcePath: ".claude/skills/review/SKILL.md",
+      },
+      {
+        id: "codex:plugin:github:yeet",
+        name: "github:yeet",
+        displayName: null,
+        description: "Publish local changes to GitHub.",
+        source: "harness-native",
+        providerHarness: "codex",
+        scope: "plugin",
+        invocationKind: "harness-native-token",
+        invocationValue: "$github:yeet",
+        enabled: true,
+        sourcePath: ".codex/plugins/cache/github/skills/yeet/SKILL.md",
+      },
+    ],
+  }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
   update_agent_provider_settings: async (args) => {
     const input = args.input as Partial<

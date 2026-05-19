@@ -397,12 +397,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   isSubmitting={composerProps.isSending}
                   isReadOnly={composerProps.isReadOnly}
                   autoFocus={composerProps.autoFocus}
+                  conversationId={selectedConversationId}
                   placeholder={
                     isFocusedChildChat
                       ? "Send a message..."
                       : "Ask the agent to plan, build, debug, or review something"
                   }
-                  showHelperText={false}
                   onFocusChange={(focused) => {
                     if (focused) {
                       markComposerActivity();

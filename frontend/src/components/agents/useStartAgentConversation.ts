@@ -7,6 +7,7 @@ import {
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type ComposerProjectReference,
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
@@ -81,6 +82,7 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      composerProjectReferences,
     }: {
       projectId: string;
       content: string;
@@ -88,6 +90,7 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
       const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
       const seedConversationState = (
@@ -260,6 +263,9 @@ export function useStartAgentConversation({
           modelId: normalizedRuntime.modelId,
           logicalEffort: normalizedRuntime.effort,
           mode,
+          ...(composerProjectReferences?.length
+            ? { composerProjectReferences }
+            : {}),
           ...(base ? { base } : {}),
         });
         const resolvedConversation: ChatConversation = {

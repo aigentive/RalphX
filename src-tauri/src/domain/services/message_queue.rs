@@ -12,6 +12,23 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// User-selected project reference metadata that must survive queue replay.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComposerProjectReferenceKind {
+    File,
+    Directory,
+}
+
+/// A project file/folder reference selected in the chat composer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerProjectReference {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ComposerProjectReferenceKind>,
+}
+
 /// Key for the message queue - combines context type and ID
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct QueueKey {
@@ -64,6 +81,9 @@ pub struct QueuedMessage {
     /// Optional runtime harness override to preserve relaunch/recovery provider continuity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_override: Option<AgentHarnessKind>,
+    /// Optional composer project references used for runtime-only prompt expansion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composer_project_references: Vec<ComposerProjectReference>,
 }
 
 impl QueuedMessage {
@@ -77,6 +97,7 @@ impl QueuedMessage {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            composer_project_references: Vec::new(),
         }
     }
 
@@ -91,6 +112,7 @@ impl QueuedMessage {
             metadata_override: None,
             created_at_override: None,
             harness_override: None,
+            composer_project_references: Vec::new(),
         }
     }
 }
@@ -197,11 +219,34 @@ impl MessageQueue {
         created_at_override: Option<String>,
         harness_override: Option<AgentHarnessKind>,
     ) -> QueuedMessage {
+        self.queue_with_overrides_and_project_references(
+            context_type,
+            context_id,
+            content,
+            metadata_override,
+            created_at_override,
+            harness_override,
+            Vec::new(),
+        )
+    }
+
+    /// Queue a message with send overrides and composer project references.
+    pub fn queue_with_overrides_and_project_references(
+        &self,
+        context_type: ChatContextType,
+        context_id: impl Into<String>,
+        content: String,
+        metadata_override: Option<String>,
+        created_at_override: Option<String>,
+        harness_override: Option<AgentHarnessKind>,
+        composer_project_references: Vec<ComposerProjectReference>,
+    ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
         let mut message = QueuedMessage::new(content);
         message.metadata_override = metadata_override;
         message.created_at_override = created_at_override;
         message.harness_override = harness_override;
+        message.composer_project_references = composer_project_references;
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().push(message.clone());
         message

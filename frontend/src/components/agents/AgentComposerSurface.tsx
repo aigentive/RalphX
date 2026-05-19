@@ -9,6 +9,10 @@ import {
 } from "react";
 import { useInputHistory } from "@/hooks/useInputHistory";
 import {
+  useAgentComposerEntries,
+  useAgentComposerSkills,
+} from "@/hooks/useAgentComposerResources";
+import {
   ArrowUp,
   Bot,
   Check,
@@ -46,6 +50,20 @@ import {
 } from "@/components/ui/popover";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
+import {
+  appendInternalSkillDirectives,
+  detectAgentComposerTrigger,
+  extractComposerPathTokens,
+  extractComposerSkillTokens,
+  normalizeComposerProjectReferences,
+  replaceAgentComposerTrigger,
+  type AgentComposerProjectReference,
+} from "./composer/agentComposerCore";
+import {
+  AgentComposerCommandMenu,
+  type AgentComposerMenuItem,
+} from "./composer/AgentComposerCommandMenu";
+import type { AgentComposerSkill } from "@/api/agent-composer";
 
 interface ComposerOption {
   id: string;
@@ -129,12 +147,16 @@ export interface AgentComposerQuestionMode {
   onMatchedOptions: (indices: number[]) => void;
 }
 
+export interface AgentComposerSendOptions {
+  projectReferences?: AgentComposerProjectReference[];
+}
+
 export interface AgentComposerSurfaceProps {
   project: ProjectFieldConfig;
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
-  onSend: (message: string) => Promise<void> | void;
+  onSend: (message: string, options?: AgentComposerSendOptions) => Promise<void> | void;
   onStop?: (() => Promise<unknown> | void) | undefined;
   placeholder?: string;
   isSubmitting?: boolean;
@@ -161,6 +183,7 @@ export interface AgentComposerSurfaceProps {
   submitLabel?: string;
   submittingLabel?: string;
   sendDisabledReason?: string | null;
+  conversationId?: string | null;
   className?: string;
 }
 
@@ -196,11 +219,20 @@ export function AgentComposerSurface({
   submitLabel = "Send",
   submittingLabel = "Sending...",
   sendDisabledReason = null,
+  conversationId = null,
   className,
 }: AgentComposerSurfaceProps) {
   const isControlled = controlledValue !== undefined;
   const [internalValue, setInternalValue] = useState("");
   const [isFocused, setIsFocused] = useState(false);
+  const [cursorPosition, setCursorPosition] = useState(0);
+  const [activeMenuIndex, setActiveMenuIndex] = useState(0);
+  const [selectedInternalSkillNames, setSelectedInternalSkillNames] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [selectedProjectReferences, setSelectedProjectReferences] = useState<
+    Map<string, AgentComposerProjectReference>
+  >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -220,6 +252,30 @@ export function AgentComposerSurface({
     : questionMode
       ? `Type 1-${questionMode.optionCount} or a custom response...`
       : placeholder;
+  const activeTrigger = useMemo(
+    () => detectAgentComposerTrigger(value, cursorPosition),
+    [cursorPosition, value]
+  );
+  const composerAssistEnabled =
+    !isReadOnly && !questionMode && project.value.trim().length > 0;
+  const pathQuery =
+    activeTrigger?.kind === "path" ? activeTrigger.query : "";
+  const pathEntriesQuery = useAgentComposerEntries({
+    projectId: project.value,
+    conversationId,
+    query: pathQuery,
+    enabled:
+      composerAssistEnabled &&
+      isFocused &&
+      activeTrigger?.kind === "path",
+  });
+  const skillsQuery = useAgentComposerSkills({
+    projectId: project.value,
+    conversationId,
+    providerHarness: provider.value,
+    mode: mode?.value ?? null,
+    enabled: composerAssistEnabled && isFocused,
+  });
 
   useEffect(() => {
     if (autoFocus && textareaRef.current) {
@@ -303,8 +359,258 @@ export function AgentComposerSurface({
     } else {
       setInternalValue("");
     }
+    setCursorPosition(0);
+    setSelectedInternalSkillNames(new Set());
+    setSelectedProjectReferences(new Map());
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
+
+  const applyComposerText = useCallback(
+    (nextValue: string, nextCursor: number) => {
+      setValue(nextValue);
+      setCursorPosition(nextCursor);
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
+        }
+        textarea.focus();
+        textarea.setSelectionRange(nextCursor, nextCursor);
+      });
+    },
+    [setValue]
+  );
+
+  const skills = useMemo(
+    () => skillsQuery.data?.skills ?? [],
+    [skillsQuery.data?.skills]
+  );
+  const skillByMenuId = useMemo(() => {
+    const map = new Map<string, AgentComposerSkill>();
+    for (const skill of skills) {
+      map.set(`skill:${skill.id}`, skill);
+    }
+    return map;
+  }, [skills]);
+  const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
+    const items: AgentComposerMenuItem[] = [];
+    if (mode && !mode.disabled) {
+      const modeCommands: Record<string, string> = {
+        edit: "agent",
+        chat: "chat",
+        ideation: "ideation",
+      };
+      for (const option of mode.options) {
+        const commandName = modeCommands[option.id] ?? option.id;
+        items.push({
+          id: `command:mode:${option.id}`,
+          kind: "slash-command",
+          label: `/${commandName}`,
+          description: option.description ?? `Switch composer mode to ${option.label}`,
+          detail: `mode:${option.id}`,
+          ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
+        });
+      }
+    }
+    items.push({
+      id: "command:clear",
+      kind: "slash-command",
+      label: "/clear",
+      description: "Clear the current prompt",
+      detail: "clear",
+    });
+    for (const skill of skills) {
+      if (
+        !skill.enabled ||
+        skill.source !== "harness-native" ||
+        !skill.invocationValue.startsWith("/")
+      ) {
+        continue;
+      }
+      const item: AgentComposerMenuItem = {
+        id: `command:skill:${skill.id}`,
+        kind: "slash-command",
+        label: skill.invocationValue,
+        detail: `skill:${skill.id}`,
+        sourceLabel: skill.providerHarness ?? "native",
+      };
+      if (skill.description) {
+        item.description = skill.description;
+      }
+      items.push(item);
+    }
+    return items;
+  }, [mode, skills]);
+  const menuItems = useMemo<AgentComposerMenuItem[]>(() => {
+    if (!activeTrigger) {
+      return [];
+    }
+    const query = activeTrigger.query.trim().toLowerCase();
+    if (activeTrigger.kind === "path") {
+      return (pathEntriesQuery.data?.entries ?? []).map((entry) => ({
+        id: `path:${entry.path}`,
+        kind: "path" as const,
+        label: `@${entry.path}`,
+        description: entry.parentPath ?? (entry.kind === "directory" ? "Folder" : "File"),
+        detail: entry.kind,
+      }));
+    }
+    if (activeTrigger.kind === "skill") {
+      return skills
+        .filter((skill) => skill.enabled)
+        .filter((skill) => {
+          if (!query) return true;
+          const label = `${skill.name} ${skill.displayName ?? ""} ${skill.description ?? ""}`
+            .toLowerCase();
+          return label.includes(query);
+        })
+        .slice(0, 12)
+        .map((skill) => {
+          const item: AgentComposerMenuItem = {
+            id: `skill:${skill.id}`,
+            kind: "skill",
+            label: `$${skill.name}`,
+            detail: skill.name,
+            sourceLabel:
+              skill.source === "ralphx-internal"
+                ? "RalphX"
+                : skill.providerHarness ?? "native",
+          };
+          if (skill.description) {
+            item.description = skill.description;
+          }
+          return item;
+        });
+    }
+    return slashCommandItems
+      .filter((item) =>
+        query ? item.label.slice(1).toLowerCase().includes(query) : true
+      )
+      .slice(0, 12);
+  }, [activeTrigger, pathEntriesQuery.data?.entries, skills, slashCommandItems]);
+  const shouldShowCommandMenu =
+    composerAssistEnabled &&
+    isFocused &&
+    Boolean(activeTrigger);
+  const menuEmptyLabel =
+    activeTrigger?.kind === "path"
+      ? "No matching files or folders"
+      : activeTrigger?.kind === "skill"
+        ? "No matching skills"
+        : "No matching commands";
+  const menuLoading =
+    activeTrigger?.kind === "path"
+      ? pathEntriesQuery.isFetching
+      : activeTrigger?.kind === "skill"
+        ? skillsQuery.isFetching
+        : false;
+
+  useEffect(() => {
+    setActiveMenuIndex(0);
+  }, [activeTrigger?.kind, activeTrigger?.query, menuItems.length]);
+
+  const selectMenuItem = useCallback(
+    (item: AgentComposerMenuItem) => {
+      if (!activeTrigger || item.disabled) {
+        return;
+      }
+      if (item.kind === "path") {
+        const path = item.label.startsWith("@") ? item.label.slice(1) : item.label;
+        setSelectedProjectReferences((current) => {
+          const nextSet = new Map(current);
+          nextSet.set(path, {
+            path,
+            kind: item.detail === "directory" ? "directory" : "file",
+          });
+          return nextSet;
+        });
+        const next = replaceAgentComposerTrigger(value, activeTrigger, `@${path} `);
+        applyComposerText(next.text, next.cursor);
+        return;
+      }
+      if (item.kind === "skill") {
+        const skill = skillByMenuId.get(item.id);
+        const skillName = skill?.name ?? item.detail;
+        if (!skillName) {
+          return;
+        }
+        if (skill?.source === "ralphx-internal") {
+          setSelectedInternalSkillNames((current) => {
+            const nextSet = new Set(current);
+            nextSet.add(skill.invocationValue || skill.name);
+            return nextSet;
+          });
+        }
+        const replacement =
+          skill?.source === "harness-native"
+            ? skill.invocationValue || `$${skillName}`
+            : `$${skillName}`;
+        const next = replaceAgentComposerTrigger(value, activeTrigger, `${replacement} `);
+        applyComposerText(next.text, next.cursor);
+        return;
+      }
+      if (item.detail === "clear") {
+        clearValue();
+        return;
+      }
+      if (item.detail?.startsWith("skill:")) {
+        const skill = skillByMenuId.get(item.detail);
+        const replacement = skill?.invocationValue || item.label;
+        const next = replaceAgentComposerTrigger(value, activeTrigger, `${replacement} `);
+        applyComposerText(next.text, next.cursor);
+        return;
+      }
+      if (item.detail?.startsWith("mode:") && mode && !mode.disabled) {
+        const nextMode = item.detail.slice("mode:".length);
+        const option = mode.options.find((candidate) => candidate.id === nextMode);
+        if (option && !option.disabled) {
+          mode.onValueChange(nextMode);
+        }
+        const next = replaceAgentComposerTrigger(value, activeTrigger, "");
+        applyComposerText(next.text, next.cursor);
+      }
+    },
+    [activeTrigger, applyComposerText, clearValue, mode, skillByMenuId, value]
+  );
+
+  const prepareMessageForSend = useCallback(
+    (message: string): { message: string; options?: AgentComposerSendOptions } => {
+      if (questionMode) {
+        return { message };
+      }
+      const tokens = new Set(extractComposerSkillTokens(message));
+      const internalNames = new Set(selectedInternalSkillNames);
+      for (const skill of skills) {
+        if (skill.source === "ralphx-internal" && tokens.has(skill.name)) {
+          internalNames.add(skill.invocationValue || skill.name);
+        }
+      }
+      const withInternalSkillDirectives = appendInternalSkillDirectives(message, [
+        ...internalNames,
+      ]);
+      const references = new Map<string, AgentComposerProjectReference>();
+      for (const reference of selectedProjectReferences.values()) {
+        if (message.includes(`@${reference.path}`)) {
+          references.set(reference.path, reference);
+        }
+      }
+      for (const reference of extractComposerPathTokens(message)) {
+        if (!references.has(reference.path)) {
+          references.set(reference.path, reference);
+        }
+      }
+      const projectReferences = normalizeComposerProjectReferences([
+        ...references.values(),
+      ]);
+      return {
+        message: withInternalSkillDirectives,
+        ...(projectReferences.length > 0
+          ? { options: { projectReferences } }
+          : {}),
+      };
+    },
+    [questionMode, selectedInternalSkillNames, selectedProjectReferences, skills]
+  );
 
   const handleAttachmentSelect = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -347,15 +653,23 @@ export function AgentComposerSurface({
     }
 
     addHistoryEntry(trimmedValue);
+    const outgoing = prepareMessageForSend(trimmedValue);
+
+    const sendOutgoing = () =>
+      outgoing.options
+        ? onSend(outgoing.message, outgoing.options)
+        : onSend(outgoing.message);
 
     if (questionMode || isControlled) {
-      await onSend(trimmedValue);
+      await sendOutgoing();
+      setSelectedInternalSkillNames(new Set());
+      setSelectedProjectReferences(new Map());
       return;
     }
 
     clearValue();
     try {
-      await onSend(trimmedValue);
+      await sendOutgoing();
     } catch {
       // Errors surface through the parent; preserve the current interaction model.
     }
@@ -368,6 +682,7 @@ export function AgentComposerSurface({
     isSubmitting,
     onSend,
     onStop,
+    prepareMessageForSend,
     questionMode,
     sendDisabledReason,
     shouldShowStop,
@@ -376,6 +691,30 @@ export function AgentComposerSurface({
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (shouldShowCommandMenu && activeTrigger) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setActiveMenuIndex((index) =>
+            menuItems.length > 0 ? (index + 1) % menuItems.length : 0
+          );
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setActiveMenuIndex((index) =>
+            menuItems.length > 0
+              ? (index - 1 + menuItems.length) % menuItems.length
+              : 0
+          );
+          return;
+        }
+        if ((event.key === "Enter" || event.key === "Tab") && menuItems.length > 0) {
+          event.preventDefault();
+          selectMenuItem(menuItems[Math.min(activeMenuIndex, menuItems.length - 1)]!);
+          return;
+        }
+      }
+
       if (event.key === "Escape") {
         event.preventDefault();
         (event.target as HTMLTextAreaElement).blur();
@@ -398,7 +737,18 @@ export function AgentComposerSurface({
         return;
       }
     },
-    [handleHistoryKeyDown, handleSend, hasQueuedMessages, onEditLastQueued, value]
+    [
+      activeMenuIndex,
+      activeTrigger,
+      handleHistoryKeyDown,
+      handleSend,
+      hasQueuedMessages,
+      menuItems,
+      onEditLastQueued,
+      selectMenuItem,
+      shouldShowCommandMenu,
+      value,
+    ]
   );
 
   const helperText = useMemo(() => {
@@ -415,9 +765,33 @@ export function AgentComposerSurface({
           •
         </span>
         <span>Shift + Enter for a new line</span>
+        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
+          •
+        </span>
+        <span>Type / for commands</span>
+        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
+          •
+        </span>
+        <span>@ for files</span>
+        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
+          •
+        </span>
+        <span>$ for skills</span>
       </div>
     );
   }, [shouldShowStop, showHelperText]);
+
+  const updateCursorFromTextarea = useCallback((textarea: HTMLTextAreaElement) => {
+    setCursorPosition(textarea.selectionStart ?? textarea.value.length);
+  }, []);
+
+  const handleTextareaChange = useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setValue(event.target.value);
+      updateCursorFromTextarea(event.target);
+    },
+    [setValue, updateCursorFromTextarea]
+  );
 
   const attachmentDropEnabled =
     enableAttachments && !attachmentDisabled && onFilesSelected !== undefined;
@@ -445,14 +819,28 @@ export function AgentComposerSurface({
           boxShadow: "var(--shadow-sm)",
         }}
       >
+        {shouldShowCommandMenu && (
+          <AgentComposerCommandMenu
+            items={menuItems}
+            activeIndex={Math.min(activeMenuIndex, Math.max(menuItems.length - 1, 0))}
+            onActiveIndexChange={setActiveMenuIndex}
+            onSelect={selectMenuItem}
+            isLoading={menuLoading}
+            emptyLabel={menuEmptyLabel}
+          />
+        )}
         <textarea
           ref={textareaRef}
           data-testid={textareaTestId}
           value={value}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={handleTextareaChange}
           onKeyDown={handleKeyDown}
-          onFocus={() => {
+          onKeyUp={(event) => updateCursorFromTextarea(event.currentTarget)}
+          onClick={(event) => updateCursorFromTextarea(event.currentTarget)}
+          onSelect={(event) => updateCursorFromTextarea(event.currentTarget)}
+          onFocus={(event) => {
             setIsFocused(true);
+            updateCursorFromTextarea(event.currentTarget);
             onFocusChange?.(true);
           }}
           onBlur={() => {
