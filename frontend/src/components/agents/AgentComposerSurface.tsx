@@ -779,6 +779,18 @@ export function AgentComposerSurface({
           •
         </span>
         <span>Shift + Enter for a new line</span>
+        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
+          •
+        </span>
+        <span>Type / for commands</span>
+        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
+          •
+        </span>
+        <span>@ for files</span>
+        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
+          •
+        </span>
+        <span>$ for skills</span>
       </div>
     );
   }, [shouldShowStop, showHelperText]);

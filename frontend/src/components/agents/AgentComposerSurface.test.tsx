@@ -87,6 +87,14 @@ describe("AgentComposerSurface", () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
   });
 
+  it("shows trigger hints in the helper text", () => {
+    renderComposer();
+
+    expect(screen.getByText("Type / for commands")).toBeInTheDocument();
+    expect(screen.getByText("@ for files")).toBeInTheDocument();
+    expect(screen.getByText("$ for skills")).toBeInTheDocument();
+  });
+
   it("shows disabled mode option reasons without firing the change handler", () => {
     const onValueChange = vi.fn();
     renderComposer({
@@ -138,6 +146,35 @@ describe("AgentComposerSurface", () => {
 
     expect(onValueChange).toHaveBeenCalledWith("chat");
     expect(textarea.value).toBe("");
+  });
+
+  it("bounds slash command suggestions to five visible rows", async () => {
+    renderComposer({
+      mode: {
+        value: "edit",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "edit", label: "Agent" },
+          { id: "chat", label: "Chat" },
+          { id: "ideation", label: "Ideation" },
+          { id: "review", label: "Review" },
+          { id: "debug", label: "Debug" },
+          { id: "plan", label: "Plan" },
+        ],
+      },
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/" } });
+    textarea.setSelectionRange(1, 1);
+    fireEvent.keyUp(textarea);
+
+    const scrollRegion = await screen.findByTestId(
+      "agent-composer-command-menu-scroll",
+    );
+    expect(scrollRegion).toHaveStyle({ maxHeight: "260px" });
+    expect(scrollRegion).toHaveClass("overflow-y-auto");
   });
 
   it("opens initial path suggestions for a bare @ trigger", async () => {

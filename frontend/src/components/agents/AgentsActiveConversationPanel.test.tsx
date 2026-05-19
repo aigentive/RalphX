@@ -104,13 +104,16 @@ vi.mock("./AgentComposerSurface", () => ({
   AgentComposerSurface: ({
     model,
     effort,
+    showHelperText,
   }: {
     model: { value: string; onValueChange: (value: string) => void };
     effort: { value: string; onValueChange: (value: string) => void };
+    showHelperText?: boolean;
   }) => (
     <div>
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
+      <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
       <button
         type="button"
         data-testid="change-workspace-model"
@@ -235,6 +238,7 @@ describe("AgentsActiveConversationPanel", () => {
     );
 
     expect(screen.getByTestId("workspace-effort-value").textContent).toBe("high");
+    expect(screen.getByTestId("workspace-helper-enabled").textContent).toBe("true");
 
     fireEvent.click(screen.getByTestId("change-workspace-model"));
     fireEvent.click(screen.getByTestId("change-workspace-effort"));

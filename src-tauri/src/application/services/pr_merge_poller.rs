@@ -1596,6 +1596,7 @@ fn agent_workspace_check_is_failing(check: &PrHealthCheck) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn compact_pr_feedback_text(body: &str, max_chars: usize) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= max_chars {
