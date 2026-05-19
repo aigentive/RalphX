@@ -1826,9 +1826,18 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
     to: u32,
 ) -> AppResult<Vec<RangeLine>> {
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
+    if ctx.patch_diff.is_some() {
+        return Err(AppError::Validation(
+            "File content range is unavailable for patch-backed agent workspace diffs"
+                .to_string(),
+        ));
+    }
     let workspace_path = ctx.working_path.to_string_lossy().to_string();
 
-    // Resolve workspace-specific ref_kind variants to concrete Commit refs
+    // Resolve workspace-specific ref_kind variants to concrete refs that match
+    // the same old/new pair used by get_agent_conversation_workspace_file_diff.
+    let live_worktree_head_range =
+        ctx.supports_worktree_modes && ctx.diff_target.is_none() && ctx.patch_diff.is_none();
     let resolved_ref_kind = match ref_kind {
         DiffRefKind::CumulativeBase => DiffRefKind::Commit {
             sha: ctx.base_ref.clone(),
@@ -1840,6 +1849,12 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
                 .unwrap_or_else(|| "HEAD".to_string());
             DiffRefKind::Commit { sha: head }
         }
+        DiffRefKind::Head if live_worktree_head_range => match &side {
+            DiffSide::Old => DiffRefKind::Commit {
+                sha: ctx.base_ref.clone(),
+            },
+            DiffSide::New => DiffRefKind::Unstaged,
+        },
         other => other,
     };
 
@@ -2598,6 +2613,24 @@ new file mode 100644
             .flat_map(|h| h.lines.iter())
             .any(|line| line.content.contains("answer")));
 
+        let range_result = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "src/lib.rs".to_string(),
+            DiffRefKind::CumulativeHead,
+            1,
+            1,
+        )
+        .await;
+        assert!(
+            range_result
+                .unwrap_err()
+                .to_string()
+                .contains("patch-backed"),
+            "patch-backed diffs do not have a full local file source for lazy context ranges"
+        );
+
         let state = github.state();
         assert_eq!(state.get_pr_diff_patch_calls, 1);
         assert_eq!(state.last_get_pr_diff_patch_number, Some(123));
@@ -3131,33 +3164,189 @@ new file mode 100644
         assert_eq!(lines[0].content, "base");
         assert_eq!(lines[1].line_num, 2);
         assert_eq!(lines[1].content, "ranged");
+
+        let old_lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::Old,
+            "base.txt".to_string(),
+            DiffRefKind::Staged,
+            1,
+            1,
+        )
+        .await
+        .expect("staged old-side range should load from HEAD");
+
+        assert_eq!(old_lines.len(), 1);
+        assert_eq!(old_lines[0].line_num, 1);
+        assert_eq!(old_lines[0].content, "base");
     }
 
     #[tokio::test]
-    async fn file_content_range_command_resolves_cumulative_base() {
-        let (_temp_dir, state, conversation_id, _worktree_path, _) =
+    async fn file_content_range_command_reads_workspace_head_sides_from_base_and_disk() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        std::fs::write(worktree_path.join("base.txt"), "disk-first\ndisk-only\n").unwrap();
+
+        let old_lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::Old,
+            "base.txt".to_string(),
+            DiffRefKind::Head,
+            1,
+            1,
+        )
+        .await
+        .expect("workspace head old-side range should load from captured base");
+
+        assert_eq!(old_lines.len(), 1);
+        assert_eq!(old_lines[0].line_num, 1);
+        assert_eq!(old_lines[0].content, "base");
+
+        let lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "base.txt".to_string(),
+            DiffRefKind::Head,
+            2,
+            2,
+        )
+        .await
+        .expect("file content range should load");
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line_num, 2);
+        assert_eq!(lines[0].content, "disk-only");
+    }
+
+    #[tokio::test]
+    async fn file_content_range_command_reads_unstaged_sides_from_index_and_disk() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        std::fs::write(worktree_path.join("base.txt"), "base\nindex\n").unwrap();
+        run_git(&worktree_path, &["add", "base.txt"]);
+        std::fs::write(worktree_path.join("base.txt"), "base\nindex\ndisk\n").unwrap();
+
+        let old_lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::Old,
+            "base.txt".to_string(),
+            DiffRefKind::Unstaged,
+            2,
+            2,
+        )
+        .await
+        .expect("unstaged old-side range should load from index");
+        let new_lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "base.txt".to_string(),
+            DiffRefKind::Unstaged,
+            3,
+            3,
+        )
+        .await
+        .expect("unstaged new-side range should load from disk");
+
+        assert_eq!(old_lines.len(), 1);
+        assert_eq!(old_lines[0].content, "index");
+        assert_eq!(new_lines.len(), 1);
+        assert_eq!(new_lines[0].content, "disk");
+    }
+
+    #[tokio::test]
+    async fn file_content_range_command_resolves_commit_and_cumulative_refs() {
+        let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
             create_agent_workspace_command_state().await;
         let app = mock_builder()
             .manage(state)
             .build(mock_context(noop_assets()))
             .expect("mock app");
 
-        // CumulativeBase is resolved by the command layer to the base commit.
-        // src/lib.rs exists at the worktree HEAD but not at the base commit (it was added).
-        // Requesting it at CumulativeBase should fail with GitOperation (file not at base)
-        // OR succeed if the base happened to have it — either is valid; we just verify
-        // the command body runs end-to-end (no panic, no type errors).
-        let _ = get_agent_conversation_workspace_file_content_range(
+        let base_lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "README.md".to_string(),
+            DiffRefKind::CumulativeBase,
+            1,
+            1,
+        )
+        .await
+        .expect("cumulative base range should resolve to base commit");
+        let head_lines = get_agent_conversation_workspace_file_content_range(
             app.state(),
             conversation_id.as_str(),
             DiffSide::New,
             "src/lib.rs".to_string(),
-            DiffRefKind::CumulativeBase,
+            DiffRefKind::CumulativeHead,
             1,
-            10,
+            1,
         )
-        .await;
-        // No assertion on Ok/Err — we only need coverage of the resolution branch
+        .await
+        .expect("cumulative head range should resolve to workspace HEAD");
+        let commit_lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "src/lib.rs".to_string(),
+            DiffRefKind::Commit { sha: commit_sha },
+            1,
+            1,
+        )
+        .await
+        .expect("commit range should resolve to selected commit");
+
+        assert_eq!(base_lines.len(), 1);
+        assert_eq!(base_lines[0].content, "base");
+        assert_eq!(head_lines.len(), 1);
+        assert!(head_lines[0].content.contains("answer"));
+        assert_eq!(commit_lines.len(), 1);
+        assert!(commit_lines[0].content.contains("answer"));
+    }
+
+    #[tokio::test]
+    async fn file_content_range_command_reads_cumulative_head_from_branch_target_context() {
+        let (temp_dir, state, conversation_id, worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let repo = temp_dir.path().join("repo");
+        let worktree_arg = worktree_path
+            .to_str()
+            .expect("test worktree path should be utf-8");
+        run_git(&repo, &["worktree", "remove", worktree_arg]);
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let lines = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "src/lib.rs".to_string(),
+            DiffRefKind::CumulativeHead,
+            1,
+            1,
+        )
+        .await
+        .expect("cumulative head range should load from branch target");
+
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].content.contains("answer"));
     }
 
     #[tokio::test]

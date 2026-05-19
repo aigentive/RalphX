@@ -1136,6 +1136,55 @@ describe("AgentsPublishInlineDiffs", () => {
       );
     });
 
+    it("passes cumulative_head refKind for branch-backed read-only review context", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={{
+              ...makeReview(changes),
+              headRef: "refs/ralphx/pr-heads/123",
+              supportsWorktreeModes: false,
+            }}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CumulativeFile.tsx")).toHaveAttribute(
+          "data-ref-kind",
+          "cumulative_head",
+        ),
+      );
+    });
+
+    it("omits range refKind for patch-backed read-only review context", async () => {
+      const changes = [makeFileChange("src/Foo.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={{
+              ...makeReview(changes),
+              headRef: "github-pr-diff/123",
+              supportsWorktreeModes: false,
+            }}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await waitFor(() => {
+        const card = screen.getByTestId("mock-file-diff-src-CumulativeFile.tsx");
+        expect(card).not.toHaveAttribute("data-ref-kind");
+        expect(card).toHaveAttribute("data-conversation-id", "conv-1");
+      });
+    });
+
     it("passes matching GitHub annotations to cumulative file cards", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
