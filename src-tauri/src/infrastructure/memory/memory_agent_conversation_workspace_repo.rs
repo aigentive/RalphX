@@ -465,17 +465,27 @@ fn is_active_direct_published_workspace(workspace: &AgentConversationWorkspace) 
 fn is_active_direct_external_pr_reconciliation_candidate(
     workspace: &AgentConversationWorkspace,
 ) -> bool {
+    if workspace.mode != AgentConversationWorkspaceMode::Edit
+        || workspace.linked_plan_branch_id.is_some()
+        || matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
+    {
+        return false;
+    }
+
+    if workspace.publication_pr_number.is_some() {
+        return matches!(
+            workspace.status,
+            AgentConversationWorkspaceStatus::Active | AgentConversationWorkspaceStatus::Missing
+        );
+    }
+
     workspace.status == AgentConversationWorkspaceStatus::Active
-        && workspace.mode == AgentConversationWorkspaceMode::Edit
-        && workspace.linked_plan_branch_id.is_none()
-        && workspace.publication_pr_number.is_none()
         && !matches!(
             workspace.publication_push_status.as_deref(),
             Some("needs_agent" | "pending" | "failed" | "description_failed")
-        )
-        && !matches!(
-            workspace.publication_pr_status.as_deref(),
-            Some("closed") | Some("merged")
         )
 }
 
@@ -740,8 +750,15 @@ mod tests {
 
         let first = candidate_workspace("candidate-1");
         let second = candidate_workspace("candidate-2");
-        let mut already_linked = candidate_workspace("already-linked");
-        already_linked.publication_pr_number = Some(12);
+        let mut linked_failed = candidate_workspace("linked-failed");
+        linked_failed.publication_pr_number = Some(12);
+        linked_failed.publication_pr_status = Some("open".to_string());
+        linked_failed.publication_push_status = Some("failed".to_string());
+        let mut linked_missing = candidate_workspace("linked-missing");
+        linked_missing.status = AgentConversationWorkspaceStatus::Missing;
+        linked_missing.publication_pr_number = Some(13);
+        linked_missing.publication_pr_status = Some("open".to_string());
+        linked_missing.publication_push_status = Some("needs_agent".to_string());
         let mut linked_plan = candidate_workspace("linked-plan");
         linked_plan.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-1"));
         let mut blocked_push = candidate_workspace("blocked-push");
@@ -756,7 +773,8 @@ mod tests {
         for workspace in [
             first.clone(),
             second.clone(),
-            already_linked,
+            linked_failed.clone(),
+            linked_missing.clone(),
             linked_plan,
             blocked_push,
             terminal,
@@ -772,7 +790,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].conversation_id, second.conversation_id);
+        assert_eq!(limited[0].conversation_id, linked_missing.conversation_id);
 
         let all = repo
             .list_active_direct_external_pr_reconciliation_candidates(10)
@@ -782,7 +800,12 @@ mod tests {
             all.into_iter()
                 .map(|workspace| workspace.conversation_id)
                 .collect::<Vec<_>>(),
-            vec![second.conversation_id, first.conversation_id]
+            vec![
+                linked_missing.conversation_id,
+                linked_failed.conversation_id,
+                second.conversation_id,
+                first.conversation_id
+            ]
         );
     }
 
