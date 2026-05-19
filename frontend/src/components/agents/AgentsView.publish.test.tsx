@@ -20,6 +20,7 @@ const {
   getAgentConversationWorkspaceMock,
   getWorkspaceDiffMock,
   getWorkspaceReviewMock,
+  listAgentTasksMock,
   publishAgentConversationWorkspaceMock,
   sendAgentMessageMock,
   toastErrorMock,
@@ -102,6 +103,89 @@ describe("AgentsView publish", () => {
       screen.getByTestId("agents-composer-workspace-file-src/generated.ts"),
     ).toHaveTextContent("Generated");
     expect(getWorkspaceDiffMock).not.toHaveBeenCalled();
+  });
+
+  it("switches the composer context tray between tasks and changes", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "Add runtime task output shim",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: ["task-2"],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+      {
+        taskId: "task-2",
+        taskNumber: 2,
+        title: "Render ledger rows",
+        state: "open",
+        ownerAgent: null,
+        blockedBy: ["task-1"],
+        blocks: [],
+        availability: "blocked",
+        updatedAt: "2026-05-20T10:01:00Z",
+      },
+    ]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Foo.tsx",
+          status: "modified",
+          additions: 10,
+          deletions: 2,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-context-tray",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    const taskToggle = screen.getByTestId("agents-composer-tasks-toggle");
+    const changesToggle = screen.getByTestId("diff-filter-trigger");
+    expect(taskToggle.compareDocumentPosition(changesToggle)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(taskToggle).toHaveTextContent("Tasks");
+    expect(taskToggle).toHaveTextContent("2");
+    expect(changesToggle).toHaveTextContent("Workspace changes");
+
+    fireEvent.click(taskToggle);
+
+    expect(screen.getByTestId("agents-composer-task-list")).toHaveTextContent(
+      "Add runtime task output shim",
+    );
+    expect(screen.getByTestId("agents-composer-task-2")).toHaveTextContent(
+      "blocked by #1",
+    );
+    expect(
+      screen.queryByTestId("agents-composer-workspace-changes-list"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(changesToggle);
+
+    expect(screen.getByTestId("agents-composer-workspace-changes-list")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-composer-task-list")).not.toBeInTheDocument();
+
+    fireEvent.click(changesToggle);
+
+    expect(screen.queryByTestId("agents-composer-context-tray-body")).not.toBeInTheDocument();
   });
 
   it("opens the publish pane with a focused file request from the composer summary", async () => {

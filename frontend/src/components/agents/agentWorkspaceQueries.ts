@@ -44,6 +44,11 @@ export const agentWorkspaceKeys = {
     "workspace-review",
     conversationId,
   ] as const,
+  agentTasks: (conversationId: string | null | undefined) => [
+    "agents",
+    "conversation-agent-tasks",
+    conversationId,
+  ] as const,
   prAnnotations: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-pr-annotations",
