@@ -9,7 +9,9 @@
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
 import { ChatAttachmentPicker } from "./ChatAttachmentPicker";
+import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import { ChatAttachmentGallery, type ChatAttachment } from "./ChatAttachmentGallery";
 import type { AgentStatus } from "@/stores/chatStore";
 
@@ -143,6 +145,7 @@ export function ChatInput({
   const value = isControlled ? controlledValue : internalValue;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
 
   // Determine the actual placeholder text
   const effectivePlaceholder = isReadOnly
@@ -288,9 +291,20 @@ export function ChatInput({
   // Allow typing and queueing/sending when agent is alive (generating or waiting), but not in read-only mode
   const isDisabled = isReadOnly || (isSending && !isAgentAlive);
   const canSend = value.trim().length > 0 && !isReadOnly && (!isSending || isAgentAlive);
+  const attachmentDropEnabled = enableAttachments && !isReadOnly && onFilesSelected !== undefined;
+  const { isDragging: isAttachmentDragging, dropProps: attachmentDropProps } = useChatAttachmentDrop({
+    enabled: attachmentDropEnabled,
+    targetRef: composerRef,
+    onFilesSelected,
+  });
 
   return (
-    <div data-testid="chat-input" className="flex flex-col">
+    <div
+      ref={composerRef}
+      data-testid="chat-input"
+      className="relative flex flex-col"
+      {...attachmentDropProps}
+    >
       <div className="flex gap-2 items-end">
         {/* Unified container: textarea + stop button share one input field.
             Border is 2px wide on every state so the focus color swap does
@@ -419,6 +433,8 @@ export function ChatInput({
               : "Enter to send · Shift+Enter for new line"}
         </p>
       )}
+
+      {isAttachmentDragging && <ChatAttachmentDropOverlay roundedClassName="rounded-lg" />}
     </div>
   );
 }
