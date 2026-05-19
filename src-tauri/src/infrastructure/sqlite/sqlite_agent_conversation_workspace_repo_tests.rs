@@ -272,8 +272,7 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     published.publication_pr_status = Some("open".to_string());
     repo.create_or_update(published.clone()).await.unwrap();
 
-    let refreshed_id =
-        ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    let refreshed_id = ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     seed_conversation(&db, &refreshed_id);
     let mut refreshed = make_workspace(refreshed_id);
     refreshed.publication_pr_number = Some(78);
@@ -326,20 +325,16 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
         .unwrap();
 
     assert_eq!(workspaces.len(), 2);
-    assert!(
-        workspaces
-            .iter()
-            .any(|workspace| workspace.conversation_id == published.conversation_id)
-    );
-    assert!(
-        workspaces
-            .iter()
-            .any(|workspace| workspace.conversation_id == refreshed.conversation_id)
-    );
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == published.conversation_id));
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
 }
 
 #[tokio::test]
-async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_edit_workspaces() {
+async fn list_external_pr_reconciliation_candidates_filters_to_reconcilable_edit_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let candidate = make_workspace(conversation_id);
     repo.create_or_update(candidate.clone()).await.unwrap();
@@ -349,7 +344,17 @@ async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_e
     let mut linked = make_workspace(linked_id);
     linked.publication_pr_number = Some(72);
     linked.publication_pr_status = Some("open".to_string());
-    repo.create_or_update(linked).await.unwrap();
+    linked.publication_push_status = Some("failed".to_string());
+    repo.create_or_update(linked.clone()).await.unwrap();
+
+    let missing_linked_id = ChatConversationId::from_string("25252525-2525-2525-2525-252525252525");
+    seed_conversation(&db, &missing_linked_id);
+    let mut missing_linked = make_workspace(missing_linked_id);
+    missing_linked.status = AgentConversationWorkspaceStatus::Missing;
+    missing_linked.publication_pr_number = Some(73);
+    missing_linked.publication_pr_status = Some("open".to_string());
+    missing_linked.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(missing_linked.clone()).await.unwrap();
 
     let needs_agent_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
     seed_conversation(&db, &needs_agent_id);
@@ -368,8 +373,19 @@ async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_e
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+    assert_eq!(
+        workspaces
+            .into_iter()
+            .map(|workspace| workspace.conversation_id)
+            .collect::<std::collections::HashSet<_>>(),
+        [
+            candidate.conversation_id,
+            linked.conversation_id,
+            missing_linked.conversation_id
+        ]
+        .into_iter()
+        .collect()
+    );
 
     let limited = repo
         .list_active_direct_external_pr_reconciliation_candidates(0)
@@ -498,10 +514,7 @@ async fn pr_supervision_preferences_round_trip() {
         updated.pr_auto_merge_method,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
     );
-    assert_eq!(
-        updated.pr_supervision_status.as_deref(),
-        Some("monitoring")
-    );
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
     assert!(updated.pr_supervision_updated_at.is_some());
 }
 
