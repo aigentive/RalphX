@@ -41,6 +41,7 @@ import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary
 
 const EMPTY_PR_DIFF_ANNOTATIONS: PrDiffAnnotation[] = [];
 const VIRTUAL_RANGE_OVERSCAN_FILES = 0;
+const PATCH_BACKED_HEAD_REF_PREFIX = "github-pr-diff/";
 
 export interface AgentsPublishInlineDiffsProps {
   conversationId: string;
@@ -62,7 +63,7 @@ interface AgentsPublishVirtualFileRowProps {
   onCopyPath: (path: string) => void;
   onOpenFullscreenPath: (path: string) => void;
   conversationId: string;
-  refKind: DiffRefKind;
+  refKind?: DiffRefKind | undefined;
   shouldHydrate: boolean;
   annotations: PrDiffAnnotation[];
   isShowAnywayOverridden: boolean;
@@ -157,6 +158,10 @@ export function AgentsPublishInlineDiffs({
     workspaceChangeCount,
     unstagedCount,
   } = useAgentWorkspaceChangeSummary({ conversationId, review });
+  const rangeRefKind =
+    review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
+      ? undefined
+      : refKind;
   const canRenderPrAnnotations = refKind.kind === "head" || refKind.kind === "cumulative_head";
   const annotationsByPath = useMemo(() => {
     const map = new Map<string, PrDiffAnnotation[]>();
@@ -472,7 +477,7 @@ export function AgentsPublishInlineDiffs({
           onCopyPath={handleCopyPath}
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
-          refKind={refKind}
+          refKind={rangeRefKind}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -492,7 +497,7 @@ export function AgentsPublishInlineDiffs({
       handleToggle,
       hydratedPaths,
       focusTargetPath,
-      refKind,
+      rangeRefKind,
       userShowAnywayPaths,
     ],
   );
