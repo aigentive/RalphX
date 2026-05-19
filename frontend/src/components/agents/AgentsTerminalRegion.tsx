@@ -4,11 +4,14 @@ import { Terminal as TerminalIcon } from "lucide-react";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
+import { formatBranchDisplay } from "@/lib/branch-utils";
 
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
+import { compactTerminalPath } from "./agentTerminalPaths";
 import { preloadAgentTerminalDrawer } from "./agentTerminalPreload";
 import {
+  AGENT_TERMINAL_COLLAPSED_HEIGHT,
   AGENT_TERMINAL_DEFAULT_HEIGHT,
   useAgentTerminalStore,
   type AgentTerminalPlacement,
@@ -20,17 +23,23 @@ const LazyAgentTerminalDrawer = lazy(() =>
 
 function AgentTerminalLoadingShell({
   height,
+  expanded,
+  workspace,
   dockElement,
 }: {
   height: number;
+  expanded: boolean;
+  workspace: AgentConversationWorkspace;
   dockElement: HTMLElement | null;
 }) {
+  const branchLabel = formatBranchDisplay(workspace.branchName).short;
+  const displayCwd = compactTerminalPath(workspace.worktreePath);
   const shell = (
     <div
       className="relative shrink-0 overflow-hidden border-t"
       style={{
-        height,
-        background: "var(--bg-base)",
+        height: expanded ? height : AGENT_TERMINAL_COLLAPSED_HEIGHT,
+        backgroundColor: "var(--bg-base)",
         borderColor: "var(--overlay-weak)",
         boxShadow: "0 -16px 36px var(--shadow-card)",
       }}
@@ -39,7 +48,7 @@ function AgentTerminalLoadingShell({
       <div
         className="flex h-9 items-center gap-2 border-b px-3 text-xs"
         style={{
-          background: "var(--bg-surface)",
+          backgroundColor: "var(--bg-surface)",
           borderColor: "var(--overlay-faint)",
           color: "var(--text-secondary)",
         }}
@@ -51,12 +60,26 @@ function AgentTerminalLoadingShell({
         <span className="font-medium" style={{ color: "var(--text-primary)" }}>
           Terminal
         </span>
-        <span className="h-1 w-1 rounded-full" style={{ background: "var(--text-muted)" }} />
-        <span>Opening</span>
+        <span
+          className="h-1 w-1 rounded-full"
+          style={{ backgroundColor: "var(--text-muted)" }}
+        />
+        <span>{expanded ? "Opening" : "Closed"}</span>
+        <span className="min-w-0 truncate font-mono" style={{ color: "var(--text-muted)" }}>
+          {branchLabel}
+        </span>
+        <span
+          className="hidden min-w-0 truncate font-mono md:inline"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {displayCwd}
+        </span>
       </div>
-      <div className="px-3 py-2 font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-        Starting terminal...
-      </div>
+      {expanded ? (
+        <div className="px-3 py-2 font-mono text-xs" style={{ color: "var(--text-muted)" }}>
+          Starting terminal...
+        </div>
+      ) : null}
     </div>
   );
 
@@ -76,7 +99,7 @@ function useAgentTerminalPresentation({
   terminalUnavailableReason,
   hasAutoOpenArtifacts,
 }: AgentsTerminalPresentationInput) {
-  const isOpen = useAgentTerminalStore((state) =>
+  const isExpanded = useAgentTerminalStore((state) =>
     conversationId ? state.openByConversationId[conversationId] ?? false : false,
   );
   const height = useAgentTerminalStore((state) =>
@@ -97,7 +120,7 @@ function useAgentTerminalPresentation({
 
   return {
     canRender,
-    isOpen,
+    isExpanded,
     height,
     placement,
     dockTarget,
@@ -118,7 +141,7 @@ export function AgentsTerminalDockHost({
   hasAutoOpenArtifacts,
   setDockElement,
 }: AgentsTerminalDockHostProps) {
-  const { canRender, isOpen, height, dockTarget } = useAgentTerminalPresentation({
+  const { canRender, isExpanded, height, dockTarget } = useAgentTerminalPresentation({
     conversationId,
     workspace,
     terminalUnavailableReason,
@@ -129,14 +152,18 @@ export function AgentsTerminalDockHost({
     return null;
   }
 
-  const isVisible = isOpen && dockTarget === dock;
+  const isVisible = dockTarget === dock;
 
   return (
     <div
       ref={setDockElement}
       className="shrink-0 overflow-hidden"
       style={{
-        height: isVisible ? height : 0,
+        height: isVisible
+          ? isExpanded
+            ? height
+            : AGENT_TERMINAL_COLLAPSED_HEIGHT
+          : 0,
         opacity: isVisible ? 1 : 0,
         pointerEvents: isVisible ? "auto" : "none",
         transition: "none",
@@ -163,7 +190,7 @@ export function AgentsTerminalRegion({
 }: AgentsTerminalRegionProps) {
   const {
     canRender,
-    isOpen,
+    isExpanded,
     height,
     placement,
     dockTarget,
@@ -174,7 +201,7 @@ export function AgentsTerminalRegion({
     terminalUnavailableReason,
     hasAutoOpenArtifacts,
   });
-  const contentMounted = useAfterPaintMounted(canRender && isOpen);
+  const contentMounted = useAfterPaintMounted(canRender);
   const setTerminalHeight = useAgentTerminalStore((state) => state.setHeight);
   const setTerminalOpen = useAgentTerminalStore((state) => state.setOpen);
   const setTerminalPlacement = useAgentTerminalStore((state) => state.setPlacement);
@@ -195,12 +222,15 @@ export function AgentsTerminalRegion({
 
   const dockElement = dockTarget === "panel" ? panelDockElement : chatDockElement;
 
-  if (isOpen && !contentMounted) {
-    return <AgentTerminalLoadingShell height={height} dockElement={dockElement} />;
-  }
-
   if (!contentMounted) {
-    return null;
+    return (
+      <AgentTerminalLoadingShell
+        height={height}
+        expanded={isExpanded}
+        workspace={workspace}
+        dockElement={dockElement}
+      />
+    );
   }
 
   return (
@@ -208,16 +238,21 @@ export function AgentsTerminalRegion({
       fallback={
         <AgentTerminalLoadingShell
           height={height}
+          expanded={isExpanded}
+          workspace={workspace}
           dockElement={dockElement}
         />
       }
     >
       <LazyAgentTerminalDrawer
+        key={conversationId}
         conversationId={conversationId}
         workspace={workspace}
         height={height}
+        expanded={isExpanded}
         onHeightChange={(nextHeight) => setTerminalHeight(conversationId, nextHeight)}
-        onClose={() => setTerminalOpen(conversationId, false)}
+        onExpand={() => setTerminalOpen(conversationId, true)}
+        onCollapse={() => setTerminalOpen(conversationId, false)}
         placement={placement}
         onPlacementChange={handlePlacementChange}
         dockElement={dockElement}

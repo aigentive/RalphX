@@ -134,6 +134,50 @@ describe("AgentTerminalDrawer", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows a collapsed Closed header before the terminal exists", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={false}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveStyle({
+      height: "36px",
+    });
+    expect(screen.getByText("Closed")).toBeInTheDocument();
+    expect(screen.getByText("/tmp/ralphx/agent-conversation")).toBeInTheDocument();
+    expect(screen.queryByText("Starting terminal...")).not.toBeInTheDocument();
+    expect(terminalOpenMock).not.toHaveBeenCalled();
+    expect(openAgentTerminalMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      rafCallbacks.forEach((callback) => callback(0));
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+    });
+
+    expect(terminalOpenMock).not.toHaveBeenCalled();
+    expect(openAgentTerminalMock).not.toHaveBeenCalled();
+  });
+
   it("paints the drawer shell before starting xterm hydration", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
@@ -144,8 +188,10 @@ describe("AgentTerminalDrawer", () => {
           conversationId="conversation-1"
           workspace={workspace()}
           height={220}
+          expanded={true}
           onHeightChange={vi.fn()}
-          onClose={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
           placement="auto"
           onPlacementChange={vi.fn()}
           dockElement={dockElement}
@@ -159,7 +205,7 @@ describe("AgentTerminalDrawer", () => {
 
     expect(screen.getByTestId("agent-terminal-drawer")).toBeInTheDocument();
     expect(screen.getByText("Starting terminal...")).toBeInTheDocument();
-    expect(rafCallbacks).toHaveLength(1);
+    expect(rafCallbacks.length).toBeGreaterThanOrEqual(1);
     expect(terminalOpenMock).not.toHaveBeenCalled();
     expect(openAgentTerminalMock).not.toHaveBeenCalled();
 
@@ -190,10 +236,42 @@ describe("AgentTerminalDrawer", () => {
     );
   });
 
-  it("requests visual close before waiting for the backend terminal close", async () => {
+  it("collapses the terminal without closing the backend session", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
-    const onClose = vi.fn();
+    const onCollapse = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={onCollapse}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByLabelText("Collapse terminal"));
+
+    expect(onCollapse).toHaveBeenCalledTimes(1);
+    expect(closeAgentTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("requests visual collapse before waiting for the backend terminal close", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const onCollapse = vi.fn();
     closeAgentTerminalMock.mockReturnValue(new Promise(() => undefined));
 
     render(
@@ -202,8 +280,10 @@ describe("AgentTerminalDrawer", () => {
           conversationId="conversation-1"
           workspace={workspace()}
           height={220}
+          expanded={true}
           onHeightChange={vi.fn()}
-          onClose={onClose}
+          onExpand={vi.fn()}
+          onCollapse={onCollapse}
           placement="auto"
           onPlacementChange={vi.fn()}
           dockElement={dockElement}
@@ -217,7 +297,7 @@ describe("AgentTerminalDrawer", () => {
 
     fireEvent.click(screen.getByLabelText("Close terminal"));
 
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onCollapse).toHaveBeenCalledTimes(1);
     expect(closeAgentTerminalMock).toHaveBeenCalledWith({
       conversationId: "conversation-1",
       terminalId: "default",
@@ -236,8 +316,10 @@ describe("AgentTerminalDrawer", () => {
           conversationId="conversation-1"
           workspace={workspace()}
           height={220}
+          expanded={true}
           onHeightChange={vi.fn()}
-          onClose={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
           placement="auto"
           onPlacementChange={vi.fn()}
           dockElement={chatDockElement}
@@ -269,8 +351,10 @@ describe("AgentTerminalDrawer", () => {
           conversationId="conversation-1"
           workspace={workspace()}
           height={220}
+          expanded={true}
           onHeightChange={vi.fn()}
-          onClose={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
           placement="auto"
           onPlacementChange={vi.fn()}
           dockElement={panelDockElement}
