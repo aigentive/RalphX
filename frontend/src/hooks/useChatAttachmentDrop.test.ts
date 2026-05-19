@@ -56,7 +56,7 @@ function makeTargetRef(): RefObject<HTMLElement | null> {
   return { current: element };
 }
 
-function makeHtmlDropEvent(files: File[]) {
+function makeHtmlDropEvent(files: File[], types: string[] = ["Files"]) {
   return {
     preventDefault: vi.fn(),
     stopPropagation: vi.fn(),
@@ -67,7 +67,7 @@ function makeHtmlDropEvent(files: File[]) {
         type: file.type,
         getAsFile: () => file,
       })),
-      types: ["Files"],
+      types,
       dropEffect: "none",
     },
   } as unknown as React.DragEvent<HTMLElement>;
@@ -209,5 +209,212 @@ describe("useChatAttachmentDrop", () => {
     expect(event.preventDefault).toHaveBeenCalled();
     expect(event.stopPropagation).toHaveBeenCalled();
     expect(onFilesSelected).toHaveBeenCalledWith([file]);
+  });
+
+  it("ignores browser drags that do not contain files", () => {
+    const onFilesSelected = vi.fn();
+    const { result } = renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef: makeTargetRef(),
+        onFilesSelected,
+      }),
+    );
+    const event = makeHtmlDropEvent([], ["text/plain"]);
+
+    act(() => {
+      result.current.dropProps.onDrop(event);
+    });
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(event.stopPropagation).not.toHaveBeenCalled();
+    expect(onFilesSelected).not.toHaveBeenCalled();
+  });
+
+  it("prevents browser file drops while disabled without selecting files", () => {
+    const onFilesSelected = vi.fn();
+    const { result } = renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: false,
+        targetRef: makeTargetRef(),
+        onFilesSelected,
+      }),
+    );
+    const file = new File(["hello"], "browser.md", { type: "text/markdown" });
+    const event = makeHtmlDropEvent([file]);
+
+    act(() => {
+      result.current.dropProps.onDrop(event);
+    });
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(event.stopPropagation).toHaveBeenCalled();
+    expect(onFilesSelected).not.toHaveBeenCalled();
+  });
+
+  it("clears browser drag state when leaving the target", () => {
+    const { result } = renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef: makeTargetRef(),
+        onFilesSelected: vi.fn(),
+      }),
+    );
+    const file = new File(["hello"], "browser.md", { type: "text/markdown" });
+    const event = { ...makeHtmlDropEvent([file]), relatedTarget: null };
+
+    act(() => {
+      result.current.dropProps.onDragEnter(event);
+    });
+    expect(result.current.isDragging).toBe(true);
+
+    act(() => {
+      result.current.dropProps.onDragLeave(event);
+    });
+    expect(result.current.isDragging).toBe(false);
+  });
+
+  it("uses the last native over-target state when drop has no position", async () => {
+    const onFilesSelected = vi.fn();
+    const targetRef = makeTargetRef();
+    renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef,
+        onFilesSelected,
+      }),
+    );
+    await waitFor(() => expect(mocks.dragDropHandler).not.toBeNull());
+
+    act(() => {
+      void mocks.dragDropHandler?.({ payload: { type: "over", position: { x: 30, y: 40 } } });
+    });
+
+    await act(async () => {
+      await mocks.dragDropHandler?.({
+        payload: {
+          type: "drop",
+          paths: ["/Users/dev/Desktop/note.txt"],
+        },
+      });
+    });
+
+    expect(mocks.readFile).toHaveBeenCalledWith("/Users/dev/Desktop/note.txt");
+    expect(onFilesSelected).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores native drops with no paths", async () => {
+    const onFilesSelected = vi.fn();
+    renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef: makeTargetRef(),
+        onFilesSelected,
+      }),
+    );
+    await waitFor(() => expect(mocks.dragDropHandler).not.toBeNull());
+
+    await act(async () => {
+      await mocks.dragDropHandler?.({
+        payload: {
+          type: "drop",
+          paths: [],
+          position: { x: 30, y: 40 },
+        },
+      });
+    });
+
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(onFilesSelected).not.toHaveBeenCalled();
+  });
+
+  it("skips native directories and oversized files before reading", async () => {
+    const onFilesSelected = vi.fn();
+    mocks.stat
+      .mockResolvedValueOnce({
+        size: 3,
+        isFile: false,
+        isDirectory: true,
+        isSymlink: false,
+      })
+      .mockResolvedValueOnce({
+        size: 12,
+        isFile: true,
+        isDirectory: false,
+        isSymlink: false,
+      });
+    renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef: makeTargetRef(),
+        onFilesSelected,
+        maxFileSize: 10,
+      }),
+    );
+    await waitFor(() => expect(mocks.dragDropHandler).not.toBeNull());
+
+    await act(async () => {
+      await mocks.dragDropHandler?.({
+        payload: {
+          type: "drop",
+          paths: ["/tmp/folder", "/tmp/large.txt"],
+          position: { x: 30, y: 40 },
+        },
+      });
+    });
+
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    expect(onFilesSelected).not.toHaveBeenCalled();
+  });
+
+  it("continues native file selection after one path fails to read", async () => {
+    const onFilesSelected = vi.fn();
+    mocks.readFile
+      .mockRejectedValueOnce(new Error("permission denied"))
+      .mockResolvedValueOnce(new Uint8Array([65, 66, 67]));
+    renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef: makeTargetRef(),
+        onFilesSelected,
+      }),
+    );
+    await waitFor(() => expect(mocks.dragDropHandler).not.toBeNull());
+
+    await act(async () => {
+      await mocks.dragDropHandler?.({
+        payload: {
+          type: "drop",
+          paths: ["/tmp/blocked.txt", "/tmp/readable.md"],
+          position: { x: 30, y: 40 },
+        },
+      });
+    });
+
+    expect(onFilesSelected).toHaveBeenCalledTimes(1);
+    const droppedFiles = onFilesSelected.mock.calls[0]?.[0] as File[];
+    expect(droppedFiles).toHaveLength(1);
+    expect(droppedFiles[0]?.name).toBe("readable.md");
+  });
+
+  it("resets native drag state on cancel-like events", async () => {
+    const { result } = renderHook(() =>
+      useChatAttachmentDrop({
+        enabled: true,
+        targetRef: makeTargetRef(),
+        onFilesSelected: vi.fn(),
+      }),
+    );
+    await waitFor(() => expect(mocks.dragDropHandler).not.toBeNull());
+
+    act(() => {
+      void mocks.dragDropHandler?.({ payload: { type: "over", position: { x: 30, y: 40 } } });
+    });
+    expect(result.current.isDragging).toBe(true);
+
+    act(() => {
+      void mocks.dragDropHandler?.({ payload: { type: "cancel" } });
+    });
+    expect(result.current.isDragging).toBe(false);
   });
 });
