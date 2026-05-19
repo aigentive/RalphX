@@ -34,6 +34,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentConversationWorkspaceMock: vi.fn(),
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
+  listWorkspaceOpenTargetsMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
@@ -130,6 +131,7 @@ const {
   getAgentConversationWorkspaceMock,
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
+  listWorkspaceOpenTargetsMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
   setAgentConversationWorkspacePrSupervisionMock,
@@ -313,11 +315,17 @@ vi.mock("./AgentTerminalDrawer", async () => {
   return {
     AgentTerminalDrawer: ({
       placement,
+      expanded,
       onPlacementChange,
+      onExpand,
+      onCollapse,
       dockElement,
     }: {
       placement: string;
+      expanded: boolean;
       onPlacementChange: (placement: "auto" | "chat" | "panel") => void;
+      onExpand: () => void;
+      onCollapse: () => void;
       dockElement: HTMLElement | null;
     }) => {
       React.useEffect(() => {
@@ -328,7 +336,11 @@ vi.mock("./AgentTerminalDrawer", async () => {
       }, []);
 
       const drawer = (
-        <div data-testid="agent-terminal-drawer" data-placement={placement}>
+        <div
+          data-testid="agent-terminal-drawer"
+          data-placement={placement}
+          data-expanded={String(expanded)}
+        >
           <button
             type="button"
             data-testid="agent-terminal-placement"
@@ -339,6 +351,20 @@ vi.mock("./AgentTerminalDrawer", async () => {
             }
           >
             {placement}
+          </button>
+          <button
+            type="button"
+            data-testid="agent-terminal-expand"
+            onClick={onExpand}
+          >
+            expand
+          </button>
+          <button
+            type="button"
+            data-testid="agent-terminal-collapse"
+            onClick={onCollapse}
+          >
+            collapse
           </button>
         </div>
       );
@@ -440,6 +466,8 @@ vi.mock("@/api/chat", () => ({
     archiveConversation: (...args: unknown[]) => archiveConversationMock(...args),
     restoreConversation: (...args: unknown[]) => restoreConversationMock(...args),
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
+    listWorkspaceOpenTargets: (...args: unknown[]) =>
+      listWorkspaceOpenTargetsMock(...args),
     getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
@@ -928,6 +956,7 @@ export function setupAgentsViewTest() {
   getAgentConversationWorkspaceMock.mockReset();
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
+  listWorkspaceOpenTargetsMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
@@ -982,6 +1011,7 @@ export function setupAgentsViewTest() {
     worktreeStatusChecked: true,
   });
   listAgentConversationWorkspacesByProjectMock.mockResolvedValue([]);
+  listWorkspaceOpenTargetsMock.mockResolvedValue([]);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
   listIdeationSessionsMock.mockResolvedValue([]);

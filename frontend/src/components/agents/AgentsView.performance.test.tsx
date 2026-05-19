@@ -26,13 +26,13 @@ const {
   integratedChatPanelRenderMock,
   preloadAgentTerminalExperienceMock,
   preloadAgentsArtifactPaneMock,
-  terminalDrawerModuleLoadedMock,
+  terminalDrawerUnmountMock,
 } = getAgentsViewTestMocks();
 
 describe("AgentsView performance", () => {
   beforeEach(setupAgentsViewTest);
 
-  it("does not load the terminal drawer module until the terminal opens", async () => {
+  it("paints the collapsed terminal header before initializing the terminal", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" })
@@ -47,7 +47,15 @@ describe("AgentsView performance", () => {
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
-    expect(terminalDrawerModuleLoadedMock).not.toHaveBeenCalled();
+    const host = await screen.findByTestId("agent-terminal-host-chat");
+    expect(host).toHaveStyle({
+      height: "36px",
+      opacity: "1",
+      pointerEvents: "auto",
+      transition: "none",
+    });
+    expect(screen.getByText("Closed")).toBeInTheDocument();
+    expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
   });
 
   it("paints the artifact panel frame before hydrating the heavy pane", async () => {
@@ -118,13 +126,12 @@ describe("AgentsView performance", () => {
     );
     const closedHost = await screen.findByTestId("agent-terminal-host-chat");
     expect(closedHost).toHaveStyle({
-      height: "0px",
-      opacity: "0",
-      pointerEvents: "none",
+      height: "36px",
+      opacity: "1",
+      pointerEvents: "auto",
       transition: "none",
     });
     expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
-    expect(terminalDrawerModuleLoadedMock).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(getAgentConversationWorkspaceFreshnessMock).toHaveBeenCalledWith(
         "conversation-1",
@@ -150,14 +157,16 @@ describe("AgentsView performance", () => {
     });
     expect(screen.getByTestId("agent-terminal-loading-shell")).toBeInTheDocument();
     expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
-    expect(terminalDrawerModuleLoadedMock).not.toHaveBeenCalled();
     expect(integratedChatPanelRenderMock).not.toHaveBeenCalled();
 
     await waitFor(() => expect(preloadAgentTerminalExperienceMock).toHaveBeenCalledTimes(1));
-    await screen.findByTestId("agent-terminal-drawer");
+    expect(await screen.findByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "true"
+    );
   });
 
-  it("collapses the terminal frame before unmounting the heavy drawer", async () => {
+  it("collapses the terminal frame without unmounting the heavy drawer", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" })
@@ -188,17 +197,17 @@ describe("AgentsView performance", () => {
     fireEvent.click(screen.getByTestId("agents-terminal-toggle"));
 
     expect(host).toHaveStyle({
-      height: "0px",
-      opacity: "0",
-      pointerEvents: "none",
+      height: "36px",
+      opacity: "1",
+      pointerEvents: "auto",
       transition: "none",
     });
-    expect(screen.getByTestId("agent-terminal-drawer")).toBeInTheDocument();
-    expect(integratedChatPanelRenderMock).not.toHaveBeenCalled();
-
-    await waitFor(() =>
-      expect(screen.queryByTestId("agent-terminal-drawer")).not.toBeInTheDocument()
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "false"
     );
+    expect(integratedChatPanelRenderMock).not.toHaveBeenCalled();
+    expect(terminalDrawerUnmountMock).not.toHaveBeenCalled();
   });
 
   it("does not re-render the chat panel when toggling the artifact pane", async () => {
