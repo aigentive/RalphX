@@ -66,6 +66,8 @@ interface ChatState {
   queuedMessages: Record<string, QueuedMessage[]>;
   /** Agent status keyed by context key. Absent = "idle". Values: "generating" | "waiting_for_input" */
   agentStatus: Record<string, AgentStatus>;
+  /** Short transient activity label shown next to the typing indicator, keyed by context key */
+  agentActivityLabels: Record<string, string>;
   /** Whether a message is currently being sent, keyed by context key */
   isSending: Record<string, boolean>;
   /** Whether a team is active for a context key (enables team UI) */
@@ -105,6 +107,8 @@ interface ChatActions {
   clearActiveAgentRun: (storeKey: string, expectedRunId?: string | null) => void;
   /** Set agent status for a context (tri-state: "idle" | "generating" | "waiting_for_input") */
   setAgentStatus: (contextKey: string, status: AgentStatus) => void;
+  /** Set or clear the transient activity label for a context */
+  setAgentActivityLabel: (contextKey: string, label: string | null) => void;
   /** Backward-compat wrapper: true → "generating", false → "idle" */
   setAgentRunning: (contextKey: string, isRunning: boolean) => void;
   /** Set whether a message is currently being sent for a context */
@@ -157,6 +161,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     activeAgentRunIds: {},
     queuedMessages: {},
     agentStatus: {},
+    agentActivityLabels: {},
     isSending: {},
     isTeamActive: {},
     lastAgentEventTimestamp: {},
@@ -222,10 +227,31 @@ export const useChatStore = create<ChatState & ChatActions>()(
           }
           delete state.agentStatus[contextKey];
           delete state.activeAgentRunIds[contextKey];
+          delete state.agentActivityLabels[contextKey];
         } else {
-          if (state.agentStatus[contextKey] === status) return; // already set — no-op
+          if (state.agentStatus[contextKey] === status) {
+            if (status === "waiting_for_input") {
+              delete state.agentActivityLabels[contextKey];
+            }
+            return; // already set — no-op
+          }
           state.agentStatus[contextKey] = status;
+          if (status === "waiting_for_input") {
+            delete state.agentActivityLabels[contextKey];
+          }
         }
+      }),
+
+    setAgentActivityLabel: (contextKey, label) =>
+      set((state) => {
+        const normalized = label?.trim();
+        if (normalized) {
+          if (state.agentActivityLabels[contextKey] === normalized) return;
+          state.agentActivityLabels[contextKey] = normalized;
+          return;
+        }
+        if (!(contextKey in state.agentActivityLabels)) return;
+        delete state.agentActivityLabels[contextKey];
       }),
 
     setAgentRunning: (contextKey, isRunning) =>
@@ -239,6 +265,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
           }
           delete state.agentStatus[contextKey];
           delete state.activeAgentRunIds[contextKey];
+          delete state.agentActivityLabels[contextKey];
         }
       }),
 
@@ -259,11 +286,17 @@ export const useChatStore = create<ChatState & ChatActions>()(
         Object.keys(state.agentStatus).forEach((key) => {
           if (key.endsWith(`:${taskId}`)) {
             delete state.agentStatus[key];
+            delete state.agentActivityLabels[key];
           }
         });
         Object.keys(state.activeAgentRunIds).forEach((key) => {
           if (key.endsWith(`:${taskId}`)) {
             delete state.activeAgentRunIds[key];
+          }
+        });
+        Object.keys(state.agentActivityLabels).forEach((key) => {
+          if (key.endsWith(`:${taskId}`)) {
+            delete state.agentActivityLabels[key];
           }
         });
       }),
@@ -480,6 +513,16 @@ export const selectAgentStatus =
   (contextKey: string) =>
   (state: ChatState): AgentStatus =>
     state.agentStatus[contextKey] ?? "idle";
+
+/**
+ * Select transient activity label for a specific context.
+ * @param contextKey - The context key to check
+ * @returns Selector function returning the short label or null
+ */
+export const selectAgentActivityLabel =
+  (contextKey: string) =>
+  (state: ChatState): string | null =>
+    state.agentActivityLabels[contextKey] ?? null;
 
 /**
  * Select whether an agent is currently running for a context (backward-compat boolean).

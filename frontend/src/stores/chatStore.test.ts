@@ -46,6 +46,7 @@ describe("chatStore", () => {
       activeAgentRunIds: {},
       queuedMessages: {},
       agentStatus: {},
+      agentActivityLabels: {},
       isSending: {},
       isTeamActive: {},
       lastAgentEventTimestamp: {},
@@ -858,6 +859,7 @@ describe("selectors", () => {
       activeAgentRunIds: {},
       queuedMessages: {},
       agentStatus: {},
+      agentActivityLabels: {},
       isSending: {},
     });
   });

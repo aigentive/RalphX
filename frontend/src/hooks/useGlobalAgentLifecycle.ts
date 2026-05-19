@@ -40,6 +40,36 @@ type TerminalLifecyclePayload = {
   agent_run_id?: string | null;
 };
 
+const STARTUP_STAGE_LABELS: Record<string, string> = {
+  resolve_conversation: "Creating chat",
+  prepare_workspace: "Setup workspace",
+  persist_conversation: "Saving chat",
+  persist_workspace: "Saving chat",
+  send_message: "Starting agent",
+};
+
+const ALLOWED_ACTIVITY_LABELS = new Set([
+  "Creating chat",
+  "Saving chat",
+  "Uploading files",
+  "Setup workspace",
+  "Starting agent",
+  "Agent working",
+]);
+
+function normalizeActivityLabel(label: unknown, stage: unknown): string | null {
+  if (typeof label === "string") {
+    const trimmed = label.trim();
+    if (ALLOWED_ACTIVITY_LABELS.has(trimmed)) {
+      return trimmed;
+    }
+  }
+  if (typeof stage === "string") {
+    return STARTUP_STAGE_LABELS[stage] ?? null;
+  }
+  return null;
+}
+
 export function useGlobalAgentLifecycle() {
   const bus = useEventBus();
   const queryClient = useQueryClient();
@@ -169,6 +199,7 @@ export function useGlobalAgentLifecycle() {
         }
 
         useChatStore.getState().setAgentStatus(eventContextKey, "generating");
+        useChatStore.getState().setAgentActivityLabel(eventContextKey, "Agent working");
         useChatStore.getState().setActiveAgentRun(eventContextKey, payload.run_id);
         // Track the active conversation for this context so the stale guard can function
         // for ALL sessions, not just those with mounted per-panel hooks.
@@ -348,6 +379,28 @@ export function useGlobalAgentLifecycle() {
             duration: 8000,
           });
         }
+      })
+    );
+
+    // agent:startup_progress → update the short typing-indicator label while startup work runs.
+    unsubscribes.push(
+      bus.subscribe<{
+        stage?: string | null;
+        label?: string | null;
+        context_type: string;
+        context_id: string;
+        conversation_id: string;
+      }>("agent:startup_progress", (payload) => {
+        const label = normalizeActivityLabel(payload.label, payload.stage);
+        if (!label) return;
+
+        const key = buildAgentEventStoreKey(
+          payload.context_type,
+          payload.context_id,
+          payload.conversation_id
+        );
+        useChatStore.getState().updateLastAgentEvent(key);
+        useChatStore.getState().setAgentActivityLabel(key, label);
       })
     );
 

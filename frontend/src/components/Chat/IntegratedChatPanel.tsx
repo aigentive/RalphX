@@ -20,6 +20,7 @@ import {
 import {
   useChatStore,
   selectQueuedMessages,
+  selectAgentActivityLabel,
   selectAgentStatus,
   selectIsAgentRunning,
   selectIsSending,
@@ -503,6 +504,11 @@ export function IntegratedChatPanel({
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const agentStatusSelector = useMemo(() => selectAgentStatus(storeContextKey), [storeContextKey]);
   const agentStatus = useChatStore(agentStatusSelector);
+  const agentActivityLabelSelector = useMemo(
+    () => selectAgentActivityLabel(storeContextKey),
+    [storeContextKey],
+  );
+  const agentActivityLabel = useChatStore(agentActivityLabelSelector);
   const isAgentRunning = agentStatus !== "idle"; // backward-compat boolean (agent process alive)
   const lastAgentEventTsSelector = useMemo(() => selectLastAgentEventTimestamp(storeContextKey), [storeContextKey]);
   const lastAgentEventTs = useChatStore(lastAgentEventTsSelector);
@@ -1204,6 +1210,7 @@ export function IntegratedChatPanel({
               onDismissFailedRun={setDismissedErrorId}
               isSending={isSending}
               isAgentRunning={agentStatus === "generating"}
+              typingIndicatorLabel={agentActivityLabel}
               streamingToolCalls={
                 hasPersistedStreamingTimelineItems ? [] : streamingToolCalls
               }

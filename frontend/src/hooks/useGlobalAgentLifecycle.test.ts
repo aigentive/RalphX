@@ -29,6 +29,7 @@ const chatStoreMocks = vi.hoisted(() => ({
   activeAgentRunIds: {} as Record<string, string>,
   lastAgentEventTimestamp: {} as Record<string, number>,
   updateLastAgentEvent: vi.fn(),
+  setAgentActivityLabel: vi.fn(),
   isTeamActive: {} as Record<string, boolean>,
   activeConversationIds: {} as Record<string, string | null>,
   setActiveConversation: vi.fn(),
@@ -184,6 +185,7 @@ describe("useGlobalAgentLifecycle", () => {
     mockGetQueryData.mockReturnValue(undefined);
     chatStoreMocks.setAgentStatus.mockClear();
     chatStoreMocks.updateLastAgentEvent.mockClear();
+    chatStoreMocks.setAgentActivityLabel.mockClear();
     chatStoreMocks.setActiveConversation.mockClear();
     chatStoreMocks.setActiveAgentRun.mockClear();
     chatStoreMocks.clearActiveAgentRun.mockClear();
@@ -219,6 +221,47 @@ describe("useGlobalAgentLifecycle", () => {
     });
 
     expect(chatStoreMocks.setAgentStatus).toHaveBeenCalledWith("session:session-1", "generating");
+  });
+
+  it("run_started marks active turns as agent working", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_started", {
+        run_id: "run-1",
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        teammate_name: null,
+      });
+    });
+
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conversation-1",
+      "Agent working"
+    );
+  });
+
+  it("startup_progress hydrates the project conversation activity label", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:startup_progress", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        stage: "prepare_workspace",
+        label: "Setup workspace",
+      });
+    });
+
+    expect(chatStoreMocks.updateLastAgentEvent).toHaveBeenCalledWith(
+      "project:conversation-1"
+    );
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conversation-1",
+      "Setup workspace"
+    );
   });
 
   it("run_started calls updateLastAgentEvent when not already generating", () => {
