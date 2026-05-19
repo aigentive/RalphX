@@ -663,4 +663,150 @@ description: Workspace bridge instructions
             assert_eq!(injected.system_prompt, "Base prompt");
         }
     }
+
+    #[test]
+    fn list_internal_skill_summaries_sorts_and_preserves_invocability() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        create_agent(
+            root,
+            r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    allowed:
+      - zebra-skill
+      - alpha-skill
+"#,
+        );
+        create_skill(
+            root,
+            "zebra-skill",
+            r#"---
+name: zebra-skill
+description: Last alphabetically
+user-invocable: false
+---
+Zebra body.
+"#,
+        );
+        create_skill(
+            root,
+            "alpha-skill",
+            r#"---
+name: alpha-skill
+description: First alphabetically
+---
+Alpha body.
+"#,
+        );
+
+        let summaries =
+            list_internal_skill_summaries_for_agent(root, "test-agent").expect("summaries");
+
+        assert_eq!(
+            summaries.iter().map(|summary| summary.name.as_str()).collect::<Vec<_>>(),
+            vec!["alpha-skill", "zebra-skill"]
+        );
+        assert_eq!(
+            summaries[0].description.as_deref(),
+            Some("First alphabetically")
+        );
+        assert!(summaries[0].user_invocable);
+        assert!(!summaries[1].user_invocable);
+        assert!(summaries[0]
+            .source_path
+            .ends_with("plugins/app/skills/alpha-skill/SKILL.md"));
+    }
+
+    #[test]
+    fn auto_match_respects_priority_limit_and_description_hits() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        create_agent(
+            root,
+            r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    auto_match: true
+    max_auto_loaded: 1
+    allowed:
+      - lower-priority
+      - higher-priority
+"#,
+        );
+        create_skill(
+            root,
+            "lower-priority",
+            r#"---
+name: lower-priority
+description: Refactor project composer workflows
+trigger: composer workflow
+priority: 0
+---
+Lower body.
+"#,
+        );
+        create_skill(
+            root,
+            "higher-priority",
+            r#"---
+name: higher-priority
+description: Refactor project composer workflows
+trigger: composer workflow
+priority: 10
+---
+Higher body.
+"#,
+        );
+
+        let injected = inject_internal_skills_into_system_prompt(
+            root,
+            "test-agent",
+            "Base prompt",
+            "Please refactor the project composer workflow.",
+        )
+        .expect("inject");
+
+        assert_eq!(injected.injected_skill_names, vec!["higher-priority"]);
+        assert!(injected.system_prompt.contains("Higher body."));
+        assert!(!injected.system_prompt.contains("Lower body."));
+    }
+
+    #[test]
+    fn invalid_internal_skill_files_fail_with_precise_errors() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        create_skill(root, "bad-frontmatter", "Not frontmatter");
+        let frontmatter_error =
+            load_internal_skill(root, "bad-frontmatter").expect_err("frontmatter required");
+        assert!(frontmatter_error.contains("must start with YAML frontmatter"));
+
+        create_skill(
+            root,
+            "wrong-name",
+            r#"---
+name: other-name
+---
+Body.
+"#,
+        );
+        let name_error = load_internal_skill(root, "wrong-name").expect_err("name mismatch");
+        assert!(name_error.contains("declares mismatched name"));
+    }
+
+    #[test]
+    fn directive_extraction_accepts_legacy_and_use_skill_forms_once() {
+        let directives = extract_internal_skill_directives(
+            "Use /workspace-swe skill now.\n<!-- ralphx_internal_skill=workspace-swe -->",
+        );
+
+        assert_eq!(directives, vec!["workspace-swe"]);
+        assert!(is_manual_invocation("Please run /workspace-swe.", "workspace-swe"));
+        assert_eq!(
+            split_match_terms("Workspace bridge, code-quality."),
+            vec!["workspace", "bridge", "code-quality"]
+        );
+    }
 }

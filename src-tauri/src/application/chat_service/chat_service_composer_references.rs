@@ -405,4 +405,107 @@ mod tests {
         assert!(expanded.contains("<file path=\"README.md\""));
         assert!(expanded.contains("hello"));
     }
+
+    #[test]
+    fn visible_token_extraction_requires_reasonable_boundaries() {
+        let tokens = extract_visible_project_reference_tokens(
+            "email test@example.com and read (@src/main.ts), `@README.md`, plus nope@bad.rs",
+        );
+
+        assert_eq!(tokens, vec!["src/main.ts", "README.md"]);
+    }
+
+    #[test]
+    fn normalizes_reference_paths_and_rejects_unsafe_segments() {
+        assert_eq!(
+            normalize_reference_path("@./src/main.ts").expect("normalized"),
+            PathBuf::from("src/main.ts")
+        );
+        assert_eq!(
+            normalize_reference_path("../secret").expect_err("parent rejected"),
+            "parent-segment"
+        );
+        assert_eq!(
+            normalize_reference_path("/tmp/secret").expect_err("absolute rejected"),
+            "absolute-path"
+        );
+        assert_eq!(
+            normalize_reference_path("target/debug").expect_err("ignored rejected"),
+            "ignored-path"
+        );
+    }
+
+    #[test]
+    fn renders_binary_and_missing_references_as_safe_summaries() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(temp.path().join("binary.bin"), b"abc\0def").expect("binary");
+
+        let expanded = expand_project_references_for_prompt(
+            "Read @binary.bin and @missing.txt",
+            &[
+                ComposerProjectReference {
+                    path: "binary.bin".to_string(),
+                    kind: Some(ComposerProjectReferenceKind::File),
+                },
+                ComposerProjectReference {
+                    path: "missing.txt".to_string(),
+                    kind: Some(ComposerProjectReferenceKind::File),
+                },
+            ],
+            temp.path(),
+        );
+
+        assert!(expanded.contains("path=\"binary.bin\""));
+        assert!(expanded.contains("status=\"metadata-only\""));
+        assert!(expanded.contains("reason=\"binary\""));
+        assert!(expanded.contains("path=\"missing.txt\""));
+        assert!(expanded.contains("reason=\"missing\""));
+    }
+
+    #[test]
+    fn structured_references_are_deduped_and_capped_before_visible_tokens() {
+        let references = (0..10)
+            .map(|index| ComposerProjectReference {
+                path: format!("file-{index}.txt"),
+                kind: Some(ComposerProjectReferenceKind::File),
+            })
+            .collect::<Vec<_>>();
+
+        let collected = collect_project_references("Read @visible.txt", &references);
+
+        assert_eq!(collected.len(), MAX_REFERENCES);
+        assert_eq!(collected[0], "file-0.txt");
+        assert!(!collected.iter().any(|path| path == "visible.txt"));
+    }
+
+    #[test]
+    fn invalid_working_directory_leaves_message_unchanged() {
+        let temp = tempdir().expect("tempdir");
+        let file_path = temp.path().join("not-a-dir");
+        fs::write(&file_path, "file").expect("file");
+
+        let message = "Read @README.md";
+        let expanded = expand_project_references_for_prompt(
+            message,
+            &[ComposerProjectReference {
+                path: "README.md".to_string(),
+                kind: None,
+            }],
+            &file_path,
+        );
+
+        assert_eq!(expanded, message);
+    }
+
+    #[test]
+    fn escapes_reference_attributes() {
+        assert_eq!(
+            escape_attr("a&b\"<c>"),
+            "a&amp;b&quot;&lt;c&gt;".to_string()
+        );
+        assert_eq!(
+            render_skipped_reference("bad\"path", "missing"),
+            "<reference path=\"bad&quot;path\" status=\"skipped\" reason=\"missing\" />"
+        );
+    }
 }

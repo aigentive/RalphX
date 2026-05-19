@@ -38,3 +38,33 @@ pub(super) fn validate_composer_root(path: &Path) -> Result<PathBuf, String> {
     }
     Ok(canonical)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn validate_composer_root_accepts_existing_directories() {
+        let temp = tempdir().expect("tempdir");
+
+        let root = validate_composer_root(temp.path()).expect("root");
+
+        assert_eq!(root, temp.path().canonicalize().expect("canonical tempdir"));
+    }
+
+    #[test]
+    fn validate_composer_root_rejects_files_and_missing_paths() {
+        let temp = tempdir().expect("tempdir");
+        let file_path = temp.path().join("README.md");
+        fs::write(&file_path, "not a directory").expect("file");
+
+        let file_error = validate_composer_root(&file_path).expect_err("file should fail");
+        assert!(file_error.contains("not a directory"));
+
+        let missing_error =
+            validate_composer_root(&temp.path().join("missing")).expect_err("missing should fail");
+        assert!(missing_error.contains("Failed to resolve agent composer root"));
+    }
+}

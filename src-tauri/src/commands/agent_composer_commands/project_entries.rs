@@ -320,4 +320,69 @@ mod tests {
             .iter()
             .any(|entry| entry.path == "src/main.ts"));
     }
+
+    #[test]
+    fn filesystem_index_ignores_heavy_dirs_and_records_parent_paths() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("src/components")).expect("src dirs");
+        fs::create_dir_all(temp.path().join("node_modules/pkg")).expect("ignored dir");
+        fs::write(temp.path().join("src/components/Button.tsx"), "").expect("src file");
+        fs::write(temp.path().join("node_modules/pkg/index.js"), "").expect("ignored file");
+
+        let entries = collect_fs_entries(temp.path());
+
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "src" && entry.kind == EntryKind::Directory));
+        assert!(entries.iter().any(|entry| {
+            entry.path == "src/components/Button.tsx" && entry.kind == EntryKind::File
+        }));
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.path.starts_with("node_modules")));
+
+        let response = entry_response(IndexedEntry {
+            path: "src/components/Button.tsx".to_string(),
+            kind: EntryKind::File,
+        });
+        assert_eq!(response.parent_path.as_deref(), Some("src/components"));
+        assert_eq!(response.kind, "file");
+    }
+
+    #[test]
+    fn search_entries_reports_truncation_when_limit_is_smaller_than_matches() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(temp.path().join("alpha.ts"), "").expect("alpha");
+        fs::write(temp.path().join("beta.ts"), "").expect("beta");
+
+        let result = search_entries_blocking(temp.path(), "", 1).expect("search");
+
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn score_entry_covers_match_tiers_and_fuzzy_misses() {
+        let entry = IndexedEntry {
+            path: "src/components/AgentComposerSurface.tsx".to_string(),
+            kind: EntryKind::File,
+        };
+
+        assert_eq!(score_entry(&entry, "AgentComposerSurface.tsx"), Some(1000));
+        assert_eq!(score_entry(&entry, "agent"), Some(850));
+        assert_eq!(score_entry(&entry, "src"), Some(760));
+        assert_eq!(score_entry(&entry, "comp"), Some(650));
+        assert_eq!(score_entry(&entry, "poser"), Some(540));
+        assert_eq!(score_entry(&entry, "components/agent"), Some(420));
+        assert!(score_entry(&entry, "acs").is_some_and(|score| score >= 220));
+        assert_eq!(score_entry(&entry, "zzzz"), None);
+    }
+
+    #[test]
+    fn ignored_relative_path_checks_only_top_level_directory() {
+        assert!(ignored_relative_path("target/debug/app"));
+        assert!(!ignored_relative_path("src/target/mod.rs"));
+        assert_eq!(fuzzy_match_score("composer", "cmr"), Some(22));
+        assert_eq!(fuzzy_match_score("composer", "xyz"), None);
+    }
 }

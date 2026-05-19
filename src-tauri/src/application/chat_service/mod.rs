@@ -4215,8 +4215,64 @@ mod agent_workspace_send_tests {
         AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
         MessageRole, Project, ProjectId, TaskId,
     };
-    use crate::domain::services::RunningAgentKey;
+    use crate::domain::services::{
+        ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
+    };
     use std::sync::Arc;
+
+    #[test]
+    fn persisted_user_metadata_strips_resume_flag_and_embeds_composer_references() {
+        let metadata = super::persisted_user_metadata(&SendMessageOptions {
+            metadata: Some(r#"{"resume_in_place":true,"source":"composer"}"#.to_string()),
+            composer_project_references: vec![ComposerProjectReference {
+                path: "src/main.ts".to_string(),
+                kind: Some(ComposerProjectReferenceKind::File),
+            }],
+            ..Default::default()
+        })
+        .expect("metadata");
+        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
+
+        assert_eq!(value.get("resume_in_place"), None);
+        assert_eq!(value["source"], "composer");
+        assert_eq!(value["composer_project_references"][0]["path"], "src/main.ts");
+        assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    }
+
+    #[test]
+    fn persisted_user_metadata_wraps_scalar_and_raw_metadata_with_references() {
+        let scalar = super::persisted_user_metadata(&SendMessageOptions {
+            metadata: Some("42".to_string()),
+            composer_project_references: vec![ComposerProjectReference {
+                path: "README.md".to_string(),
+                kind: None,
+            }],
+            ..Default::default()
+        })
+        .expect("scalar metadata");
+        let scalar_value: serde_json::Value = serde_json::from_str(&scalar).expect("json");
+        assert_eq!(scalar_value["metadata"], 42);
+        assert_eq!(
+            scalar_value["composer_project_references"][0]["path"],
+            "README.md"
+        );
+
+        let raw = super::persisted_user_metadata(&SendMessageOptions {
+            metadata: Some("not-json".to_string()),
+            composer_project_references: vec![ComposerProjectReference {
+                path: "src/lib.rs".to_string(),
+                kind: None,
+            }],
+            ..Default::default()
+        })
+        .expect("raw metadata");
+        let raw_value: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(raw_value["raw_metadata"], "not-json");
+        assert_eq!(
+            raw_value["composer_project_references"][0]["path"],
+            "src/lib.rs"
+        );
+    }
 
     #[tokio::test]
     async fn interactive_stdin_send_returns_registered_process_run_id() {

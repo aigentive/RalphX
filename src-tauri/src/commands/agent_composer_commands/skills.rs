@@ -901,4 +901,254 @@ enabled = false
         assert_eq!(skills.len(), 1);
         assert!(!skills[0].enabled);
     }
+
+    fn create_agent(root: &Path, agent_yaml: &str) {
+        fs::create_dir_all(root.join("agents/test-agent")).expect("agent dir");
+        fs::write(root.join("agents/test-agent/agent.yaml"), agent_yaml).expect("agent yaml");
+    }
+
+    fn create_internal_skill(root: &Path, name: &str, frontmatter: &str, body: &str) {
+        fs::create_dir_all(root.join(format!("plugins/app/skills/{name}"))).expect("skill dir");
+        fs::write(
+            root.join(format!("plugins/app/skills/{name}/SKILL.md")),
+            format!("---\n{frontmatter}\n---\n{body}\n"),
+        )
+        .expect("skill file");
+    }
+
+    #[test]
+    fn internal_composer_skills_exposes_only_user_invocable_allowed_skills() {
+        let temp = tempdir().expect("tempdir");
+        create_agent(
+            temp.path(),
+            r#"name: test-agent
+role: test
+capabilities:
+  internal_skills:
+    allowed:
+      - quick-fix
+      - hidden-bridge
+"#,
+        );
+        create_internal_skill(
+            temp.path(),
+            "quick-fix",
+            "name: quick-fix\ndescription: Apply focused fixes",
+            "Quick fix instructions.",
+        );
+        create_internal_skill(
+            temp.path(),
+            "hidden-bridge",
+            "name: hidden-bridge\nuser-invocable: false",
+            "Hidden bridge instructions.",
+        );
+
+        let skills =
+            list_internal_composer_skills(temp.path(), "test-agent").expect("internal skills");
+
+        assert_eq!(skills.len(), 1);
+        let skill = &skills[0];
+        assert_eq!(skill.id, "internal:quick-fix");
+        assert_eq!(skill.name, "quick-fix");
+        assert_eq!(skill.description.as_deref(), Some("Apply focused fixes"));
+        assert_eq!(skill.source, "ralphx-internal");
+        assert_eq!(skill.invocation_kind, "internal-directive");
+        assert_eq!(skill.invocation_value, "quick-fix");
+        assert!(skill.enabled);
+        assert!(skill
+            .source_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("plugins/app/skills/quick-fix/SKILL.md")));
+    }
+
+    #[test]
+    fn claude_skill_reader_uses_metadata_fallbacks_and_filters_commands() {
+        let temp = tempdir().expect("tempdir");
+        let skill_root = temp.path().join(".claude/skills");
+        fs::create_dir_all(skill_root.join("fallback-skill")).expect("skill dir");
+        fs::write(
+            skill_root.join("fallback-skill/SKILL.md"),
+            r#"---
+name: ../unsafe
+display-name: Fallback Skill
+when_to_use: Use when metadata name is unsafe
+user-invocable: false
+---
+Skill body.
+"#,
+        )
+        .expect("skill file");
+
+        let skills = read_claude_skill_dir(&skill_root, "project").expect("skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "claude:project:fallback-skill");
+        assert_eq!(skills[0].name, "fallback-skill");
+        assert_eq!(skills[0].display_name.as_deref(), Some("Fallback Skill"));
+        assert_eq!(
+            skills[0].description.as_deref(),
+            Some("Use when metadata name is unsafe")
+        );
+        assert!(!skills[0].enabled);
+
+        let commands_root = temp.path().join(".claude/commands");
+        fs::create_dir_all(&commands_root).expect("commands dir");
+        fs::write(commands_root.join("review.md"), "\nReview the current branch.\n")
+            .expect("command file");
+        fs::write(commands_root.join("bad.name.md"), "Should be ignored.")
+            .expect("unsafe command file");
+        fs::write(commands_root.join("notes.txt"), "Should also be ignored.")
+            .expect("non-command file");
+
+        let commands =
+            read_claude_skill_dir(&commands_root, "project-command").expect("commands");
+
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].id, "claude:project-command:review");
+        assert_eq!(
+            commands[0].description.as_deref(),
+            Some("Review the current branch.")
+        );
+        assert_eq!(commands[0].invocation_value, "/review");
+    }
+
+    #[test]
+    fn claude_canonical_agent_skill_entries_are_included() {
+        let temp = tempdir().expect("tempdir");
+        create_agent(
+            temp.path(),
+            r#"name: test-agent
+role: test
+harnesses:
+  claude:
+    skills:
+      - ship-it
+"#,
+        );
+
+        let skills = list_claude_native_skills(temp.path(), "test-agent").expect("skills");
+
+        assert!(skills.iter().any(|skill| {
+            skill.id == "claude:canonical:ship-it"
+                && skill.invocation_value == "/ship-it"
+                && skill.scope.as_deref() == Some("agent")
+        }));
+    }
+
+    #[test]
+    fn codex_skill_reader_uses_body_description_prefix_and_disabled_set() {
+        let temp = tempdir().expect("tempdir");
+        let skills_root = temp.path().join("skills");
+        fs::create_dir_all(skills_root.join("local")).expect("skill dir");
+        let skill_file = skills_root.join("local/SKILL.md");
+        fs::write(
+            &skill_file,
+            r#"---
+name: bad/name
+display-name: Local Skill
+---
+First body line is the description.
+
+More body.
+"#,
+        )
+        .expect("skill file");
+        let disabled_paths = BTreeSet::from([skill_file.canonicalize().expect("canonical")]);
+
+        let skills =
+            read_codex_skill_dir(&skills_root, "plugin", Some("github"), &disabled_paths)
+                .expect("skills");
+
+        assert_eq!(skills.len(), 1);
+        let skill = &skills[0];
+        assert_eq!(skill.id, "codex:plugin:github:local");
+        assert_eq!(skill.name, "github:local");
+        assert_eq!(skill.display_name.as_deref(), Some("Local Skill"));
+        assert_eq!(
+            skill.description.as_deref(),
+            Some("First body line is the description.")
+        );
+        assert_eq!(skill.invocation_value, "$github:local");
+        assert!(!skill.enabled);
+    }
+
+    #[test]
+    fn codex_config_parser_handles_quotes_comments_and_table_boundaries() {
+        let temp = tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("skills/disabled")).expect("disabled skill dir");
+        fs::create_dir_all(temp.path().join("skills/enabled")).expect("enabled skill dir");
+        let disabled = temp.path().join("skills/disabled/SKILL.md");
+        let enabled = temp.path().join("skills/enabled/SKILL.md");
+        fs::write(&disabled, "---\nname: disabled\n---\nBody").expect("disabled skill");
+        fs::write(&enabled, "---\nname: enabled\n---\nBody").expect("enabled skill");
+        let config = format!(
+            r#"
+[[skills.config]]
+path = '{}' # single quotes are accepted
+enabled = false
+
+[[skills.config]]
+path = "{}"
+enabled = true
+
+[other]
+path = "/tmp/ignored"
+enabled = false
+"#,
+            disabled.display(),
+            enabled.display()
+        );
+
+        let disabled_paths = parse_disabled_codex_skill_paths(&config);
+
+        assert!(disabled_paths.contains(&disabled.canonicalize().expect("canonical disabled")));
+        assert!(!disabled_paths.contains(&enabled.canonicalize().expect("canonical enabled")));
+    }
+
+    #[test]
+    fn codex_plugin_roots_reject_unsafe_manifests_and_accept_cache_plugins() {
+        let temp = tempdir().expect("tempdir");
+        let unsafe_plugin = temp.path().join("unsafe-plugin");
+        fs::create_dir_all(unsafe_plugin.join(".codex-plugin")).expect("unsafe metadata");
+        fs::create_dir_all(temp.path().join("outside-skills")).expect("outside skills");
+        fs::write(
+            unsafe_plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"unsafe","skills":"../outside-skills"}"#,
+        )
+        .expect("unsafe manifest");
+
+        assert!(read_codex_plugin_skill_root(&unsafe_plugin).is_none());
+
+        let plugin_root = temp
+            .path()
+            .join("plugins/cache/openai-curated/github/version-1");
+        fs::create_dir_all(plugin_root.join(".codex-plugin")).expect("plugin metadata");
+        fs::create_dir_all(plugin_root.join("skills/yeet")).expect("plugin skill");
+        fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{"name":"github","skills":"./skills"}"#,
+        )
+        .expect("plugin manifest");
+        fs::write(plugin_root.join("skills/yeet/SKILL.md"), "---\nname: yeet\n---\nBody")
+            .expect("plugin skill file");
+
+        let mut roots = Vec::new();
+        let mut seen = BTreeSet::new();
+        push_codex_plugin_roots(&mut roots, &mut seen, temp.path());
+
+        assert!(roots.iter().any(|root| {
+            root.scope == "plugin"
+                && root.name_prefix.as_deref() == Some("github")
+                && root.path.ends_with("plugins/cache/openai-curated/github/version-1/skills")
+        }));
+    }
+
+    #[test]
+    fn skill_helpers_ignore_invalid_inputs() {
+        assert!(split_frontmatter("No frontmatter").is_none());
+        assert!(is_safe_skill_token("safe-name_1"));
+        assert!(!is_safe_skill_token("bad/name"));
+        assert_eq!(parse_toml_key_value("enabled = false", "enabled"), Some("false"));
+        assert_eq!(parse_toml_string("\"hello\" # ignored"), Some("hello".to_string()));
+        assert_eq!(parse_toml_string("unquoted"), None);
+    }
 }

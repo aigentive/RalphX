@@ -680,3 +680,59 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
         last_run_id,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::services::{ComposerProjectReference, ComposerProjectReferenceKind};
+
+    #[test]
+    fn queued_persisted_metadata_embeds_composer_references() {
+        let mut message = crate::domain::services::QueuedMessage::new("follow up".to_string());
+        message.metadata_override = Some(r#"{"source":"queue"}"#.to_string());
+        message.composer_project_references = vec![ComposerProjectReference {
+            path: "src/main.rs".to_string(),
+            kind: Some(ComposerProjectReferenceKind::File),
+        }];
+
+        let metadata = queued_persisted_metadata(&message).expect("metadata");
+        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
+
+        assert_eq!(value["source"], "queue");
+        assert_eq!(value["composer_project_references"][0]["path"], "src/main.rs");
+        assert_eq!(value["composer_project_references"][0]["kind"], "file");
+    }
+
+    #[test]
+    fn queued_persisted_metadata_preserves_raw_metadata_when_references_exist() {
+        let mut message = crate::domain::services::QueuedMessage::new("follow up".to_string());
+        message.metadata_override = Some("not-json".to_string());
+        message.composer_project_references = vec![ComposerProjectReference {
+            path: "README.md".to_string(),
+            kind: None,
+        }];
+
+        let metadata = queued_persisted_metadata(&message).expect("metadata");
+        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
+
+        assert_eq!(value["raw_metadata"], "not-json");
+        assert_eq!(value["composer_project_references"][0]["path"], "README.md");
+    }
+
+    #[test]
+    fn hidden_resume_marker_metadata_strips_transient_flags() {
+        let metadata = hidden_resume_in_place_marker_metadata(Some(
+            r#"{"resume_in_place":true,"persist_hidden_marker":true,"reason":"verify"}"#,
+        ))
+        .expect("marker metadata");
+        let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
+
+        assert_eq!(value.get("resume_in_place"), None);
+        assert_eq!(value.get("persist_hidden_marker"), None);
+        assert_eq!(value["hidden_from_ui"], true);
+        assert_eq!(value["recovery_context"], true);
+        assert_eq!(value["reason"], "verify");
+        assert!(hidden_resume_in_place_marker_metadata(Some(r#"{"resume_in_place":true}"#))
+            .is_none());
+    }
+}
