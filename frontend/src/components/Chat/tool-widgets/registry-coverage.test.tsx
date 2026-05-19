@@ -40,6 +40,7 @@ describe("tool widget registry coverage", () => {
     expect(canonicalizeToolName("ralphx:get_merge_target")).toBe("get_merge_target");
     expect(canonicalizeToolName("ralphx::get_merge_target")).toBe("get_merge_target");
     expect(canonicalizeToolName("mcp__ralphx__start_step")).toBe("start_step");
+    expect(canonicalizeToolName("mcp__ralphx_internal__create_agent_task")).toBe("create_agent_task");
     expect(canonicalizeToolName("mcp__ralphx__fs_read_file")).toBe("read");
     expect(canonicalizeToolName("mcp__ralphx__fs_grep")).toBe("grep");
     expect(canonicalizeToolName("mcp__ralphx__fs_glob")).toBe("glob");
@@ -73,6 +74,15 @@ describe("tool widget registry coverage", () => {
     );
     expect(getToolCallWidget("ralphx::search_memories")).toBe(
       getToolCallWidget("mcp__ralphx__search_memories")
+    );
+    expect(getToolCallWidget("mcp__ralphx_internal__create_agent_task")).toBe(
+      getToolCallWidget("create_agent_task")
+    );
+    expect(getToolCallWidget("ralphx_internal:create_agent_task")).toBe(
+      getToolCallWidget("create_agent_task")
+    );
+    expect(getToolCallWidget("ralphx_internal::create_agent_task")).toBe(
+      getToolCallWidget("create_agent_task")
     );
     expect(getToolCallWidget("mcp__ralphx__fs_read_file")).toBe(getToolCallWidget("read"));
     expect(getToolCallWidget("mcp__ralphx__fs_grep")).toBe(getToolCallWidget("grep"));
@@ -172,6 +182,27 @@ describe("tool widget registry coverage", () => {
         arguments: { subject: "Add widget coverage", description: "Cover missing chat widgets." },
       }),
       expectedText: "Create Task",
+    },
+    {
+      label: "agent task widget",
+      toolCall: makeToolCall("mcp__ralphx_internal__list_agent_tasks", {
+        result: {
+          success: true,
+          tasks: [
+            {
+              task_id: "agent-task-1",
+              task_number: 1,
+              title: "Trace task ledger scope",
+              state: "active",
+              owner_agent: "ralphx-chat-project",
+              blocked_by: [],
+              blocks: [],
+              availability: "ready",
+            },
+          ],
+        },
+      }),
+      expectedText: "Agent task ledger",
     },
     {
       label: "file change widget",

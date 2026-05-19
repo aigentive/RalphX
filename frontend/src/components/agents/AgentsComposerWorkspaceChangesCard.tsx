@@ -142,6 +142,7 @@ function AgentsComposerWorkspaceChangesCardContent({
 }) {
   const [activePanel, setActivePanel] = useState<ComposerContextPanel | null>(null);
   const isReviewRefreshInFlight = useRef(false);
+  const wasAgentGenerating = useRef(false);
   const reviewRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
   const canInspectChanges =
     workspace?.mode === "edit" && workspace.status !== "missing";
@@ -178,6 +179,18 @@ function AgentsComposerWorkspaceChangesCardContent({
     refetchInterval:
       canHydrateReview && isAgentGenerating ? ACTIVE_AGENT_TASK_REFRESH_MS : false,
   });
+  const refetchTasks = tasksQuery.refetch;
+  useEffect(() => {
+    if (isAgentGenerating) {
+      wasAgentGenerating.current = true;
+      return;
+    }
+    if (!canHydrateReview || !wasAgentGenerating.current) {
+      return;
+    }
+    wasAgentGenerating.current = false;
+    void refetchTasks();
+  }, [canHydrateReview, isAgentGenerating, refetchTasks]);
   useEffect(() => {
     reviewRefetchRef.current = reviewQuery.refetch;
   }, [reviewQuery.refetch]);

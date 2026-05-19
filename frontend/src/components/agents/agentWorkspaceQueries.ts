@@ -135,6 +135,9 @@ export function invalidateWorkspaceQueries(
       queryKey: agentWorkspaceKeys.review(conversationId),
     }),
     queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.agentTasks(conversationId),
+    }),
+    queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
     }),
     queryClient.invalidateQueries({

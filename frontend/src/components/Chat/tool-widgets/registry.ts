@@ -89,6 +89,9 @@ const ProjectOrchestrationWidget = lazyWidget(() =>
     default: module.ProjectOrchestrationWidget,
   }))
 );
+const AgentTaskWidget = lazyWidget(() =>
+  import("./AgentTaskWidget").then((module) => ({ default: module.AgentTaskWidget }))
+);
 const TaskCreateWidget = lazyWidget(() =>
   import("./TeamTaskWidgets").then((module) => ({ default: module.TaskCreateWidget }))
 );
@@ -224,6 +227,13 @@ export const TOOL_CALL_WIDGETS: ToolCallWidgetRegistry = {
   "v1_list_proposals": ProjectOrchestrationWidget,
   "v1_get_session_tasks": ProjectOrchestrationWidget,
   "v1_send_ideation_message": ProjectOrchestrationWidget,
+  // Native agent task tools -> AgentTaskWidget
+  "create_agent_task": AgentTaskWidget,
+  "get_agent_task": AgentTaskWidget,
+  "list_agent_tasks": AgentTaskWidget,
+  "update_agent_task": AgentTaskWidget,
+  "claim_agent_task": AgentTaskWidget,
+  "complete_agent_task": AgentTaskWidget,
   // SendMessage tool → SendMessageWidget (team message card)
   "sendmessage": SendMessageWidget,
   // Task management tools → TeamTaskWidgets

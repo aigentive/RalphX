@@ -29,6 +29,7 @@ import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
+import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -134,15 +135,6 @@ const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
-function withAgentTaskRuntimeContext(args) {
-    return {
-        ...args,
-        context_type: RALPHX_CONTEXT_TYPE,
-        context_id: RALPHX_CONTEXT_ID,
-        project_id: RALPHX_PROJECT_ID,
-        actor_agent: AGENT_TYPE,
-    };
-}
 function buildArtifactMutationTransportHeaders() {
     if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
         return undefined;
@@ -661,7 +653,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 complete_agent_task: "agent_tasks/complete",
             };
             const endpoint = endpointByTool[name];
-            result = await callTauri(endpoint, withAgentTaskRuntimeContext(args));
+            result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
+                contextType: RALPHX_CONTEXT_TYPE,
+                contextId: RALPHX_CONTEXT_ID,
+                projectId: RALPHX_PROJECT_ID,
+                actorAgent: AGENT_TYPE,
+                parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+            }));
         }
         else if (name === "get_project_analysis") {
             // GET /api/projects/:project_id/analysis?task_id=
