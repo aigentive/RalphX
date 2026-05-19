@@ -17,6 +17,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  CHAT_ATTACHMENT_ACCEPTED_TYPES,
+  CHAT_ATTACHMENT_MAX_FILE_SIZE,
+  CHAT_ATTACHMENT_MAX_FILES,
+  validateChatAttachmentFiles,
+} from "./chatAttachmentFiles";
 
 // ============================================================================
 // Types
@@ -39,29 +45,6 @@ export interface ChatAttachmentPickerProps {
 // Constants
 // ============================================================================
 
-const DEFAULT_MAX_FILES = 5;
-const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-
-const ACCEPTED_TYPES = [
-  "text/*",
-  "image/*",
-  "application/pdf",
-  "application/json",
-  ".md",
-  ".txt",
-  ".js",
-  ".ts",
-  ".tsx",
-  ".jsx",
-  ".py",
-  ".rs",
-  ".go",
-  ".java",
-  ".cpp",
-  ".c",
-  ".h",
-].join(",");
-
 // ============================================================================
 // Component
 // ============================================================================
@@ -69,8 +52,8 @@ const ACCEPTED_TYPES = [
 export function ChatAttachmentPicker({
   onFilesSelected,
   disabled = false,
-  maxFiles = DEFAULT_MAX_FILES,
-  maxFileSize = DEFAULT_MAX_FILE_SIZE,
+  maxFiles = CHAT_ATTACHMENT_MAX_FILES,
+  maxFileSize = CHAT_ATTACHMENT_MAX_FILE_SIZE,
   subtle = false,
 }: ChatAttachmentPickerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -79,17 +62,7 @@ export function ChatAttachmentPicker({
   // Validate and filter selected files
   const validateFiles = useCallback(
     (fileList: FileList | null): File[] => {
-      if (!fileList || fileList.length === 0) {
-        return [];
-      }
-
-      const files = Array.from(fileList);
-
-      // Filter out files that exceed size limit
-      const validFiles = files.filter((file) => file.size <= maxFileSize);
-
-      // Limit to maxFiles
-      return validFiles.slice(0, maxFiles);
+      return validateChatAttachmentFiles(fileList, { maxFiles, maxFileSize });
     },
     [maxFiles, maxFileSize]
   );
@@ -182,7 +155,7 @@ export function ChatAttachmentPicker({
         data-testid="attachment-file-input"
         type="file"
         multiple
-        accept={ACCEPTED_TYPES}
+        accept={CHAT_ATTACHMENT_ACCEPTED_TYPES}
         onChange={handleFileChange}
         className="hidden"
         aria-hidden="true"

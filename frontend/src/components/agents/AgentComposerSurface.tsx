@@ -27,14 +27,22 @@ import {
   Square,
 } from "lucide-react";
 
+import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
 import type { AgentStatus } from "@/stores/chatStore";
 import type { AgentProvider } from "@/stores/agentSessionStore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ChatAttachmentDropOverlay } from "@/components/Chat/ChatAttachmentDropOverlay";
 import {
   ChatAttachmentGallery,
   type ChatAttachment as ComposerAttachment,
 } from "@/components/Chat/ChatAttachmentGallery";
+import {
+  CHAT_ATTACHMENT_ACCEPTED_TYPES,
+  CHAT_ATTACHMENT_MAX_FILE_SIZE,
+  CHAT_ATTACHMENT_MAX_FILES,
+  validateChatAttachmentFiles,
+} from "@/components/Chat/chatAttachmentFiles";
 import {
   Popover,
   PopoverContent,
@@ -56,29 +64,6 @@ import {
   type AgentComposerMenuItem,
 } from "./composer/AgentComposerCommandMenu";
 import type { AgentComposerSkill } from "@/api/agent-composer";
-
-const COMPOSER_ATTACHMENT_ACCEPTED_TYPES = [
-  "text/*",
-  "image/*",
-  "application/pdf",
-  "application/json",
-  ".md",
-  ".txt",
-  ".js",
-  ".ts",
-  ".tsx",
-  ".jsx",
-  ".py",
-  ".rs",
-  ".go",
-  ".java",
-  ".cpp",
-  ".c",
-  ".h",
-].join(",");
-
-const COMPOSER_ATTACHMENT_MAX_FILES = 5;
-const COMPOSER_ATTACHMENT_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 interface ComposerOption {
   id: string;
@@ -634,9 +619,10 @@ export function AgentComposerSurface({
         return;
       }
 
-      const validFiles = Array.from(fileList)
-        .filter((file) => file.size <= COMPOSER_ATTACHMENT_MAX_FILE_SIZE)
-        .slice(0, COMPOSER_ATTACHMENT_MAX_FILES);
+      const validFiles = validateChatAttachmentFiles(fileList, {
+        maxFiles: CHAT_ATTACHMENT_MAX_FILES,
+        maxFileSize: CHAT_ATTACHMENT_MAX_FILE_SIZE,
+      });
 
       if (validFiles.length > 0) {
         void onFilesSelected?.(validFiles);
@@ -807,11 +793,23 @@ export function AgentComposerSurface({
     [setValue, updateCursorFromTextarea]
   );
 
+  const attachmentDropEnabled =
+    enableAttachments && !attachmentDisabled && onFilesSelected !== undefined;
+  const { isDragging: isAttachmentDragging, dropProps: attachmentDropProps } =
+    useChatAttachmentDrop({
+      enabled: attachmentDropEnabled,
+      targetRef: surfaceRef,
+      onFilesSelected,
+      maxFiles: CHAT_ATTACHMENT_MAX_FILES,
+      maxFileSize: CHAT_ATTACHMENT_MAX_FILE_SIZE,
+    });
+
   return (
     <div
       ref={surfaceRef}
       data-testid={dataTestId}
-      className={cn("agent-composer-surface mx-auto w-full max-w-full", className)}
+      className={cn("agent-composer-surface relative mx-auto w-full max-w-full", className)}
+      {...attachmentDropProps}
     >
       <div
         className="overflow-hidden rounded-[22px] border transition-colors"
@@ -892,7 +890,7 @@ export function AgentComposerSurface({
                 data-testid="attachment-file-input"
                 type="file"
                 multiple
-                accept={COMPOSER_ATTACHMENT_ACCEPTED_TYPES}
+                accept={CHAT_ATTACHMENT_ACCEPTED_TYPES}
                 onChange={handleAttachmentSelect}
                 className="hidden"
                 aria-hidden="true"
@@ -985,6 +983,9 @@ export function AgentComposerSurface({
           </div>
         </div>
       </div>
+      {isAttachmentDragging && (
+        <ChatAttachmentDropOverlay roundedClassName="rounded-[22px]" />
+      )}
     </div>
   );
 }

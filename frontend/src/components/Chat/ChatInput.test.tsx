@@ -16,6 +16,17 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatInput } from "./ChatInput";
 
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: () => Promise.resolve(() => {}),
+  }),
+}));
+
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  readFile: vi.fn(),
+  stat: vi.fn(),
+}));
+
 describe("ChatInput", () => {
   const defaultProps = {
     onSend: vi.fn(),
@@ -23,6 +34,19 @@ describe("ChatInput", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  const makeDropEvent = (files: File[]) => ({
+    dataTransfer: {
+      files,
+      items: files.map((file) => ({
+        kind: "file",
+        type: file.type,
+        getAsFile: () => file,
+      })),
+      types: ["Files"],
+      dropEffect: "none",
+    },
   });
 
   // ============================================================================
@@ -828,6 +852,48 @@ describe("ChatInput", () => {
       await user.click(screen.getByTestId("chat-input-send"));
 
       expect(onSend).toHaveBeenCalledWith("Message");
+    });
+
+    it("accepts dropped files across the whole chat input", async () => {
+      const onFilesSelected = vi.fn();
+      render(
+        <ChatInput
+          {...defaultProps}
+          enableAttachments={true}
+          onFilesSelected={onFilesSelected}
+        />
+      );
+      const file = new File(["content"], "dropped.txt", { type: "text/plain" });
+      const chatInput = screen.getByTestId("chat-input");
+
+      fireEvent.dragEnter(chatInput, makeDropEvent([file]));
+
+      expect(screen.getByTestId("chat-composer-drop-overlay")).toBeInTheDocument();
+
+      fireEvent.drop(chatInput, makeDropEvent([file]));
+
+      await waitFor(() => {
+        expect(onFilesSelected).toHaveBeenCalledWith([file]);
+      });
+      expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    });
+
+    it("does not accept dropped files in read-only mode", () => {
+      const onFilesSelected = vi.fn();
+      render(
+        <ChatInput
+          {...defaultProps}
+          enableAttachments={true}
+          isReadOnly={true}
+          onFilesSelected={onFilesSelected}
+        />
+      );
+      const file = new File(["content"], "dropped.txt", { type: "text/plain" });
+
+      fireEvent.drop(screen.getByTestId("chat-input"), makeDropEvent([file]));
+
+      expect(onFilesSelected).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
     });
   });
 

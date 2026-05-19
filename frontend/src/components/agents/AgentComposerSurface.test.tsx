@@ -1,9 +1,20 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentComposerSurface } from "./AgentComposerSurface";
+
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: () => Promise.resolve(() => {}),
+  }),
+}));
+
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  readFile: vi.fn(),
+  stat: vi.fn(),
+}));
 
 type ComposerProps = Parameters<typeof AgentComposerSurface>[0];
 
@@ -46,6 +57,21 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
       />
     </QueryClientProvider>
   );
+}
+
+function makeDropEvent(files: File[]) {
+  return {
+    dataTransfer: {
+      files,
+      items: files.map((file) => ({
+        kind: "file",
+        type: file.type,
+        getAsFile: () => file,
+      })),
+      types: ["Files"],
+      dropEffect: "none",
+    },
+  };
 }
 
 describe("AgentComposerSurface", () => {
@@ -369,5 +395,42 @@ describe("AgentComposerSurface", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     expect(textarea.value).toBe("/review ");
+  });
+
+  it("accepts dropped files across the whole composer surface", async () => {
+    const onFilesSelected = vi.fn();
+    renderComposer({
+      dataTestId: "agent-composer",
+      enableAttachments: true,
+      onFilesSelected,
+    });
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    const composer = screen.getByTestId("agent-composer");
+
+    fireEvent.dragEnter(composer, makeDropEvent([file]));
+
+    expect(screen.getByTestId("chat-composer-drop-overlay")).toBeInTheDocument();
+
+    fireEvent.drop(composer, makeDropEvent([file]));
+
+    await waitFor(() => {
+      expect(onFilesSelected).toHaveBeenCalledWith([file]);
+    });
+    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+  });
+
+  it("does not accept dropped files when attachments are disabled", () => {
+    const onFilesSelected = vi.fn();
+    renderComposer({
+      dataTestId: "agent-composer",
+      enableAttachments: false,
+      onFilesSelected,
+    });
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+
+    fireEvent.drop(screen.getByTestId("agent-composer"), makeDropEvent([file]));
+
+    expect(onFilesSelected).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
   });
 });
