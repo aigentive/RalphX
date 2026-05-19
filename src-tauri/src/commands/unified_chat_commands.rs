@@ -4547,6 +4547,9 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 .to_string(),
         );
     }
+    if workspace.has_terminal_publication_pr_status() {
+        return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
+    }
 
     let conversation = state
         .chat_conversation_repo
@@ -8942,6 +8945,56 @@ mod tests {
         .expect_err("concurrent publish should be rejected");
 
         assert_eq!(error, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_rejects_terminal_pr_without_mutating_status() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "terminal-pr",
+            true,
+            Some(333),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_pr_status = Some("merged".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace update should persist");
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect_err("terminal PR should block publish");
+
+        assert!(error.contains("closed or merged"));
+        assert_eq!(github.state().update_pr_base_calls, 0);
+        assert_eq!(github.state().push_branch_calls, 0);
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(stored.publication_pr_status.as_deref(), Some("merged"));
+        assert_eq!(
+            stored.publication_push_status.as_deref(),
+            Some("needs_agent")
+        );
     }
 
     #[tokio::test]

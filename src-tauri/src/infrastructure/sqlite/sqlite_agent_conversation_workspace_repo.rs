@@ -436,14 +436,22 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT * FROM agent_conversation_workspaces
-                     WHERE status = 'active'
-                       AND mode = 'edit'
+                     WHERE mode = 'edit'
                        AND linked_plan_branch_id IS NULL
-                       AND publication_pr_number IS NULL
-                       AND COALESCE(publication_push_status, 'pushed') NOT IN (
-                           'needs_agent', 'pending', 'failed', 'description_failed'
-                       )
                        AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                       AND (
+                         (
+                           status = 'active'
+                           AND publication_pr_number IS NULL
+                           AND COALESCE(publication_push_status, 'pushed') NOT IN (
+                               'needs_agent', 'pending', 'failed', 'description_failed'
+                           )
+                         )
+                         OR (
+                           status IN ('active', 'missing')
+                           AND publication_pr_number IS NOT NULL
+                         )
+                       )
                      ORDER BY updated_at DESC
                      LIMIT ?1",
                 )?;
