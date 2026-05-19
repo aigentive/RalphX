@@ -434,7 +434,7 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
 }
 
 #[tokio::test]
-async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_edit_workspaces() {
+async fn list_external_pr_reconciliation_candidates_filters_to_reconcilable_edit_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let candidate = make_workspace(conversation_id);
     repo.create_or_update(candidate.clone()).await.unwrap();
@@ -444,7 +444,17 @@ async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_e
     let mut linked = make_workspace(linked_id);
     linked.publication_pr_number = Some(72);
     linked.publication_pr_status = Some("open".to_string());
-    repo.create_or_update(linked).await.unwrap();
+    linked.publication_push_status = Some("failed".to_string());
+    repo.create_or_update(linked.clone()).await.unwrap();
+
+    let missing_linked_id = ChatConversationId::from_string("25252525-2525-2525-2525-252525252525");
+    seed_conversation(&db, &missing_linked_id);
+    let mut missing_linked = make_workspace(missing_linked_id);
+    missing_linked.status = AgentConversationWorkspaceStatus::Missing;
+    missing_linked.publication_pr_number = Some(73);
+    missing_linked.publication_pr_status = Some("open".to_string());
+    missing_linked.publication_push_status = Some("needs_agent".to_string());
+    repo.create_or_update(missing_linked.clone()).await.unwrap();
 
     let needs_agent_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
     seed_conversation(&db, &needs_agent_id);
@@ -463,8 +473,19 @@ async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_e
         .await
         .unwrap();
 
-    assert_eq!(workspaces.len(), 1);
-    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+    assert_eq!(
+        workspaces
+            .into_iter()
+            .map(|workspace| workspace.conversation_id)
+            .collect::<std::collections::HashSet<_>>(),
+        [
+            candidate.conversation_id,
+            linked.conversation_id,
+            missing_linked.conversation_id
+        ]
+        .into_iter()
+        .collect()
+    );
 
     let limited = repo
         .list_active_direct_external_pr_reconciliation_candidates(0)

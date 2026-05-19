@@ -13,7 +13,7 @@ use crate::application::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    ChatConversationId, ProjectId,
+    ChatConversationId, Project, ProjectId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ProjectRepository,
@@ -146,6 +146,10 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         ));
     }
 
+    if workspace.publication_pr_number.is_some() {
+        return reconcile_linked_agent_workspace_pr(deps, &workspace, &project).await;
+    }
+
     let lookup_started = Instant::now();
     let branch_name = workspace.branch_name.clone();
     let pr = deps
@@ -208,6 +212,78 @@ pub(crate) async fn reconcile_agent_workspace_external_pr(
         pr_number: pr.number,
         pr_status: pr_status.to_string(),
     })
+}
+
+async fn reconcile_linked_agent_workspace_pr(
+    deps: AgentWorkspaceExternalPrReconciliationDeps,
+    workspace: &AgentConversationWorkspace,
+    project: &Project,
+) -> AppResult<AgentWorkspaceExternalPrReconciliationOutcome> {
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+            "missing_pr_number",
+        ));
+    };
+
+    let status = deps
+        .github
+        .check_pr_status(Path::new(&project.working_directory), pr_number)
+        .await?;
+    let pr_status = publication_status_for_pr_status(&status);
+    if !matches!(status, PrStatus::Closed | PrStatus::Merged { .. }) {
+        return Ok(AgentWorkspaceExternalPrReconciliationOutcome::Skipped(
+            "linked_pr_not_terminal",
+        ));
+    }
+
+    deps.workspace_repo
+        .update_publication(
+            &workspace.conversation_id,
+            Some(pr_number),
+            workspace.publication_pr_url.as_deref(),
+            Some(pr_status),
+            Some("pushed"),
+        )
+        .await?;
+    deps.workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            workspace.conversation_id.clone(),
+            format!("pr_{pr_status}"),
+            "succeeded",
+            terminal_linked_pr_summary(pr_status),
+            None,
+        ))
+        .await?;
+    emit_workspace_changed(deps.app_handle.as_ref(), &workspace.conversation_id);
+    cleanup_terminal_agent_workspace_after_pr(
+        Arc::clone(&deps.workspace_repo),
+        &workspace.conversation_id,
+        project,
+        matches!(status, PrStatus::Merged { .. }).then(|| Arc::clone(&deps.github)),
+        pr_status == "merged",
+    )
+    .await;
+
+    Ok(AgentWorkspaceExternalPrReconciliationOutcome::Linked {
+        pr_number,
+        pr_status: pr_status.to_string(),
+    })
+}
+
+fn publication_status_for_pr_status(status: &PrStatus) -> &'static str {
+    match status {
+        PrStatus::Open => "open",
+        PrStatus::Closed => "closed",
+        PrStatus::Merged { .. } => "merged",
+    }
+}
+
+fn terminal_linked_pr_summary(status: &str) -> &'static str {
+    match status {
+        "merged" => "Pull request merged",
+        "closed" => "Pull request closed without merging",
+        _ => "Pull request reached a terminal state",
+    }
 }
 
 pub(crate) async fn reconcile_recent_agent_workspace_external_prs_on_startup(
@@ -289,29 +365,33 @@ pub(crate) async fn reconcile_recent_agent_workspace_external_prs_on_startup(
 pub(crate) fn external_pr_reconciliation_skip_reason(
     workspace: &AgentConversationWorkspace,
 ) -> Option<&'static str> {
-    if workspace.status != AgentConversationWorkspaceStatus::Active {
-        return Some("workspace_not_active");
-    }
     if workspace.mode != AgentConversationWorkspaceMode::Edit {
         return Some("workspace_not_edit_mode");
     }
     if workspace.linked_plan_branch_id.is_some() {
         return Some("workspace_linked_to_plan_branch");
     }
+    if matches!(
+        workspace.publication_pr_status.as_deref(),
+        Some("closed") | Some("merged")
+    ) {
+        return Some("workspace_terminal");
+    }
     if workspace.publication_pr_number.is_some() {
-        return Some("workspace_already_linked");
+        return match workspace.status {
+            AgentConversationWorkspaceStatus::Active
+            | AgentConversationWorkspaceStatus::Missing => None,
+            AgentConversationWorkspaceStatus::Archived => Some("workspace_not_active"),
+        };
+    }
+    if workspace.status != AgentConversationWorkspaceStatus::Active {
+        return Some("workspace_not_active");
     }
     if matches!(
         workspace.publication_push_status.as_deref(),
         Some("needs_agent" | "pending" | "failed" | "description_failed")
     ) {
         return Some("workspace_push_not_reconcilable");
-    }
-    if matches!(
-        workspace.publication_pr_status.as_deref(),
-        Some("closed") | Some("merged")
-    ) {
-        return Some("workspace_terminal");
     }
     None
 }
