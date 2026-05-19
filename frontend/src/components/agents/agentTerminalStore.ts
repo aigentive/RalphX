@@ -20,6 +20,7 @@ interface AgentTerminalUiActions {
 }
 
 export const AGENT_TERMINAL_DEFAULT_HEIGHT = 260;
+export const AGENT_TERMINAL_COLLAPSED_HEIGHT = 36;
 export const AGENT_TERMINAL_MIN_HEIGHT = 160;
 export const AGENT_TERMINAL_MAX_HEIGHT = 560;
 

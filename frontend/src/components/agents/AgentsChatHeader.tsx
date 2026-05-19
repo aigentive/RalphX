@@ -460,7 +460,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               onPointerEnter={onPreloadTerminal}
               onFocus={onPreloadTerminal}
               disabled={!onToggleTerminal || Boolean(terminalUnavailableReason)}
-              aria-label={terminalOpen ? "Close terminal" : "Open terminal"}
+              aria-label={terminalOpen ? "Collapse terminal" : "Expand terminal"}
               data-testid="agents-terminal-toggle"
             >
               <TerminalIcon className="w-4 h-4" />
@@ -468,7 +468,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-[280px] text-xs">
             {terminalUnavailableReason ??
-              (terminalOpen ? "Close terminal" : "Open terminal")}
+              (terminalOpen ? "Collapse terminal" : "Expand terminal")}
           </TooltipContent>
         </Tooltip>
 
