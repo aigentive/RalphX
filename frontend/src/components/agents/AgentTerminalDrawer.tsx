@@ -19,9 +19,11 @@ import type {
 import "@xterm/xterm/css/xterm.css";
 import {
   PanelBottomClose,
+  PanelBottomOpen,
   RefreshCw,
   Terminal as TerminalIcon,
   Trash2,
+  X,
 } from "lucide-react";
 
 import {
@@ -49,14 +51,19 @@ import { formatBranchDisplay } from "@/lib/branch-utils";
 import { cn } from "@/lib/utils";
 import { compactTerminalPath } from "./agentTerminalPaths";
 import { loadAgentTerminalRuntime } from "./agentTerminalRuntime";
-import type { AgentTerminalPlacement } from "./agentTerminalStore";
+import {
+  AGENT_TERMINAL_COLLAPSED_HEIGHT,
+  type AgentTerminalPlacement,
+} from "./agentTerminalStore";
 
 interface AgentTerminalDrawerProps {
   conversationId: string;
   workspace: AgentConversationWorkspace;
   height: number;
+  expanded: boolean;
   onHeightChange: (height: number) => void;
-  onClose: () => void;
+  onExpand: () => void;
+  onCollapse: () => void;
   placement: AgentTerminalPlacement;
   onPlacementChange: (placement: AgentTerminalPlacement) => void;
   dockElement: HTMLElement | null;
@@ -64,6 +71,7 @@ interface AgentTerminalDrawerProps {
 
 const TERMINAL_MIN_COLS = 80;
 const TERMINAL_MIN_ROWS = 20;
+type AgentTerminalDisplayStatus = AgentTerminalStatus | "closed";
 
 type DeferredFrameJob = { frame: number | null; timer: number | null };
 
@@ -98,8 +106,10 @@ export function AgentTerminalDrawer({
   conversationId,
   workspace,
   height,
+  expanded,
   onHeightChange,
-  onClose,
+  onExpand,
+  onCollapse,
   placement,
   onPlacementChange,
   dockElement,
@@ -121,19 +131,28 @@ export function AgentTerminalDrawer({
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const resizeReportTimerRef = useRef<number | null>(null);
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const [status, setStatus] = useState<AgentTerminalStatus>("running");
+  const [status, setStatus] = useState<AgentTerminalDisplayStatus>("closed");
   const [cwd, setCwd] = useState(workspace.worktreePath);
   const [branchName, setBranchName] = useState(workspace.branchName);
   const [isFocused, setIsFocused] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
-  const [isHydrating, setIsHydrating] = useState(true);
+  const [isHydrating, setIsHydrating] = useState(false);
+  const [isTerminalStarted, setIsTerminalStarted] = useState(false);
 
   const branchLabel = useMemo(
     () => formatBranchDisplay(branchName).short,
     [branchName],
   );
   const displayCwd = useMemo(() => compactTerminalPath(cwd), [cwd]);
+  const displayHeight = expanded ? height : AGENT_TERMINAL_COLLAPSED_HEIGHT;
+  const shouldHydrateTerminal = hasDocked && (expanded || isTerminalStarted);
+  const shouldRenderTerminalBody = expanded || isTerminalStarted;
+  const statusLabel = isHydrating
+    ? "Opening"
+    : status === "closed"
+      ? "Closed"
+      : status;
 
   const terminalTheme = useMemo(() => readTerminalTheme(), []);
 
@@ -234,6 +253,7 @@ export function AgentTerminalDrawer({
 
   const applySnapshot = useCallback((snapshot: AgentTerminalSnapshot) => {
     setStatus(snapshot.status);
+    setIsTerminalStarted(true);
     setCwd(snapshot.cwd);
     setBranchName(snapshot.workspaceBranch);
   }, []);
@@ -271,6 +291,7 @@ export function AgentTerminalDrawer({
 
     if (event.type === "started" || event.type === "restarted") {
       setStatus("running");
+      setIsTerminalStarted(true);
       if (event.type === "restarted") {
         terminal?.reset();
       }
@@ -308,7 +329,7 @@ export function AgentTerminalDrawer({
   }, []);
 
   useEffect(() => {
-    if (!hasDocked) {
+    if (!shouldHydrateTerminal) {
       return;
     }
     const host = containerRef.current;
@@ -319,6 +340,7 @@ export function AgentTerminalDrawer({
     hydrationCompleteRef.current = false;
     bufferedEventsRef.current = [];
     setIsHydrating(true);
+    setIsTerminalStarted(true);
 
     let disposed = false;
     let terminal: XTermTerminal | null = null;
@@ -483,15 +505,22 @@ export function AgentTerminalDrawer({
     conversationId,
     fitTerminal,
     fitAndReportSize,
-    hasDocked,
+    shouldHydrateTerminal,
     showControlError,
     terminalId,
     terminalTheme,
   ]);
 
+  useEffect(() => {
+    if (!expanded || !isTerminalStarted) {
+      return;
+    }
+    const job = scheduleDeferredFrameJob(fitAndReportSize);
+    return () => cancelDeferredFrameJob(job);
+  }, [expanded, fitAndReportSize, isTerminalStarted]);
+
   const hasTerminalInstance = useCallback(() => {
     if (!terminalRef.current) {
-      setStatus("error");
       return false;
     }
     return true;
@@ -526,6 +555,7 @@ export function AgentTerminalDrawer({
   const handleRestart = useCallback(async () => {
     const terminal = terminalRef.current;
     if (!terminal) {
+      onExpand();
       return;
     }
     setIsRestarting(true);
@@ -545,12 +575,32 @@ export function AgentTerminalDrawer({
     } finally {
       setIsRestarting(false);
     }
-  }, [applySnapshot, conversationId, showControlError, terminalId]);
+  }, [applySnapshot, conversationId, onExpand, showControlError, terminalId]);
 
   const handleClose = useCallback(() => {
-    onClose();
+    if (status === "closed" && !isHydrating) {
+      onCollapse();
+      return;
+    }
+
+    onCollapse();
+    setStatus("closed");
+    setIsHydrating(false);
+    setIsClearing(false);
+    setIsRestarting(false);
+    setIsTerminalStarted(false);
+    hydrationCompleteRef.current = false;
+    bufferedEventsRef.current = [];
     void closeAgentTerminal({ conversationId, terminalId }).catch(() => undefined);
-  }, [conversationId, onClose, terminalId]);
+  }, [conversationId, isHydrating, onCollapse, status, terminalId]);
+
+  const handleExpandToggle = useCallback(() => {
+    if (expanded) {
+      onCollapse();
+      return;
+    }
+    onExpand();
+  }, [expanded, onCollapse, onExpand]);
 
   const handleResizeStart = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -576,6 +626,8 @@ export function AgentTerminalDrawer({
     return null;
   }
 
+  const terminalSessionUnavailable = status === "closed" && !isHydrating;
+
   return createPortal(
     <div
       className={cn(
@@ -583,8 +635,8 @@ export function AgentTerminalDrawer({
         isFocused && "border-t-2",
       )}
       style={{
-        height,
-        background: "var(--bg-base)",
+        height: displayHeight,
+        backgroundColor: "var(--bg-base)",
         borderColor: isFocused ? "var(--accent-border)" : "var(--overlay-weak)",
         boxShadow: "0 -16px 36px var(--shadow-card)",
       }}
@@ -602,7 +654,7 @@ export function AgentTerminalDrawer({
       <div
         className="flex h-9 items-center justify-between gap-3 border-b px-3"
         style={{
-          background: "var(--bg-surface)",
+          backgroundColor: "var(--bg-surface)",
           borderColor: "var(--overlay-faint)",
         }}
       >
@@ -614,9 +666,12 @@ export function AgentTerminalDrawer({
           <span className="font-medium" style={{ color: "var(--text-primary)" }}>
             Terminal
           </span>
-          <span className="h-1 w-1 rounded-full" style={{ background: "var(--text-muted)" }} />
+          <span
+            className="h-1 w-1 rounded-full"
+            style={{ backgroundColor: "var(--text-muted)" }}
+          />
           <span className="shrink-0 capitalize" style={{ color: "var(--text-secondary)" }}>
-            {isHydrating ? "Opening" : status}
+            {statusLabel}
           </span>
           <span className="min-w-0 truncate font-mono" style={{ color: "var(--text-muted)" }}>
             {branchLabel}
@@ -637,38 +692,60 @@ export function AgentTerminalDrawer({
           <TerminalIconButton
             label="Clear terminal"
             onClick={() => void handleClear()}
-            disabled={isClearing || isHydrating}
+            disabled={isClearing || isHydrating || terminalSessionUnavailable}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </TerminalIconButton>
           <TerminalIconButton
-            label="Start fresh terminal session"
+            label={terminalSessionUnavailable ? "Open terminal" : "Start fresh terminal session"}
             onClick={() => void handleRestart()}
             disabled={isRestarting || isHydrating}
           >
             <RefreshCw className={cn("h-3.5 w-3.5", isRestarting && "animate-spin")} />
           </TerminalIconButton>
-          <TerminalIconButton label="Close terminal" onClick={handleClose}>
-            <PanelBottomClose className="h-3.5 w-3.5" />
+          <TerminalIconButton
+            label={expanded ? "Collapse terminal" : "Expand terminal"}
+            onClick={handleExpandToggle}
+          >
+            {expanded ? (
+              <PanelBottomClose className="h-3.5 w-3.5" />
+            ) : (
+              <PanelBottomOpen className="h-3.5 w-3.5" />
+            )}
+          </TerminalIconButton>
+          <TerminalIconButton
+            label="Close terminal"
+            onClick={handleClose}
+            disabled={terminalSessionUnavailable}
+          >
+            <X className="h-3.5 w-3.5" />
           </TerminalIconButton>
         </div>
       </div>
 
-      <div className="relative h-[calc(100%-2.25rem)] w-full">
-        {isHydrating && (
-          <div
-            className="absolute inset-0 flex items-start px-3 py-2 font-mono text-xs"
-            style={{ color: "var(--text-muted)" }}
-          >
-            Starting terminal...
-          </div>
-        )}
+      {shouldRenderTerminalBody && (
         <div
-          ref={containerRef}
-          className="h-full w-full px-3 py-2"
-          aria-label={`Terminal for ${branchLabel}`}
-        />
-      </div>
+          className={cn(
+            "relative w-full overflow-hidden",
+            expanded ? "h-[calc(100%-2.25rem)]" : "h-0",
+          )}
+          aria-hidden={!expanded}
+        >
+          {isHydrating && expanded && (
+            <div
+              className="absolute inset-0 flex items-start px-3 py-2 font-mono text-xs"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Starting terminal...
+            </div>
+          )}
+          <div
+            ref={containerRef}
+            className="h-full w-full px-3 py-2"
+            aria-label={`Terminal for ${branchLabel}`}
+          />
+        </div>
+      )}
     </div>,
     portalRoot,
   );
