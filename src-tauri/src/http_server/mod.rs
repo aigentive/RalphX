@@ -322,6 +322,10 @@ pub async fn start_http_server(
             get(get_agent_workspace_pr_fix_context),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/pr-comments/:comment_id",
+            get(read_agent_workspace_pr_comment),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/complete-pr-fix",
             post(complete_agent_workspace_pr_fix),
         )

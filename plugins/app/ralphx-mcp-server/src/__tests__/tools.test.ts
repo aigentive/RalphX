@@ -1302,6 +1302,7 @@ describe('agent workspace PR fix tools', () => {
   const allTools = getAllTools();
   const prFixTools = [
     'get_agent_workspace_pr_fix_context',
+    'read_agent_workspace_pr_comment',
     'complete_agent_workspace_pr_fix',
   ];
 
@@ -1568,6 +1569,12 @@ describe('agent workspace publish tool transport', () => {
       undefined,
     ],
     [
+      'read_agent_workspace_pr_comment',
+      'get',
+      'agent-workspaces/conversation-1/pr-comments/comment-1',
+      undefined,
+    ],
+    [
       'complete_agent_workspace_pr_fix',
       'post',
       'agent-workspaces/conversation-1/complete-pr-fix',
@@ -1606,6 +1613,7 @@ describe('agent workspace publish tool transport', () => {
         base_ref_kind: 'local_branch',
         base_ref: 'feature/base',
         base_display_name: 'feature/base',
+        comment_id: 'comment-1',
         repair_commit_sha: 'a'.repeat(40),
         resolved_base_ref: 'main',
         resolved_base_commit: 'b'.repeat(40),

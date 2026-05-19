@@ -1,8 +1,9 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
-    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
+    IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -261,6 +262,105 @@ async fn publication_events_round_trip_in_created_order() {
     assert_eq!(events[0].step, "checking");
     assert_eq!(events[0].summary, "Checking workspace");
     assert_eq!(events[1].classification.as_deref(), Some("agent_fixable"));
+}
+
+#[tokio::test]
+async fn pr_comment_evidence_tracks_edits_inclusion_and_reads() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    repo.upsert_pr_comment_evidence(
+        &conversation_id,
+        vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+            267,
+            "comment-1".to_string(),
+            Some("codecov".to_string()),
+            "Patch coverage is below target.".to_string(),
+            Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            true,
+            true,
+        )],
+    )
+    .await
+    .unwrap();
+
+    let first = repo
+        .list_pr_comment_evidence(&conversation_id, 267, 10)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].comment_id, "comment-1");
+    assert_eq!(first[0].edit_count, 0);
+    assert!(first[0].body_excerpt.contains("Patch coverage"));
+
+    repo.mark_pr_comments_included(&conversation_id, 267, &["comment-1".to_string()])
+        .await
+        .unwrap();
+    repo.mark_pr_comment_read(&conversation_id, 267, "comment-1")
+        .await
+        .unwrap();
+    repo.upsert_pr_comment_evidence(
+        &conversation_id,
+        vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+            267,
+            "comment-1".to_string(),
+            Some("codecov".to_string()),
+            "Patch coverage recovered after rerun.".to_string(),
+            Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            Some("2026-05-18T22:05:00Z".to_string()),
+            true,
+            true,
+        )],
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_pr_comment_evidence(&conversation_id, 267, "comment-1")
+        .await
+        .unwrap()
+        .expect("comment should exist");
+    assert_eq!(updated.edit_count, 1);
+    assert_eq!(updated.body, "Patch coverage recovered after rerun.");
+    assert!(updated.last_included_at.is_some());
+    assert!(updated.last_read_at.is_some());
+}
+
+#[tokio::test]
+async fn delete_removes_pr_comment_evidence_for_conversation() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    repo.upsert_pr_comment_evidence(
+        &conversation_id,
+        vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+            267,
+            "comment-1".to_string(),
+            Some("codecov".to_string()),
+            "Patch coverage is below target.".to_string(),
+            Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            true,
+            true,
+        )],
+    )
+    .await
+    .unwrap();
+
+    repo.delete(&conversation_id).await.unwrap();
+
+    let comments = repo
+        .list_pr_comment_evidence(&conversation_id, 267, 10)
+        .await
+        .unwrap();
+    assert!(comments.is_empty());
 }
 
 #[tokio::test]
