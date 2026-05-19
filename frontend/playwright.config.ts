@@ -51,6 +51,11 @@ export default defineConfig({
     url: "http://127.0.0.1:5173",
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,
+    // Give Vite a chance to close sockets before reaping. Without this Playwright
+    // can default to SIGKILL on teardown (worse on macOS), which orphans hundreds
+    // of TIME_WAITs on ::1:5173 every run. With many parallel agent worktrees
+    // running tests, those leaks accumulate and exhaust the ephemeral port pool.
+    gracefulShutdown: { signal: "SIGTERM", timeout: 5000 },
   },
 
   /* Directory for snapshot files */

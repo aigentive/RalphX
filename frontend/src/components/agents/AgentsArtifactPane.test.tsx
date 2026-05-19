@@ -1449,6 +1449,7 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
     expect(publishButton).toBeDisabled();
     await screen.findByText("1 changed file published for review.");
+    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Published changes");
 
     fireEvent.click(publishButton);
 
@@ -1989,6 +1990,25 @@ describe("AgentsArtifactPane", () => {
     fireEvent.click(publishButton);
 
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("shows merged publication state instead of stale blocked PR supervision", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 91,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "needs_agent",
+        prSupervisionStatus: "blocked",
+      }),
+    );
+
+    expect(await screen.findByTestId("agents-publish-confirm")).toHaveTextContent(
+      "Merged"
+    );
+    expect(screen.queryByTestId("agents-pr-supervision-status")).not.toBeInTheDocument();
+    expect(screen.queryByText("PR supervision blocked")).not.toBeInTheDocument();
   });
 
   it("locks the base update action while agent repair is pending", async () => {

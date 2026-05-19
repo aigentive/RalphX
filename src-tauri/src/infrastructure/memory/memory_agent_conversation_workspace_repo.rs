@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -18,6 +19,7 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     pr_descriptions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrDescription>>,
     publication_events:
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
+    pr_comment_evidence: RwLock<HashMap<(String, i64, String), AgentWorkspacePrCommentEvidence>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -26,6 +28,7 @@ impl MemoryAgentConversationWorkspaceRepository {
             workspaces: RwLock::new(HashMap::new()),
             pr_descriptions: RwLock::new(HashMap::new()),
             publication_events: RwLock::new(HashMap::new()),
+            pr_comment_evidence: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -115,6 +118,23 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(workspaces)
     }
 
+    async fn list_active_direct_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let mut workspaces = self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_direct_pr_supervision_recovery_candidate(workspace))
+            .cloned()
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        workspaces.truncate(limit);
+        Ok(workspaces)
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
@@ -142,7 +162,13 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             workspace.publication_pr_url = pr_url.map(str::to_string);
             workspace.publication_pr_status = pr_status.map(str::to_string);
             workspace.publication_push_status = push_status.map(str::to_string);
-            workspace.updated_at = Utc::now();
+            let now = Utc::now();
+            if matches!(pr_status, Some("merged" | "closed")) {
+                workspace.pr_supervision_status = None;
+                workspace.pr_supervision_summary = None;
+                workspace.pr_supervision_updated_at = Some(now);
+            }
+            workspace.updated_at = now;
         }
         Ok(())
     }
@@ -269,6 +295,148 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .unwrap_or_default())
     }
 
+    async fn upsert_pr_comment_evidence(
+        &self,
+        conversation_id: &ChatConversationId,
+        comments: Vec<AgentWorkspacePrCommentEvidenceUpsert>,
+    ) -> AppResult<()> {
+        if comments.is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now();
+        let conversation_key = conversation_id.as_str().to_string();
+        let mut evidence = self.pr_comment_evidence.write().await;
+        for comment in comments {
+            let key = (
+                conversation_key.clone(),
+                comment.pr_number,
+                comment.comment_id.clone(),
+            );
+            if let Some(existing) = evidence.get_mut(&key) {
+                if existing.body_sha256 != comment.body_sha256 {
+                    existing.edit_count += 1;
+                }
+                existing.author = comment.author;
+                existing.body = comment.body;
+                existing.body_excerpt = comment.body_excerpt;
+                existing.body_sha256 = comment.body_sha256;
+                existing.url = comment.url;
+                existing.github_created_at = comment.github_created_at;
+                existing.github_updated_at = comment.github_updated_at;
+                existing.is_codecov = comment.is_codecov;
+                existing.is_bot = comment.is_bot;
+                existing.last_seen_at = now;
+            } else {
+                evidence.insert(
+                    key,
+                    AgentWorkspacePrCommentEvidence {
+                        conversation_id: conversation_id.clone(),
+                        pr_number: comment.pr_number,
+                        comment_id: comment.comment_id,
+                        author: comment.author,
+                        body: comment.body,
+                        body_excerpt: comment.body_excerpt,
+                        body_sha256: comment.body_sha256,
+                        url: comment.url,
+                        github_created_at: comment.github_created_at,
+                        github_updated_at: comment.github_updated_at,
+                        is_codecov: comment.is_codecov,
+                        is_bot: comment.is_bot,
+                        first_seen_at: now,
+                        last_seen_at: now,
+                        last_included_at: None,
+                        last_read_at: None,
+                        edit_count: 0,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn list_pr_comment_evidence(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        limit: usize,
+    ) -> AppResult<Vec<AgentWorkspacePrCommentEvidence>> {
+        let conversation_key = conversation_id.as_str();
+        let mut comments = self
+            .pr_comment_evidence
+            .read()
+            .await
+            .values()
+            .filter(|comment| {
+                comment.conversation_id.as_str() == conversation_key
+                    && comment.pr_number == pr_number
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        comments.sort_by(|left, right| {
+            right
+                .github_updated_at
+                .cmp(&left.github_updated_at)
+                .then(right.last_seen_at.cmp(&left.last_seen_at))
+                .then(right.comment_id.cmp(&left.comment_id))
+        });
+        comments.truncate(limit);
+        Ok(comments)
+    }
+
+    async fn get_pr_comment_evidence(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        comment_id: &str,
+    ) -> AppResult<Option<AgentWorkspacePrCommentEvidence>> {
+        Ok(self
+            .pr_comment_evidence
+            .read()
+            .await
+            .get(&(
+                conversation_id.as_str().to_string(),
+                pr_number,
+                comment_id.to_string(),
+            ))
+            .cloned())
+    }
+
+    async fn mark_pr_comments_included(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        comment_ids: &[String],
+    ) -> AppResult<()> {
+        let now = Utc::now();
+        let conversation_key = conversation_id.as_str().to_string();
+        let mut evidence = self.pr_comment_evidence.write().await;
+        for comment_id in comment_ids {
+            if let Some(comment) =
+                evidence.get_mut(&(conversation_key.clone(), pr_number, comment_id.clone()))
+            {
+                comment.last_included_at = Some(now);
+            }
+        }
+        Ok(())
+    }
+
+    async fn mark_pr_comment_read(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        comment_id: &str,
+    ) -> AppResult<()> {
+        let key = (
+            conversation_id.as_str().to_string(),
+            pr_number,
+            comment_id.to_string(),
+        );
+        if let Some(comment) = self.pr_comment_evidence.write().await.get_mut(&key) {
+            comment.last_read_at = Some(Utc::now());
+        }
+        Ok(())
+    }
+
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
         self.workspaces.write().await.remove(conversation_id);
         self.publication_events
@@ -276,6 +444,11 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .remove(conversation_id);
         self.pr_descriptions.write().await.remove(conversation_id);
+        let conversation_key = conversation_id.as_str().to_string();
+        self.pr_comment_evidence
+            .write()
+            .await
+            .retain(|(id, _, _), _| id != &conversation_key);
         Ok(())
     }
 }
@@ -306,6 +479,22 @@ fn is_active_direct_external_pr_reconciliation_candidate(
         )
 }
 
+fn is_active_direct_pr_supervision_recovery_candidate(
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Edit
+        && workspace.linked_plan_branch_id.is_none()
+        && workspace.publication_pr_number.is_some()
+        && workspace.publication_push_status.as_deref() == Some("failed")
+        && workspace.pr_supervision_status.as_deref() == Some("blocked")
+        && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
+}
+
 fn is_active_needs_agent_workspace(workspace: &AgentConversationWorkspace) -> bool {
     workspace.status == AgentConversationWorkspaceStatus::Active
         && workspace.publication_push_status.as_deref() == Some("needs_agent")
@@ -320,8 +509,8 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-        AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
-        ProjectId,
+        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
+        IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
 
@@ -396,6 +585,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pr_comment_evidence_tracks_edits_inclusion_and_reads() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let conversation_id = ChatConversationId::from_string("conversation-1");
+
+        repo.upsert_pr_comment_evidence(
+            &conversation_id,
+            vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+                267,
+                "comment-1".to_string(),
+                Some("codecov".to_string()),
+                "Patch coverage is below target.".to_string(),
+                Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                true,
+                true,
+            )],
+        )
+        .await
+        .unwrap();
+
+        let first = repo
+            .list_pr_comment_evidence(&conversation_id, 267, 10)
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].edit_count, 0);
+
+        repo.mark_pr_comments_included(&conversation_id, 267, &["comment-1".to_string()])
+            .await
+            .unwrap();
+        repo.mark_pr_comment_read(&conversation_id, 267, "comment-1")
+            .await
+            .unwrap();
+        repo.upsert_pr_comment_evidence(
+            &conversation_id,
+            vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+                267,
+                "comment-1".to_string(),
+                Some("codecov".to_string()),
+                "Patch coverage recovered after rerun.".to_string(),
+                Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                Some("2026-05-18T22:05:00Z".to_string()),
+                true,
+                true,
+            )],
+        )
+        .await
+        .unwrap();
+
+        let updated = repo
+            .get_pr_comment_evidence(&conversation_id, 267, "comment-1")
+            .await
+            .unwrap()
+            .expect("comment should exist");
+        assert_eq!(updated.edit_count, 1);
+        assert_eq!(updated.body, "Patch coverage recovered after rerun.");
+        assert!(updated.last_included_at.is_some());
+        assert!(updated.last_read_at.is_some());
+    }
+
+    #[tokio::test]
     async fn delete_removes_publication_events_for_conversation() {
         let repo = MemoryAgentConversationWorkspaceRepository::new();
         let conversation_id = ChatConversationId::from_string("conversation-1");
@@ -408,6 +660,22 @@ mod tests {
         ))
         .await
         .unwrap();
+        repo.upsert_pr_comment_evidence(
+            &conversation_id,
+            vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+                267,
+                "comment-1".to_string(),
+                Some("codecov".to_string()),
+                "Patch coverage is below target.".to_string(),
+                Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                Some("2026-05-18T22:00:00Z".to_string()),
+                true,
+                true,
+            )],
+        )
+        .await
+        .unwrap();
 
         repo.delete(&conversation_id).await.unwrap();
 
@@ -416,6 +684,11 @@ mod tests {
             .await
             .unwrap();
         assert!(events.is_empty());
+        let comments = repo
+            .list_pr_comment_evidence(&conversation_id, 267, 10)
+            .await
+            .unwrap();
+        assert!(comments.is_empty());
     }
 
     fn candidate_workspace(id: &str) -> AgentConversationWorkspace {
@@ -447,7 +720,10 @@ mod tests {
         repo.create_or_update(pushed.clone()).await.unwrap();
         repo.create_or_update(refreshed.clone()).await.unwrap();
 
-        let workspaces = repo.list_active_direct_published_workspaces().await.unwrap();
+        let workspaces = repo
+            .list_active_direct_published_workspaces()
+            .await
+            .unwrap();
 
         assert_eq!(workspaces.len(), 2);
         assert!(workspaces
@@ -500,6 +776,68 @@ mod tests {
 
         let all = repo
             .list_active_direct_external_pr_reconciliation_candidates(10)
+            .await
+            .unwrap();
+        assert_eq!(
+            all.into_iter()
+                .map(|workspace| workspace.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![second.conversation_id, first.conversation_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_recovery_candidates_filter_blocked_failed_supervised_prs() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+
+        let mut first = candidate_workspace("candidate-1");
+        first.publication_pr_number = Some(41);
+        first.publication_pr_status = Some("open".to_string());
+        first.publication_push_status = Some("failed".to_string());
+        first.pr_supervision_status = Some("blocked".to_string());
+        first.pr_autofix_enabled = true;
+        let mut second = candidate_workspace("candidate-2");
+        second.publication_pr_number = Some(42);
+        second.publication_pr_status = Some("open".to_string());
+        second.publication_push_status = Some("failed".to_string());
+        second.pr_supervision_status = Some("blocked".to_string());
+        second.pr_auto_merge_desired = true;
+        let mut disabled = candidate_workspace("disabled");
+        disabled.publication_pr_number = Some(43);
+        disabled.publication_push_status = Some("failed".to_string());
+        disabled.pr_supervision_status = Some("blocked".to_string());
+        let mut needs_agent = candidate_workspace("needs-agent");
+        needs_agent.publication_pr_number = Some(44);
+        needs_agent.publication_push_status = Some("needs_agent".to_string());
+        needs_agent.pr_supervision_status = Some("blocked".to_string());
+        needs_agent.pr_autofix_enabled = true;
+        let mut terminal = candidate_workspace("terminal");
+        terminal.publication_pr_number = Some(45);
+        terminal.publication_pr_status = Some("merged".to_string());
+        terminal.publication_push_status = Some("failed".to_string());
+        terminal.pr_supervision_status = Some("blocked".to_string());
+        terminal.pr_autofix_enabled = true;
+
+        for workspace in [
+            first.clone(),
+            second.clone(),
+            disabled,
+            needs_agent,
+            terminal,
+        ] {
+            repo.create_or_update(workspace).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        let limited = repo
+            .list_active_direct_pr_supervision_recovery_candidates(1)
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].conversation_id, second.conversation_id);
+
+        let all = repo
+            .list_active_direct_pr_supervision_recovery_candidates(10)
             .await
             .unwrap();
         assert_eq!(

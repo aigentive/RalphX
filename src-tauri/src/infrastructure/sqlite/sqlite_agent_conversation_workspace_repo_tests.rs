@@ -1,8 +1,9 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId,
-    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
+    IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -264,6 +265,105 @@ async fn publication_events_round_trip_in_created_order() {
 }
 
 #[tokio::test]
+async fn pr_comment_evidence_tracks_edits_inclusion_and_reads() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    repo.upsert_pr_comment_evidence(
+        &conversation_id,
+        vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+            267,
+            "comment-1".to_string(),
+            Some("codecov".to_string()),
+            "Patch coverage is below target.".to_string(),
+            Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            true,
+            true,
+        )],
+    )
+    .await
+    .unwrap();
+
+    let first = repo
+        .list_pr_comment_evidence(&conversation_id, 267, 10)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].comment_id, "comment-1");
+    assert_eq!(first[0].edit_count, 0);
+    assert!(first[0].body_excerpt.contains("Patch coverage"));
+
+    repo.mark_pr_comments_included(&conversation_id, 267, &["comment-1".to_string()])
+        .await
+        .unwrap();
+    repo.mark_pr_comment_read(&conversation_id, 267, "comment-1")
+        .await
+        .unwrap();
+    repo.upsert_pr_comment_evidence(
+        &conversation_id,
+        vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+            267,
+            "comment-1".to_string(),
+            Some("codecov".to_string()),
+            "Patch coverage recovered after rerun.".to_string(),
+            Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            Some("2026-05-18T22:05:00Z".to_string()),
+            true,
+            true,
+        )],
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_pr_comment_evidence(&conversation_id, 267, "comment-1")
+        .await
+        .unwrap()
+        .expect("comment should exist");
+    assert_eq!(updated.edit_count, 1);
+    assert_eq!(updated.body, "Patch coverage recovered after rerun.");
+    assert!(updated.last_included_at.is_some());
+    assert!(updated.last_read_at.is_some());
+}
+
+#[tokio::test]
+async fn delete_removes_pr_comment_evidence_for_conversation() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    repo.upsert_pr_comment_evidence(
+        &conversation_id,
+        vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+            267,
+            "comment-1".to_string(),
+            Some("codecov".to_string()),
+            "Patch coverage is below target.".to_string(),
+            Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            Some("2026-05-18T22:00:00Z".to_string()),
+            true,
+            true,
+        )],
+    )
+    .await
+    .unwrap();
+
+    repo.delete(&conversation_id).await.unwrap();
+
+    let comments = repo
+        .list_pr_comment_evidence(&conversation_id, 267, 10)
+        .await
+        .unwrap();
+    assert!(comments.is_empty());
+}
+
+#[tokio::test]
 async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let mut published = make_workspace(conversation_id);
@@ -272,8 +372,7 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
     published.publication_pr_status = Some("open".to_string());
     repo.create_or_update(published.clone()).await.unwrap();
 
-    let refreshed_id =
-        ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    let refreshed_id = ChatConversationId::from_string("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     seed_conversation(&db, &refreshed_id);
     let mut refreshed = make_workspace(refreshed_id);
     refreshed.publication_pr_number = Some(78);
@@ -326,16 +425,12 @@ async fn list_active_direct_published_workspaces_filters_to_open_edit_workspaces
         .unwrap();
 
     assert_eq!(workspaces.len(), 2);
-    assert!(
-        workspaces
-            .iter()
-            .any(|workspace| workspace.conversation_id == published.conversation_id)
-    );
-    assert!(
-        workspaces
-            .iter()
-            .any(|workspace| workspace.conversation_id == refreshed.conversation_id)
-    );
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == published.conversation_id));
+    assert!(workspaces
+        .iter()
+        .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
 }
 
 #[tokio::test]
@@ -373,6 +468,61 @@ async fn list_external_pr_reconciliation_candidates_filters_to_unlinked_active_e
 
     let limited = repo
         .list_active_direct_external_pr_reconciliation_candidates(0)
+        .await
+        .unwrap();
+    assert!(limited.is_empty());
+}
+
+#[tokio::test]
+async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_failed_prs() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut candidate = make_workspace(conversation_id);
+    candidate.publication_pr_number = Some(82);
+    candidate.publication_pr_status = Some("open".to_string());
+    candidate.publication_push_status = Some("failed".to_string());
+    candidate.pr_supervision_status = Some("blocked".to_string());
+    candidate.pr_autofix_enabled = true;
+    repo.create_or_update(candidate.clone()).await.unwrap();
+
+    let disabled_id = ChatConversationId::from_string("66666666-6666-6666-6666-666666666666");
+    seed_conversation(&db, &disabled_id);
+    let mut disabled = make_workspace(disabled_id);
+    disabled.publication_pr_number = Some(83);
+    disabled.publication_pr_status = Some("open".to_string());
+    disabled.publication_push_status = Some("failed".to_string());
+    disabled.pr_supervision_status = Some("blocked".to_string());
+    repo.create_or_update(disabled).await.unwrap();
+
+    let needs_agent_id = ChatConversationId::from_string("77777777-7777-7777-7777-777777777777");
+    seed_conversation(&db, &needs_agent_id);
+    let mut needs_agent = make_workspace(needs_agent_id);
+    needs_agent.publication_pr_number = Some(84);
+    needs_agent.publication_pr_status = Some("open".to_string());
+    needs_agent.publication_push_status = Some("needs_agent".to_string());
+    needs_agent.pr_supervision_status = Some("blocked".to_string());
+    needs_agent.pr_autofix_enabled = true;
+    repo.create_or_update(needs_agent).await.unwrap();
+
+    let closed_id = ChatConversationId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    seed_conversation(&db, &closed_id);
+    let mut closed = make_workspace(closed_id);
+    closed.publication_pr_number = Some(85);
+    closed.publication_pr_status = Some("closed".to_string());
+    closed.publication_push_status = Some("failed".to_string());
+    closed.pr_supervision_status = Some("blocked".to_string());
+    closed.pr_autofix_enabled = true;
+    repo.create_or_update(closed).await.unwrap();
+
+    let workspaces = repo
+        .list_active_direct_pr_supervision_recovery_candidates(10)
+        .await
+        .unwrap();
+
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].conversation_id, candidate.conversation_id);
+
+    let limited = repo
+        .list_active_direct_pr_supervision_recovery_candidates(0)
         .await
         .unwrap();
     assert!(limited.is_empty());
@@ -443,9 +593,39 @@ async fn pr_supervision_preferences_round_trip() {
         updated.pr_auto_merge_method,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
     );
-    assert_eq!(
-        updated.pr_supervision_status.as_deref(),
-        Some("monitoring")
-    );
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
     assert!(updated.pr_supervision_updated_at.is_some());
+}
+
+#[tokio::test]
+async fn terminal_publication_update_clears_stale_pr_supervision_state() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id.clone());
+    workspace.publication_pr_number = Some(91);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("failed".to_string());
+    workspace.pr_supervision_status = Some("blocked".to_string());
+    workspace.pr_supervision_summary = Some("CI checks failed".to_string());
+    workspace.pr_supervision_updated_at = Some(chrono::Utc::now());
+    repo.create_or_update(workspace).await.unwrap();
+
+    repo.update_publication(
+        &conversation_id,
+        Some(91),
+        Some("https://github.com/owner/repo/pull/91"),
+        Some("merged"),
+        Some("pushed"),
+    )
+    .await
+    .unwrap();
+
+    let updated = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
+    assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+    assert!(updated.pr_supervision_status.is_none());
+    assert!(updated.pr_supervision_summary.is_none());
 }

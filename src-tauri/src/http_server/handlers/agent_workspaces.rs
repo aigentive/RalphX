@@ -1,5 +1,7 @@
 //! Agent workspace HTTP handlers.
 
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -13,6 +15,7 @@ use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
 };
+use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
 use crate::application::{AppState, GitService};
 use crate::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
@@ -25,10 +28,11 @@ use crate::commands::unified_chat_commands::{
 };
 use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::{
-    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ChatConversationId,
-    IdeationAnalysisBaseRefKind,
+    pr_comment_body_excerpt, AgentConversationWorkspace,
+    AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
 };
-use crate::domain::services::github_service::{PrHealth, PrReviewFeedback};
+use crate::domain::services::github_service::{PrHealth, PrReviewFeedback, PrStatus};
 
 #[derive(Debug, serde::Deserialize)]
 pub struct CompleteAgentWorkspaceRepairRequest {
@@ -116,6 +120,78 @@ pub struct AgentWorkspacePrFixContextResponse {
     pub pr_url: Option<String>,
     pub health: Option<PrHealth>,
     pub review_feedback: Option<PrReviewFeedback>,
+    pub issue_comment_evidence: Vec<AgentWorkspacePrCommentEvidenceResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspacePrCommentEvidenceResponse {
+    pub comment_id: String,
+    pub author: Option<String>,
+    pub url: Option<String>,
+    pub github_created_at: Option<String>,
+    pub github_updated_at: Option<String>,
+    pub is_codecov: bool,
+    pub is_bot: bool,
+    pub body_excerpt: String,
+    pub body_length_chars: usize,
+    pub body_sha256: String,
+    pub edit_count: i64,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub last_included_at: Option<String>,
+    pub last_read_at: Option<String>,
+    pub has_more: bool,
+    pub full_body_available: bool,
+    pub is_untrusted: bool,
+    pub read_tool: String,
+}
+
+impl AgentWorkspacePrCommentEvidenceResponse {
+    fn from_evidence(value: AgentWorkspacePrCommentEvidence) -> Self {
+        let compact_body = value.body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let has_more = compact_body != value.body_excerpt;
+        let body_length_chars = value.body.chars().count();
+        Self {
+            read_tool: "read_agent_workspace_pr_comment".to_string(),
+            comment_id: value.comment_id,
+            author: value.author,
+            url: value.url,
+            github_created_at: value.github_created_at,
+            github_updated_at: value.github_updated_at,
+            is_codecov: value.is_codecov,
+            is_bot: value.is_bot,
+            body_excerpt: value.body_excerpt,
+            body_length_chars,
+            body_sha256: value.body_sha256,
+            edit_count: value.edit_count,
+            first_seen_at: value.first_seen_at.to_rfc3339(),
+            last_seen_at: value.last_seen_at.to_rfc3339(),
+            last_included_at: value.last_included_at.map(|value| value.to_rfc3339()),
+            last_read_at: value.last_read_at.map(|value| value.to_rfc3339()),
+            has_more,
+            full_body_available: true,
+            is_untrusted: true,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ReadAgentWorkspacePrCommentResponse {
+    pub success: bool,
+    pub conversation_id: String,
+    pub pr_number: i64,
+    pub comment_id: String,
+    pub author: Option<String>,
+    pub url: Option<String>,
+    pub github_created_at: Option<String>,
+    pub github_updated_at: Option<String>,
+    pub is_codecov: bool,
+    pub is_bot: bool,
+    pub body: String,
+    pub body_length_chars: usize,
+    pub body_sha256: String,
+    pub edit_count: i64,
+    pub is_untrusted: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -344,7 +420,22 @@ pub async fn get_agent_workspace_pr_fix_context(
     ) {
         (Some(github), Some(pr_number)) => {
             let working_dir = std::path::Path::new(&workspace.worktree_path);
-            let health = github.fetch_pr_health(working_dir, pr_number).await.ok();
+            let mut health = github.fetch_pr_health(working_dir, pr_number).await.ok();
+            if let Some(health) = health.as_ref() {
+                import_agent_workspace_pr_comment_evidence(
+                    Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                    &conversation_id,
+                    pr_number,
+                    health,
+                )
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            }
+            if let Some(health) = health.as_mut() {
+                truncate_pr_health_issue_comments(health);
+            }
             let review_feedback = github
                 .check_pr_review_feedback(working_dir, pr_number)
                 .await
@@ -357,6 +448,35 @@ pub async fn get_agent_workspace_pr_fix_context(
 
     let pr_number = workspace.publication_pr_number;
     let pr_url = workspace.publication_pr_url.clone();
+    let issue_comment_evidence = match pr_number {
+        Some(pr_number) => {
+            let comments = state
+                .app_state
+                .agent_conversation_workspace_repo
+                .list_pr_comment_evidence(&conversation_id, pr_number, 20)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            let comment_ids = comments
+                .iter()
+                .map(|comment| comment.comment_id.clone())
+                .collect::<Vec<_>>();
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .mark_pr_comments_included(&conversation_id, pr_number, &comment_ids)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            comments
+                .into_iter()
+                .map(AgentWorkspacePrCommentEvidenceResponse::from_evidence)
+                .collect()
+        }
+        None => Vec::new(),
+    };
     Ok(Json(AgentWorkspacePrFixContextResponse {
         success: true,
         workspace,
@@ -365,6 +485,66 @@ pub async fn get_agent_workspace_pr_fix_context(
         pr_url,
         health,
         review_feedback,
+        issue_comment_evidence,
+    }))
+}
+
+fn truncate_pr_health_issue_comments(health: &mut PrHealth) {
+    for comment in &mut health.issue_comments {
+        comment.body = pr_comment_body_excerpt(&comment.body, 480);
+    }
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/pr-comments/{comment_id}
+pub async fn read_agent_workspace_pr_comment(
+    State(state): State<HttpServerState>,
+    Path((conversation_id, comment_id)): Path<(String, String)>,
+) -> Result<Json<ReadAgentWorkspacePrCommentResponse>, JsonError> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
+    let pr_number = workspace.publication_pr_number.ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "Agent workspace has no linked pull request",
+            None,
+        )
+    })?;
+    let comment = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_pr_comment_evidence(&conversation_id, pr_number, &comment_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "PR comment not found", None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .mark_pr_comment_read(&conversation_id, pr_number, &comment_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    Ok(Json(ReadAgentWorkspacePrCommentResponse {
+        success: true,
+        conversation_id: conversation_id.as_str(),
+        pr_number,
+        comment_id: comment.comment_id,
+        author: comment.author,
+        url: comment.url,
+        github_created_at: comment.github_created_at,
+        github_updated_at: comment.github_updated_at,
+        is_codecov: comment.is_codecov,
+        is_bot: comment.is_bot,
+        body_length_chars: comment.body.chars().count(),
+        body: comment.body,
+        body_sha256: comment.body_sha256,
+        edit_count: comment.edit_count,
+        is_untrusted: true,
     }))
 }
 
@@ -394,6 +574,46 @@ pub async fn complete_agent_workspace_pr_fix(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
+
+    if let (Some(github), Some(pr_number)) = (
+        state.app_state.github_service.as_ref(),
+        workspace.publication_pr_number,
+    ) {
+        match github
+            .check_pr_status(std::path::Path::new(&workspace.worktree_path), pr_number)
+            .await
+        {
+            Ok(PrStatus::Merged { .. }) => {
+                return complete_pr_fix_for_terminal_pr(
+                    state.app_state.as_ref(),
+                    &conversation_id,
+                    &workspace,
+                    "merged",
+                    "Pull request already merged; skipping PR fix publish.",
+                )
+                .await;
+            }
+            Ok(PrStatus::Closed) => {
+                return complete_pr_fix_for_terminal_pr(
+                    state.app_state.as_ref(),
+                    &conversation_id,
+                    &workspace,
+                    "closed",
+                    "Pull request already closed; skipping PR fix publish.",
+                )
+                .await;
+            }
+            Ok(PrStatus::Open) => {}
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "complete_agent_workspace_pr_fix: failed to recheck PR status before publish"
+                );
+            }
+        }
+    }
 
     if let Some(blocker) = req
         .blocker
@@ -561,6 +781,53 @@ pub async fn complete_agent_workspace_pr_fix(
             }))
         }
     }
+}
+
+async fn complete_pr_fix_for_terminal_pr(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    terminal_status: &str,
+    message: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    state
+        .agent_conversation_workspace_repo
+        .update_publication(
+            conversation_id,
+            workspace.publication_pr_number,
+            workspace.publication_pr_url.as_deref(),
+            Some(terminal_status),
+            workspace.publication_push_status.as_deref(),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_skipped_terminal",
+            "skipped",
+            message,
+            Some(format!("pr_autofix_skipped_terminal:{terminal_status}")),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    let pr_number = workspace.publication_pr_number;
+    let pr_url = workspace.publication_pr_url.clone();
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: "skipped_terminal".to_string(),
+        message: message.to_string(),
+        workspace: Some(workspace),
+        publish_status: Some("skipped".to_string()),
+        publish_error: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number,
+        pr_url,
+    }))
 }
 
 async fn load_agent_workspace_response(
@@ -1369,9 +1636,14 @@ mod tests {
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType,
-        ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentWorkspacePrCommentEvidenceUpsert, ChatContextType, ChatConversation,
+        IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
+    use crate::domain::services::github_service::{
+        GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrStatus, PrSyncState,
+    };
+    use crate::tests::mock_github_service::MockGithubService;
 
     fn git(repo: impl AsRef<StdPath>, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -1664,6 +1936,188 @@ mod tests {
         assert!(response.success);
         assert_eq!(response.status, "needs_agent_repair");
         assert!(response.repair_queued);
+    }
+
+    #[tokio::test]
+    async fn complete_pr_fix_skips_publish_when_pr_is_already_merged() {
+        let mut app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        github.will_return_status(PrStatus::Merged {
+            merge_commit_sha: Some("a".repeat(40)),
+        });
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/267".to_string());
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.pr_supervision_status = Some("fixing".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let Json(response) = complete_agent_workspace_pr_fix(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(CompleteAgentWorkspacePrFixRequest {
+                summary: "Investigated post-merge fixer state".to_string(),
+                blocker: None,
+            }),
+        )
+        .await
+        .expect("terminal PR should be handled without publishing");
+
+        assert_eq!(response.status, "skipped_terminal");
+        assert_eq!(response.publish_status.as_deref(), Some("skipped"));
+        let updated = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.publication_pr_status.as_deref(), Some("merged"));
+        assert!(updated.pr_supervision_status.is_none());
+        assert_eq!(github.state().check_pr_status_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn read_pr_comment_returns_full_body_and_marks_read() {
+        let app_state = Arc::new(AppState::new_test());
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_pr_number = Some(267);
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_pr_comment_evidence(
+                &conversation_id,
+                vec![AgentWorkspacePrCommentEvidenceUpsert::new(
+                    267,
+                    "comment-1".to_string(),
+                    Some("codecov".to_string()),
+                    "Full Codecov report body with detailed coverage table.".to_string(),
+                    Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+                    Some("2026-05-18T22:00:00Z".to_string()),
+                    Some("2026-05-18T22:00:00Z".to_string()),
+                    true,
+                    true,
+                )],
+            )
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let Json(response) = read_agent_workspace_pr_comment(
+            State(state),
+            Path((conversation_id.to_string(), "comment-1".to_string())),
+        )
+        .await
+        .expect("comment should read");
+
+        assert!(response.success);
+        assert_eq!(response.pr_number, 267);
+        assert_eq!(
+            response.body,
+            "Full Codecov report body with detailed coverage table."
+        );
+        assert_eq!(response.body_length_chars, response.body.chars().count());
+        assert!(response.is_untrusted);
+        let stored = app_state
+            .agent_conversation_workspace_repo
+            .get_pr_comment_evidence(&conversation_id, 267, "comment-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.last_read_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn pr_fix_context_imports_bounded_comment_evidence() {
+        let mut app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        let long_body = "Patch coverage report row ".repeat(40);
+        github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+            sync_state: PrSyncState {
+                status: PrStatus::Open,
+                merge_state_status: None,
+                mergeable: None,
+                is_draft: false,
+                head_ref_name: "feature/pr-description".to_string(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: None,
+                base_ref_oid: None,
+            },
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: vec![PrIssueCommentSummary {
+                id: "comment-long".to_string(),
+                author: Some("codecov".to_string()),
+                body: long_body.clone(),
+                url: Some("https://github.com/owner/repo/pull/267#issuecomment-1".to_string()),
+                created_at: Some("2026-05-18T22:00:00Z".to_string()),
+                updated_at: Some("2026-05-18T22:05:00Z".to_string()),
+                is_bot: true,
+                is_codecov: true,
+            }],
+            auto_merge_request: None,
+        }));
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/267".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let Json(response) =
+            get_agent_workspace_pr_fix_context(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("PR fix context should load");
+
+        assert_eq!(response.issue_comment_evidence.len(), 1);
+        let evidence = &response.issue_comment_evidence[0];
+        assert_eq!(evidence.comment_id, "comment-long");
+        assert!(evidence.has_more);
+        assert!(evidence.full_body_available);
+        assert!(evidence.is_untrusted);
+        assert_eq!(evidence.read_tool, "read_agent_workspace_pr_comment");
+        assert_eq!(evidence.body_length_chars, long_body.chars().count());
+        assert!(evidence.body_excerpt.chars().count() <= 480);
+        assert!(
+            response
+                .health
+                .as_ref()
+                .expect("health should be present")
+                .issue_comments[0]
+                .body
+                .chars()
+                .count()
+                <= 480
+        );
+        let stored = app_state
+            .agent_conversation_workspace_repo
+            .get_pr_comment_evidence(&conversation_id, 267, "comment-long")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.body, long_body);
+        assert!(stored.last_included_at.is_some());
+        assert_eq!(github.state().fetch_pr_health_calls, 1);
     }
 
     #[test]

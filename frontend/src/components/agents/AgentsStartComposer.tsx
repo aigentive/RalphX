@@ -132,6 +132,7 @@ export function AgentsStartComposer({
   const [hydratedStartFromProjectId, setHydratedStartFromProjectId] =
     useState<string | null>(null);
   const [content, setContent] = useState("");
+  const [isComposerActive, setIsComposerActive] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
@@ -597,7 +598,7 @@ export function AgentsStartComposer({
           >
             <span className="inline-flex items-baseline justify-center whitespace-nowrap">
               <span>Start your&nbsp;</span>
-              <AnimatedStarterHeadingWord />
+              <AnimatedStarterHeadingWord paused={isComposerActive || content.length > 0} />
             </span>
           </h2>
           <p
@@ -608,7 +609,16 @@ export function AgentsStartComposer({
           </p>
         </div>
 
-        <div className="mt-6 w-full">
+        <div
+          className="mt-6 w-full"
+          onFocusCapture={() => setIsComposerActive(true)}
+          onBlurCapture={(event) => {
+            const nextTarget = event.relatedTarget;
+            if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+              setIsComposerActive(false);
+            }
+          }}
+        >
           {isExecutionHalted && (
             <div
               data-testid="agents-start-paused-banner"
@@ -788,8 +798,12 @@ function toAgentProvider(value: unknown): AgentProvider | null {
   return value === "claude" || value === "codex" ? value : null;
 }
 
-const AnimatedStarterHeadingWord = memo(function AnimatedStarterHeadingWord() {
-  const animatedHeadingWord = useAnimatedStarterWord();
+const AnimatedStarterHeadingWord = memo(function AnimatedStarterHeadingWord({
+  paused = false,
+}: {
+  paused?: boolean;
+}) {
+  const animatedHeadingWord = useAnimatedStarterWord(paused);
 
   return (
     <span className="inline-flex items-baseline whitespace-nowrap">
@@ -819,7 +833,7 @@ function resolveBranchSelectionKey(
 }
 
 
-function useAnimatedStarterWord() {
+function useAnimatedStarterWord(paused = false) {
   const [wordIndex, setWordIndex] = useState(0);
   const [characterCount, setCharacterCount] = useState(
     STARTER_TYPING_INITIAL_WORD.length
@@ -849,7 +863,7 @@ function useAnimatedStarterWord() {
   }, []);
 
   useEffect(() => {
-    if (prefersReducedMotion) {
+    if (paused || prefersReducedMotion) {
       return;
     }
 
@@ -889,10 +903,10 @@ function useAnimatedStarterWord() {
     return () => {
       window.clearTimeout(timeout);
     };
-  }, [characterCount, phase, prefersReducedMotion, wordIndex]);
+  }, [characterCount, paused, phase, prefersReducedMotion, wordIndex]);
 
   useEffect(() => {
-    if (prefersReducedMotion) {
+    if (paused || prefersReducedMotion) {
       setWordIndex(0);
       setCharacterCount(STARTER_TYPING_INITIAL_WORD.length);
       setPhase("holding");
@@ -907,9 +921,9 @@ function useAnimatedStarterWord() {
     if (phase === "typing" && characterCount > currentWord.length) {
       setCharacterCount(currentWord.length);
     }
-  }, [characterCount, phase, prefersReducedMotion, wordIndex]);
+  }, [characterCount, paused, phase, prefersReducedMotion, wordIndex]);
 
-  if (prefersReducedMotion) {
+  if (paused || prefersReducedMotion) {
     return STARTER_TYPING_INITIAL_WORD;
   }
 

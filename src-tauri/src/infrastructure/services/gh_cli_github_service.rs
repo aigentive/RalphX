@@ -1153,7 +1153,7 @@ pub(crate) fn parse_pr_sync_state_output(json_str: &str) -> AppResult<PrSyncStat
 }
 
 fn parse_pr_sync_state_value(v: &Value, context: &str) -> AppResult<PrSyncState> {
-    let status = parse_pr_status_value(&v)?;
+    let status = parse_pr_status_value(v)?;
     let head_ref_name = required_string(v, "headRefName", context)?;
     let base_ref_name = required_string(v, "baseRefName", context)?;
 
@@ -1277,6 +1277,11 @@ fn parse_pr_issue_comments_value(value: &Value) -> AppResult<Vec<PrIssueCommentS
                 .and_then(|user| user.get("login"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            let is_bot = comment
+                .get("user")
+                .and_then(|user| user.get("type"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("bot"));
             let body = comment
                 .get("body")
                 .and_then(Value::as_str)
@@ -1299,6 +1304,11 @@ fn parse_pr_issue_comments_value(value: &Value) -> AppResult<Vec<PrIssueCommentS
                     .get("created_at")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                updated_at: comment
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                is_bot,
                 is_codecov: source.contains("codecov"),
             }
         })

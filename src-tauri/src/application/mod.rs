@@ -7,12 +7,18 @@ pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub mod agent_workspace_pr_description;
 pub mod agent_workspace_external_pr_reconciliation;
+pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;
 pub mod app_setup;
 pub mod app_state;
+pub mod http_shutdown;
+#[cfg(test)]
+mod http_shutdown_tests;
+#[cfg(test)]
+mod shutdown_tests;
 pub mod ideation_harness_availability;
 pub mod ideation_workspace;
 pub mod apply_service;
@@ -83,6 +89,7 @@ pub mod webhook_service;
 
 // Re-export commonly used items
 pub use app_state::AppState;
+pub use http_shutdown::HttpShutdownHandle;
 pub(crate) use agent_client_bundle::AgentClientBundle;
 pub(crate) use harness_runtime_registry::probe_supported_harnesses;
 pub use agent_lane_settings_bootstrap::{
@@ -160,6 +167,8 @@ pub use webhook_service::WebhookService;
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod agent_workspace_external_pr_reconciliation_tests;
+#[cfg(test)]
+mod agent_workspace_pr_supervision_recovery_tests;
 #[cfg(test)]
 mod app_state_shared_state_tests;
 #[cfg(test)]

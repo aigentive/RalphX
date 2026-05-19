@@ -158,6 +158,73 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("keeps a clicked sidebar conversation selected while its list page is stale", async () => {
+    const firstConversation = conversation({
+      id: "conversation-1",
+      title: "Current agent",
+      contextId: "project-1",
+      projectId: "project-1",
+    });
+    const clickedConversation = conversation({
+      id: "conversation-older",
+      title: "Older clicked agent",
+      contextId: "project-1",
+      projectId: "project-1",
+      createdAt: "2026-04-20T09:00:00Z",
+      updatedAt: "2026-04-20T09:00:00Z",
+    });
+    useProjectsMock.mockReturnValue({
+      data: [project],
+      isLoading: false,
+    });
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: [firstConversation],
+      conversations: [firstConversation],
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    mockAgentSidebarData([firstConversation, clickedConversation]);
+    useConversationMock.mockImplementation((conversationId: string | null) => ({
+      data:
+        conversationId === firstConversation.id
+          ? {
+              conversation: firstConversation,
+              messages: [],
+            }
+          : null,
+      isLoading: false,
+    }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: firstConversation.id,
+    });
+
+    renderAgentsView();
+
+    const clickedRow = await screen.findByTestId("agents-session-conversation-older");
+    const clickedButton = clickedRow.querySelector("button");
+    expect(clickedButton).not.toBeNull();
+    fireEvent.click(clickedButton as HTMLButtonElement);
+
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+        clickedConversation.id
+      )
+    );
+    expect(clickedButton).toHaveAttribute("aria-current", "true");
+    expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
+
+    fireEvent.click(clickedButton);
+
+    expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+      clickedConversation.id
+    );
+    expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
+  });
+
   it("starts a new conversation directly from the starter composer and triggers the session namer", async () => {
     const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     mockAgentViewData();

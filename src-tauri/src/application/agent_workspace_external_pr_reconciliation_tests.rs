@@ -8,14 +8,17 @@ use crate::application::agent_workspace_external_pr_reconciliation::{
     AgentWorkspaceExternalPrReconciliationDeps, AgentWorkspaceExternalPrReconciliationOutcome,
     AgentWorkspaceExternalPrReconciliationTrigger,
 };
+use crate::application::chat_service::{ChatService, MockChatService};
+use crate::application::services::PrPollerRegistry;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
     IdeationAnalysisBaseRefKind, PlanBranchId, Project,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, ProjectRepository};
-use crate::domain::services::{PrBranchMatch, PrStatus};
+use crate::domain::services::{GithubServiceTrait, PrBranchMatch, PrStatus};
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryProjectRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository,
+    MemoryPlanBranchRepository, MemoryProjectRepository,
 };
 use crate::tests::mock_github_service::MockGithubService;
 
@@ -81,6 +84,7 @@ async fn deps_with_workspace(
             github,
             pr_poller_registry: None,
             chat_service: None,
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             app_handle: None,
         },
         workspace_repo,
@@ -101,8 +105,14 @@ async fn reconciliation_links_external_open_pr_to_unpublished_workspace() {
         head_ref_name: workspace.branch_name.clone(),
         updated_at: Some("2026-05-11T22:00:00Z".to_string()),
     })));
-    let (deps, workspace_repo) =
+    let (mut deps, workspace_repo) =
         deps_with_workspace(project, workspace.clone(), github.clone()).await;
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::new(MemoryPlanBranchRepository::new()),
+    ));
+    deps.pr_poller_registry = Some(Arc::clone(&registry));
+    deps.chat_service = Some(Arc::new(MockChatService::new()) as Arc<dyn ChatService>);
 
     let outcome = reconcile_agent_workspace_external_pr(
         deps,
@@ -139,6 +149,8 @@ async fn reconciliation_links_external_open_pr_to_unpublished_workspace() {
         .unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].step, "external_pr_linked");
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
 }
 
 #[tokio::test]
@@ -348,6 +360,7 @@ async fn reconciliation_skips_missing_workspace_project_and_disabled_projects() 
         github: github.clone(),
         pr_poller_registry: None,
         chat_service: None,
+        agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         app_handle: None,
     };
     assert_eq!(
@@ -495,6 +508,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         github: github.clone(),
         pr_poller_registry: None,
         chat_service: None,
+        agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
         app_handle: None,
     };
 

@@ -3,7 +3,8 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentWorkspacePrDescription, ChatConversationId,
+    AgentConversationWorkspaceStatus, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
     IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
@@ -55,6 +56,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
     async fn list_active_direct_external_pr_reconciliation_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
+    async fn list_active_direct_pr_supervision_recovery_candidates(
         &self,
         limit: usize,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
@@ -128,6 +137,50 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Vec<AgentConversationWorkspacePublicationEvent>>;
+
+    async fn upsert_pr_comment_evidence(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _comments: Vec<AgentWorkspacePrCommentEvidenceUpsert>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_pr_comment_evidence(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _limit: usize,
+    ) -> AppResult<Vec<AgentWorkspacePrCommentEvidence>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_pr_comment_evidence(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _comment_id: &str,
+    ) -> AppResult<Option<AgentWorkspacePrCommentEvidence>> {
+        Ok(None)
+    }
+
+    async fn mark_pr_comments_included(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _comment_ids: &[String],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn mark_pr_comment_read(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _comment_id: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()>;
 

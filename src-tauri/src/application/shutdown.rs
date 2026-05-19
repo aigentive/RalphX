@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tauri::Manager;
 
+use crate::application::HttpShutdownHandle;
 use crate::commands;
 use crate::domain::services::RunningAgentRegistry;
 use crate::infrastructure::sqlite::DbConnection;
@@ -14,10 +15,40 @@ pub fn handle_run_event<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     event: &tauri::RunEvent,
 ) {
-    if !matches!(event, tauri::RunEvent::Exit) {
-        return;
+    match event {
+        // Fires first — before the window actually closes. Kick off HTTP
+        // server drain immediately so axum has the maximum window to close
+        // idle keep-alive sockets and finish in-flight requests before the
+        // process is reaped. Do NOT prevent the exit — we want it to proceed.
+        tauri::RunEvent::ExitRequested { .. } => {
+            trigger_http_shutdown(app_handle);
+        }
+        // Final exit. Re-fire the HTTP shutdown trigger as a safety net in
+        // case ExitRequested didn't fire on this code path (idempotent), then
+        // do the existing child-process / WAL cleanup.
+        tauri::RunEvent::Exit => {
+            trigger_http_shutdown(app_handle);
+            run_exit_cleanup(app_handle);
+        }
+        _ => {}
     }
+}
 
+/// `pub(crate)` so the sidecar test in `shutdown_tests.rs` can exercise the
+/// handle-present vs handle-missing branches directly without having to
+/// construct a `RunEvent::ExitRequested` (whose `api` field has no public
+/// constructor in Tauri 2.x).
+pub(crate) fn trigger_http_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    if let Some(handle) = app_handle.try_state::<HttpShutdownHandle>() {
+        handle.trigger();
+        tracing::info!("Triggered HTTP server graceful shutdown");
+    } else {
+        // Tests or early-exit paths may run without the HTTP server registered.
+        tracing::debug!("HttpShutdownHandle not registered; skipping HTTP drain");
+    }
+}
+
+fn run_exit_cleanup<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     let app_state = app_handle.state::<AppState>();
 
     // Set shutdown flag before killing agents so stream handlers can skip escalation.
@@ -55,7 +86,13 @@ fn shutdown_agents(
             );
             interactive.clear().await;
             let stopped = registry.stop_all().await;
+            // Reap tracked head-process maps for both harnesses. Each helper
+            // sends SIGTERM to the spawn's process group (setsid-isolated),
+            // gives it a short grace window, then SIGKILLs the group — so
+            // the stdio MCP server gets a chance to close keep-alive sockets
+            // cleanly instead of being orphaned mid-burst.
             crate::infrastructure::agents::claude::kill_all_tracked_processes().await;
+            crate::infrastructure::agents::codex::kill_all_tracked_processes().await;
             if !stopped.is_empty() {
                 tracing::info!(count = stopped.len(), "Killed running agents on app exit");
             }

@@ -13,6 +13,10 @@
  * - Each agent only sees tools appropriate for its role
  */
 
+// Side-effect import — installs the keep-alive dispatcher BEFORE any other
+// module can issue a fetch(). Must stay first.
+import "./keep-alive.js";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -167,6 +171,7 @@ const RALPHX_PROJECT_ID = runtimeContext.projectId;
 const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
+const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 
 function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
   if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
@@ -648,7 +653,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callTauri(`git/tasks/${task_id}/complete-merge`, { commit_sha });
     /* c8 ignore next 2 -- index.ts is a side-effectful MCP server; pure dispatch is covered in agent-workspace-tools tests. */
     } else if (isAgentWorkspaceToolName(name)) {
-      result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args);
+      result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
+        parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+      });
     } else if (name === "report_conflict") {
       // POST /api/git/tasks/:task_id/report-conflict
       const { task_id, conflict_files, reason } = args as {

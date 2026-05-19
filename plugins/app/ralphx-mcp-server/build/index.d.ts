@@ -11,6 +11,7 @@
  * - Filters available tools based on agent type (hard enforcement)
  * - Each agent only sees tools appropriate for its role
  */
+import "./keep-alive.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.

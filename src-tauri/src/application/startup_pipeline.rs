@@ -441,6 +441,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
         Arc::clone(&pr_poller_registry),
+        Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
         Arc::clone(&blocked_git_project_ids),
     )
@@ -458,6 +459,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
                 github: github_service,
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
+                agent_run_repo: Arc::clone(&agent_run_repo),
                 app_handle: Some(app_handle.clone()),
             };
         let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
@@ -495,7 +497,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         .with_task_scheduler(Arc::clone(&task_scheduler))
         .with_app_handle(app_handle.clone())
         .with_review_repo(Arc::clone(&review_repo))
-        .with_chat_service(recovery_chat_service)
+        .with_chat_service(Arc::clone(&recovery_chat_service))
         .with_previous_session_cutoff(previous_session_cutoff)
         .with_git_startup_blocked_projects(Arc::clone(&blocked_git_project_ids)),
     );
@@ -511,6 +513,31 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     )
     .await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
+
+    if let Some(github_service) = github_service.as_ref().map(Arc::clone) {
+        tracing::info!("Scheduling agent workspace PR supervision startup recovery...");
+        let deps =
+            crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryDeps {
+                workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
+                project_repo: Arc::clone(&project_repo),
+                github: github_service,
+                pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
+                chat_service: Some(Arc::clone(&recovery_chat_service)),
+                agent_run_repo: Arc::clone(&agent_run_repo),
+                app_handle: Some(app_handle.clone()),
+            };
+        let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
+        tauri::async_runtime::spawn(async move {
+            git_cmd::with_git_command_lane(GitCommandLane::Background, async move {
+                crate::application::agent_workspace_pr_supervision_recovery::recover_recent_agent_workspace_pr_supervision_on_startup(
+                    deps,
+                    blocked_git_project_ids,
+                )
+                .await;
+            })
+            .await;
+        });
+    }
 
     if mode == StartupPipelineMode::Full {
         let phase_started_at = startup_phase_started("memory_archive_recovery");

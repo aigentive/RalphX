@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
     IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -90,6 +91,36 @@ fn row_to_publication_event(
         summary: row.get("summary")?,
         classification: row.get("classification")?,
         created_at: parse_datetime(&created_at),
+    })
+}
+
+fn row_to_pr_comment_evidence(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AgentWorkspacePrCommentEvidence> {
+    let first_seen_at: String = row.get("first_seen_at")?;
+    let last_seen_at: String = row.get("last_seen_at")?;
+    Ok(AgentWorkspacePrCommentEvidence {
+        conversation_id: ChatConversationId::from_string(row.get::<_, String>("conversation_id")?),
+        pr_number: row.get("pr_number")?,
+        comment_id: row.get("comment_id")?,
+        author: row.get("author")?,
+        body: row.get("body")?,
+        body_excerpt: row.get("body_excerpt")?,
+        body_sha256: row.get("body_sha256")?,
+        url: row.get("url")?,
+        github_created_at: row.get("github_created_at")?,
+        github_updated_at: row.get("github_updated_at")?,
+        is_codecov: row.get("is_codecov")?,
+        is_bot: row.get("is_bot")?,
+        first_seen_at: parse_datetime(&first_seen_at),
+        last_seen_at: parse_datetime(&last_seen_at),
+        last_included_at: row
+            .get::<_, Option<String>>("last_included_at")?
+            .map(|value| parse_datetime(&value)),
+        last_read_at: row
+            .get::<_, Option<String>>("last_read_at")?
+            .map(|value| parse_datetime(&value)),
+        edit_count: row.get("edit_count")?,
     })
 }
 
@@ -426,6 +457,36 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_active_direct_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND mode = 'edit'
+                       AND linked_plan_branch_id IS NULL
+                       AND publication_pr_number IS NOT NULL
+                       AND publication_push_status = 'failed'
+                       AND pr_supervision_status = 'blocked'
+                       AND (pr_autofix_enabled = 1 OR pr_auto_merge_desired = 1)
+                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                     ORDER BY updated_at DESC
+                     LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![limit], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,
@@ -468,6 +529,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let pr_url = pr_url.map(str::to_string);
         let pr_status = pr_status.map(str::to_string);
         let push_status = push_status.map(str::to_string);
+        let terminal_pr_status = matches!(pr_status.as_deref(), Some("merged" | "closed"));
         let updated_at = Utc::now().to_rfc3339();
         self.db
             .run(move |conn| {
@@ -477,6 +539,9 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                          publication_pr_url = ?3,
                          publication_pr_status = ?4,
                          publication_push_status = ?5,
+                         pr_supervision_status = CASE WHEN ?7 THEN NULL ELSE pr_supervision_status END,
+                         pr_supervision_summary = CASE WHEN ?7 THEN NULL ELSE pr_supervision_summary END,
+                         pr_supervision_updated_at = CASE WHEN ?7 THEN ?6 ELSE pr_supervision_updated_at END,
                          updated_at = ?6
                      WHERE conversation_id = ?1",
                     rusqlite::params![
@@ -485,7 +550,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_url,
                         pr_status,
                         push_status,
-                        updated_at
+                        updated_at,
+                        terminal_pr_status
                     ],
                 )?;
                 Ok(())
@@ -727,10 +793,185 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn upsert_pr_comment_evidence(
+        &self,
+        conversation_id: &ChatConversationId,
+        comments: Vec<AgentWorkspacePrCommentEvidenceUpsert>,
+    ) -> AppResult<()> {
+        if comments.is_empty() {
+            return Ok(());
+        }
+        let conversation_id = conversation_id.as_str().to_string();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                for comment in comments {
+                    conn.execute(
+                        "INSERT INTO agent_workspace_pr_comment_evidence (
+                            conversation_id, pr_number, comment_id, author, body,
+                            body_excerpt, body_sha256, url, github_created_at,
+                            github_updated_at, is_codecov, is_bot, first_seen_at,
+                            last_seen_at, edit_count
+                         ) VALUES (
+                            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                            ?13, ?13, 0
+                         )
+                         ON CONFLICT(conversation_id, pr_number, comment_id) DO UPDATE SET
+                            author = excluded.author,
+                            body = excluded.body,
+                            body_excerpt = excluded.body_excerpt,
+                            body_sha256 = excluded.body_sha256,
+                            url = excluded.url,
+                            github_created_at = excluded.github_created_at,
+                            github_updated_at = excluded.github_updated_at,
+                            is_codecov = excluded.is_codecov,
+                            is_bot = excluded.is_bot,
+                            last_seen_at = excluded.last_seen_at,
+                            edit_count = CASE
+                                WHEN agent_workspace_pr_comment_evidence.body_sha256 != excluded.body_sha256
+                                THEN agent_workspace_pr_comment_evidence.edit_count + 1
+                                ELSE agent_workspace_pr_comment_evidence.edit_count
+                            END",
+                        rusqlite::params![
+                            conversation_id.as_str(),
+                            comment.pr_number,
+                            comment.comment_id,
+                            comment.author,
+                            comment.body,
+                            comment.body_excerpt,
+                            comment.body_sha256,
+                            comment.url,
+                            comment.github_created_at,
+                            comment.github_updated_at,
+                            comment.is_codecov,
+                            comment.is_bot,
+                            now.as_str(),
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    async fn list_pr_comment_evidence(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        limit: usize,
+    ) -> AppResult<Vec<AgentWorkspacePrCommentEvidence>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_pr_comment_evidence
+                     WHERE conversation_id = ?1 AND pr_number = ?2
+                     ORDER BY
+                        COALESCE(github_updated_at, github_created_at, last_seen_at) DESC,
+                        comment_id DESC
+                     LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(
+                    rusqlite::params![conversation_id, pr_number, limit],
+                    row_to_pr_comment_evidence,
+                )?;
+                let mut comments = Vec::new();
+                for row in rows {
+                    comments.push(row?);
+                }
+                Ok(comments)
+            })
+            .await
+    }
+
+    async fn get_pr_comment_evidence(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        comment_id: &str,
+    ) -> AppResult<Option<AgentWorkspacePrCommentEvidence>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let comment_id = comment_id.to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_pr_comment_evidence
+                     WHERE conversation_id = ?1 AND pr_number = ?2 AND comment_id = ?3",
+                )?;
+                let mut rows =
+                    stmt.query(rusqlite::params![conversation_id, pr_number, comment_id])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_pr_comment_evidence(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
+    async fn mark_pr_comments_included(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        comment_ids: &[String],
+    ) -> AppResult<()> {
+        if comment_ids.is_empty() {
+            return Ok(());
+        }
+        let conversation_id = conversation_id.as_str().to_string();
+        let comment_ids = comment_ids.to_vec();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                for comment_id in comment_ids {
+                    conn.execute(
+                        "UPDATE agent_workspace_pr_comment_evidence
+                         SET last_included_at = ?4
+                         WHERE conversation_id = ?1 AND pr_number = ?2 AND comment_id = ?3",
+                        rusqlite::params![
+                            conversation_id.as_str(),
+                            pr_number,
+                            comment_id,
+                            now.as_str()
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    async fn mark_pr_comment_read(
+        &self,
+        conversation_id: &ChatConversationId,
+        pr_number: i64,
+        comment_id: &str,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let comment_id = comment_id.to_string();
+        let now = Utc::now().to_rfc3339();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_workspace_pr_comment_evidence
+                     SET last_read_at = ?4
+                     WHERE conversation_id = ?1 AND pr_number = ?2 AND comment_id = ?3",
+                    rusqlite::params![conversation_id, pr_number, comment_id, now],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
         let conversation_id = conversation_id.as_str().to_string();
         self.db
             .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM agent_workspace_pr_comment_evidence WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id.as_str()],
+                )?;
                 conn.execute(
                     "DELETE FROM agent_conversation_workspaces WHERE conversation_id = ?1",
                     rusqlite::params![conversation_id],

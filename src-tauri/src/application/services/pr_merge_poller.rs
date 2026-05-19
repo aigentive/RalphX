@@ -21,11 +21,13 @@ use crate::application::TaskTransitionService;
 use crate::domain::entities::plan_branch::PrStatus as DbPrStatus;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, ChatContextType,
-    ChatConversationId,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrCommentEvidenceUpsert, ChatContextType, ChatConversationId,
 };
 use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
-use crate::domain::repositories::{AgentConversationWorkspaceRepository, PlanBranchRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
+};
 use crate::domain::services::github_service::{
     PrHealth, PrHealthCheck, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
     PrReviewFeedback,
@@ -130,6 +132,7 @@ impl PrPollerRegistry {
         project: Project,
         working_dir: PathBuf,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         chat_service: Arc<dyn ChatService>,
     ) {
         use dashmap::mapref::entry::Entry;
@@ -171,6 +174,7 @@ impl PrPollerRegistry {
                 stopping,
                 semaphore,
                 workspace_repo,
+                agent_run_repo,
                 chat_service,
             )
             .await;
@@ -785,6 +789,7 @@ async fn agent_workspace_poll_loop(
     stopping: Arc<DashMap<ChatConversationId, ()>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
     chat_service: Arc<dyn ChatService>,
 ) {
     let interval = Duration::from_secs(60);
@@ -893,6 +898,7 @@ async fn agent_workspace_poll_loop(
                     pr_number,
                     &conversation_id,
                     Arc::clone(&workspace_repo),
+                    Some(Arc::clone(&agent_run_repo)),
                     Arc::clone(&chat_service),
                 )
                 .await
@@ -1028,6 +1034,10 @@ async fn mark_agent_workspace_pr_open(
         return Ok(());
     };
 
+    if workspace.has_terminal_publication_pr_status() {
+        return Ok(());
+    }
+
     if workspace.publication_pr_status.as_deref() == Some("open")
         && workspace.publication_push_status.as_deref() == Some("pushed")
     {
@@ -1158,7 +1168,6 @@ async fn route_review_feedback_if_present(
 enum AgentWorkspacePrAutofixIssueKind {
     Review,
     Checks,
-    Coverage,
     Mergeability,
 }
 
@@ -1176,6 +1185,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     pr_number: i64,
     conversation_id: &ChatConversationId,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
     chat_service: Arc<dyn ChatService>,
 ) -> crate::AppResult<bool> {
     let workspace = workspace_repo
@@ -1195,7 +1205,48 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         return Ok(false);
     }
 
+    if agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await? {
+        tracing::info!(
+            conversation_id = conversation_id.as_str(),
+            pr_number,
+            publication_push_status = workspace.publication_push_status.as_deref(),
+            pr_supervision_status = workspace.pr_supervision_status.as_deref(),
+            "Agent workspace PR poller: skipping autofix route because repair is already active"
+        );
+        return Ok(false);
+    }
+
     let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    import_agent_workspace_pr_comment_evidence(
+        Arc::clone(&workspace_repo),
+        conversation_id,
+        pr_number,
+        &health,
+    )
+    .await?;
+    if let Some((terminal_status, summary)) =
+        agent_workspace_terminal_status_from_pr_health(&health)
+    {
+        workspace_repo
+            .update_publication(
+                conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                Some(terminal_status),
+                workspace.publication_push_status.as_deref(),
+            )
+            .await?;
+        workspace_repo
+            .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+                conversation_id.clone(),
+                "pr_terminal",
+                terminal_status,
+                summary,
+                Some(format!("github_pr_terminal:{pr_number}:{terminal_status}")),
+            ))
+            .await?;
+        return Ok(false);
+    }
     let auto_merge_current = sync_agent_workspace_auto_merge_preference(
         Arc::clone(&github),
         working_dir,
@@ -1286,6 +1337,30 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         .await?;
 
     Ok(true)
+}
+
+async fn agent_workspace_pr_autofix_repair_in_flight(
+    workspace: &AgentConversationWorkspace,
+    agent_run_repo: Option<&Arc<dyn AgentRunRepository>>,
+) -> crate::AppResult<bool> {
+    if matches!(
+        workspace.publication_push_status.as_deref(),
+        Some("needs_agent")
+    ) || matches!(
+        workspace.pr_supervision_status.as_deref(),
+        Some("fixing" | "publishing")
+    ) {
+        return Ok(true);
+    }
+
+    let Some(agent_run_repo) = agent_run_repo else {
+        return Ok(false);
+    };
+
+    Ok(agent_run_repo
+        .get_active_for_conversation(&workspace.conversation_id)
+        .await?
+        .is_some())
 }
 
 async fn sync_agent_workspace_auto_merge_preference(
@@ -1421,34 +1496,6 @@ fn classify_agent_workspace_pr_autofix_issue(
         });
     }
 
-    let codecov_comments: Vec<String> = health
-        .issue_comments
-        .iter()
-        .filter(|comment| {
-            comment.is_codecov && agent_workspace_codecov_comment_is_actionable(&comment.body)
-        })
-        .map(|comment| {
-            let author = comment.author.as_deref().unwrap_or("codecov");
-            format!(
-                "@{author}: {}",
-                compact_pr_feedback_text(&comment.body, 240)
-            )
-        })
-        .collect();
-    if !codecov_comments.is_empty() {
-        return Some(AgentWorkspacePrAutofixIssue {
-            kind: AgentWorkspacePrAutofixIssueKind::Coverage,
-            summary: format!("PR #{pr_number} has actionable Codecov feedback"),
-            classification: agent_workspace_pr_autofix_event_classification(
-                pr_number,
-                health,
-                "coverage",
-                &codecov_comments,
-            ),
-            details: codecov_comments,
-        });
-    }
-
     let mut mergeability_details = Vec::new();
     match health.sync_state.merge_state_status.as_ref() {
         Some(PrMergeStateStatus::Behind) => {
@@ -1458,7 +1505,9 @@ fn classify_agent_workspace_pr_autofix_issue(
             mergeability_details.push("PR branch has merge conflicts".to_string());
         }
         Some(PrMergeStateStatus::Blocked) => {
-            mergeability_details.push("PR is blocked from merging".to_string());
+            // GitHub uses BLOCKED for branch-protection waits such as pending
+            // required checks or reviews. Route only the concrete signals above
+            // or explicit conflicts below.
         }
         _ => {}
     }
@@ -1485,6 +1534,45 @@ fn classify_agent_workspace_pr_autofix_issue(
     None
 }
 
+fn agent_workspace_terminal_status_from_pr_health(
+    health: &PrHealth,
+) -> Option<(&'static str, &'static str)> {
+    match &health.sync_state.status {
+        PrStatus::Merged { .. } => Some(("merged", "Pull request merged")),
+        PrStatus::Closed => Some(("closed", "Pull request closed without merging")),
+        PrStatus::Open => None,
+    }
+}
+
+pub(crate) async fn import_agent_workspace_pr_comment_evidence(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    conversation_id: &ChatConversationId,
+    pr_number: i64,
+    health: &PrHealth,
+) -> crate::AppResult<()> {
+    let comments = health
+        .issue_comments
+        .iter()
+        .filter(|comment| !comment.id.trim().is_empty())
+        .map(|comment| {
+            AgentWorkspacePrCommentEvidenceUpsert::new(
+                pr_number,
+                comment.id.clone(),
+                comment.author.clone(),
+                comment.body.clone(),
+                comment.url.clone(),
+                comment.created_at.clone(),
+                comment.updated_at.clone(),
+                comment.is_codecov,
+                comment.is_bot,
+            )
+        })
+        .collect::<Vec<_>>();
+    workspace_repo
+        .upsert_pr_comment_evidence(conversation_id, comments)
+        .await
+}
+
 fn agent_workspace_check_is_failing(check: &PrHealthCheck) -> bool {
     check
         .conclusion
@@ -1506,15 +1594,6 @@ fn agent_workspace_check_is_failing(check: &PrHealthCheck) -> bool {
             )
         })
         .unwrap_or(false)
-}
-
-fn agent_workspace_codecov_comment_is_actionable(body: &str) -> bool {
-    let body = body.to_ascii_lowercase();
-    body.contains("fail")
-        || body.contains("threshold")
-        || body.contains("target")
-        || body.contains("decreased")
-        || body.contains("patch coverage")
 }
 
 fn compact_pr_feedback_text(body: &str, max_chars: usize) -> String {

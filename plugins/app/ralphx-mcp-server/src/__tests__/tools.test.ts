@@ -1270,12 +1270,12 @@ describe('agent workspace publish tools', () => {
     expect(allTools.find((t) => t.name === toolName)).toBeDefined();
   });
 
-  it.each(publishTools)('%s should require a conversation id', (toolName) => {
+  it.each(publishTools)('%s should accept the current workspace conversation context', (toolName) => {
     const tool = allTools.find((t) => t.name === toolName);
 
     expect(tool?.inputSchema.type).toBe('object');
     expect(tool?.inputSchema.properties).toHaveProperty('conversation_id');
-    expect(tool?.inputSchema.required).toEqual(expect.arrayContaining(['conversation_id']));
+    expect(tool?.inputSchema.required ?? []).not.toContain('conversation_id');
   });
 
   it('exposes publish tools to the general worker only through canonical metadata', () => {
@@ -1302,6 +1302,7 @@ describe('agent workspace PR fix tools', () => {
   const allTools = getAllTools();
   const prFixTools = [
     'get_agent_workspace_pr_fix_context',
+    'read_agent_workspace_pr_comment',
     'complete_agent_workspace_pr_fix',
   ];
 
@@ -1383,6 +1384,22 @@ describe('agent workspace publish tool transport', () => {
     );
   });
 
+  it('defaults publish status reads to the current runtime workspace conversation', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callGetAgentWorkspacePublishStatusTool(
+        callTauriGet,
+        {},
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauriGet).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/publish-status'
+    );
+  });
+
   it('routes publish readiness checks to the agent workspace endpoint', async () => {
     const callTauriGet = vi.fn().mockResolvedValue({ success: true });
 
@@ -1394,6 +1411,22 @@ describe('agent workspace publish tool transport', () => {
 
     expect(callTauriGet).toHaveBeenCalledWith(
       'agent-workspaces/conversation-1/publish-readiness'
+    );
+  });
+
+  it('defaults publish readiness checks to the current runtime workspace conversation', async () => {
+    const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callCheckAgentWorkspacePublishReadinessTool(
+        callTauriGet,
+        {},
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauriGet).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/publish-readiness'
     );
   });
 
@@ -1416,6 +1449,27 @@ describe('agent workspace publish tool transport', () => {
     });
   });
 
+  it('defaults base updates to the current runtime workspace conversation', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callUpdateAgentWorkspaceFromBaseTool(
+        callTauri,
+        { base_ref_kind: 'project_default' },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/update-from-base',
+      {
+        base_ref_kind: 'project_default',
+        base_ref: undefined,
+        base_display_name: undefined,
+      }
+    );
+  });
+
   it('routes publish requests to the agent workspace endpoint', async () => {
     const callTauri = vi.fn().mockResolvedValue({ success: true });
 
@@ -1426,6 +1480,31 @@ describe('agent workspace publish tool transport', () => {
     ).resolves.toEqual({ success: true });
 
     expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-1/publish', {});
+  });
+
+  it('defaults publish requests to the current runtime workspace conversation', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+
+    await expect(
+      callPublishAgentWorkspaceTool(
+        callTauri,
+        {},
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/publish',
+      {}
+    );
+  });
+
+  it('reports a clear error when no conversation id is available', async () => {
+    await expect(
+      callPublishAgentWorkspaceTool(vi.fn(), {})
+    ).rejects.toThrow(
+      'publish_agent_workspace requires conversation_id because RalphX did not provide the current workspace conversation id'
+    );
   });
 
   it('routes PR fix context reads to the agent workspace endpoint', async () => {
@@ -1490,6 +1569,12 @@ describe('agent workspace publish tool transport', () => {
       undefined,
     ],
     [
+      'read_agent_workspace_pr_comment',
+      'get',
+      'agent-workspaces/conversation-1/pr-comments/comment-1',
+      undefined,
+    ],
+    [
       'complete_agent_workspace_pr_fix',
       'post',
       'agent-workspaces/conversation-1/complete-pr-fix',
@@ -1528,6 +1613,7 @@ describe('agent workspace publish tool transport', () => {
         base_ref_kind: 'local_branch',
         base_ref: 'feature/base',
         base_display_name: 'feature/base',
+        comment_id: 'comment-1',
         repair_commit_sha: 'a'.repeat(40),
         resolved_base_ref: 'main',
         resolved_base_commit: 'b'.repeat(40),

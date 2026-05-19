@@ -456,18 +456,15 @@ export function AgentPublishPanel({
   const canConfigurePrSupervision =
     workspace.mode === "edit" && workspace.status !== "missing" && !terminalPublicationStatus;
   const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
-  const prSupervisionStatusLabel =
-    prSupervisionMutation.isPending
-      ? "Saving PR supervision"
-      : prSupervisionStatus === "fixing"
-        ? "Fixing PR"
-        : prSupervisionStatus === "waiting_for_checks"
-          ? "Waiting for checks"
-          : prSupervisionStatus === "blocked"
-            ? "PR supervision blocked"
-            : prAutofixEnabled || prAutoMergeDesired
-              ? "Monitoring PR"
-              : null;
+  const prSupervisionStatusLabel = (() => {
+    if (terminalPublicationStatus) return null;
+    if (prSupervisionMutation.isPending) return "Saving PR supervision";
+    if (prSupervisionStatus === "fixing") return "Fixing PR";
+    if (prSupervisionStatus === "waiting_for_checks") return "Waiting for checks";
+    if (prSupervisionStatus === "blocked") return "PR supervision blocked";
+    if (prAutofixEnabled || prAutoMergeDesired) return "Monitoring PR";
+    return null;
+  })();
   const updatePrSupervisionPreferences = (next: {
     autoFixEnabled: boolean;
     autoMergeDesired: boolean;
@@ -945,6 +942,7 @@ export function AgentPublishPanel({
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
+              {...(isPublishCurrent && { workspaceChangeLabel: "Published changes" })}
             />
           </section>
         )}

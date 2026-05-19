@@ -345,9 +345,15 @@ mod v20260513143000_orphan_worktree_cleanup_markers_tests;
 mod v20260517153000_agent_workspace_pr_supervision;
 #[cfg(test)]
 mod v20260517153000_agent_workspace_pr_supervision_tests;
+mod v20260518113000_agent_workspace_pr_supervision_recovery_index;
+#[cfg(test)]
+mod v20260518113000_agent_workspace_pr_supervision_recovery_index_tests;
+mod v20260518230038_agent_workspace_pr_comment_evidence;
+#[cfg(test)]
+mod v20260518230038_agent_workspace_pr_comment_evidence_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260517153000;
+pub const SCHEMA_VERSION: i64 = 20260518230038;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -981,6 +987,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260517153000,
         name: "agent_workspace_pr_supervision",
         migrate: v20260517153000_agent_workspace_pr_supervision::migrate,
+    },
+    Migration {
+        version: 20260518113000,
+        name: "agent_workspace_pr_supervision_recovery_index",
+        migrate: v20260518113000_agent_workspace_pr_supervision_recovery_index::migrate,
+    },
+    Migration {
+        version: 20260518230038,
+        name: "agent_workspace_pr_comment_evidence",
+        migrate: v20260518230038_agent_workspace_pr_comment_evidence::migrate,
     },
 ];
 

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Clock, Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
 
 import type {
@@ -172,6 +172,26 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       }),
     [configuredProviders, providerSettingsReady],
   );
+  const [composerActivityTick, setComposerActivityTick] = useState(0);
+  const [isComposerHydrationPaused, setIsComposerHydrationPaused] = useState(false);
+  const markComposerActivity = useCallback(() => {
+    setIsComposerHydrationPaused(true);
+    setComposerActivityTick((tick) => tick + 1);
+  }, []);
+  useEffect(() => {
+    setIsComposerHydrationPaused(false);
+  }, [selectedConversationId]);
+  useEffect(() => {
+    if (!isComposerHydrationPaused) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setIsComposerHydrationPaused(false);
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [composerActivityTick, isComposerHydrationPaused]);
   const workspaceProviderStatusMessage = getProviderAvailabilityMessage({
     provider: normalizedActiveRuntime.provider,
     providerOptions,
@@ -363,6 +383,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   conversationId={selectedConversationId}
                   workspace={activeWorkspace}
                   isFocusedChildChat={isFocusedChildChat}
+                  isAgentGenerating={composerProps.agentStatus === "generating"}
+                  pauseHydration={isComposerHydrationPaused}
                   onOpenFile={onOpenPublishFile}
                   onPreloadPublishPane={onPreloadArtifacts}
                 />
@@ -382,6 +404,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       : "Ask the agent to plan, build, debug, or review something"
                   }
                   showHelperText={false}
+                  onFocusChange={(focused) => {
+                    if (focused) {
+                      markComposerActivity();
+                    }
+                  }}
                   sendDisabledReason={
                     !isFocusedChildChat ? workspaceProviderStatusMessage : null
                   }
@@ -395,7 +422,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   {...(composerProps.value !== undefined
                     ? {
                         value: composerProps.value,
-                        onChange: composerProps.onChange,
+                        onChange: (value: string) => {
+                          markComposerActivity();
+                          composerProps.onChange?.(value);
+                        },
                       }
                     : {})}
                   {...(composerProps.questionMode !== undefined

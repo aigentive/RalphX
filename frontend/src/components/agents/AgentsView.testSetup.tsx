@@ -45,6 +45,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   updateConversationTitleMock: vi.fn(),
   archiveConversationMock: vi.fn(),
   restoreConversationMock: vi.fn(),
+  getAgentRunningStatesMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
   getLatestChildSessionIdMock: vi.fn(),
@@ -140,6 +141,7 @@ const {
   updateConversationTitleMock,
   archiveConversationMock,
   restoreConversationMock,
+  getAgentRunningStatesMock,
   getPlanBranchesMock,
   listIdeationSessionsMock,
   getLatestChildSessionIdMock,
@@ -362,6 +364,12 @@ vi.mock("./agentTerminalPreload", () => ({
 vi.mock("@/hooks/useChat", () => ({
   chatKeys: {
     conversation: (conversationId: string) => ["chat", "conversations", conversationId],
+    conversationSummary: (conversationId: string) => [
+      "chat",
+      "conversations",
+      conversationId,
+      "summary",
+    ],
     conversationHistory: (conversationId: string) => [
       "chat",
       "conversations",
@@ -387,6 +395,13 @@ vi.mock("@/hooks/useChat", () => ({
     Boolean(conversationId?.startsWith("optimistic-conversation:")),
   invalidateConversationDataQueries: vi.fn(),
   useConversation: (conversationId: string | null) => useConversationMock(conversationId),
+  useConversationSummary: (conversationId: string | null) => {
+    const query = useConversationMock(conversationId);
+    return {
+      ...query,
+      data: query.data?.conversation ?? null,
+    };
+  },
   useConversationHistoryWindow: (conversationId: string | null) => {
     const query = useConversationMock(conversationId);
     return {
@@ -424,7 +439,7 @@ vi.mock("@/api/chat", () => ({
     updateConversationTitle: (...args: unknown[]) => updateConversationTitleMock(...args),
     archiveConversation: (...args: unknown[]) => archiveConversationMock(...args),
     restoreConversation: (...args: unknown[]) => restoreConversationMock(...args),
-    getAgentRunningStates: vi.fn().mockResolvedValue({}),
+    getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
     getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
@@ -512,6 +527,16 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
     emptyState?: ReactNode;
   }) => {
+    const agentStatus = useChatStore((state) =>
+      storeContextKeyOverride
+        ? state.agentStatus[storeContextKeyOverride] ?? "idle"
+        : "idle"
+    );
+    const isSending = useChatStore((state) =>
+      storeContextKeyOverride
+        ? state.isSending[storeContextKeyOverride] ?? false
+        : false
+    );
     integratedChatPanelRenderMock({
       ideationSessionId,
       conversationIdOverride,
@@ -546,8 +571,8 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         {renderComposer?.({
           onSend: vi.fn(),
           onStop: vi.fn(),
-          agentStatus: "idle",
-          isSending: false,
+          agentStatus,
+          isSending,
           isReadOnly: false,
           autoFocus: false,
           hasQueuedMessages: false,
@@ -913,6 +938,7 @@ export function setupAgentsViewTest() {
   updateConversationTitleMock.mockReset();
   archiveConversationMock.mockReset();
   restoreConversationMock.mockReset();
+  getAgentRunningStatesMock.mockReset();
   getPlanBranchesMock.mockReset();
   listIdeationSessionsMock.mockReset();
   getWorkspaceChangesMock.mockReset();
@@ -1116,6 +1142,7 @@ export function setupAgentsViewTest() {
   mockHarnessProviders();
   archiveConversationMock.mockResolvedValue(undefined);
   restoreConversationMock.mockResolvedValue(undefined);
+  getAgentRunningStatesMock.mockResolvedValue({});
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
 

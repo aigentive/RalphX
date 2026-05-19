@@ -24,6 +24,48 @@ lazy_static! {
         Mutex::new(HashMap::new());
 }
 
+/// Kill all Codex CLI processes tracked in the global PROCESSES map.
+///
+/// Mirrors `claude::kill_all_tracked_processes` — called from the Tauri exit
+/// handler so Codex children get the same setsid-aware SIGTERM→grace→SIGKILL
+/// teardown that Claude already gets. Without this, Codex spawns from the
+/// previous session were left to the macOS reaper, and any keep-alive
+/// sockets they held leaked into orphaned TIME_WAITs.
+pub async fn kill_all_tracked_processes() {
+    use crate::infrastructure::agents::spawn_isolation;
+
+    let mut processes = PROCESSES.lock().await;
+    let count = processes.len();
+    if count == 0 {
+        return;
+    }
+
+    tracing::info!(
+        count,
+        "Killing tracked Codex agent processes on exit"
+    );
+
+    #[cfg(unix)]
+    {
+        let pids: Vec<u32> = processes
+            .iter()
+            .filter_map(|(_, (child, _))| child.id())
+            .collect();
+        for pid in &pids {
+            spawn_isolation::send_signal_to_group(*pid, nix::sys::signal::Signal::SIGTERM);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    for (_id, (mut child, _start_time)) in processes.drain() {
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            spawn_isolation::send_signal_to_group(pid, nix::sys::signal::Signal::SIGKILL);
+        }
+        let _ = child.kill().await;
+    }
+}
+
 pub struct CodexCliClient {
     cli_path: PathBuf,
     capabilities: ClientCapabilities,

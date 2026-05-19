@@ -104,6 +104,13 @@ export default defineConfig(async ({ mode }) => {
       // fails with EADDRINUSE even though `lsof` reports nothing listening. Pinning to
       // 127.0.0.1 sidesteps that — IPv6 TIME_WAITs are irrelevant when we bind IPv4 only.
       // Mobile/Tauri DEV_HOST mode (when `host` is set) still wins.
+      //
+      // Hard incident (2026-05-18): a chain of Playwright runs from agent worktrees
+      // that branched off main before the IPv4 pin landed left ~10,800 orphaned
+      // TIME_WAITs on ::1:5173. They never drained, exhausted the ephemeral port
+      // pool (49152-65535), and Chrome started failing with ERR_ADDRESS_INVALID
+      // because bind() couldn't allocate a source port. Pin HMR explicitly too so
+      // the contract is unambiguous on every code path.
       host: host || "127.0.0.1",
       hmr: host
         ? {
@@ -111,7 +118,11 @@ export default defineConfig(async ({ mode }) => {
             host,
             port: isWebMode ? 5174 : 1421,
           }
-        : undefined,
+        : {
+            protocol: "ws",
+            host: "127.0.0.1",
+            port: isWebMode ? 5174 : 1421,
+          },
       watch: {
         // 3. tell Vite to ignore backend trees, generated artifacts, and test outputs
         // that can churn heavily during local validation without affecting app source.

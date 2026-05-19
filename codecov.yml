@@ -22,6 +22,30 @@ coverage:
           - "!src-tauri/src/application/startup_pipeline.rs"
           - "!src-tauri/src/application/startup_pipeline_launch.rs"
           - "!src-tauri/src/application/startup_transition_factory.rs"
+          # Tauri RunEvent / HTTP-server boot glue — same composition-root pattern.
+          # The Exit-arm body needs the full production AppState AND a non-async
+          # caller context (tauri::async_runtime::block_on panics inside
+          # #[tokio::test]); the ExitRequested arm's `api: ExitRequestApi` field
+          # has no public constructor in Tauri 2.x. The actual decision logic is
+          # extracted into pub(crate) `trigger_http_shutdown` + `HttpShutdownHandle`,
+          # both unit-tested in `application/shutdown_tests.rs` and
+          # `application/http_shutdown_tests.rs`.
+          - "!src-tauri/src/application/shutdown.rs"
+          - "!src-tauri/src/application/server_boot.rs"
+          # Per-harness child-process cleanup (Claude + Codex). Both files wrap
+          # real subprocess spawning, stdio handling, and OS signal management
+          # — only exercisable via integration tests with real process spawning
+          # (same precedent as chat_service_streaming.rs above). Decision logic
+          # is extracted into spawn_isolation::send_signal_to_group (safety
+          # guards + ESRCH branch fully unit-tested in spawn_isolation_tests).
+          - "!src-tauri/src/infrastructure/agents/claude/claude_code_client.rs"
+          - "!src-tauri/src/infrastructure/agents/codex/codex_cli_client.rs"
+          # setsid + killpg helpers. install_setsid_pre_exec's pre_exec closure
+          # only runs in the forked child after spawn — verifiable end-to-end
+          # only by the ignored capability test in spawn_isolation_tests. The
+          # callable parent-side surfaces (safety guards, ESRCH path, hook
+          # registration) ARE covered by the default-run unit tests.
+          - "!src-tauri/src/infrastructure/agents/spawn_isolation.rs"
           # Pure trait/module export glue has no runtime branch to exercise directly.
           # Implementations and call sites carry the behavioral coverage.
           - "!src-tauri/src/domain/repositories/orphan_worktree_cleanup_marker_repository.rs"

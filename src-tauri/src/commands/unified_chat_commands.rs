@@ -46,6 +46,10 @@ use crate::application::agent_workspace_pr_description::{
     draft_agent_workspace_pr_description, get_or_draft_agent_workspace_pr_description,
     invalidate_agent_workspace_pr_description_cache, AgentWorkspacePrDescriptionCacheKey,
 };
+use crate::application::agent_workspace_pr_supervision_recovery::{
+    pr_supervision_recovery_schedule_skip_reason, schedule_agent_workspace_pr_supervision_recovery,
+    AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryTrigger,
+};
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_result_object, tool_detail_ref,
@@ -615,6 +619,12 @@ pub(crate) async fn agent_workspace_response_for_state(
     let workspace = recover_stale_publish_repair_for_workspace_in_state(state, workspace)
         .await
         .map_err(|e| e.to_string())?;
+    schedule_pr_supervision_recovery_for_workspace(
+        state,
+        &workspace,
+        AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        false,
+    );
 
     let mode_lock = resolve_agent_conversation_workspace_mode_lock(state, &workspace).await?;
     let linked_plan_branch_id = workspace.linked_plan_branch_id.clone();
@@ -656,6 +666,36 @@ fn schedule_external_pr_reconciliation_for_workspace(
             github,
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
             chat_service: Some(chat_service),
+            agent_run_repo: Arc::clone(&state.agent_run_repo),
+            app_handle: state.app_handle.clone(),
+        },
+        workspace.conversation_id.clone(),
+        trigger,
+        force,
+    );
+}
+
+fn schedule_pr_supervision_recovery_for_workspace(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) {
+    if pr_supervision_recovery_schedule_skip_reason(workspace).is_some() {
+        return;
+    }
+    let Some(github) = state.github_service.as_ref().map(Arc::clone) else {
+        return;
+    };
+    let chat_service: Arc<dyn ChatService> = Arc::new(state.build_chat_service());
+    schedule_agent_workspace_pr_supervision_recovery(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            project_repo: Arc::clone(&state.project_repo),
+            github,
+            pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+            chat_service: Some(chat_service),
+            agent_run_repo: Arc::clone(&state.agent_run_repo),
             app_handle: state.app_handle.clone(),
         },
         workspace.conversation_id.clone(),
@@ -680,6 +720,25 @@ async fn schedule_external_pr_reconciliation_for_conversation_id(
     };
 
     schedule_external_pr_reconciliation_for_workspace(state, &workspace, trigger, force);
+    Ok(())
+}
+
+async fn schedule_pr_supervision_recovery_for_conversation_id(
+    state: &AppState,
+    conversation_id: ChatConversationId,
+    trigger: AgentWorkspacePrSupervisionRecoveryTrigger,
+    force: bool,
+) -> Result<(), String> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(());
+    };
+
+    schedule_pr_supervision_recovery_for_workspace(state, &workspace, trigger, force);
     Ok(())
 }
 
@@ -3169,6 +3228,106 @@ fn normalize_agent_workspace_auto_merge_method(
     }
 }
 
+async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    auto_merge_desired: bool,
+    auto_merge_method: &str,
+) -> Result<(), String> {
+    let (Some(github), Some(pr_number)) = (
+        state.github_service.as_ref(),
+        workspace.publication_pr_number,
+    ) else {
+        return Ok(());
+    };
+
+    let working_dir = Path::new(&workspace.worktree_path);
+    if auto_merge_desired {
+        let enable_result = async {
+            if workspace.publication_pr_status.as_deref() == Some("draft") {
+                github.mark_pr_ready(working_dir, pr_number).await?;
+            }
+            github
+                .enable_pr_auto_merge(working_dir, pr_number, auto_merge_method)
+                .await
+        }
+        .await;
+
+        match enable_result {
+            Ok(()) => {
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        conversation_id,
+                        Some(true),
+                        Some("monitoring"),
+                        Some("GitHub auto-merge is enabled for this PR."),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Agent workspace PR supervision deferred GitHub auto-merge enable"
+                );
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        conversation_id,
+                        Some(false),
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge could not be enabled yet: {error}"
+                        )),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    } else if workspace.pr_auto_merge_current == Some(true) {
+        match github.disable_pr_auto_merge(working_dir, pr_number).await {
+            Ok(()) => {
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        conversation_id,
+                        Some(false),
+                        Some("monitoring"),
+                        Some("GitHub auto-merge is disabled for this PR."),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Agent workspace PR supervision deferred GitHub auto-merge disable"
+                );
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        conversation_id,
+                        Some(true),
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge could not be disabled yet: {error}"
+                        )),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Update PR supervision preferences for a project-backed agent conversation.
 #[tauri::command]
 pub async fn set_agent_conversation_workspace_pr_supervision(
@@ -3217,52 +3376,14 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
         .await
         .map_err(|e| e.to_string())?;
 
-    if let (Some(github), Some(pr_number)) = (
-        state.github_service.as_ref(),
-        workspace.publication_pr_number,
-    ) {
-        if input.auto_merge_desired {
-            if workspace.publication_pr_status.as_deref() == Some("draft") {
-                github
-                    .mark_pr_ready(Path::new(&workspace.worktree_path), pr_number)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            github
-                .enable_pr_auto_merge(
-                    Path::new(&workspace.worktree_path),
-                    pr_number,
-                    &auto_merge_method,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    &conversation_id,
-                    Some(true),
-                    Some("monitoring"),
-                    Some("GitHub auto-merge is enabled for this PR."),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-        } else if workspace.pr_auto_merge_current == Some(true) {
-            github
-                .disable_pr_auto_merge(Path::new(&workspace.worktree_path), pr_number)
-                .await
-                .map_err(|e| e.to_string())?;
-            state
-                .agent_conversation_workspace_repo
-                .update_pr_auto_merge_state(
-                    &conversation_id,
-                    Some(false),
-                    Some("monitoring"),
-                    Some("GitHub auto-merge is disabled for this PR."),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    reconcile_agent_workspace_auto_merge_for_supervision_toggle(
+        state,
+        &conversation_id,
+        &workspace,
+        input.auto_merge_desired,
+        &auto_merge_method,
+    )
+    .await?;
 
     state
         .agent_conversation_workspace_repo
@@ -3303,10 +3424,18 @@ pub async fn reconcile_agent_conversation_workspace_publication(
     conversation_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
     schedule_external_pr_reconciliation_for_conversation_id(
         state.inner(),
-        ChatConversationId::from_string(conversation_id),
+        conversation_id.clone(),
         AgentWorkspaceExternalPrReconciliationTrigger::AgentRunCompleted,
+        true,
+    )
+    .await?;
+    schedule_pr_supervision_recovery_for_conversation_id(
+        state.inner(),
+        conversation_id,
+        AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
         true,
     )
     .await
@@ -4916,6 +5045,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         project.clone(),
         worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
+        Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
 
@@ -6213,6 +6343,7 @@ mod tests {
         retarget_existing_workspace_pr_base_if_needed,
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
+        schedule_pr_supervision_recovery_for_conversation_id,
         send_agent_workspace_publish_repair_message_for_target,
         set_agent_conversation_workspace_pr_supervision_for_state,
         should_defer_agent_workspace_repair_message_for_registry,
@@ -6236,6 +6367,7 @@ mod tests {
     use crate::application::agent_conversation_workspace_base::{
         BaseResolutionResult, BaseStatus, BLOCK_REASON_MISSING_BASE_COMMIT,
     };
+    use crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryTrigger;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
         chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
@@ -6258,8 +6390,9 @@ mod tests {
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::{
-        GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrStatus as GithubPrStatus,
-        RunningAgentKey, RunningAgentRegistry,
+        GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrMergeStateStatus,
+        PrMergeableState, PrStatus as GithubPrStatus, PrSyncState, RunningAgentKey,
+        RunningAgentRegistry,
     };
     use crate::error::AppError;
     use crate::tests::mock_github_service::MockGithubService;
@@ -6918,6 +7051,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pr_supervision_enable_records_waiting_when_auto_merge_enable_fails() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        github.state().enable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+            "GitHub auto-merge is not ready".to_string(),
+        )));
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(254);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/254".to_string());
+        workspace.publication_pr_status = Some("open".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let response = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: true,
+                auto_merge_desired: true,
+                auto_merge_method: Some("squash".to_string()),
+            },
+            &state,
+        )
+        .await
+        .expect("PR supervision should persist even when GitHub auto-merge waits");
+
+        assert!(response.pr_autofix_enabled);
+        assert!(response.pr_auto_merge_desired);
+        assert_eq!(response.pr_auto_merge_current, Some(false));
+        assert_eq!(response.pr_supervision_status.as_deref(), Some("waiting"));
+        assert!(response
+            .pr_supervision_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("could not be enabled yet"));
+
+        let github_state = github.state();
+        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        drop(github_state);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "pr_supervision"
+                && event.status == "enabled"
+                && event
+                    .summary
+                    .contains("request GitHub auto-merge when possible")
+        }));
+    }
+
+    #[tokio::test]
     async fn pr_supervision_disable_turns_off_existing_auto_merge() {
         let mut state = AppState::new_test();
         let github = Arc::new(MockGithubService::new());
@@ -6968,6 +7161,66 @@ mod tests {
         let github_state = github.state();
         assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
         assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(252));
+        drop(github_state);
+
+        let events = state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&workspace.conversation_id)
+            .await
+            .expect("events should list");
+        assert!(events.iter().any(|event| {
+            event.step == "pr_supervision"
+                && event.status == "disabled"
+                && event.summary == "RalphX PR supervision is disabled."
+        }));
+    }
+
+    #[tokio::test]
+    async fn pr_supervision_disable_records_waiting_when_auto_merge_disable_fails() {
+        let mut state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        github.state().disable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+            "GitHub auto-merge cannot be disabled yet".to_string(),
+        )));
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        state.github_service = Some(github_trait);
+
+        let mut workspace = command_test_workspace();
+        workspace.publication_pr_number = Some(255);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_desired = true;
+        workspace.pr_auto_merge_current = Some(true);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should persist");
+
+        let response = set_agent_conversation_workspace_pr_supervision_for_state(
+            workspace.conversation_id.as_str(),
+            AgentConversationWorkspacePrSupervisionInput {
+                auto_fix_enabled: false,
+                auto_merge_desired: false,
+                auto_merge_method: None,
+            },
+            &state,
+        )
+        .await
+        .expect("PR supervision preference should persist even when GitHub disable waits");
+
+        assert!(!response.pr_autofix_enabled);
+        assert!(!response.pr_auto_merge_desired);
+        assert_eq!(response.pr_auto_merge_current, Some(true));
+        assert_eq!(response.pr_supervision_status.as_deref(), Some("waiting"));
+        assert!(response
+            .pr_supervision_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("could not be disabled yet"));
+
+        let github_state = github.state();
+        assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
         drop(github_state);
 
         let events = state
@@ -7200,6 +7453,19 @@ mod tests {
         );
     }
 
+    async fn wait_for_pr_sync_state_calls(github: &MockGithubService, expected: u32) {
+        for _ in 0..100 {
+            if github.state().check_pr_sync_state_calls >= expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "expected at least {expected} PR sync-state lookups, got {}",
+            github.state().check_pr_sync_state_calls
+        );
+    }
+
     #[tokio::test]
     async fn workspace_load_external_pr_reconciliation_schedules_for_reconcilable_workspace() {
         let mut state = AppState::new_test();
@@ -7301,6 +7567,61 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].step, "external_pr_closed");
+    }
+
+    #[tokio::test]
+    async fn run_completed_pr_supervision_recovery_rearms_blocked_workspace() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "pr-supervision-command-recovery",
+            true,
+            Some(257),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_push_status = Some("failed".to_string());
+        workspace.pr_supervision_status = Some("blocked".to_string());
+        workspace.pr_autofix_enabled = true;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace update should persist");
+        let head_sha = git(Path::new(&workspace.worktree_path), &["rev-parse", "HEAD"]);
+        github.will_return_sync_state(PrSyncState {
+            status: GithubPrStatus::Open,
+            merge_state_status: Some(PrMergeStateStatus::Clean),
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: workspace.branch_name.clone(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head_sha),
+            base_ref_oid: None,
+        });
+
+        schedule_pr_supervision_recovery_for_conversation_id(
+            &state,
+            conversation_id.clone(),
+            AgentWorkspacePrSupervisionRecoveryTrigger::AgentRunCompleted,
+            true,
+        )
+        .await
+        .expect("recovery scheduling should succeed");
+
+        wait_for_pr_sync_state_calls(&github, 1).await;
+        let updated = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+        assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
     }
 
     fn git(repo: &Path, args: &[&str]) -> String {
