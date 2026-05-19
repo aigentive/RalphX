@@ -692,6 +692,31 @@ fn project_chat_codex_surface_can_append_to_open_ideation_plans() {
 }
 
 #[test]
+fn project_chat_codex_surface_mixes_external_flow_tools_with_internal_agent_tasks() {
+    let root = project_root();
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-chat-project");
+    let prompt = load_harness_agent_prompt(&root, "ralphx-chat-project", AgentPromptHarness::Codex)
+        .expect("missing codex prompt for ralphx-chat-project");
+
+    assert_eq!(metadata.mcp_transport.as_deref(), Some("external"));
+    assert!(
+        metadata.mcp_tools.iter().all(|tool| !tool.ends_with("_agent_task")),
+        "agent-task tools should not be exposed through the external project-chat surface"
+    );
+    assert!(
+        metadata
+            .internal_mcp_tools
+            .iter()
+            .any(|tool| tool == "create_agent_task"),
+        "project chat Codex should receive native agent-task tools from the internal sidecar"
+    );
+    assert!(
+        prompt.contains("list_agent_tasks"),
+        "project chat Codex prompt should mention internal native agent-task tools"
+    );
+}
+
+#[test]
 fn project_chat_claude_surface_uses_external_ideation_tools() {
     let root = project_root();
     let metadata = load_canonical_claude_metadata(&root, "ralphx-chat-project");
@@ -710,6 +735,32 @@ fn project_chat_claude_surface_uses_external_ideation_tools() {
     assert!(
         prompt.contains("v1_start_ideation") && prompt.contains("next_action` yourself"),
         "project chat Claude prompt must describe the external ideation flow"
+    );
+}
+
+#[test]
+fn project_chat_claude_surface_mixes_external_flow_tools_with_internal_agent_tasks() {
+    let root = project_root();
+    let metadata = load_canonical_claude_metadata(&root, "ralphx-chat-project");
+    let prompt =
+        load_harness_agent_prompt(&root, "ralphx-chat-project", AgentPromptHarness::Claude)
+            .expect("missing claude prompt for ralphx-chat-project");
+
+    assert_eq!(metadata.mcp_transport.as_deref(), Some("external"));
+    assert!(
+        metadata.mcp_tools.iter().all(|tool| !tool.ends_with("_agent_task")),
+        "agent-task tools should not be exposed through the external project-chat surface"
+    );
+    assert!(
+        metadata
+            .internal_mcp_tools
+            .iter()
+            .any(|tool| tool == "create_agent_task"),
+        "project chat Claude should receive native agent-task tools from the internal sidecar"
+    );
+    assert!(
+        prompt.contains("list_agent_tasks"),
+        "project chat Claude prompt should mention internal native agent-task tools"
     );
 }
 
@@ -1613,6 +1664,42 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
     assert!(
         !session_namer.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
         "non-delegating codex prompt should not include the generated delegation appendix"
+    );
+}
+
+#[test]
+fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
+    let root = project_root();
+
+    for agent_name in [
+        "ralphx-chat-task",
+        "ralphx-chat-project",
+        "ralphx-ideation",
+        "ralphx-execution-worker",
+        "ralphx-execution-coder",
+        "ralphx-general-worker",
+    ] {
+        let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
+            .unwrap_or_else(|| panic!("missing codex prompt for {agent_name}"));
+        assert!(
+            prompt.contains("## RalphX Agent Task Ledger (AUTO-GENERATED)"),
+            "prompt for {agent_name} should include the generated agent task appendix"
+        );
+        assert!(
+            prompt.contains("list_agent_tasks"),
+            "prompt for {agent_name} should mention live agent task tools"
+        );
+    }
+
+    let session_namer = load_harness_agent_prompt(
+        &root,
+        "ralphx-utility-session-namer",
+        AgentPromptHarness::Codex,
+    )
+    .expect("missing session namer codex prompt");
+    assert!(
+        !session_namer.contains("## RalphX Agent Task Ledger (AUTO-GENERATED)"),
+        "non-agent-task prompt should not include the generated agent task appendix"
     );
 }
 

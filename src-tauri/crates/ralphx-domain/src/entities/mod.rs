@@ -1,6 +1,7 @@
 pub mod activity_event;
 pub mod agent_run;
 pub mod agent_conversation_workspace;
+pub mod agent_task;
 pub mod event_type;
 pub mod api_key;
 pub mod app_state;
@@ -48,6 +49,11 @@ pub use agent_conversation_workspace::{
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+};
+pub use agent_task::{
+    merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
+    AgentTaskListId, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
+    AgentTaskStateChange, AgentTaskSummary,
 };
 pub use event_type::{EventType, ParseEventTypeError};
 pub use api_key::{

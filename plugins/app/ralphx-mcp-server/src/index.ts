@@ -57,6 +57,7 @@ import {
   callAgentWorkspaceTool,
   isAgentWorkspaceToolName,
 } from "./agent-workspace-tools.js";
+import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
@@ -172,6 +173,16 @@ const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
+
+function withAgentTaskRuntimeContext(args: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...args,
+    context_type: RALPHX_CONTEXT_TYPE,
+    context_id: RALPHX_CONTEXT_ID,
+    project_id: RALPHX_PROJECT_ID,
+    actor_agent: AGENT_TYPE,
+  };
+}
 
 function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
   if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
@@ -787,6 +798,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callTauri("coordination/delegate/wait", args as Record<string, unknown>);
     } else if (name === "delegate_cancel") {
       result = await callTauri("coordination/delegate/cancel", args as Record<string, unknown>);
+    } else if ((AGENT_TASK_TOOL_NAMES as string[]).includes(name)) {
+      const endpointByTool: Record<string, string> = {
+        create_agent_task: "agent_tasks/create",
+        get_agent_task: "agent_tasks/get",
+        list_agent_tasks: "agent_tasks/list",
+        update_agent_task: "agent_tasks/update",
+        claim_agent_task: "agent_tasks/claim",
+        complete_agent_task: "agent_tasks/complete",
+      };
+      const endpoint = endpointByTool[name];
+      result = await callTauri(
+        endpoint,
+        withAgentTaskRuntimeContext(args as Record<string, unknown>)
+      );
     } else if (name === "get_project_analysis") {
       // GET /api/projects/:project_id/analysis?task_id=
       const { project_id, task_id } = args as { project_id: string; task_id?: string };

@@ -851,6 +851,60 @@ harnesses:
 }
 
 #[test]
+fn build_codex_mcp_overrides_mixes_external_transport_with_internal_sidecar_tools() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+    std::fs::create_dir_all(root.join("agents/ralphx-chat-project"))
+        .expect("create canonical agent dir");
+    std::fs::write(
+        root.join("agents/ralphx-chat-project/agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+harnesses:
+  codex:
+    mcp_transport: external
+    mcp_tools:
+      - v1_start_ideation
+    internal_mcp_tools:
+      - create_agent_task
+      - list_agent_tasks
+"#,
+    )
+    .expect("write shared definition");
+
+    let overrides = build_codex_mcp_overrides(&plugin_dir, "ralphx-chat-project", false, None)
+        .expect("overrides");
+
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry.starts_with("mcp_servers.ralphx.url=")),
+        "external MCP transport should remain configured: {overrides:?}"
+    );
+    assert!(
+        overrides
+            .iter()
+            .any(|entry| entry.starts_with("mcp_servers.ralphx_internal.command=")),
+        "internal MCP sidecar should launch bundled stdio server: {overrides:?}"
+    );
+    assert!(
+        overrides.iter().any(|entry| {
+            entry
+                == "mcp_servers.ralphx_internal.enabled_tools=[\"create_agent_task\",\"list_agent_tasks\"]"
+        }),
+        "internal sidecar enabled tools should come from internal_mcp_tools: {overrides:?}"
+    );
+    assert!(
+        overrides.iter().any(|entry| {
+            entry.contains("mcp_servers.ralphx_internal.args=")
+                && entry.contains("--allowed-tools=create_agent_task,list_agent_tasks")
+        }),
+        "internal sidecar args should pass narrowed --allowed-tools: {overrides:?}"
+    );
+}
+
+#[test]
 fn build_codex_mcp_overrides_threads_runtime_context_into_external_mcp_url() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let root = temp_dir.path();

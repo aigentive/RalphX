@@ -12,6 +12,7 @@ import { FILESYSTEM_TOOLS } from "./filesystem-tools.js";
 import { IDEATION_TOOLS } from "./ideation-tools.js";
 import { WORKFLOW_TOOLS } from "./workflow-tools.js";
 import { AGENT_WORKSPACE_TOOLS } from "./agent-workspace-tools.js";
+import { AGENT_TASK_TOOLS } from "./agent-task-tools.js";
 import { SUPPORT_TOOLS } from "./support-tools.js";
 import {
   formatToolErrorMessageFromRegistry,
@@ -42,6 +43,11 @@ export const ALL_TOOLS: Tool[] = [
   // AGENT WORKSPACE TOOLS (workspace repair and publication)
   // ========================================================================
   ...AGENT_WORKSPACE_TOOLS,
+
+  // ========================================================================
+  // AGENT TASK TOOLS (native todo/dependency tracking)
+  // ========================================================================
+  ...AGENT_TASK_TOOLS,
 
   // ========================================================================
   // PLAN ARTIFACT TOOLS (ralphx-ideation agent)

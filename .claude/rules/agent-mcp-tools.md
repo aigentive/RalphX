@@ -37,6 +37,8 @@ Rule:
 
 **Delegation policy note:** Non-team RalphX-native delegation topology now belongs in canonical `agents/<agent>/agent.yaml` under `delegation.allowed_targets`; backend `delegate_start`, auto-generated delegation system instructions, and MCP delegation-tool visibility must derive from that same allowlist instead of prompt-only conventions. See `delegation-topology.md`.
 
+**Mixed MCP transport note:** Agents with `harnesses.<harness>.mcp_transport: external` may add internal sidecar grants with `harnesses.<harness>.internal_mcp_tools`; external `mcp_tools` stay public/high-level while internal sidecar tools use the generated `<mcp_server>_internal` server.
+
 ## Alignment Rule (NON-NEGOTIABLE)
 
 When adding OR removing an MCP tool from an agent:
