@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import { AgentComposerSurface } from "./AgentComposerSurface";
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -74,8 +75,27 @@ function makeDropEvent(files: File[]) {
   };
 }
 
+function makeTerminalDragEvent() {
+  const file = new File(["content"], "terminal-drag.txt", { type: "text/plain" });
+  return {
+    dataTransfer: {
+      files: [file],
+      items: [
+        {
+          kind: "file",
+          type: file.type,
+          getAsFile: () => file,
+        },
+      ],
+      types: ["application/x-ralphx-terminal-dock", "Files"],
+      dropEffect: "none",
+    },
+  };
+}
+
 describe("AgentComposerSurface", () => {
   beforeEach(() => {
+    setRalphxTerminalDockDragActive(false);
     vi.mocked(invoke).mockImplementation((cmd) => {
       if (cmd === "list_agent_composer_skills") {
         return Promise.resolve({ skills: [] });
@@ -417,6 +437,42 @@ describe("AgentComposerSurface", () => {
       expect(onFilesSelected).toHaveBeenCalledWith([file]);
     });
     expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+  });
+
+  it("ignores terminal panel drags even when the drag event advertises file types", () => {
+    const onFilesSelected = vi.fn();
+    renderComposer({
+      dataTestId: "agent-composer",
+      enableAttachments: true,
+      onFilesSelected,
+    });
+    const composer = screen.getByTestId("agent-composer");
+
+    fireEvent.dragEnter(composer, makeTerminalDragEvent());
+    fireEvent.dragOver(composer, makeTerminalDragEvent());
+    fireEvent.drop(composer, makeTerminalDragEvent());
+
+    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    expect(onFilesSelected).not.toHaveBeenCalled();
+  });
+
+  it("ignores active terminal panel drags when WebKit only reports file types", () => {
+    const onFilesSelected = vi.fn();
+    const file = new File(["content"], "terminal-drag.txt", { type: "text/plain" });
+    setRalphxTerminalDockDragActive(true);
+    renderComposer({
+      dataTestId: "agent-composer",
+      enableAttachments: true,
+      onFilesSelected,
+    });
+    const composer = screen.getByTestId("agent-composer");
+
+    fireEvent.dragEnter(composer, makeDropEvent([file]));
+    fireEvent.dragOver(composer, makeDropEvent([file]));
+    fireEvent.drop(composer, makeDropEvent([file]));
+
+    expect(screen.queryByTestId("chat-composer-drop-overlay")).not.toBeInTheDocument();
+    expect(onFilesSelected).not.toHaveBeenCalled();
   });
 
   it("does not accept dropped files when attachments are disabled", () => {

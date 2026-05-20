@@ -5,6 +5,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -18,6 +20,7 @@ import type {
 } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
+  ChevronDown,
   PanelBottomClose,
   PanelBottomOpen,
   RefreshCw,
@@ -43,11 +46,22 @@ import {
 import type { AgentConversationWorkspace } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatBranchDisplay } from "@/lib/branch-utils";
+import {
+  RALPHX_TERMINAL_DOCK_DRAG_TYPE,
+  setRalphxTerminalDockDragActive,
+} from "@/lib/internalDragTypes";
 import { cn } from "@/lib/utils";
 import { compactTerminalPath } from "./agentTerminalPaths";
 import { loadAgentTerminalRuntime } from "./agentTerminalRuntime";
@@ -66,14 +80,24 @@ interface AgentTerminalDrawerProps {
   onCollapse: () => void;
   placement: AgentTerminalPlacement;
   onPlacementChange: (placement: AgentTerminalPlacement) => void;
+  onPlacementDragStart?: () => void;
+  onPlacementDragEnd?: () => void;
   dockElement: HTMLElement | null;
 }
 
 const TERMINAL_MIN_COLS = 80;
 const TERMINAL_MIN_ROWS = 20;
+const HEADER_DRAG_CLICK_SUPPRESSION_MS = 150;
 type AgentTerminalDisplayStatus = AgentTerminalStatus | "closed";
 
 type DeferredFrameJob = { frame: number | null; timer: number | null };
+type DragEventWithOptionalTransfer = { dataTransfer?: DataTransfer };
+
+function getOptionalDataTransfer(
+  event: ReactDragEvent<HTMLElement>,
+): DataTransfer | undefined {
+  return (event as unknown as DragEventWithOptionalTransfer).dataTransfer;
+}
 
 function cancelDeferredFrameJob(job: DeferredFrameJob | null) {
   if (!job) {
@@ -112,6 +136,8 @@ export function AgentTerminalDrawer({
   onCollapse,
   placement,
   onPlacementChange,
+  onPlacementDragStart,
+  onPlacementDragEnd,
   dockElement,
 }: AgentTerminalDrawerProps) {
   const terminalId = DEFAULT_AGENT_TERMINAL_ID;
@@ -131,6 +157,8 @@ export function AgentTerminalDrawer({
   const lastReportedSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const resizeReportTimerRef = useRef<number | null>(null);
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const suppressNextHeaderClickRef = useRef(false);
+  const headerDragClickTimerRef = useRef<number | null>(null);
   const [status, setStatus] = useState<AgentTerminalDisplayStatus>("closed");
   const [cwd, setCwd] = useState(workspace.worktreePath);
   const [branchName, setBranchName] = useState(workspace.branchName);
@@ -602,6 +630,70 @@ export function AgentTerminalDrawer({
     onExpand();
   }, [expanded, onCollapse, onExpand]);
 
+  const clearHeaderDragClickTimer = useCallback(() => {
+    if (headerDragClickTimerRef.current !== null) {
+      window.clearTimeout(headerDragClickTimerRef.current);
+      headerDragClickTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleHeaderDragClickReset = useCallback(() => {
+    clearHeaderDragClickTimer();
+    headerDragClickTimerRef.current = window.setTimeout(() => {
+      headerDragClickTimerRef.current = null;
+      suppressNextHeaderClickRef.current = false;
+    }, HEADER_DRAG_CLICK_SUPPRESSION_MS);
+  }, [clearHeaderDragClickTimer]);
+
+  const handleHeaderToggleClick = useCallback(() => {
+    if (suppressNextHeaderClickRef.current) {
+      suppressNextHeaderClickRef.current = false;
+      clearHeaderDragClickTimer();
+      return;
+    }
+    handleExpandToggle();
+  }, [clearHeaderDragClickTimer, handleExpandToggle]);
+
+  const handleHeaderKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      event.preventDefault();
+      handleExpandToggle();
+    },
+    [handleExpandToggle],
+  );
+
+  const handleHeaderDragStart = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      suppressNextHeaderClickRef.current = true;
+      setRalphxTerminalDockDragActive(true);
+      const dataTransfer = getOptionalDataTransfer(event);
+      if (dataTransfer) {
+        dataTransfer.effectAllowed = "move";
+        dataTransfer.setData(RALPHX_TERMINAL_DOCK_DRAG_TYPE, conversationId);
+        dataTransfer.setData("text/plain", conversationId);
+      }
+      onPlacementDragStart?.();
+    },
+    [conversationId, onPlacementDragStart],
+  );
+
+  const handleHeaderDragEnd = useCallback(() => {
+    setRalphxTerminalDockDragActive(false);
+    onPlacementDragEnd?.();
+    scheduleHeaderDragClickReset();
+  }, [onPlacementDragEnd, scheduleHeaderDragClickReset]);
+
+  useEffect(
+    () => () => {
+      setRalphxTerminalDockDragActive(false);
+      clearHeaderDragClickTimer();
+    },
+    [clearHeaderDragClickTimer],
+  );
+
   const handleResizeStart = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -658,7 +750,19 @@ export function AgentTerminalDrawer({
           borderColor: "var(--overlay-faint)",
         }}
       >
-        <div className="flex min-w-0 items-center gap-2 text-xs">
+        <div
+          className="flex min-w-0 flex-1 cursor-grab select-none items-center gap-2 text-xs active:cursor-grabbing"
+          role="button"
+          tabIndex={0}
+          draggable
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse terminal panel" : "Expand terminal panel"}
+          data-testid="agent-terminal-header"
+          onClick={handleHeaderToggleClick}
+          onKeyDown={handleHeaderKeyDown}
+          onDragStart={handleHeaderDragStart}
+          onDragEnd={handleHeaderDragEnd}
+        >
           <TerminalIcon
             className="h-3.5 w-3.5 shrink-0"
             style={{ color: "var(--accent-primary)" }}
@@ -689,20 +793,28 @@ export function AgentTerminalDrawer({
             placement={placement}
             onPlacementChange={onPlacementChange}
           />
-          <TerminalIconButton
-            label="Clear terminal"
-            onClick={() => void handleClear()}
-            disabled={isClearing || isHydrating || terminalSessionUnavailable}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </TerminalIconButton>
-          <TerminalIconButton
-            label={terminalSessionUnavailable ? "Open terminal" : "Start fresh terminal session"}
-            onClick={() => void handleRestart()}
-            disabled={isRestarting || isHydrating}
-          >
-            <RefreshCw className={cn("h-3.5 w-3.5", isRestarting && "animate-spin")} />
-          </TerminalIconButton>
+          {expanded ? (
+            <>
+              <TerminalIconButton
+                label="Clear terminal"
+                onClick={() => void handleClear()}
+                disabled={isClearing || isHydrating || terminalSessionUnavailable}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </TerminalIconButton>
+              <TerminalIconButton
+                label={
+                  terminalSessionUnavailable
+                    ? "Open terminal"
+                    : "Start fresh terminal session"
+                }
+                onClick={() => void handleRestart()}
+                disabled={isRestarting || isHydrating}
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", isRestarting && "animate-spin")} />
+              </TerminalIconButton>
+            </>
+          ) : null}
           <TerminalIconButton
             label={expanded ? "Collapse terminal" : "Expand terminal"}
             onClick={handleExpandToggle}
@@ -713,13 +825,15 @@ export function AgentTerminalDrawer({
               <PanelBottomOpen className="h-3.5 w-3.5" />
             )}
           </TerminalIconButton>
-          <TerminalIconButton
-            label="Close terminal"
-            onClick={handleClose}
-            disabled={terminalSessionUnavailable}
-          >
-            <X className="h-3.5 w-3.5" />
-          </TerminalIconButton>
+          {expanded ? (
+            <TerminalIconButton
+              label="Close terminal"
+              onClick={handleClose}
+              disabled={terminalSessionUnavailable}
+            >
+              <X className="h-3.5 w-3.5" />
+            </TerminalIconButton>
+          ) : null}
         </div>
       </div>
 
@@ -751,11 +865,23 @@ export function AgentTerminalDrawer({
   );
 }
 
-const TERMINAL_PLACEMENT_LABELS: Record<AgentTerminalPlacement, string> = {
-  auto: "Auto",
-  chat: "Chat",
-  panel: "Panel",
-};
+const TERMINAL_PLACEMENT_OPTIONS: Array<{
+  value: AgentTerminalPlacement;
+  label: string;
+}> = [
+  { value: "auto", label: "Auto" },
+  { value: "chat", label: "Under chat" },
+  { value: "panel", label: "Side panel" },
+];
+
+const TERMINAL_PLACEMENT_LABELS: Record<AgentTerminalPlacement, string> =
+  Object.fromEntries(
+    TERMINAL_PLACEMENT_OPTIONS.map((option) => [option.value, option.label]),
+  ) as Record<AgentTerminalPlacement, string>;
+
+function isAgentTerminalPlacement(value: string): value is AgentTerminalPlacement {
+  return value === "auto" || value === "chat" || value === "panel";
+}
 
 function TerminalPlacementButton({
   placement,
@@ -764,27 +890,41 @@ function TerminalPlacementButton({
   placement: AgentTerminalPlacement;
   onPlacementChange: (placement: AgentTerminalPlacement) => void;
 }) {
-  const nextPlacement: AgentTerminalPlacement =
-    placement === "auto" ? "panel" : placement === "panel" ? "chat" : "auto";
+  const handleValueChange = (value: string) => {
+    if (isAgentTerminalPlacement(value) && value !== placement) {
+      onPlacementChange(value);
+    }
+  };
+
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 px-2 text-[0.625rem]"
-          onClick={() => onPlacementChange(nextPlacement)}
+          className="h-7 gap-1 px-2 text-[0.625rem]"
           aria-label={`Terminal dock: ${TERMINAL_PLACEMENT_LABELS[placement]}`}
           data-testid="agent-terminal-placement"
         >
           {TERMINAL_PLACEMENT_LABELS[placement]}
+          <ChevronDown className="h-3 w-3" aria-hidden="true" />
         </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="text-xs">
-        Move terminal docking
-      </TooltipContent>
-    </Tooltip>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side="top" className="min-w-[150px]">
+        <DropdownMenuRadioGroup value={placement} onValueChange={handleValueChange}>
+          {TERMINAL_PLACEMENT_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem
+              key={option.value}
+              value={option.value}
+              className="text-xs"
+            >
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

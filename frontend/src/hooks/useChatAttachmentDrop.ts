@@ -16,6 +16,10 @@ import {
   inferMimeTypeFromFileName,
   validateChatAttachmentFiles,
 } from "@/components/Chat/chatAttachmentFiles";
+import {
+  RALPHX_TERMINAL_DOCK_DRAG_TYPE,
+  isRalphxTerminalDockDragActive,
+} from "@/lib/internalDragTypes";
 
 interface NativeDropPosition {
   x: number;
@@ -50,7 +54,19 @@ interface UseChatAttachmentDropResult {
   };
 }
 
+function dataTransferHasType(dataTransfer: DataTransfer, type: string): boolean {
+  return Array.from(dataTransfer.types ?? []).includes(type);
+}
+
 function dataTransferHasFiles(dataTransfer: DataTransfer): boolean {
+  if (isRalphxTerminalDockDragActive()) {
+    return false;
+  }
+
+  if (dataTransferHasType(dataTransfer, RALPHX_TERMINAL_DOCK_DRAG_TYPE)) {
+    return false;
+  }
+
   if (Array.from(dataTransfer.types ?? []).includes("Files")) {
     return true;
   }

@@ -3,12 +3,15 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
 export type AgentTerminalPlacement = "auto" | "chat" | "panel";
+export type AgentTerminalDock = "chat" | "panel";
 
 interface AgentTerminalUiState {
   openByConversationId: Record<string, boolean>;
   heightByConversationId: Record<string, number>;
   activeTerminalByConversationId: Record<string, string>;
   placement: AgentTerminalPlacement;
+  draggingConversationId: string | null;
+  dragOverDock: AgentTerminalDock | null;
 }
 
 interface AgentTerminalUiActions {
@@ -17,6 +20,9 @@ interface AgentTerminalUiActions {
   setHeight: (conversationId: string, height: number) => void;
   setActiveTerminal: (conversationId: string, terminalId: string) => void;
   setPlacement: (placement: AgentTerminalPlacement) => void;
+  setDraggingConversation: (conversationId: string | null) => void;
+  setDragOverDock: (dock: AgentTerminalDock | null) => void;
+  clearDragState: () => void;
 }
 
 export const AGENT_TERMINAL_DEFAULT_HEIGHT = 260;
@@ -33,6 +39,8 @@ export const useAgentTerminalStore = create<
       heightByConversationId: {},
       activeTerminalByConversationId: {},
       placement: "auto",
+      draggingConversationId: null,
+      dragOverDock: null,
 
       setOpen: (conversationId, open) =>
         set((state) => {
@@ -61,6 +69,25 @@ export const useAgentTerminalStore = create<
       setPlacement: (placement) =>
         set((state) => {
           state.placement = placement;
+        }),
+
+      setDraggingConversation: (conversationId) =>
+        set((state) => {
+          state.draggingConversationId = conversationId;
+          if (!conversationId) {
+            state.dragOverDock = null;
+          }
+        }),
+
+      setDragOverDock: (dock) =>
+        set((state) => {
+          state.dragOverDock = dock;
+        }),
+
+      clearDragState: () =>
+        set((state) => {
+          state.draggingConversationId = null;
+          state.dragOverDock = null;
         }),
     })),
     {

@@ -1,5 +1,13 @@
-import { lazy, Suspense, useCallback } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import { createPortal } from "react-dom";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Terminal as TerminalIcon } from "lucide-react";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
@@ -14,12 +22,55 @@ import {
   AGENT_TERMINAL_COLLAPSED_HEIGHT,
   AGENT_TERMINAL_DEFAULT_HEIGHT,
   useAgentTerminalStore,
+  type AgentTerminalDock,
   type AgentTerminalPlacement,
 } from "./agentTerminalStore";
 
 const LazyAgentTerminalDrawer = lazy(() =>
   preloadAgentTerminalDrawer().then((module) => ({ default: module.AgentTerminalDrawer })),
 );
+
+const TERMINAL_DOCK_DROP_LABELS: Record<AgentTerminalDock, string> = {
+  chat: "Drop under chat",
+  panel: "Drop in side panel",
+};
+const TERMINAL_DRAG_END_CLEANUP_DELAY_MS = 120;
+const TERMINAL_DOCK_DRAG_LEAVE_CLEAR_DELAY_MS = 80;
+type DragEventWithOptionalTransfer = { dataTransfer?: DataTransfer };
+interface NativeDockDragPosition {
+  x: number;
+  y: number;
+}
+interface NativeDockDragPayload {
+  type: string;
+  position?: NativeDockDragPosition;
+}
+interface NativeDockDragEvent {
+  payload: NativeDockDragPayload;
+}
+
+function getOptionalDataTransfer(
+  event: ReactDragEvent<HTMLElement>,
+): DataTransfer | undefined {
+  return (event as unknown as DragEventWithOptionalTransfer).dataTransfer;
+}
+
+function isNativePositionInsideElement(
+  position: NativeDockDragPosition | undefined,
+  element: HTMLElement | null,
+) {
+  if (!position || !element) {
+    return false;
+  }
+
+  const rect = element.getBoundingClientRect();
+  return (
+    position.x >= rect.left &&
+    position.x <= rect.right &&
+    position.y >= rect.top &&
+    position.y <= rect.bottom
+  );
+}
 
 function AgentTerminalLoadingShell({
   height,
@@ -141,35 +192,294 @@ export function AgentsTerminalDockHost({
   hasAutoOpenArtifacts,
   setDockElement,
 }: AgentsTerminalDockHostProps) {
-  const { canRender, isExpanded, height, dockTarget } = useAgentTerminalPresentation({
-    conversationId,
-    workspace,
-    terminalUnavailableReason,
-    hasAutoOpenArtifacts,
-  });
+  const { canRender, isExpanded, height, dockTarget, artifactPaneOpen } =
+    useAgentTerminalPresentation({
+      conversationId,
+      workspace,
+      terminalUnavailableReason,
+      hasAutoOpenArtifacts,
+    });
+  const draggingConversationId = useAgentTerminalStore(
+    (state) => state.draggingConversationId,
+  );
+  const dragOverDock = useAgentTerminalStore((state) => state.dragOverDock);
+  const setTerminalPlacement = useAgentTerminalStore((state) => state.setPlacement);
+  const setDragOverDock = useAgentTerminalStore((state) => state.setDragOverDock);
+  const clearDragState = useAgentTerminalStore((state) => state.clearDragState);
+  const dockHostRef = useRef<HTMLDivElement | null>(null);
+  const dragLeaveClearTimerRef = useRef<number | null>(null);
+
+  const setDockHostElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      dockHostRef.current = element;
+      setDockElement(element);
+    },
+    [setDockElement],
+  );
+
+  const cancelDragLeaveClear = useCallback(() => {
+    if (dragLeaveClearTimerRef.current !== null) {
+      window.clearTimeout(dragLeaveClearTimerRef.current);
+      dragLeaveClearTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleDragLeaveClear = useCallback(() => {
+    cancelDragLeaveClear();
+    dragLeaveClearTimerRef.current = window.setTimeout(() => {
+      dragLeaveClearTimerRef.current = null;
+      const terminalState = useAgentTerminalStore.getState();
+      if (terminalState.dragOverDock === dock) {
+        terminalState.setDragOverDock(null);
+      }
+    }, TERMINAL_DOCK_DRAG_LEAVE_CLEAR_DELAY_MS);
+  }, [cancelDragLeaveClear, dock]);
+
+  const isDocumentDragEventOverDock = useCallback((event: DragEvent) => {
+    const host = dockHostRef.current;
+    if (!host) {
+      return false;
+    }
+
+    const elementAtPointer =
+      typeof document.elementFromPoint === "function"
+        ? document.elementFromPoint(event.clientX, event.clientY)
+        : null;
+    if (elementAtPointer && host.contains(elementAtPointer)) {
+      return true;
+    }
+
+    const rect = host.getBoundingClientRect();
+    return (
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom
+    );
+  }, []);
+
+  useEffect(
+    () => () => {
+      cancelDragLeaveClear();
+    },
+    [cancelDragLeaveClear],
+  );
+
+  const isVisible = dockTarget === dock;
+  const resolvedDockHeight = isExpanded ? height : AGENT_TERMINAL_COLLAPSED_HEIGHT;
+  const targetAvailable = dock === "chat" || artifactPaneOpen;
+  const isDropTarget =
+    canRender &&
+    draggingConversationId === conversationId &&
+    targetAvailable &&
+    dockTarget !== dock;
+  const isDragOver = isDropTarget && dragOverDock === dock;
+
+  const activateDropTarget = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isDropTarget) {
+      return;
+    }
+    cancelDragLeaveClear();
+    event.preventDefault();
+    const dataTransfer = getOptionalDataTransfer(event);
+    if (dataTransfer) {
+      dataTransfer.dropEffect = "move";
+    }
+    setDragOverDock(dock);
+  };
+
+  const handleDragLeave = () => {
+    if (dragOverDock !== dock) {
+      return;
+    }
+    scheduleDragLeaveClear();
+  };
+
+  const handleDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isDropTarget) {
+      return;
+    }
+    event.preventDefault();
+    cancelDragLeaveClear();
+    setTerminalPlacement(dock);
+    clearDragState();
+  };
+
+  useEffect(() => {
+    if (!isDropTarget) {
+      return;
+    }
+
+    const handleDocumentDragMove = (event: DragEvent) => {
+      if (!isDocumentDragEventOverDock(event)) {
+        if (useAgentTerminalStore.getState().dragOverDock === dock) {
+          scheduleDragLeaveClear();
+        }
+        return;
+      }
+
+      event.preventDefault();
+      cancelDragLeaveClear();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      setDragOverDock(dock);
+    };
+
+    const handleDocumentDrop = (event: DragEvent) => {
+      if (!isDocumentDragEventOverDock(event)) {
+        return;
+      }
+
+      event.preventDefault();
+      cancelDragLeaveClear();
+      setTerminalPlacement(dock);
+      clearDragState();
+    };
+
+    document.addEventListener("dragenter", handleDocumentDragMove, true);
+    document.addEventListener("dragover", handleDocumentDragMove, true);
+    document.addEventListener("drop", handleDocumentDrop, true);
+    return () => {
+      document.removeEventListener("dragenter", handleDocumentDragMove, true);
+      document.removeEventListener("dragover", handleDocumentDragMove, true);
+      document.removeEventListener("drop", handleDocumentDrop, true);
+    };
+  }, [
+    cancelDragLeaveClear,
+    clearDragState,
+    dock,
+    isDocumentDragEventOverDock,
+    isDropTarget,
+    scheduleDragLeaveClear,
+    setDragOverDock,
+    setTerminalPlacement,
+  ]);
+
+  useEffect(() => {
+    if (!isDropTarget) {
+      return;
+    }
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    const setupNativeDragListener = async () => {
+      try {
+        const webview = getCurrentWebview();
+        unlisten = await webview.onDragDropEvent((event: NativeDockDragEvent) => {
+          const { payload } = event;
+          const isInside = isNativePositionInsideElement(
+            payload.position,
+            dockHostRef.current,
+          );
+
+          if (payload.type === "over" || payload.type === "enter") {
+            if (isInside) {
+              cancelDragLeaveClear();
+              setDragOverDock(dock);
+              return;
+            }
+
+            if (useAgentTerminalStore.getState().dragOverDock === dock) {
+              scheduleDragLeaveClear();
+            }
+            return;
+          }
+
+          if (payload.type === "drop") {
+            if (isInside) {
+              cancelDragLeaveClear();
+              setTerminalPlacement(dock);
+              clearDragState();
+              return;
+            }
+
+            if (useAgentTerminalStore.getState().dragOverDock === dock) {
+              scheduleDragLeaveClear();
+            }
+            return;
+          }
+
+          if (useAgentTerminalStore.getState().dragOverDock === dock) {
+            scheduleDragLeaveClear();
+          }
+        });
+
+        if (cancelled) {
+          unlisten();
+        }
+      } catch (error) {
+        console.error("Failed to set up terminal dock drag listener:", error);
+      }
+    };
+
+    void setupNativeDragListener();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [
+    cancelDragLeaveClear,
+    clearDragState,
+    dock,
+    isDropTarget,
+    scheduleDragLeaveClear,
+    setDragOverDock,
+    setTerminalPlacement,
+  ]);
 
   if (!canRender) {
     return null;
   }
 
-  const isVisible = dockTarget === dock;
-
   return (
     <div
-      ref={setDockElement}
+      ref={setDockHostElement}
       className="shrink-0 overflow-hidden"
       style={{
-        height: isVisible
-          ? isExpanded
-            ? height
-            : AGENT_TERMINAL_COLLAPSED_HEIGHT
-          : 0,
-        opacity: isVisible ? 1 : 0,
-        pointerEvents: isVisible ? "auto" : "none",
+        height: isVisible || isDropTarget ? resolvedDockHeight : 0,
+        opacity: isVisible || isDropTarget ? 1 : 0,
+        pointerEvents: isVisible || isDropTarget ? "auto" : "none",
         transition: "none",
       }}
       data-testid={dock === "panel" ? "agent-terminal-host-panel" : "agent-terminal-host-chat"}
-    />
+      data-terminal-drop-target={isDropTarget ? "true" : "false"}
+      aria-label={isDropTarget ? TERMINAL_DOCK_DROP_LABELS[dock] : undefined}
+      onDragLeave={handleDragLeave}
+      onDragEnter={activateDropTarget}
+      onDragOver={activateDropTarget}
+      onDrop={handleDrop}
+    >
+      {isDropTarget ? (
+        <div
+          className="flex h-full items-center justify-center px-3 text-xs font-medium"
+          data-testid={`agent-terminal-drop-target-${dock}`}
+          style={{
+            backgroundColor: isDragOver
+              ? "color-mix(in srgb, var(--accent-primary) 12%, var(--bg-surface) 88%)"
+              : "color-mix(in srgb, var(--accent-primary) 6%, var(--bg-surface) 94%)",
+            borderColor: isDragOver ? "var(--accent-primary)" : "var(--accent-border)",
+            borderStyle: "dashed",
+            borderWidth: "2px",
+            color: isDragOver ? "var(--accent-primary)" : "var(--text-secondary)",
+          }}
+        >
+          <span
+            className="rounded-full px-3 py-1"
+            style={{
+              backgroundColor: "var(--bg-elevated)",
+              borderColor: isDragOver ? "var(--accent-primary)" : "var(--accent-border)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            {TERMINAL_DOCK_DROP_LABELS[dock]}
+          </span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -205,6 +515,19 @@ export function AgentsTerminalRegion({
   const setTerminalHeight = useAgentTerminalStore((state) => state.setHeight);
   const setTerminalOpen = useAgentTerminalStore((state) => state.setOpen);
   const setTerminalPlacement = useAgentTerminalStore((state) => state.setPlacement);
+  const setDraggingConversation = useAgentTerminalStore(
+    (state) => state.setDraggingConversation,
+  );
+  const dragOverDock = useAgentTerminalStore((state) => state.dragOverDock);
+  const clearDragState = useAgentTerminalStore((state) => state.clearDragState);
+  const dragEndCleanupTimerRef = useRef<number | null>(null);
+
+  const cancelDragEndCleanup = useCallback(() => {
+    if (dragEndCleanupTimerRef.current !== null) {
+      window.clearTimeout(dragEndCleanupTimerRef.current);
+      dragEndCleanupTimerRef.current = null;
+    }
+  }, []);
 
   const handlePlacementChange = useCallback(
     (nextPlacement: AgentTerminalPlacement) => {
@@ -214,6 +537,32 @@ export function AgentsTerminalRegion({
       }
     },
     [artifactPaneOpen, conversationId, onOpenArtifactTab, setTerminalPlacement],
+  );
+  const handlePlacementDragStart = useCallback(() => {
+    cancelDragEndCleanup();
+    if (conversationId) {
+      setDraggingConversation(conversationId);
+    }
+  }, [cancelDragEndCleanup, conversationId, setDraggingConversation]);
+  const handlePlacementDragEnd = useCallback(() => {
+    cancelDragEndCleanup();
+    if (dragOverDock) {
+      setTerminalPlacement(dragOverDock);
+      clearDragState();
+      return;
+    }
+
+    dragEndCleanupTimerRef.current = window.setTimeout(() => {
+      dragEndCleanupTimerRef.current = null;
+      clearDragState();
+    }, TERMINAL_DRAG_END_CLEANUP_DELAY_MS);
+  }, [cancelDragEndCleanup, clearDragState, dragOverDock, setTerminalPlacement]);
+
+  useEffect(
+    () => () => {
+      cancelDragEndCleanup();
+    },
+    [cancelDragEndCleanup],
   );
 
   if (!canRender || !conversationId || !workspace) {
@@ -255,6 +604,8 @@ export function AgentsTerminalRegion({
         onCollapse={() => setTerminalOpen(conversationId, false)}
         placement={placement}
         onPlacementChange={handlePlacementChange}
+        onPlacementDragStart={handlePlacementDragStart}
+        onPlacementDragEnd={handlePlacementDragEnd}
         dockElement={dockElement}
       />
     </Suspense>

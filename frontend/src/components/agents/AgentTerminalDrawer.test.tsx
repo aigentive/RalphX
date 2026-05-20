@@ -268,6 +268,149 @@ describe("AgentTerminalDrawer", () => {
     expect(closeAgentTerminalMock).not.toHaveBeenCalled();
   });
 
+  it("toggles expand state from the terminal header", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const onCollapse = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={onCollapse}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={vi.fn()}
+          onPlacementDragEnd={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByTestId("agent-terminal-header"));
+
+    expect(onCollapse).toHaveBeenCalledTimes(1);
+    expect(closeAgentTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("toggles expand state from the terminal header keyboard action", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const onExpand = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={false}
+          onHeightChange={vi.fn()}
+          onExpand={onExpand}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={vi.fn()}
+          onPlacementDragEnd={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.keyDown(screen.getByTestId("agent-terminal-header"), {
+      key: "Enter",
+    });
+
+    expect(onExpand).toHaveBeenCalledTimes(1);
+    expect(openAgentTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("selects terminal placement from a dropdown without toggling the header", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const onPlacementChange = vi.fn();
+    const onCollapse = vi.fn();
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={onCollapse}
+          placement="auto"
+          onPlacementChange={onPlacementChange}
+          onPlacementDragStart={vi.fn()}
+          onPlacementDragEnd={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.pointerDown(screen.getByTestId("agent-terminal-placement"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Under chat" }));
+
+    expect(onPlacementChange).toHaveBeenCalledWith("chat");
+    expect(onCollapse).not.toHaveBeenCalled();
+  });
+
+  it("hides terminal session controls while collapsed", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={false}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={vi.fn()}
+          onPlacementDragEnd={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("agent-terminal-placement")).toBeInTheDocument();
+    expect(screen.getByLabelText("Expand terminal")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Clear terminal")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Open terminal")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Close terminal")).not.toBeInTheDocument();
+  });
+
   it("requests visual collapse before waiting for the backend terminal close", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
