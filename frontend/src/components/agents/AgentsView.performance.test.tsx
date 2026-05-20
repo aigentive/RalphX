@@ -56,6 +56,77 @@ describe("AgentsView performance", () => {
     });
     expect(screen.getByText("Closed")).toBeInTheDocument();
     expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+
+    const drawer = await screen.findByTestId("agent-terminal-drawer");
+    expect(drawer).toHaveAttribute("data-expanded", "false");
+    expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the terminal from the first-paint shell header", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const host = await screen.findByTestId("agent-terminal-host-chat");
+    expect(host).toHaveStyle({
+      height: "36px",
+    });
+
+    fireEvent.click(screen.getByTestId("agent-terminal-loading-shell-header"));
+
+    expect(host).toHaveStyle({
+      height: "260px",
+    });
+    expect(screen.getByText("Starting terminal...")).toBeInTheDocument();
+    expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
+
+    expect(await screen.findByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "true"
+    );
+  });
+
+  it("opens the first-paint terminal shell from keyboard activation", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const host = await screen.findByTestId("agent-terminal-host-chat");
+    const shellHeader = await screen.findByTestId("agent-terminal-loading-shell-header");
+    expect(host).toHaveStyle({
+      height: "36px",
+    });
+
+    fireEvent.keyDown(shellHeader, { key: "Escape" });
+    expect(host).toHaveStyle({
+      height: "36px",
+    });
+
+    fireEvent.keyDown(shellHeader, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(host).toHaveStyle({
+        height: "260px",
+      })
+    );
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "true"
+    );
   });
 
   it("paints the artifact panel frame before hydrating the heavy pane", async () => {
@@ -109,7 +180,7 @@ describe("AgentsView performance", () => {
     await screen.findByTestId("agents-artifact-pane");
   });
 
-  it("paints the terminal frame before loading the heavy drawer", async () => {
+  it("paints the terminal frame before loading the terminal runtime", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" })
@@ -144,6 +215,10 @@ describe("AgentsView performance", () => {
       )
     );
     await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "false"
+    );
     integratedChatPanelRenderMock.mockClear();
 
     fireEvent.click(screen.getByTestId("agents-terminal-toggle"));
@@ -155,7 +230,10 @@ describe("AgentsView performance", () => {
       pointerEvents: "auto",
       transition: "none",
     });
-    expect(screen.getByTestId("agent-terminal-loading-shell")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "true"
+    );
     expect(preloadAgentTerminalExperienceMock).not.toHaveBeenCalled();
     expect(integratedChatPanelRenderMock).not.toHaveBeenCalled();
 

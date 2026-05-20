@@ -8,6 +8,7 @@ import {
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -62,6 +63,10 @@ import {
   RALPHX_TERMINAL_DOCK_DRAG_TYPE,
   setRalphxTerminalDockDragActive,
 } from "@/lib/internalDragTypes";
+import {
+  safelyUnlistenTauri,
+  type TauriUnlistenFn,
+} from "@/lib/tauri-listener-cleanup";
 import { cn } from "@/lib/utils";
 import { compactTerminalPath } from "./agentTerminalPaths";
 import { loadAgentTerminalRuntime } from "./agentTerminalRuntime";
@@ -88,15 +93,28 @@ interface AgentTerminalDrawerProps {
 const TERMINAL_MIN_COLS = 80;
 const TERMINAL_MIN_ROWS = 20;
 const HEADER_DRAG_CLICK_SUPPRESSION_MS = 150;
+const HEADER_DRAG_START_THRESHOLD_PX = 4;
 type AgentTerminalDisplayStatus = AgentTerminalStatus | "closed";
 
 type DeferredFrameJob = { frame: number | null; timer: number | null };
 type DragEventWithOptionalTransfer = { dataTransfer?: DataTransfer };
+type HeaderDragStartPoint = { x: number; y: number };
 
 function getOptionalDataTransfer(
   event: ReactDragEvent<HTMLElement>,
 ): DataTransfer | undefined {
   return (event as unknown as DragEventWithOptionalTransfer).dataTransfer;
+}
+
+function hasMovedBeyondHeaderDragThreshold(
+  startPoint: HeaderDragStartPoint,
+  clientX: number,
+  clientY: number,
+) {
+  return (
+    Math.abs(clientX - startPoint.x) >= HEADER_DRAG_START_THRESHOLD_PX ||
+    Math.abs(clientY - startPoint.y) >= HEADER_DRAG_START_THRESHOLD_PX
+  );
 }
 
 function cancelDeferredFrameJob(job: DeferredFrameJob | null) {
@@ -158,6 +176,9 @@ export function AgentTerminalDrawer({
   const resizeReportTimerRef = useRef<number | null>(null);
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const suppressNextHeaderClickRef = useRef(false);
+  const headerDragStartPointRef = useRef<HeaderDragStartPoint | null>(null);
+  const headerDragMovedRef = useRef(false);
+  const headerDockDragActiveRef = useRef(false);
   const headerDragClickTimerRef = useRef<number | null>(null);
   const [status, setStatus] = useState<AgentTerminalDisplayStatus>("closed");
   const [cwd, setCwd] = useState(workspace.worktreePath);
@@ -377,14 +398,13 @@ export function AgentTerminalDrawer({
     let initFrame: number | null = null;
     let initTimer: number | null = null;
     let resizeObserver: ResizeObserver | null = null;
-    let unlisten: (() => void) | null = null;
+    let unlisten: TauriUnlistenFn | null = null;
     let listenerPromise: Promise<void> | null = null;
 
     const releaseListener = () => {
-      if (unlisten) {
-        unlisten();
-        unlisten = null;
-      }
+      const dispose = unlisten;
+      unlisten = null;
+      safelyUnlistenTauri(dispose, AGENT_TERMINAL_EVENT);
     };
 
     const scheduleFit = () => {
@@ -429,7 +449,7 @@ export function AgentTerminalDrawer({
         }
       }).then((dispose) => {
         if (disposed) {
-          dispose();
+          safelyUnlistenTauri(dispose, AGENT_TERMINAL_EVENT);
           return;
         }
         unlisten = dispose;
@@ -522,7 +542,7 @@ export function AgentTerminalDrawer({
       resizeObserver?.disconnect();
       dataDisposable?.dispose();
       releaseListener();
-      void listenerPromise?.then(releaseListener);
+      void listenerPromise?.then(releaseListener).catch(() => undefined);
       terminal?.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -665,9 +685,60 @@ export function AgentTerminalDrawer({
     [handleExpandToggle],
   );
 
+  const handleHeaderPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      headerDragStartPointRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+      headerDragMovedRef.current = false;
+    },
+    [],
+  );
+
+  const handleHeaderPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const startPoint = headerDragStartPointRef.current;
+      if (!startPoint) {
+        return;
+      }
+      if (
+        hasMovedBeyondHeaderDragThreshold(
+          startPoint,
+          event.clientX,
+          event.clientY,
+        )
+      ) {
+        headerDragMovedRef.current = true;
+      }
+    },
+    [],
+  );
+
+  const shouldStartHeaderDockDrag = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      const startPoint = headerDragStartPointRef.current;
+      if (!startPoint) {
+        return true;
+      }
+      return (
+        headerDragMovedRef.current ||
+        hasMovedBeyondHeaderDragThreshold(startPoint, event.clientX, event.clientY)
+      );
+    },
+    [],
+  );
+
   const handleHeaderDragStart = useCallback(
     (event: ReactDragEvent<HTMLDivElement>) => {
+      if (!shouldStartHeaderDockDrag(event)) {
+        event.preventDefault();
+        setRalphxTerminalDockDragActive(false);
+        headerDockDragActiveRef.current = false;
+        return;
+      }
       suppressNextHeaderClickRef.current = true;
+      headerDockDragActiveRef.current = true;
       setRalphxTerminalDockDragActive(true);
       const dataTransfer = getOptionalDataTransfer(event);
       if (dataTransfer) {
@@ -677,10 +748,15 @@ export function AgentTerminalDrawer({
       }
       onPlacementDragStart?.();
     },
-    [conversationId, onPlacementDragStart],
+    [conversationId, onPlacementDragStart, shouldStartHeaderDockDrag],
   );
 
   const handleHeaderDragEnd = useCallback(() => {
+    if (!headerDockDragActiveRef.current) {
+      setRalphxTerminalDockDragActive(false);
+      return;
+    }
+    headerDockDragActiveRef.current = false;
     setRalphxTerminalDockDragActive(false);
     onPlacementDragEnd?.();
     scheduleHeaderDragClickReset();
@@ -688,6 +764,7 @@ export function AgentTerminalDrawer({
 
   useEffect(
     () => () => {
+      headerDockDragActiveRef.current = false;
       setRalphxTerminalDockDragActive(false);
       clearHeaderDragClickTimer();
     },
@@ -758,6 +835,8 @@ export function AgentTerminalDrawer({
           aria-expanded={expanded}
           aria-label={expanded ? "Collapse terminal panel" : "Expand terminal panel"}
           data-testid="agent-terminal-header"
+          onPointerDown={handleHeaderPointerDown}
+          onPointerMove={handleHeaderPointerMove}
           onClick={handleHeaderToggleClick}
           onKeyDown={handleHeaderKeyDown}
           onDragStart={handleHeaderDragStart}

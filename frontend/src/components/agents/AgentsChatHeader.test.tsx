@@ -887,6 +887,26 @@ describe("AgentsChatHeader", () => {
     expect(toggleTerminal).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the terminal toolbar visible in compact layouts", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={conversationWorkspace()}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalOpen={false}
+        terminalUnavailableReason={null}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(screen.getByTestId("agents-chat-header-toolbar")).not.toHaveClass("hidden");
+    expect(screen.getByTestId("agents-terminal-toggle")).toBeInTheDocument();
+  });
+
   it("preloads terminal code when the terminal header action receives intent", () => {
     const preloadTerminal = vi.fn();
     renderWithProviders(

@@ -7,7 +7,7 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AGENT_TERMINAL_DEFAULT_HEIGHT,
@@ -23,6 +23,7 @@ const {
   integratedChatPanelRenderMock,
   terminalDrawerMountMock,
   terminalDrawerUnmountMock,
+  webviewDragDropUnlistenMock,
 } = getAgentsViewTestMocks();
 
 describe("AgentsView terminal docks", () => {
@@ -540,6 +541,57 @@ describe("AgentsView terminal docks", () => {
 
     expect(useAgentTerminalStore.getState().placement).toBe("panel");
     expect(useAgentTerminalStore.getState().draggingConversationId).toBeNull();
+  });
+
+  it("swallows stale native terminal dock listener cleanup failures", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentTerminalStore.setState({
+      openByConversationId: { "conversation-1": true },
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      placement: "chat",
+    });
+    const cleanupError = new TypeError(
+      "undefined is not an object (evaluating 'listeners[eventId].handlerId')",
+    );
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    webviewDragDropUnlistenMock.mockImplementationOnce(() => {
+      throw cleanupError;
+    });
+
+    renderAgentsView();
+
+    const dragHandle = await screen.findByTestId("agent-terminal-drag-handle");
+    fireEvent.dragStart(dragHandle);
+    await screen.findByTestId("agent-terminal-drop-target-panel");
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.dragEnd(dragHandle);
+      await act(async () => {
+        vi.advanceTimersByTime(120);
+      });
+
+      expect(useAgentTerminalStore.getState().draggingConversationId).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to unlisten"),
+        cleanupError,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clears stale terminal dock drag state when dragging ends without a target", async () => {

@@ -431,22 +431,27 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
         ) : null}
       </div>
 
-      <div className="hidden md:flex items-center gap-1 ml-auto shrink-0">
+      <div
+        className="flex items-center gap-1 ml-auto shrink-0"
+        data-testid="agents-chat-header-toolbar"
+      >
         {conversation && (
-          <ChatSessionChips
-            contextType={conversation.contextType}
-            contextId={conversation.contextId}
-            isAgentActive={isAgentActive}
-            conversationId={conversation.id}
-            providerHarness={conversation.providerHarness ?? null}
-            providerSessionId={conversation.providerSessionId ?? null}
-            upstreamProvider={conversation.upstreamProvider ?? null}
-            providerProfile={conversation.providerProfile ?? null}
-            fallbackConversation={conversation}
-            showProviderModel={false}
-            showStats
-            {...(modelDisplay !== undefined ? { modelDisplay } : {})}
-          />
+          <div className="hidden lg:block">
+            <ChatSessionChips
+              contextType={conversation.contextType}
+              contextId={conversation.contextId}
+              isAgentActive={isAgentActive}
+              conversationId={conversation.id}
+              providerHarness={conversation.providerHarness ?? null}
+              providerSessionId={conversation.providerSessionId ?? null}
+              upstreamProvider={conversation.upstreamProvider ?? null}
+              providerProfile={conversation.providerProfile ?? null}
+              fallbackConversation={conversation}
+              showProviderModel={false}
+              showStats
+              {...(modelDisplay !== undefined ? { modelDisplay } : {})}
+            />
+          </div>
         )}
 
         <Tooltip>
@@ -487,7 +492,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8 gap-1.5 px-2.5 text-xs"
+                className="h-8 gap-1.5 px-2 text-xs xl:px-2.5"
                 onClick={onOpenPublishPane}
                 onPointerEnter={onPreloadArtifacts}
                 onFocus={onPreloadArtifacts}
@@ -505,7 +510,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
                 ) : (
                   <GitPullRequestArrow className="h-3.5 w-3.5" />
                 )}
-                <span>{publishShortcutLabel}</span>
+                <span className="hidden xl:inline">{publishShortcutLabel}</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
