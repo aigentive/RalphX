@@ -2203,6 +2203,24 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText(/latest publish attempt failed/i)).not.toBeInTheDocument();
   });
 
+  it("does not keep auto-merge request progress active while PR supervision is monitoring", () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        prAutoMergeDesired: true,
+        prAutoMergeCurrent: false,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    expect(screen.queryByTestId("agents-publish-pipeline")).not.toBeInTheDocument();
+    expect(screen.getByText("Monitoring PR")).toBeInTheDocument();
+  });
+
   it("shows synced GitHub PR annotation count for published workspaces", async () => {
     getWorkspacePrAnnotationsMock.mockResolvedValue({
       prNumber: 78,

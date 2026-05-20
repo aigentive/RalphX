@@ -29,6 +29,38 @@ const {
   terminalDrawerUnmountMock,
 } = getAgentsViewTestMocks();
 
+function holdDeferredFrames() {
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const originalCancelAnimationFrame = window.cancelAnimationFrame;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  let nextId = 1;
+
+  window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    const id = nextId;
+    nextId += 1;
+    callbacks.set(id, callback);
+    return id;
+  }) as typeof window.requestAnimationFrame;
+  window.cancelAnimationFrame = ((id: number) => {
+    callbacks.delete(id);
+  }) as typeof window.cancelAnimationFrame;
+
+  return {
+    flush() {
+      const queuedCallbacks = [...callbacks.values()];
+      callbacks.clear();
+      for (const callback of queuedCallbacks) {
+        callback(performance.now());
+      }
+    },
+    restore() {
+      callbacks.clear();
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+    },
+  };
+}
+
 describe("AgentsView performance", () => {
   beforeEach(setupAgentsViewTest);
 
@@ -94,6 +126,7 @@ describe("AgentsView performance", () => {
   });
 
   it("opens the first-paint terminal shell from keyboard activation", async () => {
+    const deferredFrames = holdDeferredFrames();
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" })
@@ -103,30 +136,35 @@ describe("AgentsView performance", () => {
       selectedConversationId: "conversation-1",
     });
 
-    renderAgentsView();
+    try {
+      renderAgentsView();
 
-    const host = await screen.findByTestId("agent-terminal-host-chat");
-    const shellHeader = await screen.findByTestId("agent-terminal-loading-shell-header");
-    expect(host).toHaveStyle({
-      height: "36px",
-    });
-
-    fireEvent.keyDown(shellHeader, { key: "Escape" });
-    expect(host).toHaveStyle({
-      height: "36px",
-    });
-
-    fireEvent.keyDown(shellHeader, { key: "Enter" });
-
-    await waitFor(() =>
+      const host = await screen.findByTestId("agent-terminal-host-chat");
+      const shellHeader = await screen.findByTestId("agent-terminal-loading-shell-header");
       expect(host).toHaveStyle({
-        height: "260px",
-      })
-    );
-    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
-      "data-expanded",
-      "true"
-    );
+        height: "36px",
+      });
+
+      fireEvent.keyDown(shellHeader, { key: "Escape" });
+      expect(host).toHaveStyle({
+        height: "36px",
+      });
+
+      fireEvent.keyDown(shellHeader, { key: "Enter" });
+
+      await waitFor(() =>
+        expect(host).toHaveStyle({
+          height: "260px",
+        }),
+      );
+      deferredFrames.flush();
+      expect(await screen.findByTestId("agent-terminal-drawer")).toHaveAttribute(
+        "data-expanded",
+        "true"
+      );
+    } finally {
+      deferredFrames.restore();
+    }
   });
 
   it("paints the artifact panel frame before hydrating the heavy pane", async () => {

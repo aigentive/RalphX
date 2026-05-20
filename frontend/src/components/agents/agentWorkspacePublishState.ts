@@ -46,6 +46,34 @@ export function isPipelineOwnedAgentWorkspace(
   return Boolean(workspace?.linkedPlanBranchId);
 }
 
+export function isAgentWorkspaceAutoMergeRequestPending({
+  autoMergeCurrent,
+  autoMergeDesired,
+  hasPublishedPr,
+  prSupervisionStatus,
+  publicationPushStatus,
+  terminalPublicationStatus,
+}: {
+  autoMergeCurrent?: boolean | null;
+  autoMergeDesired?: boolean;
+  hasPublishedPr?: boolean;
+  prSupervisionStatus?: string | null;
+  publicationPushStatus?: string | null;
+  terminalPublicationStatus?: string | null;
+}): boolean {
+  const normalizedSupervisionStatus =
+    prSupervisionStatus?.trim().toLowerCase() || null;
+  return Boolean(
+    autoMergeDesired &&
+      publicationPushStatus === "pushed" &&
+      hasPublishedPr &&
+      autoMergeCurrent !== true &&
+      !terminalPublicationStatus &&
+      (normalizedSupervisionStatus === null ||
+        normalizedSupervisionStatus === "waiting"),
+  );
+}
+
 export function shouldShowAgentWorkspacePublishSurface(
   workspace: AgentConversationWorkspace | null | undefined
 ): boolean {

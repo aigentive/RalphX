@@ -1,6 +1,7 @@
 import { CheckCircle2, Loader2, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { isAgentWorkspaceAutoMergeRequestPending } from "./agentWorkspacePublishState";
 
 const PUBLISH_STEPS = [
   { id: "checking", label: "Check workspace" },
@@ -34,12 +35,13 @@ export function PublishPipelineSteps({
   const steps = autoMergeDesired
     ? [...PUBLISH_STEPS, AUTO_MERGE_STEP]
     : PUBLISH_STEPS;
-  const autoMergePending =
-    autoMergeDesired &&
-    normalizedStatus === "pushed" &&
-    autoMergeCurrent !== true &&
-    prSupervisionStatus !== "fixing" &&
-    prSupervisionStatus !== "blocked";
+  const autoMergePending = isAgentWorkspaceAutoMergeRequestPending({
+    autoMergeDesired,
+    autoMergeCurrent,
+    hasPublishedPr: true,
+    prSupervisionStatus,
+    publicationPushStatus: normalizedStatus,
+  });
   const activeIndex = (() => {
     if (normalizedStatus === "pushed" && autoMergeDesired) {
       return autoMergeCurrent === true ? steps.length : PUBLISH_STEPS.length;
