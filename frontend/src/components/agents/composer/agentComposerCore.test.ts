@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
+  extractComposerIntegrationTokens,
   extractComposerPathTokens,
   extractComposerSkillTokens,
+  normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
   replaceAgentComposerTrigger,
 } from "./agentComposerCore";
@@ -50,6 +52,18 @@ describe("agentComposerCore", () => {
     expect(detectAgentComposerTrigger("/model spark", "/model spark".length)).toBeNull();
   });
 
+  it("detects scoped Atlassian reference triggers under @", () => {
+    const text = "Attach @jira:RX-42";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "jira",
+      query: "RX-42",
+      rangeStart: "Attach ".length,
+      rangeEnd: text.length,
+    });
+  });
+
   it("replaces trigger ranges and consumes one trailing space", () => {
     const text = "Open @src then continue";
     const trigger = detectAgentComposerTrigger(text, "Open @src".length);
@@ -74,6 +88,16 @@ describe("agentComposerCore", () => {
     ]);
   });
 
+  it("extracts integration tokens separately from path tokens", () => {
+    const text = "Fix @jira:rx-42 with docs @confluence:123456 and @src/main.ts";
+
+    expect(extractComposerIntegrationTokens(text)).toEqual([
+      { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+      { provider: "atlassian", kind: "confluence", id: "123456" },
+    ]);
+    expect(extractComposerPathTokens(text)).toEqual([{ path: "src/main.ts" }]);
+  });
+
   it("appends internal skill directives with safe lowercase names only", () => {
     expect(
       appendInternalSkillDirectives("Build this", [
@@ -94,6 +118,19 @@ describe("agentComposerCore", () => {
     ).toEqual([
       { path: "src/main.ts", kind: "file" },
       { path: "docs/My File.md", kind: "file" },
+    ]);
+  });
+
+  it("normalizes integration references without duplicate Jira keys", () => {
+    expect(
+      normalizeComposerIntegrationReferences([
+        { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+        { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+        { provider: "atlassian", kind: "confluence", id: "123", title: "Spec" },
+      ]),
+    ).toEqual([
+      { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+      { provider: "atlassian", kind: "confluence", id: "123", title: "Spec" },
     ]);
   });
 });

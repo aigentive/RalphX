@@ -11,8 +11,8 @@
 // - OrchestratorService (ideation, task, project contexts)
 // - ExecutionChatService (task_execution context)
 
-pub(crate) mod chat_service_context;
 mod chat_service_composer_references;
+pub(crate) mod chat_service_context;
 mod chat_service_errors;
 mod chat_service_handlers;
 mod chat_service_helpers;
@@ -33,8 +33,8 @@ pub(crate) mod verification_child_process_registry;
 use crate::application::agent_conversation_workspace::{
     is_terminal_agent_conversation_publication_status,
     resolve_agent_conversation_workspace_path_for_send,
-    rollover_agent_conversation_workspace_with_setup_mode,
-    AgentConversationWorkspaceSetupMode, AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
+    rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
+    AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
@@ -44,6 +44,7 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use crate::application::question_state::QuestionState;
+use crate::application::AtlassianIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
@@ -63,8 +64,8 @@ use crate::domain::repositories::{
     TaskStepRepository,
 };
 use crate::domain::services::{
-    is_process_alive, kill_process, ComposerProjectReference, MessageQueue, QueuedMessage,
-    RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
+    is_process_alive, kill_process, ComposerIntegrationReference, ComposerProjectReference,
+    MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
@@ -236,11 +237,12 @@ fn strip_resume_in_place_metadata(metadata: Option<String>) -> Option<String> {
 
 fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     let metadata = strip_resume_in_place_metadata(options.metadata.clone());
-    if options.composer_project_references.is_empty() {
+    if options.composer_project_references.is_empty()
+        && options.composer_integration_references.is_empty()
+    {
         return metadata;
     }
 
-    let references = serde_json::to_value(&options.composer_project_references).ok()?;
     let mut value = match metadata {
         Some(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .unwrap_or_else(|_| serde_json::json!({ "raw_metadata": raw })),
@@ -252,7 +254,14 @@ fn persisted_user_metadata(options: &SendMessageOptions) -> Option<String> {
     let Some(object) = value.as_object_mut() else {
         return Some(value.to_string());
     };
-    object.insert("composer_project_references".to_string(), references);
+    if !options.composer_project_references.is_empty() {
+        let references = serde_json::to_value(&options.composer_project_references).ok()?;
+        object.insert("composer_project_references".to_string(), references);
+    }
+    if !options.composer_integration_references.is_empty() {
+        let references = serde_json::to_value(&options.composer_integration_references).ok()?;
+        object.insert("composer_integration_references".to_string(), references);
+    }
     Some(value.to_string())
 }
 
@@ -512,6 +521,8 @@ pub struct SendMessageOptions {
     pub sandbox_mode_override: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Structured composer integration references for runtime-only prompt expansion.
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
     /// Start a fresh provider-native session even when the conversation has a stored
     /// provider session or an idle interactive process.
     pub force_new_provider_session: bool,
@@ -674,6 +685,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     agent_lane_settings_repo: Option<Arc<dyn AgentLaneSettingsRepository>>,
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
+    atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -748,6 +760,7 @@ impl<R: Runtime> AppChatService<R> {
             execution_settings_repo: None,
             agent_lane_settings_repo: None,
             agent_provider_settings_repo: None,
+            atlassian_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
@@ -810,6 +823,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_atlassian_integration_service(
+        mut self,
+        service: Arc<AtlassianIntegrationService>,
+    ) -> Self {
+        self.atlassian_integration_service = Some(service);
+        self
+    }
+
     pub fn with_ideation_effort_settings_repo(
         mut self,
         repo: Arc<dyn IdeationEffortSettingsRepository>,
@@ -844,6 +865,7 @@ impl<R: Runtime> AppChatService<R> {
                 options.created_at.map(|ts| ts.to_rfc3339()),
                 options.harness_override,
                 options.composer_project_references.clone(),
+                options.composer_integration_references.clone(),
             );
         self.emit_event(
             "agent:message_queued",
@@ -993,11 +1015,7 @@ impl<R: Runtime> AppChatService<R> {
         source: &'static str,
         cleanup_caller: RegistryCleanupCaller,
     ) -> bool {
-        if !registry_entry_blocks_send_but_is_stale(
-            existing,
-            chrono::Utc::now(),
-            cleanup_caller,
-        ) {
+        if !registry_entry_blocks_send_but_is_stale(existing, chrono::Utc::now(), cleanup_caller) {
             return false;
         }
 
@@ -1367,7 +1385,10 @@ impl<R: Runtime> AppChatService<R> {
         if agent_run_persisted {
             if let Err(error) = self
                 .agent_run_repo
-                .fail(&AgentRunId::from_string(agent_run_id.to_string()), &redacted_error)
+                .fail(
+                    &AgentRunId::from_string(agent_run_id.to_string()),
+                    &redacted_error,
+                )
                 .await
             {
                 tracing::warn!(
@@ -1918,19 +1939,18 @@ impl<R: Runtime> AppChatService<R> {
         context_type: ChatContextType,
         context_id: &str,
         message: &str,
-        references: &[ComposerProjectReference],
+        project_references: &[ComposerProjectReference],
+        integration_references: &[ComposerIntegrationReference],
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
     ) -> String {
-        if let Some(working_directory) = working_directory_override {
-            return chat_service_composer_references::expand_project_references_for_prompt(
+        let with_project_references = if let Some(working_directory) = working_directory_override {
+            chat_service_composer_references::expand_project_references_for_prompt(
                 message,
-                references,
+                project_references,
                 working_directory,
-            );
-        }
-
-        if let Some(conversation_id) = conversation_id_override {
+            )
+        } else if let Some(conversation_id) = conversation_id_override {
             if let Ok(Some(workspace)) = self
                 .load_agent_conversation_workspace(context_type, conversation_id)
                 .await
@@ -1939,27 +1959,42 @@ impl<R: Runtime> AppChatService<R> {
                     .resolve_agent_workspace_working_directory(&workspace)
                     .await
                 {
-                    return chat_service_composer_references::expand_project_references_for_prompt(
+                    chat_service_composer_references::expand_project_references_for_prompt(
                         message,
-                        references,
+                        project_references,
                         &working_directory,
-                    );
+                    )
+                } else {
+                    message.to_string()
                 }
+            } else {
+                message.to_string()
             }
+        } else {
+            match self
+                .resolve_working_directory(context_type, context_id)
+                .await
+            {
+                Ok(working_directory) => {
+                    chat_service_composer_references::expand_project_references_for_prompt(
+                        message,
+                        project_references,
+                        &working_directory,
+                    )
+                }
+                Err(_) => message.to_string(),
+            }
+        };
+        if integration_references.is_empty() {
+            return with_project_references;
         }
-
-        match self
-            .resolve_working_directory(context_type, context_id)
-            .await
-        {
-            Ok(working_directory) => {
-                chat_service_composer_references::expand_project_references_for_prompt(
-                    message,
-                    references,
-                    &working_directory,
-                )
+        match self.atlassian_integration_service.as_ref() {
+            Some(service) => {
+                service
+                    .expand_references_for_prompt(&with_project_references, integration_references)
+                    .await
             }
-            Err(_) => message.to_string(),
+            None => with_project_references,
         }
     }
 
@@ -2241,6 +2276,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     context_id,
                     message,
                     &options.composer_project_references,
+                    &options.composer_integration_references,
                     options.conversation_id_override.as_ref(),
                     options.working_directory_override.as_ref(),
                 )
@@ -2335,7 +2371,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         );
                         let user_msg_id = user_msg.id.as_str().to_string();
                         let user_msg_created_at = user_msg.created_at.to_rfc3339();
-                        if self.chat_message_repo.create(user_msg.clone()).await.is_ok() {
+                        if self
+                            .chat_message_repo
+                            .create(user_msg.clone())
+                            .await
+                            .is_ok()
+                        {
                             chat_service_streaming::persist_message_text_timeline_item(
                                 &self.chat_timeline_repo,
                                 &user_msg,
@@ -2376,8 +2417,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             &runtime_context_id,
                         ))
                         .await;
-                    let interactive_run_id =
-                        interactive_continuation_run_id(active_agent.as_ref());
+                    let interactive_run_id = interactive_continuation_run_id(active_agent.as_ref());
                     let process_metadata = ipr_ref.get_metadata(&interactive_key).await;
                     let (provider_harness, provider_session_id) =
                         interactive_run_started_provider_session(
@@ -3317,12 +3357,17 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             elapsed_ms = post_gate_started.elapsed().as_millis() as u64,
             "chat_service.send_message pre-spawn preparation completed"
         );
-        let runtime_message =
-            chat_service_composer_references::expand_project_references_for_prompt(
+        let runtime_message = self
+            .composer_reference_runtime_message(
+                context_type,
+                context_id,
                 message,
                 &options.composer_project_references,
-                &working_directory,
-            );
+                &options.composer_integration_references,
+                Some(&conversation_id),
+                Some(&working_directory),
+            )
+            .await;
         let (selected_cli_path, child, interactive_process_registry) = match self
             .spawn_process_for_harness(
                 &conversation,
@@ -3941,10 +3986,9 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 #[cfg(test)]
 mod stale_registry_gate_tests {
     use super::{
-        claude_launches_paused, interactive_continuation_run_id,
+        claude_launches_paused, interactive_continuation_run_id, log_send_message_spawn_prep_phase,
         registry_entry_blocks_send_because_run_inactive, registry_entry_blocks_send_but_is_stale,
-        runtime_context_id_for_send,
-        log_send_message_spawn_prep_phase, AgentRunStatus, ChatContextType, ChatConversationId,
+        runtime_context_id_for_send, AgentRunStatus, ChatContextType, ChatConversationId,
         RegistryCleanupCaller, RunningAgentInfo,
     };
     use crate::commands::ExecutionState;
@@ -4235,7 +4279,10 @@ mod agent_workspace_send_tests {
 
         assert_eq!(value.get("resume_in_place"), None);
         assert_eq!(value["source"], "composer");
-        assert_eq!(value["composer_project_references"][0]["path"], "src/main.ts");
+        assert_eq!(
+            value["composer_project_references"][0]["path"],
+            "src/main.ts"
+        );
         assert_eq!(value["composer_project_references"][0]["kind"], "file");
     }
 
@@ -4322,7 +4369,10 @@ mod agent_workspace_send_tests {
             .await
             .expect("interactive stdin send should succeed");
 
-        state.interactive_process_registry.remove(&interactive_key).await;
+        state
+            .interactive_process_registry
+            .remove(&interactive_key)
+            .await;
         let _ = child.kill().await;
 
         assert_eq!(result.conversation_id, conversation_id);

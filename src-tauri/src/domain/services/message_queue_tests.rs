@@ -394,6 +394,7 @@ fn test_remove_stale_drops_old_messages() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
         });
         q.push(QueuedMessage {
             id: "fresh-1".to_string(),
@@ -404,6 +405,7 @@ fn test_remove_stale_drops_old_messages() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
         });
     }
 
@@ -510,11 +512,40 @@ fn test_queue_with_overrides_preserves_composer_project_references() {
         None,
         None,
         references.clone(),
+        Vec::new(),
     );
 
     assert_eq!(queued.composer_project_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_project_references, references);
+}
+
+#[test]
+fn test_queue_with_overrides_preserves_composer_integration_references() {
+    let queue = MessageQueue::new();
+    let references = vec![ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: "jira".to_string(),
+        id: "RX-42".to_string(),
+        key: Some("RX-42".to_string()),
+        title: Some("Fix composer search".to_string()),
+        url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+    }];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Read @jira:RX-42".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        references.clone(),
+    );
+
+    assert_eq!(queued.composer_integration_references, references);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.composer_integration_references, references);
 }
 
 #[test]
@@ -548,6 +579,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
         });
     }
 

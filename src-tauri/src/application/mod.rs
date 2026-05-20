@@ -23,6 +23,7 @@ mod shutdown_tests;
 pub mod ideation_harness_availability;
 pub mod ideation_workspace;
 pub mod apply_service;
+pub mod atlassian_integration_service;
 pub mod chat_attachment_service;
 pub mod chat_resumption;
 pub mod chat_service;
@@ -104,6 +105,12 @@ pub(crate) use ideation_harness_availability::{
 };
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
+};
+pub use atlassian_integration_service::{
+    AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
+    AtlassianIntegrationService, AtlassianOAuthAuthorization, AtlassianOAuthResource,
+    AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
+    AtlassianResourceSummary, EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;

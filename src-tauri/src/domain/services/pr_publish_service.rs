@@ -8,7 +8,9 @@ use crate::domain::entities::{
     PlanBranch, Project, Task, TaskCategory,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
-use crate::domain::services::GithubServiceTrait;
+use crate::domain::services::{
+    normalize_title_with_jira_key, primary_jira_key_from_title, GithubServiceTrait,
+};
 use crate::error::{AppError, AppResult};
 
 const GITHUB_PR_BODY_SOFT_LIMIT_CHARS: usize = 60_000;
@@ -63,13 +65,18 @@ impl<'a> AgentWorkspacePrPublisher<'a> {
         workspace: &AgentConversationWorkspace,
         description: &AgentWorkspacePrDescription,
     ) -> AppResult<AgentWorkspacePrPublishOutcome> {
-        let title = description
+        let mut title = description
             .title
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| build_agent_workspace_pr_title(conversation));
+        if let Some(jira_key) =
+            primary_jira_key_from_title(build_agent_workspace_pr_title(conversation).as_str())
+        {
+            title = normalize_title_with_jira_key(&title, &jira_key);
+        }
         let body_file = write_agent_workspace_pr_body(&description.body_markdown)?;
 
         if let Some(pr_number) = workspace.publication_pr_number {

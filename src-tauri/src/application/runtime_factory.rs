@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::application::chat_service::{AppChatService, StreamingStateCache};
 use crate::application::{
-    AgentClientBundle, AppState, InteractiveProcessRegistry, PrPollerRegistry,
-    TaskSchedulerService, TaskTransitionService,
+    AgentClientBundle, AppState, AtlassianIntegrationService, InteractiveProcessRegistry,
+    PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
@@ -205,6 +205,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub streaming_state_cache: Option<StreamingStateCache>,
+    pub atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
 }
 
 impl ChatRuntimeFactoryDeps {
@@ -252,6 +253,7 @@ impl ChatRuntimeFactoryDeps {
             review_repo: None,
             interactive_process_registry: None,
             streaming_state_cache: None,
+            atlassian_integration_service: None,
         }
     }
 
@@ -346,6 +348,14 @@ impl ChatRuntimeFactoryDeps {
         repo: Arc<dyn DelegatedSessionRepository>,
     ) -> Self {
         self.delegated_session_repo = Some(repo);
+        self
+    }
+
+    pub(crate) fn with_atlassian_integration_service(
+        mut self,
+        service: Arc<AtlassianIntegrationService>,
+    ) -> Self {
+        self.atlassian_integration_service = Some(service);
         self
     }
 
@@ -449,6 +459,7 @@ impl ChatRuntimeFactoryDeps {
             Some(Arc::clone(&state.review_repo)),
             Some(state.streaming_state_cache.clone()),
         )
+        .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
     }
 }
 
@@ -521,6 +532,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(cache) = deps.streaming_state_cache.as_ref() {
         service = service.with_streaming_state_cache(cache.clone());
+    }
+    if let Some(atlassian) = deps.atlassian_integration_service.as_ref() {
+        service = service.with_atlassian_integration_service(Arc::clone(atlassian));
     }
 
     service

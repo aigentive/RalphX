@@ -10,6 +10,7 @@ import {
 import { useInputHistory } from "@/hooks/useInputHistory";
 import {
   useAgentComposerEntries,
+  useAgentComposerIntegrationResources,
   useAgentComposerSkills,
 } from "@/hooks/useAgentComposerResources";
 import {
@@ -53,10 +54,14 @@ import { cn } from "@/lib/utils";
 import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
+  extractComposerIntegrationTokens,
   extractComposerPathTokens,
   extractComposerSkillTokens,
+  normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
   replaceAgentComposerTrigger,
+  type AgentComposerIntegrationKind,
+  type AgentComposerIntegrationReference,
   type AgentComposerProjectReference,
 } from "./composer/agentComposerCore";
 import {
@@ -149,6 +154,7 @@ export interface AgentComposerQuestionMode {
 
 export interface AgentComposerSendOptions {
   projectReferences?: AgentComposerProjectReference[];
+  integrationReferences?: AgentComposerIntegrationReference[];
 }
 
 export interface AgentComposerSurfaceProps {
@@ -233,6 +239,9 @@ export function AgentComposerSurface({
   const [selectedProjectReferences, setSelectedProjectReferences] = useState<
     Map<string, AgentComposerProjectReference>
   >(() => new Map());
+  const [selectedIntegrationReferences, setSelectedIntegrationReferences] = useState<
+    Map<string, AgentComposerIntegrationReference>
+  >(() => new Map());
   const surfaceRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -260,6 +269,10 @@ export function AgentComposerSurface({
     !isReadOnly && !questionMode && project.value.trim().length > 0;
   const pathQuery =
     activeTrigger?.kind === "path" ? activeTrigger.query : "";
+  const integrationQuery =
+    activeTrigger?.kind === "integration" ? activeTrigger.query : "";
+  const integrationKind =
+    activeTrigger?.kind === "integration" ? activeTrigger.integrationKind : null;
   const pathEntriesQuery = useAgentComposerEntries({
     projectId: project.value,
     conversationId,
@@ -268,6 +281,14 @@ export function AgentComposerSurface({
       composerAssistEnabled &&
       isFocused &&
       activeTrigger?.kind === "path",
+  });
+  const integrationResourcesQuery = useAgentComposerIntegrationResources({
+    kind: integrationKind ?? null,
+    query: integrationQuery,
+    enabled:
+      composerAssistEnabled &&
+      isFocused &&
+      activeTrigger?.kind === "integration",
   });
   const skillsQuery = useAgentComposerSkills({
     projectId: project.value,
@@ -362,6 +383,7 @@ export function AgentComposerSurface({
     setCursorPosition(0);
     setSelectedInternalSkillNames(new Set());
     setSelectedProjectReferences(new Map());
+    setSelectedIntegrationReferences(new Map());
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
 
@@ -392,6 +414,21 @@ export function AgentComposerSurface({
     }
     return map;
   }, [skills]);
+  const integrationByMenuId = useMemo(() => {
+    const map = new Map<string, AgentComposerIntegrationReference>();
+    for (const resource of integrationResourcesQuery.data ?? []) {
+      const reference: AgentComposerIntegrationReference = {
+        provider: "atlassian",
+        kind: resource.kind,
+        id: resource.id,
+        ...(resource.key ? { key: resource.key } : {}),
+        title: resource.title,
+        ...(resource.url ? { url: resource.url } : {}),
+      };
+      map.set(`integration:${resource.kind}:${resource.id}`, reference);
+    }
+    return map;
+  }, [integrationResourcesQuery.data]);
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
@@ -482,12 +519,31 @@ export function AgentComposerSurface({
           return item;
         });
     }
+    if (activeTrigger.kind === "integration") {
+      return (integrationResourcesQuery.data ?? []).map((resource) => ({
+        id: `integration:${resource.kind}:${resource.id}`,
+        kind: "integration" as const,
+        label:
+          resource.kind === "jira"
+            ? `@jira:${resource.key ?? resource.id}`
+            : `@confluence:${resource.id}`,
+        description: resource.title,
+        detail: resource.kind,
+        sourceLabel: resource.kind === "jira" ? "Jira" : "Confluence",
+      }));
+    }
     return slashCommandItems
       .filter((item) =>
         query ? item.label.slice(1).toLowerCase().includes(query) : true
       )
       .slice(0, 12);
-  }, [activeTrigger, pathEntriesQuery.data?.entries, skills, slashCommandItems]);
+  }, [
+    activeTrigger,
+    integrationResourcesQuery.data,
+    pathEntriesQuery.data?.entries,
+    skills,
+    slashCommandItems,
+  ]);
   const shouldShowCommandMenu =
     composerAssistEnabled &&
     isFocused &&
@@ -497,12 +553,18 @@ export function AgentComposerSurface({
       ? "No matching files or folders"
       : activeTrigger?.kind === "skill"
         ? "No matching skills"
-        : "No matching commands";
+        : activeTrigger?.kind === "integration"
+          ? integrationQuery.trim()
+            ? "No matching integration items"
+            : "Type to search Jira or Confluence"
+          : "No matching commands";
   const menuLoading =
     activeTrigger?.kind === "path"
       ? pathEntriesQuery.isFetching
       : activeTrigger?.kind === "skill"
         ? skillsQuery.isFetching
+        : activeTrigger?.kind === "integration"
+          ? integrationResourcesQuery.isFetching
         : false;
 
   useEffect(() => {
@@ -549,6 +611,24 @@ export function AgentComposerSurface({
         applyComposerText(next.text, next.cursor);
         return;
       }
+      if (item.kind === "integration") {
+        const reference = integrationByMenuId.get(item.id);
+        if (!reference) {
+          return;
+        }
+        setSelectedIntegrationReferences((current) => {
+          const nextSet = new Map(current);
+          nextSet.set(`${reference.kind}:${reference.id}`, reference);
+          return nextSet;
+        });
+        const token =
+          reference.kind === "jira"
+            ? `@jira:${reference.key ?? reference.id}`
+            : `@confluence:${reference.id}`;
+        const next = replaceAgentComposerTrigger(value, activeTrigger, `${token} `);
+        applyComposerText(next.text, next.cursor);
+        return;
+      }
       if (item.detail === "clear") {
         clearValue();
         return;
@@ -570,7 +650,15 @@ export function AgentComposerSurface({
         applyComposerText(next.text, next.cursor);
       }
     },
-    [activeTrigger, applyComposerText, clearValue, mode, skillByMenuId, value]
+    [
+      activeTrigger,
+      applyComposerText,
+      clearValue,
+      integrationByMenuId,
+      mode,
+      skillByMenuId,
+      value,
+    ]
   );
 
   const prepareMessageForSend = useCallback(
@@ -602,14 +690,42 @@ export function AgentComposerSurface({
       const projectReferences = normalizeComposerProjectReferences([
         ...references.values(),
       ]);
+      const integrationReferences = new Map<string, AgentComposerIntegrationReference>();
+      for (const reference of selectedIntegrationReferences.values()) {
+        if (messageContainsIntegrationToken(message, reference)) {
+          integrationReferences.set(`${reference.kind}:${reference.id}`, reference);
+        }
+      }
+      for (const reference of extractComposerIntegrationTokens(message)) {
+        const key = `${reference.kind}:${reference.id}`;
+        if (!integrationReferences.has(key)) {
+          integrationReferences.set(key, reference);
+        }
+      }
+      const normalizedIntegrationReferences = normalizeComposerIntegrationReferences([
+        ...integrationReferences.values(),
+      ]);
       return {
         message: withInternalSkillDirectives,
-        ...(projectReferences.length > 0
-          ? { options: { projectReferences } }
+        ...(projectReferences.length > 0 || normalizedIntegrationReferences.length > 0
+          ? {
+              options: {
+                ...(projectReferences.length > 0 ? { projectReferences } : {}),
+                ...(normalizedIntegrationReferences.length > 0
+                  ? { integrationReferences: normalizedIntegrationReferences }
+                  : {}),
+              },
+            }
           : {}),
       };
     },
-    [questionMode, selectedInternalSkillNames, selectedProjectReferences, skills]
+    [
+      questionMode,
+      selectedIntegrationReferences,
+      selectedInternalSkillNames,
+      selectedProjectReferences,
+      skills,
+    ]
   );
 
   const handleAttachmentSelect = useCallback(
@@ -664,6 +780,7 @@ export function AgentComposerSurface({
       await sendOutgoing();
       setSelectedInternalSkillNames(new Set());
       setSelectedProjectReferences(new Map());
+      setSelectedIntegrationReferences(new Map());
       return;
     }
 
@@ -772,7 +889,7 @@ export function AgentComposerSurface({
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
-        <span>@ for files</span>
+        <span>@ for references</span>
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
@@ -905,6 +1022,16 @@ export function AgentComposerSurface({
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
               open={actionMenuOpen}
               onOpenChange={setActionMenuOpen}
+              onInsertIntegrationTrigger={(kind) => {
+                insertIntegrationTrigger(
+                  kind,
+                  value,
+                  cursorPosition,
+                  applyComposerText,
+                  textareaRef.current,
+                );
+                setActionMenuOpen(false);
+              }}
               {...(mode ? { mode } : {})}
             />
 
@@ -998,6 +1125,7 @@ function ComposerActionMenu({
   onOpenAttachmentPicker,
   open,
   onOpenChange,
+  onInsertIntegrationTrigger,
 }: {
   project: ProjectFieldConfig;
   mode?: ModeFieldConfig;
@@ -1006,8 +1134,11 @@ function ComposerActionMenu({
   onOpenAttachmentPicker: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
 }) {
-  const hasPersistentActions = enableAttachments || Boolean(project.endAction) || Boolean(mode);
+  const hasPersistentActions = true;
+  const hasPrimaryActions =
+    enableAttachments || Boolean(project.endAction) || Boolean(mode);
   const setOpen = onOpenChange;
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -1090,9 +1221,64 @@ function ComposerActionMenu({
             <ComposerModeMenuSection mode={mode} onDone={() => setOpen(false)} />
           </>
         )}
+
+        {hasPrimaryActions && (
+          <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+        )}
+        <div className="py-1">
+          <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+            Integrations
+          </div>
+          <div className="space-y-1">
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("jira")}
+            >
+              <Search className="h-4 w-4" />
+              Jira
+            </button>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("confluence")}
+            >
+              <Search className="h-4 w-4" />
+              Confluence
+            </button>
+          </div>
+        </div>
       </PopoverContent>
     </Popover>
   );
+}
+
+function messageContainsIntegrationToken(
+  message: string,
+  reference: AgentComposerIntegrationReference,
+): boolean {
+  const token =
+    reference.kind === "jira"
+      ? `@jira:${reference.key ?? reference.id}`
+      : `@confluence:${reference.id}`;
+  return message.toLowerCase().includes(token.toLowerCase());
+}
+
+function insertIntegrationTrigger(
+  kind: AgentComposerIntegrationKind,
+  value: string,
+  cursorPosition: number,
+  applyComposerText: (nextValue: string, nextCursor: number) => void,
+  textarea: HTMLTextAreaElement | null,
+) {
+  const start = textarea?.selectionStart ?? cursorPosition;
+  const end = textarea?.selectionEnd ?? cursorPosition;
+  const trigger = kind === "jira" ? "@jira:" : "@confluence:";
+  const before = value.slice(0, start);
+  const after = value.slice(end);
+  const spacer = before.length > 0 && !/\s$/.test(before) ? " " : "";
+  const nextText = `${before}${spacer}${trigger}${after}`;
+  applyComposerText(nextText, before.length + spacer.length + trigger.length);
 }
 
 function ComposerModeChip({

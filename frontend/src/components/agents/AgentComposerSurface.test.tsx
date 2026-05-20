@@ -103,6 +103,9 @@ describe("AgentComposerSurface", () => {
       if (cmd === "search_agent_composer_entries") {
         return Promise.resolve({ entries: [], truncated: false });
       }
+      if (cmd === "search_atlassian_resources") {
+        return Promise.resolve({ resources: [] });
+      }
       return Promise.resolve(undefined);
     });
   });
@@ -137,7 +140,7 @@ describe("AgentComposerSurface", () => {
     renderComposer();
 
     expect(screen.getByText("Type / for commands")).toBeInTheDocument();
-    expect(screen.getByText("@ for files")).toBeInTheDocument();
+    expect(screen.getByText("@ for references")).toBeInTheDocument();
     expect(screen.getByText("$ for skills")).toBeInTheDocument();
   });
 
@@ -282,6 +285,66 @@ describe("AgentComposerSurface", () => {
         projectReferences: [{ path: "src/main.ts", kind: "file" }],
       },
     );
+  });
+
+  it("sends selected Jira items as structured integration references", async () => {
+    const onSend = vi.fn();
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "search_atlassian_resources") {
+        return Promise.resolve({
+          resources: [
+            {
+              kind: "jira",
+              id: "RX-42",
+              key: "RX-42",
+              title: "Fix composer search",
+              url: "https://example.atlassian.net/browse/RX-42",
+              excerpt: null,
+            },
+          ],
+        });
+      }
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({ skills: [] });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Work on @jira:RX" } });
+    textarea.setSelectionRange("Work on @jira:RX".length, "Work on @jira:RX".length);
+    fireEvent.keyUp(textarea);
+
+    const item = await screen.findByTestId(
+      "agent-composer-menu-item-integration:jira:RX-42",
+    );
+    fireEvent.mouseDown(item);
+    fireEvent.click(item);
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Work on @jira:RX-42", {
+      integrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer search",
+          url: "https://example.atlassian.net/browse/RX-42",
+        },
+      ],
+    });
+  });
+
+  it("inserts integration triggers from the plus menu", () => {
+    renderComposer();
+
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByText("Jira"));
+
+    expect(screen.getByLabelText("Message input")).toHaveValue("@jira:");
   });
 
   it("appends internal skill directives for selected $ skills", async () => {

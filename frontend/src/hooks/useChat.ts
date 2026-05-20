@@ -16,8 +16,9 @@ import {
 import { useEffect, useCallback, useMemo, useRef } from "react";
 import {
   chatApi,
-  type ComposerProjectReference,
   type ChatMessageResponse,
+  type ComposerIntegrationReference,
+  type ComposerProjectReference,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
   type SendAgentMessageOptions,
@@ -75,6 +76,7 @@ type SendMessageVariables = {
   attachmentIds?: string[];
   target?: string;
   composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
 };
 
 type SendMessageMutationContext = {
@@ -709,12 +711,23 @@ export function useChat(
     SendMessageVariables,
     SendMessageMutationContext
   >({
-    mutationFn: async ({ content, attachmentIds, target, composerProjectReferences }) => {
+    mutationFn: async ({
+      content,
+      attachmentIds,
+      target,
+      composerProjectReferences,
+      composerIntegrationReferences,
+    }) => {
       const sendOptions =
-        composerProjectReferences?.length
+        composerProjectReferences?.length || composerIntegrationReferences?.length
           ? {
               ...options?.sendOptions,
-              composerProjectReferences,
+              ...(composerProjectReferences?.length
+                ? { composerProjectReferences }
+                : {}),
+              ...(composerIntegrationReferences?.length
+                ? { composerIntegrationReferences }
+                : {}),
             }
           : options?.sendOptions;
       if (options?.sendOptions) {

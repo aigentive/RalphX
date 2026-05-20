@@ -74,6 +74,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 
 const queryClient = getQueryClient();
+const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 
 /**
  * Test page router - checks URL params and returns test page if applicable
@@ -532,6 +533,33 @@ function AppContent() {
     openModal("settings", { section: "providers" });
   }, [openModal]);
 
+  const handleOpenIntegrationSettings = useCallback(() => {
+    openModal("settings", { section: "integrations" });
+  }, [openModal]);
+
+  useEffect(() => {
+    if (!postUpdateAppReady || hasNoProjects || providerSetupRequired) {
+      return;
+    }
+    if (window.localStorage.getItem(ATLASSIAN_AWARENESS_TOAST_KEY) === "seen") {
+      return;
+    }
+    window.localStorage.setItem(ATLASSIAN_AWARENESS_TOAST_KEY, "seen");
+    toast.info("Atlassian integrations are available", {
+      description: "Connect Jira and Confluence from Settings.",
+      action: {
+        label: "Open Integrations",
+        onClick: handleOpenIntegrationSettings,
+      },
+      duration: 10000,
+    });
+  }, [
+    handleOpenIntegrationSettings,
+    hasNoProjects,
+    postUpdateAppReady,
+    providerSetupRequired,
+  ]);
+
   const handleBattleModeToggle = useCallback(() => {
     if (battleModeActive) {
       exitBattleMode();
@@ -891,6 +919,7 @@ function AppContent() {
         <WelcomeScreen
           onCreateProject={handleOpenProjectWizard}
           onSetupProviders={handleOpenProviderSettings}
+          onSetupIntegrations={handleOpenIntegrationSettings}
           providerSetupRequired={providerSetupRequired}
           hasProjects={!hasNoProjects}
           onClose={showWelcomeOverlay && !providerSetupRequired ? handleCloseWelcomeOverlay : undefined}

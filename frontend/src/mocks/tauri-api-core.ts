@@ -62,6 +62,26 @@ const mockExternalMcpConfig = {
   nodePath: null as string | null,
 };
 
+const mockAtlassianIntegrationSettings = {
+  enabled: false,
+  authMethod: "api_token",
+  siteUrl: null as string | null,
+  email: null as string | null,
+  hasApiToken: false,
+  oauthClientId: null as string | null,
+  oauthRedirectUri: null as string | null,
+  hasOauthClientSecret: false,
+  hasOauthToken: false,
+  oauthCloudId: null as string | null,
+  oauthScopes: null as string | null,
+  validationStatus: "not_configured",
+  jiraAvailable: false,
+  confluenceAvailable: false,
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
 const mockAgentProviderSettings = {
   providers: [
     {
@@ -521,6 +541,96 @@ const commandHandlers: Record<
     ],
   }),
   get_agent_provider_settings: async () => mockAgentProviderSettings,
+  get_atlassian_integration_settings: async () => mockAtlassianIntegrationSettings,
+  save_atlassian_integration_settings: async (args) => {
+    const input = args.input as {
+      authMethod?: "api_token" | "oauth";
+      siteUrl?: string | null;
+      email?: string | null;
+      apiToken?: string | null;
+      oauthClientId?: string | null;
+      oauthClientSecret?: string | null;
+      oauthRedirectUri?: string | null;
+    };
+    mockAtlassianIntegrationSettings.authMethod =
+      input.authMethod ?? mockAtlassianIntegrationSettings.authMethod;
+    mockAtlassianIntegrationSettings.siteUrl = input.siteUrl ?? null;
+    mockAtlassianIntegrationSettings.email = input.email ?? null;
+    mockAtlassianIntegrationSettings.hasApiToken =
+      Boolean(input.apiToken) || mockAtlassianIntegrationSettings.hasApiToken;
+    mockAtlassianIntegrationSettings.oauthClientId = input.oauthClientId ?? null;
+    mockAtlassianIntegrationSettings.oauthRedirectUri = input.oauthRedirectUri ?? null;
+    mockAtlassianIntegrationSettings.hasOauthClientSecret =
+      Boolean(input.oauthClientSecret) ||
+      mockAtlassianIntegrationSettings.hasOauthClientSecret;
+    mockAtlassianIntegrationSettings.enabled = false;
+    mockAtlassianIntegrationSettings.validationStatus =
+      mockAtlassianIntegrationSettings.authMethod === "oauth"
+        ? mockAtlassianIntegrationSettings.siteUrl &&
+          mockAtlassianIntegrationSettings.oauthClientId &&
+          mockAtlassianIntegrationSettings.oauthRedirectUri &&
+          mockAtlassianIntegrationSettings.hasOauthClientSecret
+          ? "pending"
+          : "not_configured"
+        : mockAtlassianIntegrationSettings.siteUrl &&
+            mockAtlassianIntegrationSettings.email &&
+            mockAtlassianIntegrationSettings.hasApiToken
+        ? "pending"
+        : "not_configured";
+    return mockAtlassianIntegrationSettings;
+  },
+  build_atlassian_oauth_authorization_url: async () => ({
+    authorizationUrl: "https://auth.atlassian.com/authorize?mock=1",
+    state: "mock-state",
+    scopes: "read:jira-work offline_access",
+    redirectUri: "http://127.0.0.1:8765/atlassian/oauth/callback",
+  }),
+  start_atlassian_oauth_local_callback: async () => ({
+    authorizationUrl: "https://auth.atlassian.com/authorize?mock=1",
+    state: "mock-state",
+    scopes: "read:jira-work offline_access",
+    redirectUri: "http://127.0.0.1:8765/atlassian/oauth/callback",
+  }),
+  complete_atlassian_oauth_local_callback: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      authMethod: "oauth",
+      enabled: true,
+      hasOauthToken: true,
+      oauthCloudId: "mock-cloud-id",
+      validationStatus: "valid",
+      jiraAvailable: true,
+      confluenceAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+    });
+    return mockAtlassianIntegrationSettings;
+  },
+  exchange_atlassian_oauth_code: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      authMethod: "oauth",
+      enabled: true,
+      hasOauthToken: true,
+      oauthCloudId: "mock-cloud-id",
+      validationStatus: "valid",
+      jiraAvailable: true,
+      confluenceAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+    });
+    return mockAtlassianIntegrationSettings;
+  },
+  validate_atlassian_integration: async () => {
+    Object.assign(mockAtlassianIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      jiraAvailable: true,
+      confluenceAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+    });
+    return mockAtlassianIntegrationSettings;
+  },
+  search_atlassian_resources: async () => ({ resources: [] }),
   update_agent_provider_settings: async (args) => {
     const input = args.input as Partial<
       (typeof mockAgentProviderSettings.providers)[number]

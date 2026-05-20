@@ -7,6 +7,7 @@ import {
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type ComposerIntegrationReference,
   type ComposerProjectReference,
   type ChatMessageResponse,
   type ConversationMessagesPageResponse,
@@ -83,6 +84,7 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      composerIntegrationReferences,
       composerProjectReferences,
     }: {
       projectId: string;
@@ -91,6 +93,7 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
       const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
@@ -270,6 +273,9 @@ export function useStartAgentConversation({
           mode,
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
+            : {}),
+          ...(composerIntegrationReferences?.length
+            ? { composerIntegrationReferences }
             : {}),
           ...(base ? { base } : {}),
         });

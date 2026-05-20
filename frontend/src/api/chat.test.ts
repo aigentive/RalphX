@@ -1748,6 +1748,9 @@ describe("chat api", () => {
 
     await sendAgentMessage("project", "p1", "Read @src/main.ts", undefined, undefined, {
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      composerIntegrationReferences: [
+        { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+      ],
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -1756,6 +1759,9 @@ describe("chat api", () => {
         contextId: "p1",
         content: "Read @src/main.ts",
         composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+        composerIntegrationReferences: [
+          { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+        ],
       },
     });
   });

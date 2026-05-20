@@ -35,6 +35,7 @@ import { useChatPanelContext } from "@/hooks/useChatPanelContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   chatApi,
+  type ComposerIntegrationReference,
   type ComposerProjectReference,
   type SendAgentMessageResult,
 } from "@/api/chat";
@@ -161,7 +162,10 @@ interface IntegratedChatPanelProps {
 export interface IntegratedChatComposerRenderProps {
   onSend: (
     message: string,
-    options?: { projectReferences?: ComposerProjectReference[] },
+    options?: {
+      projectReferences?: ComposerProjectReference[];
+      integrationReferences?: ComposerIntegrationReference[];
+    },
   ) => Promise<void>;
   onStop: () => Promise<void>;
   agentStatus: AgentStatus;
@@ -808,7 +812,10 @@ export function IntegratedChatPanel({
   // "new user message → scrollToBottom" effect).
   const handleSend = useCallback(async (
     message: string,
-    options?: { projectReferences?: ComposerProjectReference[] },
+    options?: {
+      projectReferences?: ComposerProjectReference[];
+      integrationReferences?: ComposerIntegrationReference[];
+    },
   ) => {
     const attachmentIds = attachments.map(a => a.id);
     logger.debug("[ChatScroll] handleSend firing", {
