@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { isRalphxTerminalDockDragActive } from "@/lib/internalDragTypes";
 import { AgentTerminalDrawer } from "./AgentTerminalDrawer";
 
 const {
@@ -377,6 +378,70 @@ describe("AgentTerminalDrawer", () => {
     expect(onCollapse).not.toHaveBeenCalled();
   });
 
+  it("marks terminal dock drags and suppresses the follow-up header click", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const onCollapse = vi.fn();
+    const onPlacementDragStart = vi.fn();
+    const onPlacementDragEnd = vi.fn();
+    const dataTransfer = {
+      effectAllowed: "none",
+      setData: vi.fn(),
+    };
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={onCollapse}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={onPlacementDragStart}
+          onPlacementDragEnd={onPlacementDragEnd}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const header = screen.getByTestId("agent-terminal-header");
+    fireEvent.keyDown(header, { key: "Escape" });
+    expect(onCollapse).not.toHaveBeenCalled();
+
+    fireEvent.dragStart(header, { dataTransfer });
+
+    expect(isRalphxTerminalDockDragActive()).toBe(true);
+    expect(onPlacementDragStart).toHaveBeenCalledTimes(1);
+    expect(dataTransfer.effectAllowed).toBe("move");
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      "application/x-ralphx-terminal-dock",
+      "conversation-1",
+    );
+    expect(dataTransfer.setData).toHaveBeenCalledWith("text/plain", "conversation-1");
+
+    fireEvent.click(header);
+
+    expect(onCollapse).not.toHaveBeenCalled();
+
+    fireEvent.dragEnd(header);
+    fireEvent.dragEnd(header);
+
+    expect(isRalphxTerminalDockDragActive()).toBe(false);
+    expect(onPlacementDragEnd).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+  });
+
   it("hides terminal session controls while collapsed", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
@@ -409,6 +474,58 @@ describe("AgentTerminalDrawer", () => {
     expect(screen.queryByLabelText("Clear terminal")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Open terminal")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Close terminal")).not.toBeInTheDocument();
+  });
+
+  it("keeps expanded terminal session controls wired to clear and restart", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={vi.fn()}
+          onPlacementDragEnd={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Clear terminal"));
+      fireEvent.click(screen.getByLabelText("Start fresh terminal session"));
+      await Promise.resolve();
+    });
+
+    expect(clearAgentTerminalMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      terminalId: "default",
+      deleteHistory: true,
+    });
+    expect(restartAgentTerminalMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      terminalId: "default",
+      cols: 100,
+      rows: 24,
+    });
   });
 
   it("requests visual collapse before waiting for the backend terminal close", async () => {

@@ -28,6 +28,16 @@ const {
 describe("AgentsView terminal docks", () => {
   beforeEach(setupAgentsViewTest);
 
+  it("clears the terminal drag-over dock when drag ownership clears", () => {
+    useAgentTerminalStore.getState().setDraggingConversation("conversation-1");
+    useAgentTerminalStore.getState().setDragOverDock("panel");
+
+    useAgentTerminalStore.getState().setDraggingConversation(null);
+
+    expect(useAgentTerminalStore.getState().draggingConversationId).toBeNull();
+    expect(useAgentTerminalStore.getState().dragOverDock).toBeNull();
+  });
+
   it("opens the artifact panel and moves an open auto terminal in the same click", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
@@ -237,7 +247,9 @@ describe("AgentsView terminal docks", () => {
       screen.getByTestId("agent-terminal-drop-target-panel").getAttribute("style"),
     ).toContain("border-color: var(--accent-border)");
 
-    fireEvent.dragOver(panelHost);
+    const dataTransfer = { dropEffect: "none" };
+    fireEvent.dragOver(panelHost, { dataTransfer });
+    expect(dataTransfer.dropEffect).toBe("move");
     expect(
       screen.getByTestId("agent-terminal-drop-target-panel").getAttribute("style"),
     ).toContain("border-color: var(--accent-primary)");
@@ -248,6 +260,39 @@ describe("AgentsView terminal docks", () => {
 
     expect(useAgentTerminalStore.getState().placement).toBe("panel");
     expect(useAgentTerminalStore.getState().draggingConversationId).toBeNull();
+  });
+
+  it("ignores terminal dock drag events before a dock drag is active", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentTerminalStore.setState({
+      openByConversationId: { "conversation-1": true },
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      placement: "chat",
+    });
+
+    renderAgentsView();
+
+    const panelHost = await screen.findByTestId("agent-terminal-host-panel");
+
+    fireEvent.dragOver(panelHost);
+    fireEvent.dragLeave(panelHost);
+    fireEvent.drop(panelHost);
+
+    expect(useAgentTerminalStore.getState().dragOverDock).toBeNull();
+    expect(useAgentTerminalStore.getState().placement).toBe("chat");
   });
 
   it("commits the drop when drag end reaches the source before the drop target", async () => {
@@ -464,6 +509,30 @@ describe("AgentsView terminal docks", () => {
     ).toContain("border-color: var(--accent-primary)");
 
     await fireAgentViewNativeDragDropEvent({
+      type: "over",
+      position: { x: 480, y: 24 },
+      paths: [],
+    });
+    await fireAgentViewNativeDragDropEvent({
+      type: "drop",
+      position: { x: 480, y: 24 },
+      paths: [],
+    });
+    await fireAgentViewNativeDragDropEvent({
+      type: "cancel",
+      paths: [],
+    });
+
+    expect(useAgentTerminalStore.getState().placement).toBe("chat");
+
+    await fireAgentViewNativeDragDropEvent({
+      type: "enter",
+      position: { x: 80, y: 24 },
+      paths: [],
+    });
+    expect(useAgentTerminalStore.getState().dragOverDock).toBe("panel");
+
+    await fireAgentViewNativeDragDropEvent({
       type: "drop",
       position: { x: 80, y: 24 },
       paths: [],
@@ -471,6 +540,45 @@ describe("AgentsView terminal docks", () => {
 
     expect(useAgentTerminalStore.getState().placement).toBe("panel");
     expect(useAgentTerminalStore.getState().draggingConversationId).toBeNull();
+  });
+
+  it("clears stale terminal dock drag state when dragging ends without a target", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+    useAgentTerminalStore.setState({
+      openByConversationId: { "conversation-1": true },
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      placement: "chat",
+    });
+
+    renderAgentsView();
+
+    const dragHandle = await screen.findByTestId("agent-terminal-drag-handle");
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.dragStart(dragHandle);
+      fireEvent.dragEnd(dragHandle);
+
+      expect(useAgentTerminalStore.getState().draggingConversationId).toBe("conversation-1");
+
+      fireEvent.dragStart(dragHandle);
+      fireEvent.dragEnd(dragHandle);
+
+      act(() => {
+        vi.advanceTimersByTime(120);
+      });
+
+      expect(useAgentTerminalStore.getState().draggingConversationId).toBeNull();
+      expect(useAgentTerminalStore.getState().dragOverDock).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("commits the placement on drag end when the browser does not emit drop", async () => {
