@@ -15,6 +15,8 @@ import { PublishPipelineSteps } from "./AgentsPublishPipelineSteps";
 export type PublishWorkspaceDialogPhase = "confirm" | "publishing";
 
 export function PublishWorkspaceDialog({
+  autoMergeCurrent = null,
+  autoMergeDesired = false,
   base,
   branch,
   confirmDisabled,
@@ -23,8 +25,11 @@ export function PublishWorkspaceDialog({
   onOpenChange,
   open,
   phase,
+  prSupervisionStatus = null,
   status,
 }: {
+  autoMergeCurrent?: boolean | null;
+  autoMergeDesired?: boolean;
   base: string;
   branch: string;
   confirmDisabled: boolean;
@@ -33,6 +38,7 @@ export function PublishWorkspaceDialog({
   onOpenChange: (open: boolean) => void;
   open: boolean;
   phase: PublishWorkspaceDialogPhase;
+  prSupervisionStatus?: string | null;
   status: string | null;
 }) {
   const isProgress = phase === "publishing";
@@ -73,7 +79,10 @@ export function PublishWorkspaceDialog({
         {isProgress && (
           <div className="px-5 pb-4">
             <PublishPipelineSteps
+              autoMergeCurrent={autoMergeCurrent}
+              autoMergeDesired={autoMergeDesired}
               className="mt-3"
+              prSupervisionStatus={prSupervisionStatus}
               status={status}
               isPublishing={isPublishing}
               testIdPrefix="agents-publish-dialog"

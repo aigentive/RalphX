@@ -11,19 +11,39 @@ const PUBLISH_STEPS = [
   { id: "pushed", label: "Open draft PR" },
 ] as const;
 
+const AUTO_MERGE_STEP = { id: "auto_merge", label: "Request auto-merge" } as const;
+
 export function PublishPipelineSteps({
+  autoMergeCurrent = null,
+  autoMergeDesired = false,
   className,
+  prSupervisionStatus = null,
   status,
   isPublishing,
   testIdPrefix = "agents-publish",
 }: {
+  autoMergeCurrent?: boolean | null;
+  autoMergeDesired?: boolean;
   className?: string;
+  prSupervisionStatus?: string | null;
   status: string | null;
   isPublishing: boolean;
   testIdPrefix?: string;
 }) {
   const normalizedStatus = status ?? "idle";
+  const steps = autoMergeDesired
+    ? [...PUBLISH_STEPS, AUTO_MERGE_STEP]
+    : PUBLISH_STEPS;
+  const autoMergePending =
+    autoMergeDesired &&
+    normalizedStatus === "pushed" &&
+    autoMergeCurrent !== true &&
+    prSupervisionStatus !== "fixing" &&
+    prSupervisionStatus !== "blocked";
   const activeIndex = (() => {
+    if (normalizedStatus === "pushed" && autoMergeDesired) {
+      return autoMergeCurrent === true ? steps.length : PUBLISH_STEPS.length;
+    }
     if (normalizedStatus === "pushed") {
       return PUBLISH_STEPS.length;
     }
@@ -67,9 +87,12 @@ export function PublishPipelineSteps({
         className="grid gap-x-3 gap-y-2 [grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr))]"
         data-testid={`${testIdPrefix}-pipeline-steps`}
       >
-        {PUBLISH_STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const isDone = activeIndex > index;
-          const isActive = isPublishing && activeIndex === index;
+          const isActive =
+            !isTerminalFailure &&
+            activeIndex === index &&
+            (isPublishing || (step.id === "auto_merge" && autoMergePending));
           const isFailed = isTerminalFailure && index === failureIndex;
           return (
             <div
