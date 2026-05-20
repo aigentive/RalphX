@@ -4,8 +4,8 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useState,
   type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -14,6 +14,10 @@ import { Terminal as TerminalIcon } from "lucide-react";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { formatBranchDisplay } from "@/lib/branch-utils";
+import {
+  safelyUnlistenTauri,
+  type TauriUnlistenFn,
+} from "@/lib/tauri-listener-cleanup";
 
 import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
@@ -78,11 +82,13 @@ function AgentTerminalLoadingShell({
   expanded,
   workspace,
   dockElement,
+  onToggleExpanded,
 }: {
   height: number;
   expanded: boolean;
   workspace: AgentConversationWorkspace;
   dockElement: HTMLElement | null;
+  onToggleExpanded: () => void;
 }) {
   const branchLabel = formatBranchDisplay(workspace.branchName).short;
   const displayCwd = compactTerminalPath(workspace.worktreePath);
@@ -98,7 +104,20 @@ function AgentTerminalLoadingShell({
       data-testid="agent-terminal-loading-shell"
     >
       <div
-        className="flex h-9 items-center gap-2 border-b px-3 text-xs"
+        className="flex h-9 cursor-pointer select-none items-center gap-2 border-b px-3 text-xs"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse terminal panel" : "Expand terminal panel"}
+        data-testid="agent-terminal-loading-shell-header"
+        onClick={onToggleExpanded}
+        onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
+          if (event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          onToggleExpanded();
+        }}
         style={{
           backgroundColor: "var(--bg-surface)",
           borderColor: "var(--overlay-faint)",
@@ -362,13 +381,19 @@ export function AgentsTerminalDockHost({
       return;
     }
 
-    let unlisten: (() => void) | undefined;
+    let unlisten: TauriUnlistenFn | undefined;
     let cancelled = false;
+
+    const releaseNativeDragListener = () => {
+      const dispose = unlisten;
+      unlisten = undefined;
+      safelyUnlistenTauri(dispose, "terminal dock drag listener");
+    };
 
     const setupNativeDragListener = async () => {
       try {
         const webview = getCurrentWebview();
-        unlisten = await webview.onDragDropEvent((event: NativeDockDragEvent) => {
+        const dispose = await webview.onDragDropEvent((event: NativeDockDragEvent) => {
           const { payload } = event;
           const isInside = isNativePositionInsideElement(
             payload.position,
@@ -408,8 +433,10 @@ export function AgentsTerminalDockHost({
         });
 
         if (cancelled) {
-          unlisten();
+          safelyUnlistenTauri(dispose, "terminal dock drag listener");
+          return;
         }
+        unlisten = dispose;
       } catch (error) {
         console.error("Failed to set up terminal dock drag listener:", error);
       }
@@ -419,7 +446,7 @@ export function AgentsTerminalDockHost({
 
     return () => {
       cancelled = true;
-      unlisten?.();
+      releaseNativeDragListener();
     };
   }, [
     cancelDragLeaveClear,
@@ -512,17 +539,7 @@ export function AgentsTerminalRegion({
     terminalUnavailableReason,
     hasAutoOpenArtifacts,
   });
-  const [hasActivatedDrawer, setHasActivatedDrawer] = useState(false);
-  useEffect(() => {
-    if (!canRender) {
-      setHasActivatedDrawer(false);
-      return;
-    }
-    if (isExpanded) {
-      setHasActivatedDrawer(true);
-    }
-  }, [canRender, isExpanded]);
-  const contentMounted = useAfterPaintMounted(canRender && hasActivatedDrawer);
+  const contentMounted = useAfterPaintMounted(canRender);
   const setTerminalHeight = useAgentTerminalStore((state) => state.setHeight);
   const setTerminalOpen = useAgentTerminalStore((state) => state.setOpen);
   const setTerminalPlacement = useAgentTerminalStore((state) => state.setPlacement);
@@ -568,6 +585,12 @@ export function AgentsTerminalRegion({
       clearDragState();
     }, TERMINAL_DRAG_END_CLEANUP_DELAY_MS);
   }, [cancelDragEndCleanup, clearDragState, dragOverDock, setTerminalPlacement]);
+  const handleTerminalShellToggle = useCallback(() => {
+    if (!conversationId) {
+      return;
+    }
+    setTerminalOpen(conversationId, !isExpanded);
+  }, [conversationId, isExpanded, setTerminalOpen]);
 
   useEffect(
     () => () => {
@@ -589,6 +612,7 @@ export function AgentsTerminalRegion({
         expanded={isExpanded}
         workspace={workspace}
         dockElement={dockElement}
+        onToggleExpanded={handleTerminalShellToggle}
       />
     );
   }
@@ -601,6 +625,7 @@ export function AgentsTerminalRegion({
           expanded={isExpanded}
           workspace={workspace}
           dockElement={dockElement}
+          onToggleExpanded={handleTerminalShellToggle}
         />
       }
     >
