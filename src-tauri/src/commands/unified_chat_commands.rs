@@ -67,6 +67,9 @@ use crate::application::publish_resilience::{
     push_publish_branch, remote_tracking_ref_for_publish, review_base_for_publish,
     PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus, PublishFailureClass,
 };
+use crate::application::services::pr_merge_poller::{
+    sync_agent_workspace_auto_merge_preference_for_workspace,
+};
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
@@ -77,10 +80,10 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
-    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunStatus, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     AgentWorkspacePrPublisher, ComposerIntegrationReference, ComposerProjectReference,
@@ -124,6 +127,9 @@ pub struct SendAgentMessageInput {
     /// Structured external integration references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Attachment IDs selected by the composer for this message.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
     /// Optional target for team message routing.
     /// When set to a teammate name, the message is routed to that teammate's stdin
     /// instead of the lead's. "lead" or None routes to the lead (default behavior).
@@ -142,6 +148,37 @@ pub struct SendAgentMessageResponse {
     pub queued_as_pending: bool,
     #[serde(default)]
     pub queued_message_id: Option<String>,
+}
+
+fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>, String> {
+    raw_ids
+        .iter()
+        .map(|id| {
+            id.parse::<ChatAttachmentId>()
+                .map_err(|_| format!("Invalid attachment id: {}", id))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod chat_attachment_id_parser_tests {
+    use super::parse_chat_attachment_ids;
+    use crate::domain::entities::ChatAttachmentId;
+
+    #[test]
+    fn parses_chat_attachment_ids_and_reports_invalid_values() {
+        let first = ChatAttachmentId::new();
+        let second = ChatAttachmentId::new();
+
+        let parsed = parse_chat_attachment_ids(&[first.as_str(), second.as_str()])
+            .expect("valid ids should parse");
+
+        assert_eq!(parsed, vec![first, second]);
+        assert_eq!(
+            parse_chat_attachment_ids(&["not-a-uuid".to_string()]).unwrap_err(),
+            "Invalid attachment id: not-a-uuid"
+        );
+    }
 }
 
 impl From<SendResult> for SendAgentMessageResponse {
@@ -2725,19 +2762,15 @@ pub async fn switch_agent_conversation_mode_for_state(
         None => AgentConversationWorkspaceModeLock::unlocked(),
     };
 
-    validate_agent_conversation_mode_transition(
-        current_mode,
-        target_mode,
-        &workspace_mode_lock,
-    )?;
+    validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
-            let should_detach_inactive_owner =
-                target_mode != AgentConversationWorkspaceMode::Ideation
-                    && !workspace_mode_lock.locked
-                    && (workspace.linked_ideation_session_id.is_some()
-                        || workspace.linked_plan_branch_id.is_some());
+            let should_detach_inactive_owner = target_mode
+                != AgentConversationWorkspaceMode::Ideation
+                && !workspace_mode_lock.locked
+                && (workspace.linked_ideation_session_id.is_some()
+                    || workspace.linked_plan_branch_id.is_some());
             if workspace.mode != target_mode || should_detach_inactive_owner {
                 workspace.mode = target_mode;
                 if should_detach_inactive_owner {
@@ -2964,6 +2997,7 @@ pub async fn send_agent_message(
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
     }
+    let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
     service
         .send_message(
@@ -2977,6 +3011,7 @@ pub async fn send_agent_message(
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
+                attachment_ids,
                 ..Default::default()
             },
         )
@@ -3287,9 +3322,7 @@ pub async fn get_agent_conversation_workspace(
     }
 }
 
-fn normalize_agent_workspace_auto_merge_method(
-    method: Option<String>,
-) -> Result<String, String> {
+fn normalize_agent_workspace_auto_merge_method(method: Option<String>) -> Result<String, String> {
     let method = method
         .unwrap_or_else(|| DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string())
         .trim()
@@ -3424,8 +3457,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let auto_merge_method =
-        normalize_agent_workspace_auto_merge_method(input.auto_merge_method)?;
+    let auto_merge_method = normalize_agent_workspace_auto_merge_method(input.auto_merge_method)?;
     let Some(workspace) = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -5120,9 +5152,65 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     .await
     .map_err(|e| e.to_string())?;
 
+    let mut refreshed = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(workspace);
+
+    if refreshed.pr_auto_merge_desired {
+        match sync_agent_workspace_auto_merge_preference_for_workspace(
+            Arc::clone(github),
+            &worktree_path,
+            outcome.pr_number,
+            &refreshed,
+            Arc::clone(&state.agent_conversation_workspace_repo),
+        )
+        .await
+        {
+            Ok(_) => {
+                refreshed = state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&refreshed.conversation_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(refreshed);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "ralphx_lib::commands::agent_workspace_publish",
+                    conversation_id = %refreshed.conversation_id,
+                    project_id = %refreshed.project_id,
+                    pr_number = outcome.pr_number,
+                    error = %error,
+                    "Deferred agent workspace auto-merge synchronization after publish"
+                );
+                state
+                    .agent_conversation_workspace_repo
+                    .update_pr_auto_merge_state(
+                        &refreshed.conversation_id,
+                        Some(false),
+                        Some("waiting"),
+                        Some(&format!(
+                            "GitHub auto-merge state could not be refreshed yet: {error}"
+                        )),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                refreshed = state
+                    .agent_conversation_workspace_repo
+                    .get_by_conversation_id(&refreshed.conversation_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(refreshed);
+            }
+        }
+    }
+
     let review_chat_service: Arc<dyn ChatService> = Arc::new(repair_service);
     state.pr_poller_registry.start_agent_workspace_polling(
-        workspace.conversation_id,
+        refreshed.conversation_id.clone(),
         outcome.pr_number,
         project.clone(),
         worktree_path.clone(),
@@ -5130,13 +5218,6 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         Arc::clone(&state.agent_run_repo),
         review_chat_service,
     );
-
-    let refreshed = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&workspace.conversation_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .unwrap_or(workspace);
 
     tracing::info!(
         target: "ralphx_lib::commands::agent_workspace_publish",
@@ -6489,6 +6570,7 @@ mod tests {
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
+    use crate::domain::services::github_service::PrHealth;
     use crate::domain::services::{
         GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrMergeStateStatus,
         PrMergeableState, PrStatus as GithubPrStatus, PrSyncState, RunningAgentKey,
@@ -9191,6 +9273,177 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publish_workspace_syncs_requested_auto_merge_before_returning() {
+        let github = Arc::new(MockGithubService::new());
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("auto-merge-publish", true, None, github).await;
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.pr_auto_merge_desired = true;
+        workspace.pr_auto_merge_method = "rebase".to_string();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace update should persist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("auto-merge.txt"),
+            "ready for review\n",
+        )
+        .expect("workspace change should be written");
+        github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+            sync_state: PrSyncState {
+                status: GithubPrStatus::Open,
+                merge_state_status: None,
+                mergeable: None,
+                is_draft: true,
+                head_ref_name: workspace.branch_name.clone(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: None,
+                base_ref_oid: None,
+            },
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        }));
+        let client = Arc::new(SubmittingPrDescriptionClient {
+            repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id: conversation_id.clone(),
+            spawned: tokio::sync::Mutex::new(0),
+        });
+        let state = state.with_agent_client(client);
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let response = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect("publish should succeed");
+        state
+            .pr_poller_registry
+            .stop_agent_workspace_polling(&conversation_id);
+
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(response.workspace.pr_auto_merge_current, Some(true));
+        assert_eq!(
+            response.workspace.pr_supervision_status.as_deref(),
+            Some("monitoring")
+        );
+        let github_state = github.state();
+        assert!(github_state.fetch_pr_health_calls >= 1);
+        assert!(github_state.mark_pr_ready_calls >= 1);
+        assert!(github_state.enable_pr_auto_merge_calls >= 1);
+        assert_eq!(
+            github_state.last_enable_pr_auto_merge_args.as_ref(),
+            Some(&(1, "rebase".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_records_waiting_when_auto_merge_sync_fails() {
+        let github = Arc::new(MockGithubService::new());
+        let (_temp, state, conversation_id, github) =
+            setup_publish_command_state("auto-merge-publish-waiting", true, None, github)
+                .await;
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.pr_auto_merge_desired = true;
+        workspace.pr_auto_merge_method = "squash".to_string();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace update should persist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("auto-merge-waiting.txt"),
+            "ready for review\n",
+        )
+        .expect("workspace change should be written");
+        github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
+            "GitHub health unavailable".to_string(),
+        )));
+        let client = Arc::new(SubmittingPrDescriptionClient {
+            repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id: conversation_id.clone(),
+            spawned: tokio::sync::Mutex::new(0),
+        });
+        let state = state.with_agent_client(client);
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let response = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect("publish should still succeed when auto-merge sync waits");
+        state
+            .pr_poller_registry
+            .stop_agent_workspace_polling(&conversation_id);
+
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(response.workspace.pr_auto_merge_current, Some(false));
+        assert_eq!(
+            response.workspace.pr_supervision_status.as_deref(),
+            Some("waiting")
+        );
+        assert!(response
+            .workspace
+            .pr_supervision_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("could not be refreshed yet"));
+        let github_state = github.state();
+        assert!(github_state.fetch_pr_health_calls >= 1);
+        assert_eq!(github_state.enable_pr_auto_merge_calls, 0);
+    }
+
+    #[tokio::test]
     async fn publish_workspace_stops_before_push_when_pr_description_fails() {
         let github = Arc::new(MockGithubService::new());
         let (_temp, state, conversation_id, github) =
@@ -9409,8 +9662,7 @@ mod tests {
         let project_id = ProjectId::from_string("project-missing-mode-lock".to_string());
         let plan_conversation_id =
             ChatConversationId::from_string("99999999-9999-4999-8999-999999999999");
-        let mut plan_workspace =
-            mode_lock_test_workspace(plan_conversation_id, project_id.clone());
+        let mut plan_workspace = mode_lock_test_workspace(plan_conversation_id, project_id.clone());
         plan_workspace.linked_plan_branch_id =
             Some(PlanBranchId::from_string("missing-plan-branch".to_string()));
 
@@ -9422,8 +9674,7 @@ mod tests {
 
         let session_conversation_id =
             ChatConversationId::from_string("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-        let mut session_workspace =
-            mode_lock_test_workspace(session_conversation_id, project_id);
+        let mut session_workspace = mode_lock_test_workspace(session_conversation_id, project_id);
         session_workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
             "missing-ideation-session".to_string(),
         ));
@@ -9513,7 +9764,10 @@ mod tests {
 
         assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
         assert_eq!(
-            response.workspace.as_ref().map(|workspace| workspace.mode.as_str()),
+            response
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.mode.as_str()),
             Some("edit")
         );
     }

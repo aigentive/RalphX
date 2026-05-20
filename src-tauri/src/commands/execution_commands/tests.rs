@@ -69,6 +69,54 @@ fn test_execution_state_decrement_no_underflow() {
     assert_eq!(state.running_count(), 0);
 }
 
+#[test]
+fn test_queued_message_to_send_options_preserves_references_and_attachments() {
+    let queue = crate::domain::services::MessageQueue::new();
+    let project_reference = crate::domain::services::ComposerProjectReference {
+        path: "src/main.rs".to_string(),
+        kind: Some(crate::domain::services::ComposerProjectReferenceKind::File),
+    };
+    let integration_reference = crate::domain::services::ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: "jira".to_string(),
+        id: "RX-42".to_string(),
+        key: Some("RX-42".to_string()),
+        title: Some("Fix queued replay".to_string()),
+        url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+    };
+    let attachment_id = crate::domain::entities::ChatAttachmentId::new();
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "queued".to_string(),
+        Some(r#"{"source":"test"}"#.to_string()),
+        Some("2026-03-11T10:00:00Z".to_string()),
+        Some(crate::domain::agents::AgentHarnessKind::Codex),
+        vec![project_reference.clone()],
+        vec![integration_reference.clone()],
+        vec![attachment_id],
+    );
+
+    let options = queued_message_to_send_options(&queued);
+
+    assert_eq!(options.metadata.as_deref(), Some(r#"{"source":"test"}"#));
+    assert_eq!(
+        options.created_at.map(|ts| ts.to_rfc3339()),
+        Some("2026-03-11T10:00:00+00:00".to_string())
+    );
+    assert_eq!(
+        options.harness_override,
+        Some(crate::domain::agents::AgentHarnessKind::Codex)
+    );
+    assert_eq!(options.composer_project_references, vec![project_reference]);
+    assert_eq!(
+        options.composer_integration_references,
+        vec![integration_reference]
+    );
+    assert_eq!(options.attachment_ids, vec![attachment_id]);
+}
+
 #[tokio::test]
 async fn test_active_project_state_set_if_changed_dedupes_same_project() {
     let state = ActiveProjectState::new();

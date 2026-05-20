@@ -180,6 +180,7 @@ struct BuildHarnessCommandRequest<'a> {
     effort_override: Option<&'a str>,
     model_override: Option<&'a str>,
     is_external_mcp: bool,
+    attachment_context_override: Option<&'a str>,
 }
 
 struct BuildHarnessResumeCommandRequest<'a> {
@@ -205,6 +206,7 @@ struct BuildHarnessResumeCommandRequest<'a> {
     effort_override: Option<&'a str>,
     model_override: Option<&'a str>,
     is_external_mcp: bool,
+    attachment_context_override: Option<&'a str>,
 }
 
 struct BuildHarnessLaunchRequest<'a> {
@@ -228,6 +230,7 @@ struct BuildHarnessLaunchRequest<'a> {
     is_external_mcp: bool,
     stored_session_id: Option<&'a str>,
     resolved_spawn_settings: &'a ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -315,6 +318,7 @@ impl ResolvedChatHarnessCli {
                     request.total_available,
                     request.effort_override,
                     request.model_override,
+                    request.attachment_context_override,
                 )
                 .await?,
             }),
@@ -349,6 +353,7 @@ impl ResolvedChatHarnessCli {
                         request.total_available,
                         request.is_external_mcp,
                         &resolved_spawn_settings,
+                        request.attachment_context_override,
                     )
                     .await?,
                 })
@@ -385,6 +390,7 @@ impl ResolvedChatHarnessCli {
                     request.total_available,
                     request.effort_override,
                     request.model_override,
+                    request.attachment_context_override,
                 )
                 .await?,
             }),
@@ -431,6 +437,7 @@ impl ResolvedChatHarnessCli {
                         request.total_available,
                         request.is_external_mcp,
                         &resolved_spawn_settings,
+                        request.attachment_context_override,
                     )
                     .await?,
                 })
@@ -461,6 +468,7 @@ impl ResolvedChatHarnessCli {
                     request.is_external_mcp,
                     request.stored_session_id,
                     request.resolved_spawn_settings,
+                    request.attachment_context_override,
                 )
                 .await?;
 
@@ -500,6 +508,7 @@ impl ResolvedChatHarnessCli {
                             request.total_available,
                             request.is_external_mcp,
                             request.resolved_spawn_settings,
+                            request.attachment_context_override,
                         )
                         .await?
                     }
@@ -521,6 +530,7 @@ impl ResolvedChatHarnessCli {
                             request.total_available,
                             request.is_external_mcp,
                             request.resolved_spawn_settings,
+                            request.attachment_context_override,
                         )
                         .await?
                     }
@@ -1805,6 +1815,7 @@ pub async fn build_command(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     // Compute agent_name using the resolution system (context type + optional status + team mode)
     let agent_name =
@@ -1825,16 +1836,21 @@ pub async fn build_command(
         && !is_fresh_review_cycle
         && conversation.context_type != ChatContextType::TaskExecution;
 
-    // Fetch pending attachments (not yet linked to a message)
-    let attachments = chat_attachment_repo
-        .find_by_conversation_id(&conversation.id)
-        .await
-        .map_err(|e| format!("Failed to fetch attachments: {}", e))?
-        .into_iter()
-        .filter(|a| a.message_id.is_none()) // Only pending attachments
-        .collect::<Vec<_>>();
+    let attachment_context = match attachment_context_override {
+        Some(context) => context.to_string(),
+        None => {
+            // Fetch pending attachments (not yet linked to a message)
+            let attachments = chat_attachment_repo
+                .find_by_conversation_id(&conversation.id)
+                .await
+                .map_err(|e| format!("Failed to fetch attachments: {}", e))?
+                .into_iter()
+                .filter(|a| a.message_id.is_none())
+                .collect::<Vec<_>>();
 
-    let attachment_context = format_attachments_for_agent(&attachments).await?;
+            format_attachments_for_agent(&attachments).await?
+        }
+    };
     let resolved_spawn_settings =
         crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
             agent_name,
@@ -1989,6 +2005,7 @@ async fn build_recovery_command_from_resolved_settings(
     total_available: usize,
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let resolved_model = resolved_spawn_settings.model.as_str();
     let ideation_subagent_model_cap = resolved_spawn_settings.subagent_model_cap.as_deref();
@@ -2005,6 +2022,11 @@ async fn build_recovery_command_from_resolved_settings(
         IdeationBootstrapMode::Recovery,
     )
     .await?;
+    let prompt = format!(
+        "{}{}",
+        prompt,
+        attachment_context_override.unwrap_or_default()
+    );
 
     let mcp_runtime_context = build_mcp_runtime_context(
         context_type,
@@ -2058,6 +2080,7 @@ pub async fn build_codex_command(
     total_available: usize,
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let total_started = Instant::now();
     let codex_team_mode = false;
@@ -2072,35 +2095,41 @@ pub async fn build_codex_command(
                 .unwrap_or_else(|| resolved_spawn_settings.model.clone())
         });
 
-    let attachments_started = Instant::now();
-    let attachments = chat_attachment_repo
-        .find_by_conversation_id(&conversation.id)
-        .await
-        .map_err(|e| format!("Failed to fetch attachments: {}", e))?
-        .into_iter()
-        .filter(|a| a.message_id.is_none())
-        .collect::<Vec<_>>();
-    tracing::info!(
-        context_type = %conversation.context_type,
-        context_id = %conversation.context_id,
-        conversation_id = %conversation.id,
-        agent_name,
-        phase = "fetch_attachments",
-        attachment_count = attachments.len(),
-        elapsed_ms = attachments_started.elapsed().as_millis() as u64,
-        "chat_service.build_codex_command phase completed"
-    );
-    let attachment_context_started = Instant::now();
-    let attachment_context = format_attachments_for_agent(&attachments).await?;
-    tracing::info!(
-        context_type = %conversation.context_type,
-        context_id = %conversation.context_id,
-        conversation_id = %conversation.id,
-        agent_name,
-        phase = "format_attachments",
-        elapsed_ms = attachment_context_started.elapsed().as_millis() as u64,
-        "chat_service.build_codex_command phase completed"
-    );
+    let attachment_context = match attachment_context_override {
+        Some(context) => context.to_string(),
+        None => {
+            let attachments_started = Instant::now();
+            let attachments = chat_attachment_repo
+                .find_by_conversation_id(&conversation.id)
+                .await
+                .map_err(|e| format!("Failed to fetch attachments: {}", e))?
+                .into_iter()
+                .filter(|a| a.message_id.is_none())
+                .collect::<Vec<_>>();
+            tracing::info!(
+                context_type = %conversation.context_type,
+                context_id = %conversation.context_id,
+                conversation_id = %conversation.id,
+                agent_name,
+                phase = "fetch_attachments",
+                attachment_count = attachments.len(),
+                elapsed_ms = attachments_started.elapsed().as_millis() as u64,
+                "chat_service.build_codex_command phase completed"
+            );
+            let attachment_context_started = Instant::now();
+            let attachment_context = format_attachments_for_agent(&attachments).await?;
+            tracing::info!(
+                context_type = %conversation.context_type,
+                context_id = %conversation.context_id,
+                conversation_id = %conversation.id,
+                agent_name,
+                phase = "format_attachments",
+                elapsed_ms = attachment_context_started.elapsed().as_millis() as u64,
+                "chat_service.build_codex_command phase completed"
+            );
+            attachment_context
+        }
+    };
 
     let prompt_build_started = Instant::now();
     let initial_prompt = build_initial_prompt_with_session_artifacts_for_agent(
@@ -2284,6 +2313,7 @@ pub(crate) async fn build_launch_plan_for_harness(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_launch_plan_from_resolved_cli(
@@ -2309,6 +2339,7 @@ pub(crate) async fn build_launch_plan_for_harness(
             is_external_mcp,
             stored_session_id,
             resolved_spawn_settings,
+            attachment_context_override,
         },
     )
     .await
@@ -2335,6 +2366,7 @@ pub async fn build_command_for_harness(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_noninteractive_command_from_resolved_cli(
@@ -2357,6 +2389,7 @@ pub async fn build_command_for_harness(
             effort_override,
             model_override,
             is_external_mcp,
+            attachment_context_override,
         },
     )
     .await
@@ -2388,6 +2421,7 @@ pub async fn build_interactive_command(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let agent_started = Instant::now();
     let agent_name = agent_name_override.unwrap_or_else(|| {
@@ -2409,28 +2443,34 @@ pub async fn build_interactive_command(
         }
     });
 
-    // Fetch pending attachments
-    let attachments_started = Instant::now();
-    let attachments = chat_attachment_repo
-        .find_by_conversation_id(&conversation.id)
-        .await
-        .map_err(|e| format!("Failed to fetch attachments: {}", e))?
-        .into_iter()
-        .filter(|a| a.message_id.is_none())
-        .collect::<Vec<_>>();
-    log_claude_launch_plan_phase(
-        conversation,
-        "load_pending_attachments",
-        attachments_started,
-    );
+    let attachment_context = match attachment_context_override {
+        Some(context) => context.to_string(),
+        None => {
+            // Fetch pending attachments
+            let attachments_started = Instant::now();
+            let attachments = chat_attachment_repo
+                .find_by_conversation_id(&conversation.id)
+                .await
+                .map_err(|e| format!("Failed to fetch attachments: {}", e))?
+                .into_iter()
+                .filter(|a| a.message_id.is_none())
+                .collect::<Vec<_>>();
+            log_claude_launch_plan_phase(
+                conversation,
+                "load_pending_attachments",
+                attachments_started,
+            );
 
-    let attachment_context_started = Instant::now();
-    let attachment_context = format_attachments_for_agent(&attachments).await?;
-    log_claude_launch_plan_phase(
-        conversation,
-        "format_pending_attachments",
-        attachment_context_started,
-    );
+            let attachment_context_started = Instant::now();
+            let attachment_context = format_attachments_for_agent(&attachments).await?;
+            log_claude_launch_plan_phase(
+                conversation,
+                "format_pending_attachments",
+                attachment_context_started,
+            );
+            attachment_context
+        }
+    };
 
     let prompt_started = Instant::now();
     let initial_prompt = match resume_session {
@@ -2614,6 +2654,7 @@ pub async fn build_resume_command(
     total_available: usize,
     effort_override: Option<&str>,
     model_override: Option<&str>,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     // Fetch entity status for status-aware agent resolution
     let entity_status = get_entity_status_for_resume(
@@ -2656,6 +2697,7 @@ pub async fn build_resume_command(
         total_available,
         effort_override,
         &resolved_spawn_settings,
+        attachment_context_override,
     )
     .await
 }
@@ -2677,6 +2719,7 @@ async fn build_resume_command_from_resolved_settings(
     total_available: usize,
     effort_override: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     match provider_resume_mode_for_session(AgentHarnessKind::Claude, session_id) {
         ProviderResumeMode::Resume => {
@@ -2688,6 +2731,11 @@ async fn build_resume_command_from_resolved_settings(
                 message,
                 session_messages,
                 total_available,
+            );
+            let resume_prompt = format!(
+                "{}{}",
+                resume_prompt,
+                attachment_context_override.unwrap_or_default()
             );
 
             let mcp_runtime_context = build_mcp_runtime_context(
@@ -2741,6 +2789,7 @@ async fn build_resume_command_from_resolved_settings(
                 total_available,
                 effort_override,
                 resolved_spawn_settings,
+                attachment_context_override,
             )
             .await
         }
@@ -2768,6 +2817,7 @@ pub async fn build_codex_resume_command(
     total_available: usize,
     is_external_mcp: bool,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
     let codex_team_mode = false;
     let entity_status = get_entity_status_for_resume(
@@ -2808,6 +2858,11 @@ pub async fn build_codex_resume_command(
                 session_messages,
                 total_available,
             );
+            let resume_prompt = format!(
+                "{}{}",
+                resume_prompt,
+                attachment_context_override.unwrap_or_default()
+            );
             let prompt = compose_codex_prompt(&resume_prompt, Some(plugin_dir), Some(agent_name));
 
             let mut spawnable = build_spawnable_codex_resume_command(
@@ -2846,6 +2901,11 @@ pub async fn build_codex_resume_command(
                 IdeationBootstrapMode::Recovery,
             )
             .await?;
+            let recovery_prompt = format!(
+                "{}{}",
+                recovery_prompt,
+                attachment_context_override.unwrap_or_default()
+            );
 
             let prompt = compose_codex_prompt(&recovery_prompt, Some(plugin_dir), Some(agent_name));
             let mut spawnable =
@@ -2894,6 +2954,7 @@ pub async fn build_resume_command_for_harness(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     is_external_mcp: bool,
+    attachment_context_override: Option<&str>,
 ) -> Result<ProviderSpawnableCommand, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_noninteractive_resume_command_from_resolved_cli(
@@ -2921,6 +2982,7 @@ pub async fn build_resume_command_for_harness(
             effort_override,
             model_override,
             is_external_mcp,
+            attachment_context_override,
         },
     )
     .await
@@ -3319,6 +3381,7 @@ exit 0
             false,
             None,
             &resolved_spawn_settings,
+            None,
         )
         .await
         .expect("project agent launch plan should build")
@@ -3367,6 +3430,7 @@ exit 0
             false,
             None,
             &resolved_spawn_settings,
+            None,
         )
         .await
         .expect("fresh ideation launch plan should build");
@@ -3840,6 +3904,238 @@ exit 0
     }
 
     #[tokio::test]
+    async fn project_launch_plans_include_captured_attachment_context_for_claude_and_codex() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-attachment-context".to_string());
+        let attachment_context =
+            "\n\n<attachments>\n<attachment>\n<filename>selected.txt</filename>\n<content>\nfile body\n</content>\n</attachment>\n</attachments>";
+        let harness_clis = [
+            (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
+            (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
+        ];
+
+        for (harness, cli_path) in harness_clis {
+            let conversation = ChatConversation::new_project(project_id.clone());
+            let resolved_spawn_settings =
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_names::AGENT_GENERAL_WORKER,
+                    Some(project_id.as_str()),
+                    ChatContextType::Project,
+                    None,
+                    Some(harness),
+                    None,
+                    None,
+                )
+                .await;
+
+            let launch_plan = build_launch_plan_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                "read the attached file",
+                Some(agent_names::AGENT_GENERAL_WORKER),
+                ChatContextType::Project,
+                project_id.as_str(),
+                temp.path(),
+                None,
+                Some(project_id.as_str()),
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                false,
+                None,
+                &resolved_spawn_settings,
+                Some(attachment_context),
+            )
+            .await
+            .expect("launch plan should build with captured attachment context");
+
+            let spawnable = launch_spawnable(&launch_plan);
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<filename>selected.txt</filename>")
+                    && prompt.contains("file body"),
+                "{} launch prompt should include captured attachment context",
+                harness
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn project_launch_plans_fall_back_to_pending_attachment_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-pending-attachment-context".to_string());
+        let attachment_path = temp.path().join("pending.txt");
+        write_test_file(&attachment_path, "pending file body");
+        let harness_clis = [
+            (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
+            (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
+        ];
+
+        for (harness, cli_path) in harness_clis {
+            let conversation = ChatConversation::new_project(project_id.clone());
+            let attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
+            attachment_repo
+                .create(ChatAttachment::new(
+                    conversation.id,
+                    "pending.txt",
+                    attachment_path.to_string_lossy().to_string(),
+                    17,
+                    Some("text/plain".to_string()),
+                ))
+                .await
+                .expect("pending attachment should persist");
+            let resolved_spawn_settings =
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_names::AGENT_GENERAL_WORKER,
+                    Some(project_id.as_str()),
+                    ChatContextType::Project,
+                    None,
+                    Some(harness),
+                    None,
+                    None,
+                )
+                .await;
+
+            let launch_plan = build_launch_plan_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                "read the pending file",
+                Some(agent_names::AGENT_GENERAL_WORKER),
+                ChatContextType::Project,
+                project_id.as_str(),
+                temp.path(),
+                None,
+                Some(project_id.as_str()),
+                false,
+                attachment_repo,
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                false,
+                None,
+                &resolved_spawn_settings,
+                None,
+            )
+            .await
+            .expect("launch plan should build with pending attachment context");
+
+            let spawnable = launch_spawnable(&launch_plan);
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<filename>pending.txt</filename>")
+                    && prompt.contains("pending file body"),
+                "{} launch prompt should include pending attachment context",
+                harness
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_commands_append_captured_attachment_context_for_claude_and_codex() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let claude_session_id = "claude-resume-attachment";
+        let codex_session_id = "codex-resume-attachment";
+        write_test_file(
+            &provider_home
+                .join(".claude")
+                .join("projects")
+                .join("project")
+                .join(format!("{claude_session_id}.jsonl")),
+            "{}\n",
+        );
+        write_test_file(
+            &provider_home.join(".codex").join("session_index.jsonl"),
+            &format!(r#"{{"id":"{codex_session_id}"}}"#),
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-resume-attachment-context".to_string());
+        let attachment_context =
+            "\n\n<attachments>\n<attachment>\n<filename>resume.txt</filename>\n<content>\nresume file body\n</content>\n</attachment>\n</attachments>";
+        let harness_clis = [
+            (
+                AgentHarnessKind::Claude,
+                make_fake_claude_cli(&temp),
+                claude_session_id,
+            ),
+            (
+                AgentHarnessKind::Codex,
+                make_fake_codex_cli(&temp),
+                codex_session_id,
+            ),
+        ];
+
+        for (harness, cli_path, session_id) in harness_clis {
+            let command = build_resume_command_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                ChatContextType::Project,
+                project_id.as_str(),
+                "continue with the selected file",
+                temp.path(),
+                session_id,
+                Some(project_id.as_str()),
+                Some("conversation-id".to_string()),
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                None,
+                None,
+                None,
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                None,
+                None,
+                false,
+                Some(attachment_context),
+            )
+            .await
+            .expect("resume command should build with captured attachment context");
+
+            let spawnable = command.spawnable;
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<filename>resume.txt</filename>")
+                    && prompt.contains("resume file body"),
+                "{} resume prompt should include captured attachment context",
+                harness
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn claude_project_launch_plan_resumes_stored_provider_session() {
         let temp = tempfile::tempdir().expect("tempdir");
         let provider_home = temp.path().join("provider-home");
@@ -3911,6 +4207,7 @@ exit 0
             false,
             Some(provider_session_id),
             &resolved_spawn_settings,
+            None,
         )
         .await
         .expect("Claude project launch plan should build");

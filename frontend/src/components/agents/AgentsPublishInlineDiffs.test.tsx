@@ -218,6 +218,7 @@ import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import type { FileChange, PrDiffAnnotation } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import type { AgentWorkspaceReview } from "@/api/diff";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 function makeQueryClient() {
   return new QueryClient({
@@ -523,6 +524,84 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-staged-count", "1");
       expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeInTheDocument();
       expect(screen.queryByTestId("mock-file-diff-src-WorkspaceFile.tsx")).toBeNull();
+    });
+
+    it("hydrates published workspace diffs after unstaged changes are published", async () => {
+      mockGetStagedFiles.mockResolvedValue([]);
+      mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
+      const queryClient = makeQueryClient();
+
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview([makeFileChange("src/WorkspaceFile.tsx")])}
+            commits={[]}
+            isLoading={false}
+          />,
+          queryClient,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+          "data-mode",
+          "unstaged",
+        ),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
+      );
+
+      act(() => {
+        queryClient.setQueryData(
+          [...agentWorkspaceKeys.diff("conv-1"), "unstaged-files"],
+          [],
+        );
+        queryClient.setQueryData(
+          [...agentWorkspaceKeys.diff("conv-1"), "staged-files"],
+          [],
+        );
+      });
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview([makeFileChange("src/Published.tsx")])}
+            commits={[]}
+            isLoading={false}
+            workspaceChangeLabel="Published changes"
+          />,
+          queryClient,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+          "data-mode",
+          "uncommitted",
+        ),
+      );
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-label",
+        "Published changes",
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Published.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
+      );
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith(
+          "conv-1",
+          "src/Published.tsx",
+        ),
+      );
     });
 
     it("auto-selects staged files when there are no unstaged files", async () => {
@@ -1577,7 +1656,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-1", "src/Bar.tsx");
     });
 
-    it("resets shouldHydrate to false when mode changes", async () => {
+    it("rehydrates visible files when mode changes back", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1599,17 +1678,15 @@ describe("AgentsPublishInlineDiffs", () => {
         );
       });
 
-      // Switch mode → hydratedPaths should reset
+      // Switch mode → hydratedPaths resets, but the current viewport range is still known.
       await user.click(screen.getByRole("button", { name: "Staged" }));
 
-      // The workspace-change file card is no longer in DOM (mode changed to staged)
-      // but the reset itself can be verified: if we switch back, shouldHydrate is false again
+      // When the workspace-change card returns, visible rows should hydrate immediately.
       await user.click(screen.getByRole("button", { name: "Workspace changes" }));
       await waitFor(() => {
-        // The card is re-rendered after mode switch; hydratedPaths was cleared
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
           "data-should-hydrate",
-          "false",
+          "true",
         );
       });
     });

@@ -12,6 +12,7 @@ import { normalizeConversationProviderMetadata } from "../types/chat-conversatio
 import type { ToolCall } from "../components/Chat/ToolCallIndicator";
 import type { ToolCallDetailRef } from "../components/Chat/tool-widgets/shared.constants";
 import type { ContentBlockItem } from "../components/Chat/MessageItem";
+import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
 
@@ -49,6 +50,8 @@ export interface ChatMessageResponse {
   toolCalls: ToolCall[] | null;
   /** Pre-parsed content blocks array (parsed from JSON at API layer) */
   contentBlocks: ContentBlockItem[] | null;
+  /** Optimistic frontend-only attachments for messages not yet hydrated from backend. */
+  attachments?: MessageAttachment[];
   /** Sender name for team mode messages (teammate name or "lead") */
   sender: string | null;
   attributionSource?: string | null;

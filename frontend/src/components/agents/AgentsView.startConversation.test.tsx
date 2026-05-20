@@ -539,7 +539,7 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
-        "Claude",
+        "sonnet",
       )
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
@@ -580,14 +580,10 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
-    expect(screen.getByTestId("agents-start-provider-claude")).toBeDisabled();
-    expect(screen.getByTestId("agents-start-provider-claude")).toHaveTextContent(
-      "Enable in Settings.",
-    );
-    await user.click(screen.getByTestId("agents-start-provider-settings"));
+    await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
-    expect(useUiStore.getState().activeModal).toBe("settings");
-    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+    expect(screen.getByText("Claude is not enabled")).toBeInTheDocument();
+    expect(screen.getByText("Enable this provider in settings to use its models.")).toBeInTheDocument();
   });
 
   it("blocks new agent runs when no provider is enabled and validated", async () => {
@@ -630,7 +626,7 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(screen.getByTestId("agents-start-provider-claude"));
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
     await userEvent.click(screen.getByTestId("agents-start-model-opus"));
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     await userEvent.click(screen.getByTestId("agents-start-effort-max"));
@@ -659,32 +655,14 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("uses a typed custom model from the existing runtime selector popover", async () => {
+  it("shows manage models link in the runtime selector popover", async () => {
     mockAgentViewData();
 
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    const customModelInput = screen.getByTestId("agents-start-model-custom-input");
-    await userEvent.clear(customModelInput);
-    await userEvent.type(customModelInput, "gpt-5.6{Enter}");
-    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(screen.getByTestId("agents-start-effort-high"));
 
-    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "use a future model" },
-    });
-    fireEvent.click(screen.getByTestId("agents-start-submit"));
-
-    await waitFor(() =>
-      expect(startAgentConversationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerHarness: "codex",
-          modelId: "gpt-5.6",
-          logicalEffort: "high",
-        })
-      )
-    );
+    expect(screen.getByText("Manage models in Settings")).toBeInTheDocument();
   });
 
   it("paints the conversation shell after seeding before the heavy agent start resolves", async () => {
@@ -1236,44 +1214,81 @@ describe("AgentsView start conversation", () => {
     });
     vi.mocked(invoke).mockResolvedValue({ id: "attachment-1" });
 
-    renderAgentsView();
+    const createObjectURL = vi.fn(() => "blob:starter-image-preview");
+    const originalCreateObjectURL = URL.createObjectURL;
+    Object.defineProperty(URL, "createObjectURL", {
+      value: createObjectURL,
+      configurable: true,
+    });
+
+    const { queryClient } = renderAgentsView();
 
     const fileInput = screen.getByTestId("attachment-file-input");
-    const file = new File(["draft"], "notes.md", { type: "text/markdown" });
+    const file = new File(["draft"], "screenshot.png", { type: "image/png" });
 
-    fireEvent.change(fileInput, {
-      target: { files: [file] },
-    });
-    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "review this note" },
-    });
-    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    try {
+      fireEvent.change(fileInput, {
+        target: { files: [file] },
+      });
+      fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+        target: { value: "review this note" },
+      });
+      fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() =>
-      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
-    );
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("upload_chat_attachment", {
-        input: expect.objectContaining({
-          conversationId: "conversation-seeded",
-          fileName: "notes.md",
-          mimeType: "text/markdown",
-        }),
-      })
-    );
-    await waitFor(() =>
-      expect(startAgentConversationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: "project-1",
-          content: "review this note",
-          conversationId: "conversation-seeded",
-          providerHarness: "codex",
-          modelId: "gpt-5.5",
-          logicalEffort: "xhigh",
-          mode: "edit",
+      await waitFor(() =>
+        expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+      );
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("upload_chat_attachment", {
+          input: expect.objectContaining({
+            conversationId: "conversation-seeded",
+            fileName: "screenshot.png",
+            mimeType: "image/png",
+          }),
         })
-      )
-    );
+      );
+      await waitFor(() =>
+        expect(startAgentConversationMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: "project-1",
+            content: "review this note",
+            conversationId: "conversation-seeded",
+            providerHarness: "codex",
+            modelId: "gpt-5.5",
+            logicalEffort: "xhigh",
+            mode: "edit",
+          })
+        )
+      );
+      await waitFor(() =>
+        expect(
+          queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
+        ).toEqual({
+          conversation: expect.objectContaining({ id: "conversation-seeded" }),
+          messages: [
+            expect.objectContaining({
+              conversationId: "conversation-seeded",
+              role: "user",
+              content: "review this note",
+              attachments: [
+                expect.objectContaining({
+                  fileName: "screenshot.png",
+                  fileSize: 5,
+                  mimeType: "image/png",
+                  previewUrl: "blob:starter-image-preview",
+                }),
+              ],
+            }),
+          ],
+        })
+      );
+      expect(createObjectURL).toHaveBeenCalledWith(file);
+    } finally {
+      Object.defineProperty(URL, "createObjectURL", {
+        value: originalCreateObjectURL,
+        configurable: true,
+      });
+    }
   });
 
 });

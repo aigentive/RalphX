@@ -355,9 +355,69 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 );
             }
 
-            // Persist user message — apply overrides if present (e.g. auto-verification metadata + trigger timestamp)
             let resume_in_place =
                 queued_message_resume_in_place(queued_msg.metadata_override.as_deref());
+            let turn_attachments = if resume_in_place {
+                Vec::new()
+            } else {
+                match super::load_turn_attachments_from_repo(
+                    chat_attachment_repo,
+                    &conversation_id,
+                    &queued_msg.attachment_ids,
+                )
+                .await
+                {
+                    Ok(attachments) => attachments,
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            queued_message_id = %queued_msg.id,
+                            "[QUEUE] Failed to load queued message attachments"
+                        );
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                "agent:error",
+                                AgentErrorPayload {
+                                    conversation_id: Some(conversation_id.as_str().to_string()),
+                                    context_type: context_type.to_string(),
+                                    context_id: context_id.to_string(),
+                                    agent_run_id: Some(queued_run_id.clone()),
+                                    error,
+                                    stderr: None,
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                }
+            };
+            let attachment_context =
+                match chat_service_context::format_attachments_for_agent(&turn_attachments).await {
+                    Ok(context) => context,
+                    Err(error) => {
+                        tracing::error!(
+                            error = %error,
+                            queued_message_id = %queued_msg.id,
+                            "[QUEUE] Failed to format queued message attachments"
+                        );
+                        if let Some(ref handle) = app_handle {
+                            let _ = handle.emit(
+                                "agent:error",
+                                AgentErrorPayload {
+                                    conversation_id: Some(conversation_id.as_str().to_string()),
+                                    context_type: context_type.to_string(),
+                                    context_id: context_id.to_string(),
+                                    agent_run_id: Some(queued_run_id.clone()),
+                                    error,
+                                    stderr: None,
+                                },
+                            );
+                        }
+                        continue;
+                    }
+                };
+
+            // Persist user message — apply overrides if present (e.g. auto-verification metadata + trigger timestamp)
             if !resume_in_place {
                 let created_at_override = queued_msg
                     .created_at_override
@@ -390,30 +450,24 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     let _ = ideation_session_repo.touch_updated_at(context_id).await;
                 }
 
-                // Link pending attachments to the user message
-                if let Ok(pending_attachments) = chat_attachment_repo
-                    .find_by_conversation_id(&conversation_id)
-                    .await
-                {
-                    let pending: Vec<_> = pending_attachments
-                        .into_iter()
-                        .filter(|a| a.message_id.is_none())
+                // Link selected attachments to the user message after capturing
+                // their prompt context for this queued turn.
+                if !turn_attachments.is_empty() {
+                    let attachment_ids: Vec<_> = turn_attachments
+                        .iter()
+                        .map(|attachment| attachment.id)
                         .collect();
-
-                    if !pending.is_empty() {
-                        let attachment_ids: Vec<_> = pending.iter().map(|a| a.id.clone()).collect();
-                        let _ = chat_attachment_repo
-                            .update_message_ids(
-                                &attachment_ids,
-                                &crate::domain::entities::ChatMessageId::from_string(&user_msg_id),
-                            )
-                            .await;
-                        tracing::debug!(
-                            message_id = %user_msg_id,
-                            attachment_count = pending.len(),
-                            "[QUEUE] Linked attachments to user message"
-                        );
-                    }
+                    let _ = chat_attachment_repo
+                        .update_message_ids(
+                            &attachment_ids,
+                            &crate::domain::entities::ChatMessageId::from_string(&user_msg_id),
+                        )
+                        .await;
+                    tracing::debug!(
+                        message_id = %user_msg_id,
+                        attachment_count = turn_attachments.len(),
+                        "[QUEUE] Linked attachments to user message"
+                    );
                 }
 
                 // Emit user message created
@@ -508,6 +562,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 None,
                 None,
                 false,
+                Some(attachment_context.as_str()),
             )
             .await
             {

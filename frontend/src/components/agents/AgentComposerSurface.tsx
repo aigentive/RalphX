@@ -14,6 +14,7 @@ import {
   useAgentComposerSkills,
 } from "@/hooks/useAgentComposerResources";
 import {
+  AlertCircle,
   ArrowUp,
   Bot,
   Check,
@@ -25,6 +26,7 @@ import {
   Paperclip,
   Plus,
   Search,
+  Settings,
   Square,
 } from "lucide-react";
 
@@ -49,6 +51,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 import {
@@ -95,6 +102,7 @@ interface ProviderFieldConfig {
   options: Array<ComposerOption & { id: AgentProvider }>;
   disabled?: boolean;
   footerAction?: ReactNode;
+  compactFooterAction?: ReactNode;
   testId?: string;
   className?: string;
 }
@@ -106,6 +114,7 @@ interface ModelFieldConfig {
   disabled?: boolean;
   allowCustomValue?: boolean;
   customPlaceholder?: string | undefined;
+  onOpenModelSettings?: () => void;
   testId?: string;
   className?: string;
 }
@@ -1476,6 +1485,73 @@ function ComposerModeMenuSection({
   );
 }
 
+function ClaudeProviderIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 100 100" className={className}>
+      <path
+        d="m19.6 66.5 19.7-11 .3-1-.3-.5h-1l-3.3-.2-11.2-.3L14 53l-9.5-.5-2.4-.5L0 49l.2-1.5 2-1.3 2.9.2 6.3.5 9.5.6 6.9.4L38 49.1h1.6l.2-.7-.5-.4-.4-.4L29 41l-10.6-7-5.6-4.1-3-2-1.5-2-.6-4.2 2.7-3 3.7.3.9.2 3.7 2.9 8 6.1L37 36l1.5 1.2.6-.4.1-.3-.7-1.1L33 25l-6-10.4-2.7-4.3-.7-2.6c-.3-1-.4-2-.4-3l3-4.2L28 0l4.2.6L33.8 2l2.6 6 4.1 9.3L47 29.9l2 3.8 1 3.4.3 1h.7v-.5l.5-7.2 1-8.7 1-11.2.3-3.2 1.6-3.8 3-2L61 2.6l2 2.9-.3 1.8-1.1 7.7L59 27.1l-1.5 8.2h.9l1-1.1 4.1-5.4 6.9-8.6 3-3.5L77 13l2.3-1.8h4.3l3.1 4.7-1.4 4.9-4.4 5.6-3.7 4.7-5.3 7.1-3.2 5.7.3.4h.7l12-2.6 6.4-1.1 7.6-1.3 3.5 1.6.4 1.6-1.4 3.4-8.2 2-9.6 2-14.3 3.3-.2.1.2.3 6.4.6 2.8.2h6.8l12.6 1 3.3 2 1.9 2.7-.3 2-5.1 2.6-6.8-1.6-16-3.8-5.4-1.3h-.8v.4l4.6 4.5 8.3 7.5L89 80.1l.5 2.4-1.3 2-1.4-.2-9.2-7-3.6-3-8-6.8h-.5v.7l1.8 2.7 9.8 14.7.5 4.5-.7 1.4-2.6 1-2.7-.6-5.8-8-6-9-4.7-8.2-.5.4-2.9 30.2-1.3 1.5-3 1.2-2.5-2-1.4-3 1.4-6.2 1.6-8 1.3-6.4 1.2-7.9.7-2.6v-.2H49L43 72l-9 12.3-7.2 7.6-1.7.7-3-1.5.3-2.8L24 86l10-12.8 6-7.9 4-4.6-.1-.5h-.3L17.2 77.4l-4.7.6-2-2 .2-3 1-1 8-5.5Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function CodexProviderIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 256 260" preserveAspectRatio="xMidYMid" className={className}>
+      <path
+        d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+const PROVIDER_ICONS: Record<AgentProvider, ComponentType<{ className?: string }>> = {
+  claude: ClaudeProviderIcon,
+  codex: CodexProviderIcon,
+};
+
+const EFFORT_BAR_COLORS: Record<string, string> = {
+  low: "var(--status-error)",
+  medium: "var(--accent-primary)",
+  high: "var(--status-warning)",
+  xhigh: "var(--status-success)",
+  max: "var(--status-success)",
+};
+
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"] as const;
+
+function EffortBars({
+  effortId,
+  totalLevels,
+  className,
+}: {
+  effortId: string;
+  totalLevels: number;
+  className?: string;
+}) {
+  const activeIndex = EFFORT_ORDER.indexOf(effortId as (typeof EFFORT_ORDER)[number]);
+  const activeCount = activeIndex >= 0 ? activeIndex + 1 : 0;
+  const color = EFFORT_BAR_COLORS[effortId] ?? "var(--text-muted)";
+  return (
+    <span className={cn("inline-flex items-end gap-px", className)} aria-hidden>
+      {Array.from({ length: totalLevels }, (_, i) => (
+        <span
+          key={i}
+          className="rounded-[1px]"
+          style={{
+            width: 3,
+            height: 6 + i * 2,
+            backgroundColor: i < activeCount ? color : "var(--text-muted)",
+            opacity: i < activeCount ? 1 : 0.25,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function ComposerRuntimePill({
   provider,
   model,
@@ -1488,6 +1564,7 @@ function ComposerRuntimePill({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [viewingProvider, setViewingProvider] = useState<AgentProvider | null>(null);
   const providerLabel =
     provider.options.find((o) => o.id === provider.value)?.label ?? provider.value;
   const modelLabel =
@@ -1502,15 +1579,19 @@ function ComposerRuntimePill({
     .filter(Boolean)
     .join(" · ");
 
-  // Skip the pill entirely when we have nothing to show (e.g., child chat
-  // session whose effective runtime hasn't loaded yet). Avoids an empty
-  // "·" placeholder.
   if (!providerLabel && !modelLabel && !effortLabel) {
     return null;
   }
 
+  const hasMultipleProviders = provider.options.length > 1;
+  const activeViewProvider = viewingProvider ?? provider.value;
+  const viewingOption = provider.options.find((o) => o.id === activeViewProvider);
+  const viewingProviderDisabled =
+    hasMultipleProviders && (viewingOption?.disabled ?? false);
+  const viewingProviderLabel = viewingOption?.label ?? activeViewProvider;
+
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setViewingProvider(null); }}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -1525,18 +1606,30 @@ function ComposerRuntimePill({
             borderColor: "var(--form-border)",
           }}
         >
-          <Cpu className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+          {(() => {
+            const ActiveProviderIcon = PROVIDER_ICONS[provider.value];
+            return ActiveProviderIcon
+              ? <ActiveProviderIcon className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+              : <Cpu className="h-3.5 w-3.5 text-[var(--text-secondary)]" />;
+          })()}
           <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
-            <span className="text-[var(--text-secondary)]">{providerLabel}</span>
-            <span className="px-1 text-[var(--text-muted)]">·</span>
-            <span>{modelLabel}</span>
-            {effortLabel && (
-              <>
-                <span className="px-1 text-[var(--text-muted)]">·</span>
-                <span>{effortLabel}</span>
-              </>
-            )}
+            {modelLabel}
           </span>
+          {effort.options.length > 0 && (
+            <Tooltip delayDuration={300}>
+              <TooltipTrigger asChild>
+                <span className="inline-flex shrink-0">
+                  <EffortBars
+                    effortId={effort.value}
+                    totalLevels={effort.options.length}
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-xs">
+                {effortLabel} effort
+              </TooltipContent>
+            </Tooltip>
+          )}
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
         </button>
       </PopoverTrigger>
@@ -1544,60 +1637,167 @@ function ComposerRuntimePill({
         side="top"
         align="start"
         sideOffset={6}
-        className="w-72 rounded-xl p-1.5"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+        className={cn(
+          "overflow-hidden rounded-xl p-0",
+          hasMultipleProviders ? "w-[21rem]" : "w-72"
+        )}
         style={{
           backgroundColor: "var(--bg-elevated)",
           borderColor: "var(--border-subtle)",
         }}
       >
-        <ComposerOptionList
-          label="Provider"
-          value={provider.value}
-          options={provider.options}
-          disabled={provider.disabled ?? false}
-          testId={provider.testId ?? "agent-composer-runtime-provider"}
-          icon={Bot}
-          onValueChange={(value) => {
-            provider.onValueChange(value as AgentProvider);
-          }}
-        />
-        {provider.footerAction && (
-          <div className="px-1 pb-0.5 pt-1">
-            {provider.footerAction}
-          </div>
-        )}
-        <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
-        <ComposerOptionList
-          label="Model"
-          value={model.value}
-          options={model.options}
-          disabled={model.disabled ?? false}
-          testId={model.testId ?? "agent-composer-runtime-model"}
-          icon={Cpu}
-          onValueChange={(value) => {
-            model.onValueChange(value);
-            setOpen(false);
-          }}
-          allowCustomValue={model.allowCustomValue ?? false}
-          customPlaceholder={model.customPlaceholder}
-        />
-        {effort.options.length > 0 && (
-          <>
-            <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
-            <ComposerOptionList
-              label="Effort"
-              value={effort.value}
-              options={effort.options}
-              disabled={effort.disabled ?? false}
-              testId={effort.testId ?? "agent-composer-runtime-effort"}
-              icon={Gauge}
-              onValueChange={(value) => {
-                effort.onValueChange(value);
-                setOpen(false);
+        <div className="flex">
+          {hasMultipleProviders && (
+            <div
+              className="flex w-12 shrink-0 flex-col gap-1 border-r p-1"
+              style={{
+                borderColor: "var(--border-subtle)",
+                backgroundColor: "color-mix(in srgb, var(--bg-base) 30%, var(--bg-elevated) 70%)",
               }}
-            />
-          </>
-        )}
+            >
+              {provider.options.map((option) => {
+                const isSelected = option.id === activeViewProvider;
+                const ProviderIcon = PROVIDER_ICONS[option.id] ?? Bot;
+                return (
+                  <div key={option.id} className="relative w-full">
+                    {isSelected && (
+                      <span
+                        className="pointer-events-none absolute -right-1 top-1/2 z-10 h-5 w-0.5 -translate-y-1/2 rounded-l-full"
+                        style={{ backgroundColor: "var(--accent-primary)" }}
+                      />
+                    )}
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid={`agent-composer-runtime-provider-${option.id}`}
+                          aria-label={option.label}
+                          className={cn(
+                            "relative flex aspect-square w-full cursor-pointer items-center justify-center rounded outline-none transition-colors",
+                            isSelected
+                              ? "shadow-sm"
+                              : "hover:bg-[var(--bg-hover)]",
+                            option.disabled && !isSelected && "opacity-50"
+                          )}
+                          style={isSelected ? {
+                            backgroundColor: "var(--bg-elevated)",
+                            color: option.disabled ? "var(--text-muted)" : "var(--text-primary)",
+                          } : {
+                            color: "var(--text-secondary)",
+                          }}
+                          onClick={() => {
+                            if (option.disabled) {
+                              setViewingProvider(option.id);
+                            } else {
+                              setViewingProvider(null);
+                              provider.onValueChange(option.id);
+                            }
+                          }}
+                        >
+                          <ProviderIcon className="h-5 w-5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" className="text-xs">
+                        {option.label}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                );
+              })}
+              {provider.compactFooterAction && (
+                <div className="mt-auto border-t pt-1" style={{ borderColor: "var(--border-subtle)" }}>
+                  {provider.compactFooterAction}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="min-w-0 flex-1 p-1.5">
+            {!hasMultipleProviders && (
+              <>
+                <ComposerOptionList
+                  label="Provider"
+                  value={provider.value}
+                  options={provider.options}
+                  disabled={provider.disabled ?? false}
+                  testId={provider.testId ?? "agent-composer-runtime-provider"}
+                  icon={Bot}
+                  onValueChange={(value) => {
+                    provider.onValueChange(value as AgentProvider);
+                  }}
+                />
+                {provider.footerAction && (
+                  <div className="px-1 pb-0.5 pt-1">
+                    {provider.footerAction}
+                  </div>
+                )}
+                <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+              </>
+            )}
+            {viewingProviderDisabled ? (
+              <div className="flex flex-col items-center gap-2 px-3 py-4 text-center">
+                <AlertCircle className="h-5 w-5" style={{ color: "var(--text-muted)" }} />
+                <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-secondary)" }}>
+                  {viewingProviderLabel} is not enabled
+                </span>
+                <span className="text-[0.75rem] leading-snug" style={{ color: "var(--text-muted)" }}>
+                  Enable this provider in settings to use its models.
+                </span>
+                {provider.footerAction && (
+                  <div className="mt-1 w-full">
+                    {provider.footerAction}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <ComposerOptionList
+                  label="Model"
+                  value={model.value}
+                  options={model.options}
+                  disabled={model.disabled ?? false}
+                  testId={model.testId ?? "agent-composer-runtime-model"}
+                  icon={Cpu}
+                  onValueChange={(value) => {
+                    model.onValueChange(value);
+                    setOpen(false);
+                  }}
+                />
+                {model.onOpenModelSettings && (
+                  <button
+                    type="button"
+                    className="mt-0.5 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-[0.6875rem] transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-muted)" }}
+                    onClick={() => {
+                      model.onOpenModelSettings?.();
+                      setOpen(false);
+                    }}
+                  >
+                    <Settings className="h-3 w-3" />
+                    Manage models in Settings
+                  </button>
+                )}
+                {effort.options.length > 0 && (
+                  <>
+                    <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+                    <ComposerOptionList
+                      label="Effort"
+                      value={effort.value}
+                      options={effort.options}
+                      disabled={effort.disabled ?? false}
+                      testId={effort.testId ?? "agent-composer-runtime-effort"}
+                      icon={Gauge}
+                      onValueChange={(value) => {
+                        effort.onValueChange(value);
+                        setOpen(false);
+                      }}
+                    />
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
       </PopoverContent>
     </Popover>
   );

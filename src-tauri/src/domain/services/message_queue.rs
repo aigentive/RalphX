@@ -7,7 +7,7 @@
 // queueing messages for all context types, not just TaskExecution.
 
 use crate::domain::agents::AgentHarnessKind;
-use crate::domain::entities::{ChatContextType, TaskId};
+use crate::domain::entities::{ChatAttachmentId, ChatContextType, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -102,6 +102,9 @@ pub struct QueuedMessage {
     /// Optional external integration references used for runtime-only prompt expansion.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Optional chat attachments selected by the composer for this queued turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<ChatAttachmentId>,
 }
 
 impl QueuedMessage {
@@ -117,6 +120,7 @@ impl QueuedMessage {
             harness_override: None,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
+            attachment_ids: Vec::new(),
         }
     }
 
@@ -133,6 +137,7 @@ impl QueuedMessage {
             harness_override: None,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
+            attachment_ids: Vec::new(),
         }
     }
 }
@@ -248,6 +253,7 @@ impl MessageQueue {
             harness_override,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -262,6 +268,7 @@ impl MessageQueue {
         harness_override: Option<AgentHarnessKind>,
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
+        attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
         let mut message = QueuedMessage::new(content);
@@ -270,6 +277,7 @@ impl MessageQueue {
         message.harness_override = harness_override;
         message.composer_project_references = composer_project_references;
         message.composer_integration_references = composer_integration_references;
+        message.attachment_ids = attachment_ids;
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().push(message.clone());
         message

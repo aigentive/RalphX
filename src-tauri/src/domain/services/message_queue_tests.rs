@@ -395,6 +395,7 @@ fn test_remove_stale_drops_old_messages() {
             harness_override: None,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
+            attachment_ids: Vec::new(),
         });
         q.push(QueuedMessage {
             id: "fresh-1".to_string(),
@@ -406,6 +407,7 @@ fn test_remove_stale_drops_old_messages() {
             harness_override: None,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
+            attachment_ids: Vec::new(),
         });
     }
 
@@ -513,6 +515,7 @@ fn test_queue_with_overrides_preserves_composer_project_references() {
         None,
         references.clone(),
         Vec::new(),
+        Vec::new(),
     );
 
     assert_eq!(queued.composer_project_references, references);
@@ -541,11 +544,36 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
         None,
         Vec::new(),
         references.clone(),
+        Vec::new(),
     );
 
     assert_eq!(queued.composer_integration_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_integration_references, references);
+}
+
+#[test]
+fn test_queue_with_overrides_preserves_attachment_ids() {
+    use crate::domain::entities::ChatAttachmentId;
+
+    let queue = MessageQueue::new();
+    let attachment_ids = vec![ChatAttachmentId::new(), ChatAttachmentId::new()];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Read the attached files".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        attachment_ids.clone(),
+    );
+
+    assert_eq!(queued.attachment_ids, attachment_ids);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.attachment_ids, attachment_ids);
 }
 
 #[test]
@@ -560,6 +588,8 @@ fn test_queue_standard_has_no_overrides() {
     assert_eq!(queued.created_at_override, None);
     assert_eq!(queued.harness_override, None);
     assert!(queued.composer_project_references.is_empty());
+    assert!(queued.composer_integration_references.is_empty());
+    assert!(queued.attachment_ids.is_empty());
 }
 
 #[test]
@@ -580,6 +610,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             harness_override: None,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
+            attachment_ids: Vec::new(),
         });
     }
 

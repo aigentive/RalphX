@@ -8,8 +8,8 @@ use crate::application::interactive_process_registry::{
 use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
-    ProjectId,
+    AgentConversationWorkspaceMode, ChatAttachment, ChatContextType, ChatConversation,
+    ChatConversationId, ProjectId,
 };
 use crate::infrastructure::agents::claude::ToolCall;
 use std::path::Path;
@@ -324,6 +324,116 @@ async fn queue_processing_records_run_id_before_spawn_failure() {
 
     assert_eq!(outcome.total_processed, 1);
     assert!(outcome.last_run_id.is_some());
+}
+
+#[tokio::test]
+async fn queue_processing_links_selected_attachments_before_spawn_failure() {
+    let app_state = AppState::new_test();
+    let message_queue = Arc::clone(&app_state.message_queue);
+    let chat_message_repo = Arc::clone(&app_state.chat_message_repo);
+    let chat_attachment_repo = Arc::clone(&app_state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&app_state.artifact_repo);
+    let activity_event_repo = Arc::clone(&app_state.activity_event_repo);
+    let task_repo = Arc::clone(&app_state.task_repo);
+    let ideation_session_repo = Arc::clone(&app_state.ideation_session_repo);
+    let app = tauri::test::mock_builder()
+        .manage(app_state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let selected_path = temp.path().join("selected.txt");
+    let unselected_path = temp.path().join("unselected.txt");
+    std::fs::write(&selected_path, "selected queued attachment").expect("write selected");
+    std::fs::write(&unselected_path, "unselected queued attachment").expect("write unselected");
+
+    let conversation_id = ChatConversationId::new();
+    let selected_attachment = chat_attachment_repo
+        .create(ChatAttachment::new(
+            conversation_id,
+            "selected.txt",
+            selected_path.to_string_lossy().to_string(),
+            26,
+            Some("text/plain".to_string()),
+        ))
+        .await
+        .expect("selected attachment should persist");
+    let unselected_attachment = chat_attachment_repo
+        .create(ChatAttachment::new(
+            conversation_id,
+            "unselected.txt",
+            unselected_path.to_string_lossy().to_string(),
+            28,
+            Some("text/plain".to_string()),
+        ))
+        .await
+        .expect("unselected attachment should persist");
+
+    message_queue.queue_with_overrides_and_project_references(
+        ChatContextType::Ideation,
+        "session-queued-attachments",
+        "Queued message with selected attachment".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        vec![selected_attachment.id],
+    );
+
+    let invalid_cli_path = Path::new("/definitely/missing/ralphx-test-cli");
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            crate::domain::agents::AgentHarnessKind::Claude,
+            "session-queued-attachments",
+            "session-queued-attachments",
+            conversation_id,
+            "session-cli",
+            &message_queue,
+            &chat_message_repo,
+            None,
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            invalid_cli_path,
+            temp.path(),
+            temp.path(),
+            None,
+            None,
+            Some(app_handle),
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            super::StreamingStateCache::new(),
+        )
+        .await;
+
+    assert_eq!(outcome.total_processed, 1);
+
+    let selected = chat_attachment_repo
+        .get_by_id(&selected_attachment.id)
+        .await
+        .expect("selected lookup should succeed")
+        .expect("selected attachment should exist");
+    let unselected = chat_attachment_repo
+        .get_by_id(&unselected_attachment.id)
+        .await
+        .expect("unselected lookup should succeed")
+        .expect("unselected attachment should exist");
+
+    assert!(
+        selected.message_id.is_some(),
+        "selected queued attachment should link to the queued user message"
+    );
+    assert_eq!(
+        unselected.message_id, None,
+        "unselected queued attachment should remain pending"
+    );
 }
 
 async fn spawn_claude_jsonl_fixture(lines: &[&str]) -> tokio::process::Child {

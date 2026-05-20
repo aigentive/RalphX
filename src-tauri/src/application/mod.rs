@@ -15,6 +15,7 @@ pub mod agent_client_bundle;
 pub mod agent_task_service;
 pub mod app_setup;
 pub mod app_state;
+pub mod chat_attachment_storage;
 pub mod http_shutdown;
 #[cfg(test)]
 mod http_shutdown_tests;

@@ -184,6 +184,7 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
         None,
         None,
         false,
+        None,
     )
     .await
     {

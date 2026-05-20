@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MessageAttachments } from "./MessageAttachments";
 
 describe("MessageAttachments", () => {
@@ -36,12 +36,15 @@ describe("MessageAttachments", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("should render attachment chips for each attachment", () => {
+  it("should render image previews and file chips for mixed attachments", () => {
     render(<MessageAttachments attachments={mockAttachments} />);
 
     expect(screen.getByText("document.txt")).toBeInTheDocument();
     expect(screen.getByText("screenshot.png")).toBeInTheDocument();
     expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    expect(screen.getByTestId("attachment-image-grid")).toBeInTheDocument();
+    expect(screen.getAllByTestId("attachment-image-tile")).toHaveLength(1);
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(2);
   });
 
   it("should format file sizes correctly", () => {
@@ -59,7 +62,98 @@ describe("MessageAttachments", () => {
     render(<MessageAttachments attachments={mockAttachments} />);
 
     const chips = screen.getAllByTestId("attachment-chip");
-    expect(chips).toHaveLength(3);
+    expect(chips).toHaveLength(2);
+    expect(screen.getAllByTestId("attachment-image-tile")).toHaveLength(1);
+  });
+
+  it("should render image attachments in a preview grid", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    expect(screen.getByTestId("attachment-image-grid")).toBeInTheDocument();
+    const preview = screen.getByTestId("attachment-image-preview");
+    expect(preview).toHaveAttribute("src", "/path/to/screenshot.png");
+  });
+
+  it("should render optimistic image attachments from frontend preview URLs", () => {
+    render(
+      <MessageAttachments
+        attachments={[
+          {
+            id: "optimistic-image",
+            fileName: "local-image.png",
+            fileSize: 42,
+            mimeType: "image/png",
+            previewUrl: "blob:local-image-preview",
+          },
+        ]}
+      />
+    );
+
+    expect(screen.getByTestId("attachment-image-grid")).toBeInTheDocument();
+    expect(screen.getByTestId("attachment-image-preview")).toHaveAttribute(
+      "src",
+      "blob:local-image-preview"
+    );
+    expect(screen.queryByTestId("attachment-chip")).not.toBeInTheDocument();
+  });
+
+  it("should render multiple images in the preview grid", () => {
+    const images = [
+      mockAttachments[1],
+      {
+        id: "att-4",
+        fileName: "diagram.jpg",
+        fileSize: 128000,
+        mimeType: "image/jpeg",
+        filePath: "/path/to/diagram.jpg",
+      },
+      {
+        id: "att-5",
+        fileName: "mockup.webp",
+        fileSize: 256000,
+        mimeType: "image/webp",
+        filePath: "/path/to/mockup.webp",
+      },
+    ];
+
+    render(<MessageAttachments attachments={images} />);
+
+    expect(screen.getByTestId("attachment-image-grid")).toHaveClass("grid-cols-2");
+    expect(screen.getAllByTestId("attachment-image-tile")).toHaveLength(3);
+    expect(screen.getAllByTestId("attachment-image-preview")).toHaveLength(3);
+  });
+
+  it("should open a large image preview when an image tile is clicked", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    fireEvent.click(screen.getByTestId("attachment-image-tile"));
+
+    expect(screen.getByTestId("attachment-image-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("attachment-image-large")).toHaveAttribute(
+      "src",
+      "/path/to/screenshot.png"
+    );
+    expect(screen.getAllByText("screenshot.png")).toHaveLength(2);
+  });
+
+  it("should fall back to a chip when image preview loading fails", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    fireEvent.error(screen.getByTestId("attachment-image-preview"));
+
+    expect(screen.queryByTestId("attachment-image-grid")).not.toBeInTheDocument();
+    expect(screen.getByTestId("attachment-chip")).toBeInTheDocument();
+    expect(screen.getByText("screenshot.png")).toBeInTheDocument();
+  });
+
+  it("should close the large preview when the selected image fails to load", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    fireEvent.click(screen.getByTestId("attachment-image-tile"));
+    fireEvent.error(screen.getByTestId("attachment-image-large"));
+
+    expect(screen.queryByTestId("attachment-image-dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("attachment-chip")).toBeInTheDocument();
   });
 
   it("should truncate long file names", () => {
@@ -143,13 +237,20 @@ describe("MessageAttachments", () => {
 
     const chip = screen.getByTestId("attachment-chip");
     expect(chip).toHaveStyle({ background: "var(--bg-elevated)" });
+
+    fireEvent.mouseEnter(chip);
+    expect(chip).toHaveStyle({ background: "var(--bg-hover)" });
+
+    fireEvent.mouseLeave(chip);
+    expect(chip).toHaveStyle({ background: "var(--bg-elevated)" });
   });
 
   it("should render in compact horizontal layout", () => {
     const { container } = render(<MessageAttachments attachments={mockAttachments} />);
 
     const wrapper = container.firstChild as HTMLElement;
-    expect(wrapper).toHaveClass("flex");
-    expect(wrapper).toHaveClass("gap-2");
+    expect(wrapper).toHaveClass("space-y-2");
+    expect(screen.getByTestId("attachment-image-grid")).toHaveClass("grid");
+    expect(screen.getAllByTestId("attachment-chip")).toHaveLength(2);
   });
 });
