@@ -27,7 +27,7 @@ MCP access is controlled by **three distinct layers**. Changing only one layer i
 | Tool Set | Resolved Tools | Source of Truth |
 |-------|------|----------|
 | `base_tools` | `Read`, `Grep`, `Glob`, `Bash`, `WebFetch`, `WebSearch`, `Skill`, `TaskCreate`, `TaskUpdate`, `TaskGet`, `TaskList`, `TaskOutput`, `KillShell`, `MCPSearch` | `config/harnesses/claude.yaml` |
-| `readonly_tools` | `Read`, `Grep`, `Glob` | `config/harnesses/claude.yaml` |
+| `readonly_tools` | `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` | `config/harnesses/claude.yaml` |
 | `critic_tools` | `Read`, `Grep`, `Glob` | `config/harnesses/claude.yaml` |
 
 Rule:

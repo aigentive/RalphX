@@ -20,7 +20,7 @@ tool_sets:
       KillShell,
       MCPSearch,
     ]
-  readonly_tools: [Read, Grep, Glob]
+  readonly_tools: [Read, Grep, Glob, WebFetch, WebSearch]
   critic_tools: [Read, Grep, Glob]
 
 claude:
