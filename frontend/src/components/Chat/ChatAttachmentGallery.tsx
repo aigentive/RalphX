@@ -8,7 +8,12 @@
 import { FileText, Image, FileCode, File, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 // ============================================================================
 // Types
@@ -203,6 +208,9 @@ export function ChatAttachmentGallery({
               <DialogTitle className="min-w-0 truncate text-sm">
                 {selectedImageEntry.attachment.fileName}
               </DialogTitle>
+              <DialogDescription className="sr-only">
+                Preview image attachment {selectedImageEntry.attachment.fileName}.
+              </DialogDescription>
               <span className="shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
                 {formatFileSize(selectedImageEntry.attachment.fileSize)}
               </span>
