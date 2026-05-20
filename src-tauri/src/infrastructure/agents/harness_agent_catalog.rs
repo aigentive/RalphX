@@ -817,107 +817,107 @@ fn build_generated_agent_task_appendix(
         && complete_tool.is_some();
 
     let mut lines = vec![
-        "## RalphX Agent Task Ledger (AUTO-GENERATED)".to_string(),
+        "<agent_task_ledger_contract>".to_string(),
+        "<purpose>".to_string(),
         "Use the RalphX agent task ledger for multi-step work, dependencies, and delegated follow-up that should survive across tool calls in this context.".to_string(),
+        "</purpose>".to_string(),
     ];
 
     if supports_full_task_flow {
         lines.extend(
             [
-                "For any non-trivial or multi-turn task that requires codebase investigation, edits, validation, or follow-up, start by checking the ledger, create and claim a task when no suitable active item exists, keep it updated while you work, and complete it before your final response.",
-                "For simple questions or conversational replies that need no tool-backed investigation or implementation, answer directly without creating a ledger item.",
-                "",
-                "### When To Use The Ledger",
-                "- Complex multi-step work: three or more distinct actions, files, phases, or verification steps.",
-                "- Non-trivial implementation: changes that need planning, codebase inspection, edits, and validation.",
-                "- User-provided task lists: multiple requested fixes, features, checks, or follow-ups in one message.",
-                "- New instructions during an active run: capture materially new requirements before continuing.",
-                "- Work that may cross turns or survive context compaction: preserve current state, blockers, and next actions in the ledger.",
-                "- Discovered follow-up work: create or update ledger items when investigation reveals necessary dependent tasks.",
-                "",
-                "### When Not To Use The Ledger",
-                "- A single straightforward action with no meaningful intermediate state.",
-                "- A purely informational or conversational answer.",
-                "- A trivial command request where the result can be returned immediately.",
-                "- A one-location text or comment edit that needs no planning or validation beyond the edit itself.",
-                "- Cases where tracking would add noise instead of reducing risk.",
-                "",
-                "### Task State Rules",
-                "- Treat `open` as not started, `active` as currently being worked, `done` as fully completed, and `dropped` as intentionally abandoned.",
-                "- Keep at most one task `active` for your own work at a time unless another actor owns a separate item.",
-                "- Mark a task `active` before doing substantial work on it, not after the work is already complete.",
-                "- Mark completion immediately after the task is actually complete; do not batch completions at the end.",
-                "- Do not mark a task `done` while tests are failing, implementation is partial, required files are missing, or unresolved blockers remain.",
-                "- If you are blocked, keep the blocked task active or open and create/update a concrete blocker task when useful.",
-                "",
-                "### Task Breakdown Rules",
-                "- Write specific, action-oriented titles that describe the next outcome, not vague process labels.",
-                "- Split broad requests into small items that can be individually completed and validated.",
-                "- Include acceptance criteria, file/module scope, validation expectations, and dependency notes in task details when they matter.",
-                "- Use dependencies for real ordering constraints instead of relying on memory.",
-                "- Remove or drop stale items when the plan changes and the work is no longer relevant.",
-            ]
-            .into_iter()
-            .map(String::from),
-        );
-        lines.extend(
-            [
-                "",
-                "### Standard Flow",
-                "- Before relying on prior state, list the current ledger and reuse a matching open or active task when one exists.",
-                "- If no suitable task exists, create a task with concrete details and any dependency links.",
-                "- Claim or mark the task active before implementation begins.",
-                "- Update details, state, dependencies, owner, or metadata as the plan changes.",
-                "- Complete the task only after implementation and required validation are actually finished.",
+                "<when_required>",
+                "<rule>Use the ledger for non-trivial implementation, codebase investigation, edits, validation, multi-step work, multiple requested fixes, or follow-up that should survive context compaction.</rule>",
+                "<rule>Use the ledger for complex multi-step work: three or more distinct actions, files, phases, or verification steps.</rule>",
+                "<rule>Use the ledger for user-provided task lists: multiple requested fixes, features, checks, or follow-ups in one message.</rule>",
+                "<rule>Read-only audits, multi-file investigations, prompt-surface reviews, and codebase inspections are tool-backed work; they are not conversational turns.</rule>",
+                "<rule>Use the ledger for new instructions during an active run when they materially change scope or add work.</rule>",
+                "<rule>Use the ledger for discovered follow-up work that becomes necessary during investigation.</rule>",
+                "</when_required>",
+                "<when_not_required>",
+                "<rule>For simple conversational turns or simple questions that need no tool-backed investigation or implementation, answer directly without creating a ledger item.</rule>",
+                "<rule>Do not create a ledger item for a single straightforward action with no meaningful intermediate state.</rule>",
+                "<rule>Do not create a ledger item for a trivial command request where the result can be returned immediately.</rule>",
+                "<rule>Do not create a ledger item for a one-location text or comment edit that needs no planning or validation beyond the edit itself.</rule>",
+                "</when_not_required>",
+                "<mandatory_start_sequence>",
+                "<step>Before search, read, edit, shell, or other tool-backed work, call `list_agent_tasks`.</step>",
+                "<step>If a matching open or active item exists, reuse it instead of creating a duplicate.</step>",
+                "<step>If no suitable task exists, create concrete tasks for each independent work item.</step>",
+                "<step>If the ledger is empty and this request requires ledger use, do not perform search, read, shell, edit, or other tool-backed work until you create the required task or tasks.</step>",
+                "<step>Claim or mark active exactly the task you are starting before implementation begins.</step>",
+                "</mandatory_start_sequence>",
+                "<state_rules>",
+                "<rule>Treat `open` as not started, `active` as currently being worked, `done` as fully completed, and `dropped` as intentionally abandoned.</rule>",
+                "<rule>Keep at most one task `active` for your own work at a time unless another actor owns a separate item.</rule>",
+                "<rule>Mark a task `active` before doing substantial work on it, not after the work is already complete.</rule>",
+                "<rule>Mark completion immediately after the task is actually complete; do not batch completions at the end.</rule>",
+                "<rule>Do not mark a task `done` while tests are failing, implementation is partial, required files are missing, or unresolved blockers remain.</rule>",
+                "<rule>If you are blocked, keep the blocked task active or open and create or update a concrete blocker task when useful.</rule>",
+                "</state_rules>",
+                "<breakdown_rules>",
+                "<rule>Write specific, action-oriented titles that describe the next outcome, not vague process labels.</rule>",
+                "<rule>Do not create one umbrella task for multiple independent fixes, checks, audit items, or investigation streams.</rule>",
+                "<rule>For two or more requested fixes, checks, audit items, or investigation streams, create one ledger task per independent item unless the items are inseparable.</rule>",
+                "<rule>For user-provided numbered audit, check, or investigation lists, create one ledger task per numbered item unless the items cannot be validated independently. This applies even when the work is read-only.</rule>",
+                "<rule>A single umbrella task is acceptable only for a single-question investigation or for work items that cannot be validated independently. If the user asks to check items independently, mirror that independence in the ledger.</rule>",
+                "<rule>Split broad requests into small items that can be individually completed and validated.</rule>",
+                "<rule>Include acceptance criteria, file or module scope, validation expectations, and dependency notes in task details when they matter.</rule>",
+                "<rule>Use dependencies for real ordering constraints instead of relying on memory.</rule>",
+                "<rule>Remove or drop stale items when the plan changes and the work is no longer relevant.</rule>",
+                "</breakdown_rules>",
             ]
             .into_iter()
             .map(String::from),
         );
     }
 
+    lines.push("<tool_guidance>".to_string());
     if let Some(tool) = list_tool {
-        lines.push(format!("- Use `{tool}` before depending on prior ledger state or when resuming a multi-step thread."));
+        lines.push(format!("<rule>Use `{tool}` before depending on prior ledger state or when resuming a multi-step thread.</rule>"));
     }
     if let Some(tool) = create_tool {
-        lines.push(format!("- Use `{tool}` for concrete work items with a clear title and details; connect blockers with `blocked_by` or `blocks` when ordering matters."));
+        lines.push(format!("<rule>Use `{tool}` for concrete work items with a clear title and details; connect blockers with `blocked_by` or `blocks` when ordering matters.</rule>"));
     }
     if let Some(tool) = claim_tool {
-        lines.push(format!("- Use `{tool}` before starting a ready ledger item; the backend rejects claims that still have unresolved blockers."));
+        lines.push(format!("<rule>Use `{tool}` before starting a ready ledger item; the backend rejects claims that still have unresolved blockers.</rule>"));
     } else if let Some(tool) = update_tool {
         lines.push(format!(
-            "- Use `{tool}` to mark a task `active` only when its unresolved blockers are clear."
+            "<rule>Use `{tool}` to mark a task `active` only when its unresolved blockers are clear.</rule>"
         ));
     }
     if let Some(tool) = update_tool {
-        lines.push(format!("- Use `{tool}` to update fields, owner, state, metadata, or dependency links as the plan changes."));
+        lines.push(format!("<rule>Use `{tool}` to update fields, owner, state, metadata, or dependency links as the plan changes.</rule>"));
     }
     if let Some(tool) = complete_tool {
-        lines.push(format!("- Use `{tool}` when the item is actually done, optionally adding concise completion metadata."));
+        lines.push(format!("<rule>Use `{tool}` when the item is actually done, optionally adding concise completion metadata.</rule>"));
     }
     if let Some(tool) = get_tool {
-        lines.push(format!("- Use `{tool}` when you need full details, including resolved blockers that list views may omit."));
+        lines.push(format!("<rule>Use `{tool}` when you need full details, including resolved blockers that list views may omit.</rule>"));
     }
+    lines.push("</tool_guidance>".to_string());
 
     if supports_full_task_flow {
         lines.extend(
             [
-                "",
-                "### Examples When To Use The Ledger",
-                "- A provider-spawn bug requires checking logs, tracing the spawn builder, changing prompt materialization, adding a regression, and running targeted Rust tests. Create separate items for diagnosis, implementation, and validation so the fix cannot stop after the first patch.",
-                "- A user asks for three UI workflow fixes in one message. Create one item per workflow, add dependencies only where one fix must land before another, and keep the active item aligned with the workflow currently being edited.",
-                "- A search finds a renamed runtime field across several backend modules plus frontend consumers. After the search reveals the scope, create ledger items for backend updates, frontend updates, and compatibility validation.",
-                "- An intermittent stuck-run report needs production logs, database inspection, code-path review, and a narrow repro test. Track each investigation branch and convert confirmed findings into implementation tasks.",
-                "",
-                "### Examples When Not To Use The Ledger",
-                "- The user asks what a specific command does. Answer directly.",
-                "- The user asks you to run one status command and report the output. Run it and report the result.",
-                "- The user asks for a one-word label change in a known file. Make the small edit directly and validate only as needed.",
-                "- The user is brainstorming and has not asked for implementation or tool-backed investigation. Discuss the idea without creating ledger state.",
+                "<examples>",
+                "<example>A provider-spawn bug requires checking logs, tracing the spawn builder, changing prompt materialization, adding a regression, and running targeted Rust tests. Create separate items for diagnosis, implementation, and validation so the fix cannot stop after the first patch.</example>",
+                "<example>A user asks for three UI workflow fixes in one message. Create one item per workflow, add dependencies only where one fix must land before another, and keep the active item aligned with the workflow currently being edited.</example>",
+                "<example>A user asks for a three-part read-only audit covering Codex prompt injection, Claude generated prompt files, and utility-agent exclusions. Create one task per audit check, claim each before inspecting files for that check, and complete each with findings.</example>",
+                "<example>A search finds a renamed runtime field across several backend modules plus frontend consumers. After the search reveals the scope, create ledger items for backend updates, frontend updates, and compatibility validation.</example>",
+                "<example>An intermittent stuck-run report needs production logs, database inspection, code-path review, and a narrow repro test. Track each investigation branch and convert confirmed findings into implementation tasks.</example>",
+                "<example>The user asks what a specific command does. Answer directly without creating a ledger task.</example>",
+                "<example>The user asks you to run one status command and report the output. Run it and report the result without creating a ledger task.</example>",
+                "<example>The user asks for a one-word label change in a known file. Make the small edit directly and validate only as needed.</example>",
+                "<example>The user is brainstorming and has not asked for implementation or tool-backed investigation. Discuss the idea without creating ledger state.</example>",
+                "</examples>",
             ]
             .into_iter()
             .map(String::from),
         );
     }
+
+    lines.push("</agent_task_ledger_contract>".to_string());
 
     Some(lines.join("\n"))
 }
