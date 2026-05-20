@@ -954,12 +954,14 @@ capabilities:
         "generated prompt should preserve the canonical prompt body"
     );
     assert!(
-        generated_prompt.contains("## RalphX Agent Task Ledger (AUTO-GENERATED)"),
+        generated_prompt.contains("<agent_task_ledger_contract>"),
         "generated prompt file should include the task ledger appendix"
     );
     assert!(
-        generated_prompt.contains("For any non-trivial or multi-turn task"),
-        "generated prompt file should include the strengthened task-ledger trigger"
+        generated_prompt.contains(
+            "For two or more requested fixes, checks, audit items, or investigation streams"
+        ),
+        "generated prompt file should include the strengthened task-ledger breakdown rule"
     );
 }
 
