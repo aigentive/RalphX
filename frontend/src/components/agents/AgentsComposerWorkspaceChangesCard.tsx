@@ -62,6 +62,18 @@ function taskStateColor(state: AgentTaskState): string {
   }
 }
 
+function taskSignature(task: AgentTaskSummary): string {
+  return JSON.stringify([
+    task.title,
+    task.state,
+    task.ownerAgent,
+    task.availability,
+    task.updatedAt,
+    task.blockedBy,
+    task.blocks,
+  ]);
+}
+
 function statusLabel(status: FileChange["status"]): string {
   switch (status) {
     case "added":
@@ -141,8 +153,14 @@ function AgentsComposerWorkspaceChangesCardContent({
   onPreloadPublishPane: () => void;
 }) {
   const [activePanel, setActivePanel] = useState<ComposerContextPanel | null>(null);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
   const isReviewRefreshInFlight = useRef(false);
   const wasAgentGenerating = useRef(false);
+  const previousIsAgentGenerating = useRef(false);
+  const userDismissedTaskPanel = useRef(false);
+  const hasObservedTaskSnapshot = useRef(false);
+  const previousTaskSignatures = useRef<Map<string, string>>(new Map());
+  const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const reviewRefetchRef = useRef<(() => Promise<unknown>) | null>(null);
   const canInspectChanges =
     workspace?.mode === "edit" && workspace.status !== "missing";
@@ -220,25 +238,6 @@ function AgentsComposerWorkspaceChangesCardContent({
   const commits = useMemo(() => mapReviewCommitsToDiffViewerCommits(review), [review]);
   const summary = useAgentWorkspaceChangeSummary({ conversationId, review });
   const hasCommitSummary = summary.workspaceChangeCount === 0 && commits.length > 0;
-  const summaryMode = summary.mode;
-  const setSummaryMode = summary.setMode;
-  useEffect(() => {
-    if (
-      !canInspectChanges ||
-      !reviewQuery.isSuccess ||
-      !hasCommitSummary ||
-      summaryMode === "cumulative"
-    ) {
-      return;
-    }
-    setSummaryMode("cumulative");
-  }, [
-    canInspectChanges,
-    hasCommitSummary,
-    reviewQuery.isSuccess,
-    setSummaryMode,
-    summaryMode,
-  ]);
   const tasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
   const taskNumberById = useMemo(
     () => new Map(tasks.map((task) => [task.taskId, task.taskNumber])),
@@ -254,6 +253,85 @@ function AgentsComposerWorkspaceChangesCardContent({
   const shouldShow = shouldShowTasks || shouldShowChanges;
 
   useEffect(() => {
+    setActivePanel(null);
+    setHighlightedTaskId(null);
+    userDismissedTaskPanel.current = false;
+    hasObservedTaskSnapshot.current = false;
+    previousTaskSignatures.current = new Map();
+    taskRowRefs.current.clear();
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (isAgentGenerating && !previousIsAgentGenerating.current) {
+      userDismissedTaskPanel.current = false;
+    }
+    previousIsAgentGenerating.current = isAgentGenerating;
+  }, [isAgentGenerating]);
+
+  useEffect(() => {
+    if (!tasksQuery.isSuccess) {
+      return;
+    }
+
+    const currentSignatures = new Map(
+      tasks.map((task) => [task.taskId, taskSignature(task)]),
+    );
+    const previousSignatures = previousTaskSignatures.current;
+    const hadObservedSnapshot = hasObservedTaskSnapshot.current;
+
+    previousTaskSignatures.current = currentSignatures;
+    hasObservedTaskSnapshot.current = true;
+
+    if (tasks.length === 0) {
+      setHighlightedTaskId(null);
+      return;
+    }
+
+    const changedTask = tasks.find(
+      (task) => previousSignatures.get(task.taskId) !== currentSignatures.get(task.taskId),
+    );
+    if (!changedTask) {
+      return;
+    }
+
+    if (!hadObservedSnapshot && !isAgentGenerating) {
+      return;
+    }
+
+    setHighlightedTaskId(changedTask.taskId);
+    if (!userDismissedTaskPanel.current) {
+      setActivePanel("tasks");
+    }
+  }, [isAgentGenerating, tasks, tasksQuery.isSuccess]);
+
+  useEffect(() => {
+    if (activePanel !== "tasks" || !highlightedTaskId) {
+      return;
+    }
+
+    const scrollTimer = window.setTimeout(() => {
+      const node = taskRowRefs.current.get(highlightedTaskId);
+      if (typeof node?.scrollIntoView === "function") {
+        node.scrollIntoView({
+          block: "nearest",
+          inline: "nearest",
+          behavior: "smooth",
+        });
+      }
+    }, 0);
+    const highlightTimer = window.setTimeout(() => {
+      setHighlightedTaskId((current) =>
+        current === highlightedTaskId ? null : current,
+      );
+    }, 2_200);
+
+    return () => {
+      window.clearTimeout(scrollTimer);
+      window.clearTimeout(highlightTimer);
+    };
+  }, [activePanel, highlightedTaskId]);
+
+  useEffect(() => {
     if (activePanel === "tasks" && !shouldShowTasks) {
       setActivePanel(null);
     }
@@ -266,7 +344,14 @@ function AgentsComposerWorkspaceChangesCardContent({
     return null;
   }
 
-  const changesLabel = hasCommitSummary ? "All commits" : "Workspace changes";
+  const changesLabel =
+    summary.effectiveMode === "unstaged"
+      ? "Unstaged"
+      : summary.effectiveMode === "staged"
+        ? "Staged"
+        : summary.effectiveMode === "cumulative" && hasCommitSummary
+          ? "All commits"
+          : "Workspace changes";
   const fileLabel = `${summary.currentFiles.length} ${
     summary.currentFiles.length === 1 ? "file" : "files"
   }`;
@@ -275,7 +360,15 @@ function AgentsComposerWorkspaceChangesCardContent({
     : fileLabel;
   const taskLabel = `${tasks.length}`;
   const togglePanel = (panel: ComposerContextPanel) =>
-    setActivePanel((current) => (current === panel ? null : panel));
+    setActivePanel((current) => {
+      const nextPanel = current === panel ? null : panel;
+      if (panel === "tasks") {
+        userDismissedTaskPanel.current = nextPanel !== "tasks";
+      } else {
+        userDismissedTaskPanel.current = true;
+      }
+      return nextPanel;
+    });
   const handleHeaderClick = (event: MouseEvent<HTMLDivElement>) => {
     if (event.target === event.currentTarget) {
       togglePanel(shouldShowChanges ? "changes" : "tasks");
@@ -392,9 +485,22 @@ function AgentsComposerWorkspaceChangesCardContent({
                 {tasks.map((task) => (
                   <div
                     key={task.taskId}
+                    ref={(node) => {
+                      if (node) {
+                        taskRowRefs.current.set(task.taskId, node);
+                      } else {
+                        taskRowRefs.current.delete(task.taskId);
+                      }
+                    }}
                     data-testid={`agents-composer-task-${task.taskNumber}`}
-                    className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5"
-                    style={{ color: "var(--text-secondary)" }}
+                    className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 transition-colors"
+                    style={{
+                      backgroundColor:
+                        highlightedTaskId === task.taskId
+                          ? "var(--bg-hover)"
+                          : "transparent",
+                      color: "var(--text-secondary)",
+                    }}
                   >
                     <span
                       className="w-8 shrink-0 font-mono text-[0.6875rem] font-semibold"

@@ -104,4 +104,26 @@ describe("AgentTaskWidget", () => {
     expect(screen.getByText(/Claim agent task failed/i)).toBeInTheDocument();
     expect(screen.getByText(/unresolved blockers/i)).toBeInTheDocument();
   });
+
+  it("uses a compact inline row when a completed task call has no body details", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__complete_agent_task",
+          arguments: {
+            task_ref: "1",
+          },
+          result: {
+            success: true,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(
+      "Complete agent task #1",
+    );
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent("done");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
 });

@@ -5,21 +5,26 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { useChatStore } from "@/stores/chatStore";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { getAgentConversationStoreKey } from "./agentConversations";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
 const {
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
+  getAgentRunningStatesMock,
   getWorkspaceDiffMock,
   getWorkspaceReviewMock,
+  getWorkspaceStagedChangesMock,
+  getWorkspaceUnstagedChangesMock,
   listAgentTasksMock,
   publishAgentConversationWorkspaceMock,
   sendAgentMessageMock,
@@ -105,6 +110,125 @@ describe("AgentsView publish", () => {
     expect(getWorkspaceDiffMock).not.toHaveBeenCalled();
   });
 
+  it("prefers unstaged files in the composer workspace summary when dirty files exist", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Workspace.tsx",
+          status: "modified",
+          additions: 20,
+          deletions: 1,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+    getWorkspaceStagedChangesMock.mockResolvedValue([
+      {
+        path: "src/Staged.tsx",
+        status: "modified",
+        additions: 7,
+        deletions: 2,
+        isGenerated: false,
+      },
+    ]);
+    getWorkspaceUnstagedChangesMock.mockResolvedValue([
+      {
+        path: "src/Unstaged.tsx",
+        status: "modified",
+        additions: 3,
+        deletions: 4,
+        isGenerated: false,
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-workspace-changes",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged"),
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
+      "1 file",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-additions")).toHaveTextContent(
+      "+3",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-deletions")).toHaveTextContent(
+      "−4",
+    );
+
+    fireEvent.click(screen.getByTestId("diff-filter-trigger"));
+
+    expect(
+      screen.getByTestId("agents-composer-workspace-file-src/Unstaged.tsx"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-composer-workspace-file-src/Workspace.tsx"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("prefers staged files in the composer workspace summary when no unstaged files exist", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Workspace.tsx",
+          status: "modified",
+          additions: 20,
+          deletions: 1,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+    getWorkspaceStagedChangesMock.mockResolvedValue([
+      {
+        path: "src/Staged.tsx",
+        status: "modified",
+        additions: 7,
+        deletions: 2,
+        isGenerated: false,
+      },
+    ]);
+    getWorkspaceUnstagedChangesMock.mockResolvedValue([]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-workspace-changes",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Staged"),
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
+      "1 file",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-additions")).toHaveTextContent(
+      "+7",
+    );
+    expect(screen.getByTestId("agents-composer-workspace-changes-deletions")).toHaveTextContent(
+      "−2",
+    );
+  });
+
   it("switches the composer context tray between tasks and changes", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
@@ -166,10 +290,12 @@ describe("AgentsView publish", () => {
     expect(taskToggle).toHaveTextContent("2");
     expect(changesToggle).toHaveTextContent("Workspace changes");
 
-    fireEvent.click(taskToggle);
+    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
 
-    expect(screen.getByTestId("agents-composer-task-list")).toHaveTextContent(
-      "Add runtime task output shim",
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-composer-task-list")).toHaveTextContent(
+        "Add runtime task output shim",
+      ),
     );
     expect(screen.getByTestId("agents-composer-task-2")).toHaveTextContent(
       "blocked by #1",
@@ -178,14 +304,67 @@ describe("AgentsView publish", () => {
       screen.queryByTestId("agents-composer-workspace-changes-list"),
     ).not.toBeInTheDocument();
 
-    fireEvent.click(changesToggle);
+    fireEvent.click(screen.getByTestId("diff-filter-trigger"));
 
     expect(screen.getByTestId("agents-composer-workspace-changes-list")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-task-list")).not.toBeInTheDocument();
 
-    fireEvent.click(changesToggle);
+    fireEvent.click(screen.getByTestId("diff-filter-trigger"));
 
     expect(screen.queryByTestId("agents-composer-context-tray-body")).not.toBeInTheDocument();
+  });
+
+  it("auto-expands the composer task ledger for live task updates", async () => {
+    const activeConversation = conversation({ agentMode: "edit" });
+    mockAgentViewData(activeConversation);
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getAgentRunningStatesMock.mockResolvedValue({ [activeConversation.id]: true });
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "Smoke the task ledger",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+    ]);
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [],
+      commits: [],
+      baseRef: "main",
+      headRef: "HEAD",
+      supportsWorktreeModes: true,
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+    act(() => {
+      useChatStore.setState({
+        agentStatus: {
+          [getAgentConversationStoreKey(activeConversation)]: "generating",
+        },
+      });
+    });
+
+    await screen.findByTestId(
+      "agents-composer-task-list",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    expect(screen.getByTestId("agents-composer-tasks-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent(
+      "Smoke the task ledger",
+    );
+    expect(screen.getByTestId("agents-composer-task-1")).toHaveStyle({
+      backgroundColor: "var(--bg-hover)",
+    });
   });
 
   it("opens the publish pane with a focused file request from the composer summary", async () => {

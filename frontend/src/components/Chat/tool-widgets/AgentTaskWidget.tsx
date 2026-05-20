@@ -10,7 +10,7 @@ import {
   UserCheck,
 } from "lucide-react";
 
-import { Badge, InlineIndicator, WidgetCard, WidgetHeader } from "./shared";
+import { Badge, InlineIndicator, WidgetCard, WidgetHeader, WidgetRow } from "./shared";
 import {
   colors,
   getArray,
@@ -461,6 +461,56 @@ export const AgentTaskWidget = React.memo(function AgentTaskWidget({
   const state = result.stateChange?.to ?? task?.state;
   const dependencyText = task ? dependencySummary(task) : null;
   const changedFields = result.changedFields.join(", ");
+  const bodyRows = [
+    task?.details ? <DetailRow key="details" label="Details" value={task.details} /> : null,
+    task?.ownerAgent ? <DetailRow key="owner" label="Owner" value={task.ownerAgent} /> : null,
+    result.stateChange?.from && result.stateChange.to ? (
+      <DetailRow
+        key="state"
+        label="State"
+        value={`${stateLabel(result.stateChange.from)} -> ${stateLabel(result.stateChange.to)}`}
+      />
+    ) : null,
+    changedFields ? <DetailRow key="changed" label="Changed" value={changedFields} /> : null,
+    dependencyText ? <DetailRow key="deps" label="Deps" value={dependencyText} /> : null,
+  ].filter((row): row is React.ReactElement => row != null);
+
+  if (bodyRows.length === 0) {
+    return (
+      <div className={className} data-testid="agent-task-widget-inline">
+        <WidgetRow compact={compact}>
+          <span
+            style={{
+              width: 14,
+              height: 14,
+              display: "flex",
+              alignItems: "center",
+              flexShrink: 0,
+            }}
+          >
+            {iconForTool(toolName)}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              color: colors.textSecondary,
+              fontSize: compact ? 10.5 : 11,
+              fontWeight: 500,
+            }}
+          >
+            {title}
+          </span>
+          <Badge variant={variantForState(state)} compact>
+            {state ? stateLabel(state) : "done"}
+          </Badge>
+        </WidgetRow>
+      </div>
+    );
+  }
 
   return (
     <WidgetCard
@@ -481,16 +531,7 @@ export const AgentTaskWidget = React.memo(function AgentTaskWidget({
       }
     >
       <div style={{ display: "grid", gap: 5 }}>
-        {task?.details && <DetailRow label="Details" value={task.details} />}
-        {task?.ownerAgent && <DetailRow label="Owner" value={task.ownerAgent} />}
-        {result.stateChange?.from && result.stateChange.to && (
-          <DetailRow
-            label="State"
-            value={`${stateLabel(result.stateChange.from)} -> ${stateLabel(result.stateChange.to)}`}
-          />
-        )}
-        {changedFields && <DetailRow label="Changed" value={changedFields} />}
-        {dependencyText && <DetailRow label="Deps" value={dependencyText} />}
+        {bodyRows}
       </div>
     </WidgetCard>
   );

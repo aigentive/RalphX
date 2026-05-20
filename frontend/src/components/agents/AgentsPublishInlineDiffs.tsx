@@ -6,6 +6,8 @@
  *
  * Fetch contract:
  *   - Workspace changes mode: per-file diff via getAgentConversationWorkspaceFileDiff
+ *   - Staged/unstaged modes: lightweight file lists are prefetched for counts and
+ *                             default view selection; file diffs still hydrate lazily
  *   - Commit mode: file list via getAgentConversationWorkspaceCommitFileChanges,
  *                  then per-file diff via getAgentConversationWorkspaceCommitFileDiff
  *   - Diffs fetched for hydrated expanded files only; off-range/collapsed cards pay zero query cost.
@@ -53,6 +55,46 @@ export interface AgentsPublishInlineDiffsProps {
   onOpenInDialog?: ((filePath: string) => void) | undefined;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
   workspaceChangeLabel?: string | undefined;
+}
+
+function getEmptyDiffStateCopy(
+  mode: DiffFilterMode,
+  workspaceChangeLabel: string | undefined,
+) {
+  if (mode === "unstaged") {
+    return {
+      title: "No unstaged files",
+      detail: "No unstaged changes detected in this workspace.",
+    };
+  }
+  if (mode === "staged") {
+    return {
+      title: "No staged files",
+      detail: "No staged changes detected in this workspace.",
+    };
+  }
+  if (mode === "cumulative") {
+    return {
+      title: "No committed files",
+      detail: "No committed changes found in this workspace.",
+    };
+  }
+  if (mode !== "uncommitted") {
+    return {
+      title: "No files in selected commit",
+      detail: "No file changes detected for the selected commit.",
+    };
+  }
+  if (workspaceChangeLabel === "Published changes") {
+    return {
+      title: "No published changes",
+      detail: "No published file changes are available.",
+    };
+  }
+  return {
+    title: "No workspace changes",
+    detail: "No workspace changes detected.",
+  };
 }
 
 interface AgentsPublishVirtualFileRowProps {
@@ -504,6 +546,7 @@ export function AgentsPublishInlineDiffs({
 
   const displayError = error ?? currentFilesError;
   const isFileListLoading = isLoading || isCurrentFilesLoading;
+  const emptyStateCopy = getEmptyDiffStateCopy(effectiveMode, workspaceChangeLabel);
 
   return (
     <div
@@ -693,9 +736,9 @@ export function AgentsPublishInlineDiffs({
           className="flex flex-col items-center justify-center py-12 text-center"
           style={{ color: "var(--text-muted)" }}
         >
-          <p className="text-sm">No changed files</p>
+          <p className="text-sm">{emptyStateCopy.title}</p>
           <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
-            No changes detected in this workspace.
+            {emptyStateCopy.detail}
           </p>
         </div>
       ) : (
