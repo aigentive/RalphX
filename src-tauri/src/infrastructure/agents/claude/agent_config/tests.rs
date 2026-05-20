@@ -142,6 +142,29 @@ fn test_default_base_tool_set_present_in_worker() {
 }
 
 #[test]
+fn test_agents_screen_claude_modes_include_web_search_tools() {
+    let mode_agents = [
+        ("agent", SHORT_GENERAL_WORKER),
+        ("chat", SHORT_GENERAL_EXPLORER),
+        ("ideation", SHORT_CHAT_PROJECT),
+    ];
+
+    for (mode, agent_name) in mode_agents {
+        let tools = get_allowed_tools(agent_name)
+            .unwrap_or_else(|| panic!("{mode} mode agent {agent_name} should resolve tools"));
+        let tool_list: HashSet<_> = tools.split(',').collect();
+        assert!(
+            tool_list.contains("WebFetch"),
+            "{mode} mode agent {agent_name} missing WebFetch"
+        );
+        assert!(
+            tool_list.contains("WebSearch"),
+            "{mode} mode agent {agent_name} missing WebSearch"
+        );
+    }
+}
+
+#[test]
 fn test_all_agent_names_are_known() {
     let known: HashSet<&str> = HashSet::from([
         SHORT_ORCHESTRATOR_IDEATION,
