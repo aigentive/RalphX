@@ -11,6 +11,8 @@ import { chatApi, type ChatAttachmentResponse } from "@/api/chat";
 import type { ChatMessageData } from "@/components/Chat/ChatMessageList";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 
+const MESSAGE_ATTACHMENTS_QUERY_VERSION = "preview-v2";
+
 /**
  * Transform ChatAttachmentResponse from backend to MessageAttachment for UI
  */
@@ -41,26 +43,44 @@ export function useMessageAttachments(
   conversationId: string | null,
   options: { enabled?: boolean } = {}
 ) {
-  const userMessages = useMemo(
-    () => messages.filter((msg) => msg.role === "user"),
+  const userMessageAttachmentTargets = useMemo(
+    () =>
+      messages
+        .filter((msg) => msg.role === "user")
+        .map((msg) => ({
+          renderMessageId: msg.id,
+          lookupMessageId:
+            msg.timelineSequence != null && msg.parentMessageId
+              ? msg.parentMessageId
+              : msg.id,
+        })),
     [messages]
   );
-  const userMessageIds = useMemo(
-    () => userMessages.map((msg) => msg.id),
-    [userMessages]
+  const userMessageAttachmentKey = useMemo(
+    () =>
+      userMessageAttachmentTargets.map((target) => [
+        target.renderMessageId,
+        target.lookupMessageId,
+      ]),
+    [userMessageAttachmentTargets]
   );
 
   return useQuery({
-    queryKey: ["message-attachments", conversationId, userMessageIds],
+    queryKey: [
+      "message-attachments",
+      conversationId,
+      MESSAGE_ATTACHMENTS_QUERY_VERSION,
+      userMessageAttachmentKey,
+    ],
     queryFn: async () => {
       const attachmentsMap = new Map<string, MessageAttachment[]>();
 
       await Promise.all(
-        userMessages.map(async (msg) => {
+        userMessageAttachmentTargets.map(async (target) => {
           try {
-            const attachments = await chatApi.listMessageAttachments(msg.id);
+            const attachments = await chatApi.listMessageAttachments(target.lookupMessageId);
             if (attachments.length > 0) {
-              attachmentsMap.set(msg.id, attachments.map(transformAttachment));
+              attachmentsMap.set(target.renderMessageId, attachments.map(transformAttachment));
             }
           } catch {
             // Silently ignore — attachment fetching is optional
@@ -72,7 +92,7 @@ export function useMessageAttachments(
     },
     enabled:
       !!conversationId &&
-      userMessages.length > 0 &&
+      userMessageAttachmentTargets.length > 0 &&
       (options.enabled ?? true),
     staleTime: 30000, // Cache for 30 seconds
   });

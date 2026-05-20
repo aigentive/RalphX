@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::State;
 
+use crate::application::chat_attachment_storage::build_chat_attachment_file_path;
 use crate::application::AppState;
 use crate::domain::entities::{
     ChatAttachment, ChatAttachmentId, ChatConversationId, ChatMessageId,
@@ -82,12 +83,12 @@ pub async fn upload_chat_attachment(
 
     // Generate attachment ID and determine storage path
     let attachment_id = ChatAttachmentId::new();
-    let file_path = build_file_path(
+    let file_path = build_chat_attachment_file_path(
         &state.attachment_storage_path,
         &conversation_id,
         &attachment_id,
         &input.file_name,
-    );
+    )?;
 
     // Create parent directories
     if let Some(parent) = file_path.parent() {
@@ -115,20 +116,6 @@ pub async fn upload_chat_attachment(
         .map_err(|e| e.to_string())?;
 
     Ok(ChatAttachmentResponse::from(created))
-}
-
-/// Build the file storage path for an attachment
-fn build_file_path(
-    base_path: &std::path::Path,
-    conversation_id: &ChatConversationId,
-    attachment_id: &ChatAttachmentId,
-    file_name: &str,
-) -> PathBuf {
-    base_path
-        .join("chat_attachments")
-        .join(conversation_id.as_str())
-        .join(attachment_id.as_str())
-        .join(file_name)
 }
 
 /// Link one or more attachments to a message (called after message is sent)

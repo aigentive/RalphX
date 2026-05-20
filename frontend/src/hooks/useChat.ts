@@ -301,6 +301,9 @@ export function invalidateConversationDataQueries(
   queryClient.invalidateQueries({
     queryKey: chatKeys.conversationTimeline(conversationId),
   });
+  queryClient.invalidateQueries({
+    queryKey: ["message-attachments", conversationId],
+  });
 }
 
 export function addOptimisticUserMessageToConversationCache(
