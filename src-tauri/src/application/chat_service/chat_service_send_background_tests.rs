@@ -1,13 +1,38 @@
-use super::{session_changed_after_resume, should_process_stream_queue};
+use super::{
+    session_changed_after_resume, should_process_stream_queue,
+    should_warn_missing_agent_task_ledger,
+};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::application::AppState;
 use crate::commands::ExecutionState;
-use crate::domain::entities::{ChatContextType, ChatConversationId};
+use crate::domain::entities::{
+    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
+    ProjectId,
+};
+use crate::infrastructure::agents::claude::ToolCall;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+
+fn test_tool_call(name: &str) -> ToolCall {
+    ToolCall {
+        id: None,
+        name: name.to_string(),
+        arguments: serde_json::json!({}),
+        result: None,
+        parent_tool_use_id: None,
+        diff_context: None,
+        stats: None,
+    }
+}
+
+fn agent_mode_conversation() -> ChatConversation {
+    let mut conversation = ChatConversation::new_project(ProjectId::new());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    conversation
+}
 
 #[test]
 fn session_changed_returns_true_when_ids_differ() {
@@ -56,6 +81,57 @@ fn stream_queue_processing_gate_allows_non_cancel_silent_exit_with_queue() {
         should_process_stream_queue(1, true, true, false),
         "timeout/eof silent exits can still drain queued messages"
     );
+}
+
+#[test]
+fn agent_task_ledger_warning_triggers_for_agent_mode_edit_without_ledger_tool() {
+    let conversation = agent_mode_conversation();
+
+    assert!(should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[test_tool_call("Edit")]
+    ));
+}
+
+#[test]
+fn agent_task_ledger_warning_triggers_for_agent_mode_many_readonly_tools_without_ledger_tool() {
+    let conversation = agent_mode_conversation();
+
+    assert!(should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("Read"),
+            test_tool_call("Grep"),
+            test_tool_call("Read"),
+        ],
+    ));
+}
+
+#[test]
+fn agent_task_ledger_warning_is_suppressed_after_ledger_tool_use() {
+    let conversation = agent_mode_conversation();
+
+    assert!(!should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("Edit"),
+            test_tool_call("mcp__ralphx__create_agent_task"),
+        ],
+    ));
+}
+
+#[test]
+fn agent_task_ledger_warning_is_suppressed_for_non_agent_mode_conversation() {
+    let conversation = ChatConversation::new_project(ProjectId::new());
+
+    assert!(!should_warn_missing_agent_task_ledger(
+        Some(&conversation),
+        &[
+            test_tool_call("Read"),
+            test_tool_call("Grep"),
+            test_tool_call("Edit"),
+        ],
+    ));
 }
 
 /// Verifies the warning condition for zero-processed queue scenarios.
