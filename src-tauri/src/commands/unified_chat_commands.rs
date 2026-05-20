@@ -156,6 +156,27 @@ fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>
         .collect()
 }
 
+#[cfg(test)]
+mod chat_attachment_id_parser_tests {
+    use super::parse_chat_attachment_ids;
+    use crate::domain::entities::ChatAttachmentId;
+
+    #[test]
+    fn parses_chat_attachment_ids_and_reports_invalid_values() {
+        let first = ChatAttachmentId::new();
+        let second = ChatAttachmentId::new();
+
+        let parsed = parse_chat_attachment_ids(&[first.as_str(), second.as_str()])
+            .expect("valid ids should parse");
+
+        assert_eq!(parsed, vec![first, second]);
+        assert_eq!(
+            parse_chat_attachment_ids(&["not-a-uuid".to_string()]).unwrap_err(),
+            "Invalid attachment id: not-a-uuid"
+        );
+    }
+}
+
 impl From<SendResult> for SendAgentMessageResponse {
     fn from(result: SendResult) -> Self {
         Self {

@@ -103,6 +103,22 @@ mod tests {
     }
 
     #[test]
+    fn build_chat_attachment_file_path_uses_content_leaf_without_safe_extension() {
+        let conversation_id = ChatConversationId::new();
+        let attachment_id = ChatAttachmentId::new();
+
+        let path = build_chat_attachment_file_path(
+            Path::new("/app-data/attachments"),
+            &conversation_id,
+            &attachment_id,
+            "README",
+        )
+        .expect("path should be built");
+
+        assert!(path.ends_with("content"));
+    }
+
+    #[test]
     fn build_chat_attachment_file_path_rejects_path_like_file_names() {
         let conversation_id = ChatConversationId::new();
         let attachment_id = ChatAttachmentId::new();
@@ -112,6 +128,7 @@ mod tests {
             "/tmp/secret.txt",
             "nested/file.txt",
             "nested\\file.txt",
+            ".",
             "",
         ] {
             let result = build_chat_attachment_file_path(
