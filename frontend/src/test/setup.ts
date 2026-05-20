@@ -53,6 +53,7 @@ afterEach(() => {
 // Mock Tauri's invoke function for testing
 // Default returns Promise.resolve(undefined) to match real invoke's Promise-based API
 vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: vi.fn((filePath: string) => filePath),
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
 

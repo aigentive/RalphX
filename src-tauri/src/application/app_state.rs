@@ -5,10 +5,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
+use crate::application::chat_attachment_storage::chat_attachment_storage_path;
 use crate::application::chat_service::AppChatService;
 use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
@@ -618,14 +619,7 @@ impl AppState {
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> = Arc::new(
             SqliteChatAttachmentRepository::from_shared(Arc::clone(&shared_conn)),
         );
-        let attachment_storage_path = if cfg!(debug_assertions) {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        } else {
-            app_handle
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-        };
+        let attachment_storage_path = chat_attachment_storage_path(&app_handle)?;
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
 
