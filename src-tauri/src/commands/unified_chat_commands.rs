@@ -80,10 +80,10 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, ChatMessageId,
-    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunStatus, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
+    ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     AgentWorkspacePrPublisher, ComposerProjectReference, QueuedMessage, RunningAgentKey,
@@ -123,6 +123,9 @@ pub struct SendAgentMessageInput {
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Attachment IDs selected by the composer for this message.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
     /// Optional target for team message routing.
     /// When set to a teammate name, the message is routed to that teammate's stdin
     /// instead of the lead's. "lead" or None routes to the lead (default behavior).
@@ -141,6 +144,16 @@ pub struct SendAgentMessageResponse {
     pub queued_as_pending: bool,
     #[serde(default)]
     pub queued_message_id: Option<String>,
+}
+
+fn parse_chat_attachment_ids(raw_ids: &[String]) -> Result<Vec<ChatAttachmentId>, String> {
+    raw_ids
+        .iter()
+        .map(|id| {
+            id.parse::<ChatAttachmentId>()
+                .map_err(|_| format!("Invalid attachment id: {}", id))
+        })
+        .collect()
 }
 
 impl From<SendResult> for SendAgentMessageResponse {
@@ -2720,19 +2733,15 @@ pub async fn switch_agent_conversation_mode_for_state(
         None => AgentConversationWorkspaceModeLock::unlocked(),
     };
 
-    validate_agent_conversation_mode_transition(
-        current_mode,
-        target_mode,
-        &workspace_mode_lock,
-    )?;
+    validate_agent_conversation_mode_transition(current_mode, target_mode, &workspace_mode_lock)?;
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
-            let should_detach_inactive_owner =
-                target_mode != AgentConversationWorkspaceMode::Ideation
-                    && !workspace_mode_lock.locked
-                    && (workspace.linked_ideation_session_id.is_some()
-                        || workspace.linked_plan_branch_id.is_some());
+            let should_detach_inactive_owner = target_mode
+                != AgentConversationWorkspaceMode::Ideation
+                && !workspace_mode_lock.locked
+                && (workspace.linked_ideation_session_id.is_some()
+                    || workspace.linked_plan_branch_id.is_some());
             if workspace.mode != target_mode || should_detach_inactive_owner {
                 workspace.mode = target_mode;
                 if should_detach_inactive_owner {
@@ -2959,6 +2968,7 @@ pub async fn send_agent_message(
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
     }
+    let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
     service
         .send_message(
@@ -2971,6 +2981,7 @@ pub async fn send_agent_message(
                 logical_effort_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
+                attachment_ids,
                 ..Default::default()
             },
         )
@@ -3281,9 +3292,7 @@ pub async fn get_agent_conversation_workspace(
     }
 }
 
-fn normalize_agent_workspace_auto_merge_method(
-    method: Option<String>,
-) -> Result<String, String> {
+fn normalize_agent_workspace_auto_merge_method(method: Option<String>) -> Result<String, String> {
     let method = method
         .unwrap_or_else(|| DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string())
         .trim()
@@ -3418,8 +3427,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
     state: &AppState,
 ) -> Result<AgentConversationWorkspaceResponse, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let auto_merge_method =
-        normalize_agent_workspace_auto_merge_method(input.auto_merge_method)?;
+    let auto_merge_method = normalize_agent_workspace_auto_merge_method(input.auto_merge_method)?;
     let Some(workspace) = state
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&conversation_id)
@@ -9606,8 +9614,7 @@ mod tests {
         let project_id = ProjectId::from_string("project-missing-mode-lock".to_string());
         let plan_conversation_id =
             ChatConversationId::from_string("99999999-9999-4999-8999-999999999999");
-        let mut plan_workspace =
-            mode_lock_test_workspace(plan_conversation_id, project_id.clone());
+        let mut plan_workspace = mode_lock_test_workspace(plan_conversation_id, project_id.clone());
         plan_workspace.linked_plan_branch_id =
             Some(PlanBranchId::from_string("missing-plan-branch".to_string()));
 
@@ -9619,8 +9626,7 @@ mod tests {
 
         let session_conversation_id =
             ChatConversationId::from_string("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-        let mut session_workspace =
-            mode_lock_test_workspace(session_conversation_id, project_id);
+        let mut session_workspace = mode_lock_test_workspace(session_conversation_id, project_id);
         session_workspace.linked_ideation_session_id = Some(IdeationSessionId::from_string(
             "missing-ideation-session".to_string(),
         ));
@@ -9710,7 +9716,10 @@ mod tests {
 
         assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
         assert_eq!(
-            response.workspace.as_ref().map(|workspace| workspace.mode.as_str()),
+            response
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.mode.as_str()),
             Some("edit")
         );
     }

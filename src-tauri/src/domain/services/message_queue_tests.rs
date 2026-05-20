@@ -394,6 +394,7 @@ fn test_remove_stale_drops_old_messages() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            attachment_ids: Vec::new(),
         });
         q.push(QueuedMessage {
             id: "fresh-1".to_string(),
@@ -404,6 +405,7 @@ fn test_remove_stale_drops_old_messages() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            attachment_ids: Vec::new(),
         });
     }
 
@@ -510,11 +512,35 @@ fn test_queue_with_overrides_preserves_composer_project_references() {
         None,
         None,
         references.clone(),
+        Vec::new(),
     );
 
     assert_eq!(queued.composer_project_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_project_references, references);
+}
+
+#[test]
+fn test_queue_with_overrides_preserves_attachment_ids() {
+    use crate::domain::entities::ChatAttachmentId;
+
+    let queue = MessageQueue::new();
+    let attachment_ids = vec![ChatAttachmentId::new(), ChatAttachmentId::new()];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Read the attached files".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        attachment_ids.clone(),
+    );
+
+    assert_eq!(queued.attachment_ids, attachment_ids);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.attachment_ids, attachment_ids);
 }
 
 #[test]
@@ -548,6 +574,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            attachment_ids: Vec::new(),
         });
     }
 

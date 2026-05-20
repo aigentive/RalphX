@@ -1760,6 +1760,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 None,
                                 None,
                                 false,
+                                None,
                             )
                             .await
                             .map(|provider_spawnable| provider_spawnable.spawnable);

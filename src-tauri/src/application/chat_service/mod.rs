@@ -48,9 +48,9 @@ use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNE
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
-    MessageRole, ProjectId, TaskId,
+    AgentRun, AgentRunId, AgentRunStatus, ChatAttachment, ChatAttachmentId, ChatContextType,
+    ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
+    IdeationSessionId, InternalStatus, MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -512,6 +512,8 @@ pub struct SendMessageOptions {
     pub sandbox_mode_override: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Chat attachment IDs explicitly selected by the composer for this user turn.
+    pub attachment_ids: Vec<ChatAttachmentId>,
     /// Start a fresh provider-native session even when the conversation has a stored
     /// provider session or an idle interactive process.
     pub force_new_provider_session: bool,
@@ -844,6 +846,7 @@ impl<R: Runtime> AppChatService<R> {
                 options.created_at.map(|ts| ts.to_rfc3339()),
                 options.harness_override,
                 options.composer_project_references.clone(),
+                options.attachment_ids.clone(),
             );
         self.emit_event(
             "agent:message_queued",
@@ -857,6 +860,41 @@ impl<R: Runtime> AppChatService<R> {
             },
         );
         queued
+    }
+
+    async fn load_turn_attachments(
+        &self,
+        conversation_id: &ChatConversationId,
+        attachment_ids: &[ChatAttachmentId],
+    ) -> Result<Vec<ChatAttachment>, ChatServiceError> {
+        load_turn_attachments_from_repo(&self.chat_attachment_repo, conversation_id, attachment_ids)
+            .await
+            .map_err(ChatServiceError::RepositoryError)
+    }
+
+    async fn format_attachment_context(
+        &self,
+        attachments: &[ChatAttachment],
+    ) -> Result<String, ChatServiceError> {
+        chat_service_context::format_attachments_for_agent(attachments)
+            .await
+            .map_err(ChatServiceError::SpawnFailed)
+    }
+
+    async fn link_turn_attachments(
+        &self,
+        attachments: &[ChatAttachment],
+        user_msg_id: &str,
+    ) -> Result<(), ChatServiceError> {
+        if attachments.is_empty() {
+            return Ok(());
+        }
+
+        let attachment_ids: Vec<_> = attachments.iter().map(|attachment| attachment.id).collect();
+        self.chat_attachment_repo
+            .update_message_ids(&attachment_ids, &ChatMessageId::from_string(user_msg_id))
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
     }
 
     async fn get_or_create_conversation_for_send(
@@ -1725,6 +1763,7 @@ impl<R: Runtime> AppChatService<R> {
             total_available,
             None, // effort_override: callers pre-resolve if needed
             None, // model_override: callers pre-resolve if needed
+            None, // attachment_context_override
         )
         .await
         .map_err(ChatServiceError::SpawnFailed)
@@ -1748,6 +1787,7 @@ impl<R: Runtime> AppChatService<R> {
         runtime_team_mode: bool,
         stored_session_id: Option<&str>,
         resolved_spawn_settings: &crate::application::agent_lane_resolution::ResolvedAgentSpawnSettings,
+        attachment_context_override: Option<&str>,
     ) -> Result<
         (
             PathBuf,
@@ -1826,6 +1866,7 @@ impl<R: Runtime> AppChatService<R> {
             is_external_mcp,
             stored_session_id.clone(),
             resolved_spawn_settings,
+            attachment_context_override,
         )
         .await
         .map_err(|error| {
@@ -2030,6 +2071,47 @@ fn log_send_message_spawn_prep_phase(
     );
 }
 
+pub(super) async fn load_turn_attachments_from_repo(
+    chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
+    conversation_id: &ChatConversationId,
+    attachment_ids: &[ChatAttachmentId],
+) -> Result<Vec<ChatAttachment>, String> {
+    let pending_attachments = chat_attachment_repo
+        .find_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|attachment| attachment.message_id.is_none())
+        .collect::<Vec<_>>();
+
+    if attachment_ids.is_empty() {
+        return Ok(pending_attachments);
+    }
+
+    let selected_ids = attachment_ids.iter().copied().collect::<HashSet<_>>();
+    let selected_attachments = pending_attachments
+        .into_iter()
+        .filter(|attachment| selected_ids.contains(&attachment.id))
+        .collect::<Vec<_>>();
+    if selected_attachments.len() == selected_ids.len() {
+        return Ok(selected_attachments);
+    }
+
+    let found_ids = selected_attachments
+        .iter()
+        .map(|attachment| attachment.id)
+        .collect::<HashSet<_>>();
+    let missing_ids = selected_ids
+        .difference(&found_ids)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "Attachment(s) not found, already sent, or outside this conversation: {}",
+        missing_ids
+    ))
+}
+
 #[async_trait]
 impl<R: Runtime + 'static> ChatService for AppChatService<R> {
     async fn send_message(
@@ -2232,6 +2314,48 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message: interactive process found, writing to stdin"
             );
 
+            let existing_conv = match options.conversation_id_override.as_ref() {
+                Some(conversation_id) => self
+                    .conversation_repo
+                    .get_by_id(conversation_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+                None => self
+                    .conversation_repo
+                    .get_active_for_context(context_type, context_id)
+                    .await
+                    .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
+            };
+
+            let conversation = match existing_conv {
+                Some(conv) => {
+                    tracing::debug!(
+                        conversation_id = conv.id.as_str(),
+                        "Gate 1: reusing existing conversation for interactive process"
+                    );
+                    conv
+                }
+                None => {
+                    tracing::warn!(
+                        %context_type,
+                        context_id,
+                        "Gate 1: no existing conversation found despite IPR entry, creating new"
+                    );
+                    let (conversation, _) = self
+                        .get_or_create_conversation_for_send(context_type, context_id, &options)
+                        .await?;
+                    conversation
+                }
+            };
+            let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
+            let turn_attachments = if resume_in_place {
+                Vec::new()
+            } else {
+                self.load_turn_attachments(&conversation.id, &options.attachment_ids)
+                    .await?
+            };
+            let attachment_context = self.format_attachment_context(&turn_attachments).await?;
+
             // Build the prompt with context wrapping, then format as stream-json input.
             // Session history is NOT injected here — the agent is already running and
             // has live context.
@@ -2252,6 +2376,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 &[],
                 0,
             );
+            let stdin_prompt = format!("{}{}", stdin_prompt, attachment_context);
             let stream_json_msg =
                 crate::infrastructure::agents::claude::format_stream_json_input(&stdin_prompt);
 
@@ -2277,50 +2402,6 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         }
                     }
 
-                    // Use the EXISTING conversation — not a force-fresh one.
-                    // The interactive process was spawned with a conversation, so
-                    // get_active_for_context should always find it.
-                    let existing_conv = match options.conversation_id_override {
-                        Some(conversation_id) => self
-                            .conversation_repo
-                            .get_by_id(&conversation_id)
-                            .await
-                            .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
-                        None => self
-                            .conversation_repo
-                            .get_active_for_context(context_type, context_id)
-                            .await
-                            .map_err(|e| ChatServiceError::RepositoryError(e.to_string()))?,
-                    };
-
-                    let conversation = match existing_conv {
-                        Some(conv) => {
-                            tracing::debug!(
-                                conversation_id = conv.id.as_str(),
-                                "Gate 1: reusing existing conversation for interactive process"
-                            );
-                            conv
-                        }
-                        None => {
-                            // Edge case: IPR has process but no conversation found.
-                            // Create one as fallback (shouldn't happen in practice).
-                            tracing::warn!(
-                                %context_type,
-                                context_id,
-                                "Gate 1: no existing conversation found despite IPR entry, creating new"
-                            );
-                            let (conversation, _) = self
-                                .get_or_create_conversation_for_send(
-                                    context_type,
-                                    context_id,
-                                    &options,
-                                )
-                                .await?;
-                            conversation
-                        }
-                    };
-
-                    let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
                     let persisted_metadata = persisted_user_metadata(&options);
 
                     // Store user message for conversation history
@@ -2342,6 +2423,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             )
                             .await;
                         }
+                        self.link_turn_attachments(&turn_attachments, &user_msg_id)
+                            .await?;
 
                         if context_type == ChatContextType::Ideation {
                             let _ = self
@@ -2902,6 +2985,21 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
         let persisted_metadata = persisted_user_metadata(&options);
+        let turn_attachments = if resume_in_place {
+            Vec::new()
+        } else {
+            match self
+                .load_turn_attachments(&conversation_id, &options.attachment_ids)
+                .await
+            {
+                Ok(attachments) => attachments,
+                Err(error) => cleanup_and_err!(error),
+            }
+        };
+        let attachment_context = match self.format_attachment_context(&turn_attachments).await {
+            Ok(context) => context,
+            Err(error) => cleanup_and_err!(error),
+        };
 
         // 4. Store user message
         if !resume_in_place {
@@ -2935,34 +3033,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 "chat_service.send_message user message stored"
             );
 
-            // 4b. Link pending attachments to the user message
-            let pending_attachments = match self
-                .chat_attachment_repo
-                .find_by_conversation_id(&conversation_id)
+            // 4b. Link selected attachments to the user message while preserving
+            // the already-captured attachment context for the runtime prompt.
+            if let Err(error) = self
+                .link_turn_attachments(&turn_attachments, &user_msg_id)
                 .await
             {
-                Ok(v) => v
-                    .into_iter()
-                    .filter(|a| a.message_id.is_none())
-                    .collect::<Vec<_>>(),
-                Err(e) => {
-                    cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
-                }
-            };
-
-            if !pending_attachments.is_empty() {
-                let attachment_ids: Vec<_> =
-                    pending_attachments.iter().map(|a| a.id.clone()).collect();
-                if let Err(e) = self
-                    .chat_attachment_repo
-                    .update_message_ids(&attachment_ids, &ChatMessageId::from_string(&user_msg_id))
-                    .await
-                {
-                    cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
-                }
+                cleanup_and_err!(error);
+            }
+            if !turn_attachments.is_empty() {
                 tracing::debug!(
                     message_id = %user_msg_id,
-                    attachment_count = pending_attachments.len(),
+                    attachment_count = turn_attachments.len(),
                     "chat_service.send_message linked attachments to user message"
                 );
             }
@@ -3340,6 +3422,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 runtime_team_mode,
                 stored_session_id.as_deref(),
                 &resolved_spawn_settings,
+                Some(attachment_context.as_str()),
             )
             .await
         {
@@ -4213,7 +4296,7 @@ mod agent_workspace_send_tests {
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
-        MessageRole, Project, ProjectId, TaskId,
+        ChatAttachment, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -4417,6 +4500,93 @@ mod agent_workspace_send_tests {
                 .contains("Claude CLI not found"),
             "failed run should retain the CLI error: {:?}",
             run.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_links_only_selected_attachment_ids_to_user_message() {
+        let state = AppState::new_test();
+        let project_dir = tempfile::tempdir().expect("project dir should be created");
+        let project = Project::new(
+            "Attachment Project".to_string(),
+            project_dir.path().to_string_lossy().to_string(),
+        );
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let conversation = ChatConversation::new_project(project.id.clone());
+        let conversation_id = conversation.id;
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should persist");
+
+        let selected_attachment = state
+            .chat_attachment_repo
+            .create(ChatAttachment::new(
+                conversation_id,
+                "selected.txt",
+                project_dir.path().join("selected.txt").to_string_lossy(),
+                8,
+                Some("text/plain".to_string()),
+            ))
+            .await
+            .expect("selected attachment should persist");
+        let unselected_attachment = state
+            .chat_attachment_repo
+            .create(ChatAttachment::new(
+                conversation_id,
+                "unselected.txt",
+                project_dir.path().join("unselected.txt").to_string_lossy(),
+                10,
+                Some("text/plain".to_string()),
+            ))
+            .await
+            .expect("unselected attachment should persist");
+
+        let service = state
+            .build_chat_service_with_execution_state(Arc::new(ExecutionState::new()))
+            .with_cli_path(project_dir.path().join("missing-claude-cli"))
+            .with_working_directory(project_dir.path());
+
+        let _ = service
+            .send_message(
+                ChatContextType::Project,
+                project.id.as_str(),
+                "read the selected file",
+                SendMessageOptions {
+                    conversation_id_override: Some(conversation_id),
+                    attachment_ids: vec![selected_attachment.id],
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("missing CLI should fail after user message persistence");
+
+        let selected = state
+            .chat_attachment_repo
+            .get_by_id(&selected_attachment.id)
+            .await
+            .expect("selected attachment lookup should succeed")
+            .expect("selected attachment should exist");
+        let unselected = state
+            .chat_attachment_repo
+            .get_by_id(&unselected_attachment.id)
+            .await
+            .expect("unselected attachment lookup should succeed")
+            .expect("unselected attachment should exist");
+
+        assert!(
+            selected.message_id.is_some(),
+            "selected attachment should link to the sent user message"
+        );
+        assert_eq!(
+            unselected.message_id, None,
+            "unselected pending attachments must not be linked to this user message"
         );
     }
 
