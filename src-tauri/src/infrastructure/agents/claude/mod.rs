@@ -1081,6 +1081,25 @@ fn write_mcp_config_temp(mcp_config: &serde_json::Value) -> Result<PathBuf, Stri
     Ok(path)
 }
 
+fn write_agent_system_prompt_temp(system_prompt: &str) -> Result<PathBuf, String> {
+    let mut temp_file = tempfile::Builder::new()
+        .prefix("ralphx-agent-prompt-")
+        .suffix(".md")
+        .tempfile()
+        .map_err(|e| format!("Failed to create agent prompt temp file: {e}"))?;
+    {
+        use std::io::Write as _;
+        temp_file
+            .as_file_mut()
+            .write_all(system_prompt.as_bytes())
+            .map_err(|e| format!("Failed to write agent prompt temp file: {e}"))?;
+    }
+    let (_file, path) = temp_file
+        .keep()
+        .map_err(|e| format!("Failed to keep agent prompt temp file: {e}"))?;
+    Ok(path)
+}
+
 /// A ready-to-spawn CLI command that handles stdin piping automatically.
 ///
 /// **CLI bug workaround (2.1.38):** `--agent` + `-p "text"` causes the CLI to
@@ -1374,19 +1393,31 @@ fn add_prompt_args(
                         "Injected agent prompt with internal skills via --append-system-prompt"
                     );
                 } else if runtime.use_append_system_prompt_file {
-                    if let Some(path_str) = prompt_path.to_str() {
-                        cmd.args(["--append-system-prompt-file", path_str]);
-                        tracing::debug!(
-                            agent = agent_name,
-                            path = path_str,
-                            "Injected agent prompt via --append-system-prompt-file"
-                        );
-                    } else {
-                        cmd.args(["--append-system-prompt", system_prompt]);
-                        tracing::debug!(
-                            agent = agent_name,
-                            "Injected agent prompt via --append-system-prompt"
-                        );
+                    match write_agent_system_prompt_temp(system_prompt) {
+                        Ok(prompt_file) => {
+                            if let Some(path_str) = prompt_file.to_str() {
+                                cmd.args(["--append-system-prompt-file", path_str]);
+                                tracing::debug!(
+                                    agent = agent_name,
+                                    path = path_str,
+                                    "Injected generated agent prompt via --append-system-prompt-file"
+                                );
+                            } else {
+                                cmd.args(["--append-system-prompt", system_prompt]);
+                                tracing::debug!(
+                                    agent = agent_name,
+                                    "Injected generated agent prompt via --append-system-prompt"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                agent = agent_name,
+                                error = %error,
+                                "Failed to write generated agent prompt file; falling back to --append-system-prompt"
+                            );
+                            cmd.args(["--append-system-prompt", system_prompt]);
+                        }
                     }
                 } else {
                     cmd.args(["--append-system-prompt", system_prompt]);

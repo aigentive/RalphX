@@ -811,10 +811,69 @@ fn build_generated_agent_task_appendix(
         return None;
     }
 
+    let supports_full_task_flow = list_tool.is_some()
+        && create_tool.is_some()
+        && (claim_tool.is_some() || update_tool.is_some())
+        && complete_tool.is_some();
+
     let mut lines = vec![
         "## RalphX Agent Task Ledger (AUTO-GENERATED)".to_string(),
         "Use the RalphX agent task ledger for multi-step work, dependencies, and delegated follow-up that should survive across tool calls in this context.".to_string(),
     ];
+
+    if supports_full_task_flow {
+        lines.extend(
+            [
+                "For any non-trivial or multi-turn task that requires codebase investigation, edits, validation, or follow-up, start by checking the ledger, create and claim a task when no suitable active item exists, keep it updated while you work, and complete it before your final response.",
+                "For simple questions or conversational replies that need no tool-backed investigation or implementation, answer directly without creating a ledger item.",
+                "",
+                "### When To Use The Ledger",
+                "- Complex multi-step work: three or more distinct actions, files, phases, or verification steps.",
+                "- Non-trivial implementation: changes that need planning, codebase inspection, edits, and validation.",
+                "- User-provided task lists: multiple requested fixes, features, checks, or follow-ups in one message.",
+                "- New instructions during an active run: capture materially new requirements before continuing.",
+                "- Work that may cross turns or survive context compaction: preserve current state, blockers, and next actions in the ledger.",
+                "- Discovered follow-up work: create or update ledger items when investigation reveals necessary dependent tasks.",
+                "",
+                "### When Not To Use The Ledger",
+                "- A single straightforward action with no meaningful intermediate state.",
+                "- A purely informational or conversational answer.",
+                "- A trivial command request where the result can be returned immediately.",
+                "- A one-location text or comment edit that needs no planning or validation beyond the edit itself.",
+                "- Cases where tracking would add noise instead of reducing risk.",
+                "",
+                "### Task State Rules",
+                "- Treat `open` as not started, `active` as currently being worked, `done` as fully completed, and `dropped` as intentionally abandoned.",
+                "- Keep at most one task `active` for your own work at a time unless another actor owns a separate item.",
+                "- Mark a task `active` before doing substantial work on it, not after the work is already complete.",
+                "- Mark completion immediately after the task is actually complete; do not batch completions at the end.",
+                "- Do not mark a task `done` while tests are failing, implementation is partial, required files are missing, or unresolved blockers remain.",
+                "- If you are blocked, keep the blocked task active or open and create/update a concrete blocker task when useful.",
+                "",
+                "### Task Breakdown Rules",
+                "- Write specific, action-oriented titles that describe the next outcome, not vague process labels.",
+                "- Split broad requests into small items that can be individually completed and validated.",
+                "- Include acceptance criteria, file/module scope, validation expectations, and dependency notes in task details when they matter.",
+                "- Use dependencies for real ordering constraints instead of relying on memory.",
+                "- Remove or drop stale items when the plan changes and the work is no longer relevant.",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+        lines.extend(
+            [
+                "",
+                "### Standard Flow",
+                "- Before relying on prior state, list the current ledger and reuse a matching open or active task when one exists.",
+                "- If no suitable task exists, create a task with concrete details and any dependency links.",
+                "- Claim or mark the task active before implementation begins.",
+                "- Update details, state, dependencies, owner, or metadata as the plan changes.",
+                "- Complete the task only after implementation and required validation are actually finished.",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
+    }
 
     if let Some(tool) = list_tool {
         lines.push(format!("- Use `{tool}` before depending on prior ledger state or when resuming a multi-step thread."));
@@ -837,6 +896,27 @@ fn build_generated_agent_task_appendix(
     }
     if let Some(tool) = get_tool {
         lines.push(format!("- Use `{tool}` when you need full details, including resolved blockers that list views may omit."));
+    }
+
+    if supports_full_task_flow {
+        lines.extend(
+            [
+                "",
+                "### Examples When To Use The Ledger",
+                "- A provider-spawn bug requires checking logs, tracing the spawn builder, changing prompt materialization, adding a regression, and running targeted Rust tests. Create separate items for diagnosis, implementation, and validation so the fix cannot stop after the first patch.",
+                "- A user asks for three UI workflow fixes in one message. Create one item per workflow, add dependencies only where one fix must land before another, and keep the active item aligned with the workflow currently being edited.",
+                "- A search finds a renamed runtime field across several backend modules plus frontend consumers. After the search reveals the scope, create ledger items for backend updates, frontend updates, and compatibility validation.",
+                "- An intermittent stuck-run report needs production logs, database inspection, code-path review, and a narrow repro test. Track each investigation branch and convert confirmed findings into implementation tasks.",
+                "",
+                "### Examples When Not To Use The Ledger",
+                "- The user asks what a specific command does. Answer directly.",
+                "- The user asks you to run one status command and report the output. Run it and report the result.",
+                "- The user asks for a one-word label change in a known file. Make the small edit directly and validate only as needed.",
+                "- The user is brainstorming and has not asked for implementation or tool-backed investigation. Discuss the idea without creating ledger state.",
+            ]
+            .into_iter()
+            .map(String::from),
+        );
     }
 
     Some(lines.join("\n"))

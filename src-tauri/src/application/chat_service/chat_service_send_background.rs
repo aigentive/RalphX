@@ -136,6 +136,94 @@ pub(super) fn should_process_stream_queue(
         && !(silent_interactive_exit && cancellation_requested)
 }
 
+const AGENT_TASK_LEDGER_SUBSTANTIAL_TOOL_CALL_COUNT: usize = 3;
+const AGENT_TASK_LEDGER_TOOL_NAMES: &[&str] = &[
+    "create_agent_task",
+    "get_agent_task",
+    "list_agent_tasks",
+    "update_agent_task",
+    "claim_agent_task",
+    "complete_agent_task",
+];
+const AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES: &[&str] = &[
+    "Bash",
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "bash",
+    "edit",
+    "write",
+    "apply_patch",
+    "exec_command",
+    "write_stdin",
+];
+
+fn maybe_warn_missing_agent_task_ledger(
+    conversation: Option<&ChatConversation>,
+    agent_name: Option<&str>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: &ChatConversationId,
+    tool_calls: &[ToolCall],
+) {
+    if !should_warn_missing_agent_task_ledger(conversation, tool_calls) {
+        return;
+    }
+
+    let agent_mode = conversation
+        .and_then(|conversation| conversation.agent_mode)
+        .map(|mode| mode.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    tracing::warn!(
+        conversation_id = conversation_id.as_str(),
+        %context_type,
+        context_id = %context_id,
+        agent_name = agent_name.unwrap_or("unknown"),
+        agent_mode = %agent_mode,
+        tool_calls = tool_calls.len(),
+        "Agent-mode run completed substantial tool-backed work without using the agent task ledger"
+    );
+}
+
+fn should_warn_missing_agent_task_ledger(
+    conversation: Option<&ChatConversation>,
+    tool_calls: &[ToolCall],
+) -> bool {
+    let Some(conversation) = conversation else {
+        return false;
+    };
+    if conversation.agent_mode.is_none() {
+        return false;
+    }
+    if tool_calls
+        .iter()
+        .any(|tool_call| is_agent_task_ledger_tool(&tool_call.name))
+    {
+        return false;
+    }
+
+    tool_calls.len() >= AGENT_TASK_LEDGER_SUBSTANTIAL_TOOL_CALL_COUNT
+        || tool_calls
+            .iter()
+            .any(|tool_call| is_mutating_work_tool(&tool_call.name))
+}
+
+fn is_agent_task_ledger_tool(tool_name: &str) -> bool {
+    AGENT_TASK_LEDGER_TOOL_NAMES.iter().any(|ledger_tool| {
+        tool_name == *ledger_tool
+            || tool_name.ends_with(&format!("__{ledger_tool}"))
+            || tool_name.ends_with(&format!("::{ledger_tool}"))
+    })
+}
+
+fn is_mutating_work_tool(tool_name: &str) -> bool {
+    AGENT_TASK_LEDGER_MUTATING_WORK_TOOL_NAMES
+        .iter()
+        .any(|work_tool| tool_name == *work_tool)
+}
+
 #[derive(Debug, Clone)]
 struct AssistantTranscriptSegment {
     content: String,
@@ -752,6 +840,14 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     response_text.len(),
                     tool_calls.len(),
                     provider_session_id
+                );
+                maybe_warn_missing_agent_task_ledger(
+                    conversation.as_ref(),
+                    agent_name.as_deref(),
+                    context_type,
+                    &context_id,
+                    &conversation_id,
+                    &tool_calls,
                 );
 
                 // Update conversation with provider session id
