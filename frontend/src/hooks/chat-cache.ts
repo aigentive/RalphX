@@ -53,7 +53,13 @@ export function replaceMatchingOptimisticMessage(
   }
 
   const nextMessages = [...messages];
-  nextMessages[optimisticIndex] = message;
+  const optimisticMessage = messages[optimisticIndex];
+  nextMessages[optimisticIndex] = {
+    ...message,
+    ...(!message.attachments && optimisticMessage?.attachments
+      ? { attachments: optimisticMessage.attachments }
+      : {}),
+  };
   return nextMessages;
 }
 

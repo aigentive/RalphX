@@ -1,11 +1,14 @@
 /**
  * ChatAttachmentGallery - Grid display of file attachments
  *
- * Displays file preview cards with type icons, names, sizes, and remove buttons.
+ * Displays image previews or file cards with names, sizes, and remove buttons.
  * Supports compact (single-row scroll) and full (multi-row grid) variants.
  */
 
 import { FileText, Image, FileCode, File, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 // ============================================================================
 // Types
@@ -20,6 +23,12 @@ export interface ChatAttachment {
   fileSize: number;
   /** MIME type of the file */
   mimeType?: string;
+  /** Local file while the attachment is still optimistic/pre-upload. */
+  file?: File;
+  /** Frontend-only preview URL for optimistic files. */
+  previewUrl?: string;
+  /** Durable path returned after upload. */
+  filePath?: string;
 }
 
 export interface ChatAttachmentGalleryProps {
@@ -62,6 +71,35 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function getImagePreviewSrc(
+  attachment: ChatAttachment,
+  localPreviewUrls: Record<string, string>,
+): string | null {
+  if (!attachment.mimeType?.startsWith("image/")) {
+    return null;
+  }
+
+  if (attachment.previewUrl) {
+    return attachment.previewUrl;
+  }
+
+  const localPreviewUrl = localPreviewUrls[attachment.id];
+  if (localPreviewUrl) {
+    return localPreviewUrl;
+  }
+
+  if (attachment.filePath) {
+    return convertFileSrc(attachment.filePath);
+  }
+
+  return null;
+}
+
+interface AttachmentPreviewEntry {
+  attachment: ChatAttachment;
+  previewSrc: string | null;
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -72,9 +110,62 @@ export function ChatAttachmentGallery({
   uploading = false,
   compact = false,
 }: ChatAttachmentGalleryProps) {
+  const [localPreviewUrls, setLocalPreviewUrls] = useState<Record<string, string>>({});
+  const [failedPreviewIds, setFailedPreviewIds] = useState<Set<string>>(() => new Set());
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+      setLocalPreviewUrls({});
+      return;
+    }
+
+    const nextUrls: Record<string, string> = {};
+    for (const attachment of attachments) {
+      if (
+        attachment.file &&
+        attachment.mimeType?.startsWith("image/") &&
+        !attachment.previewUrl &&
+        !attachment.filePath
+      ) {
+        nextUrls[attachment.id] = URL.createObjectURL(attachment.file);
+      }
+    }
+    setLocalPreviewUrls(nextUrls);
+
+    return () => {
+      for (const url of Object.values(nextUrls)) {
+        if (typeof URL.revokeObjectURL === "function") {
+          URL.revokeObjectURL(url);
+        }
+      }
+    };
+  }, [attachments]);
+
   if (attachments.length === 0) {
     return null;
   }
+
+  const attachmentEntries: AttachmentPreviewEntry[] = attachments.map((attachment) => ({
+    attachment,
+    previewSrc: failedPreviewIds.has(attachment.id)
+      ? null
+      : getImagePreviewSrc(attachment, localPreviewUrls),
+  }));
+  const selectedImageEntry =
+    attachmentEntries.find(
+      (entry) => entry.attachment.id === selectedImageId && entry.previewSrc !== null,
+    ) ?? null;
+
+  const markPreviewFailed = (attachmentId: string) => {
+    setFailedPreviewIds((current) => {
+      if (current.has(attachmentId)) return current;
+      const next = new Set(current);
+      next.add(attachmentId);
+      return next;
+    });
+    setSelectedImageId((current) => current === attachmentId ? null : current);
+  };
 
   const containerClass = compact
     ? "flex gap-2 overflow-x-auto pb-2" // Single row scroll for compact
@@ -82,15 +173,55 @@ export function ChatAttachmentGallery({
 
   return (
     <div data-testid="chat-attachment-gallery" className={containerClass}>
-      {attachments.map((attachment) => (
+      {attachmentEntries.map(({ attachment, previewSrc }) => (
         <AttachmentCard
           key={attachment.id}
           attachment={attachment}
+          previewSrc={previewSrc}
+          onPreviewClick={previewSrc ? () => setSelectedImageId(attachment.id) : undefined}
+          onPreviewError={() => markPreviewFailed(attachment.id)}
           onRemove={onRemove}
           uploading={uploading}
           compact={compact}
         />
       ))}
+      <Dialog
+        open={selectedImageEntry !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedImageId(null);
+        }}
+      >
+        {selectedImageEntry && (
+          <DialogContent
+            data-testid="chat-attachment-image-dialog"
+            className="max-h-[90vh] max-w-[min(92vw,1100px)] overflow-hidden p-0"
+          >
+            <div
+              className="flex min-w-0 items-center gap-3 border-b px-4 py-3 pr-14"
+              style={{ borderColor: "var(--border-subtle)" }}
+            >
+              <DialogTitle className="min-w-0 truncate text-sm">
+                {selectedImageEntry.attachment.fileName}
+              </DialogTitle>
+              <span className="shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
+                {formatFileSize(selectedImageEntry.attachment.fileSize)}
+              </span>
+            </div>
+            <div
+              className="max-h-[calc(90vh-4rem)] overflow-auto p-3"
+              style={{ background: "var(--bg-surface)" }}
+            >
+              <img
+                data-testid="chat-attachment-image-large"
+                src={selectedImageEntry.previewSrc ?? ""}
+                alt={selectedImageEntry.attachment.fileName}
+                className="mx-auto max-h-[calc(90vh-6rem)] max-w-full object-contain"
+                onError={() => markPreviewFailed(selectedImageEntry.attachment.id)}
+              />
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
     </div>
   );
 }
@@ -101,6 +232,9 @@ export function ChatAttachmentGallery({
 
 interface AttachmentCardProps {
   attachment: ChatAttachment;
+  previewSrc: string | null;
+  onPreviewClick: (() => void) | undefined;
+  onPreviewError: () => void;
   onRemove: ((id: string) => void) | undefined;
   uploading: boolean;
   compact: boolean;
@@ -108,6 +242,9 @@ interface AttachmentCardProps {
 
 function AttachmentCard({
   attachment,
+  previewSrc,
+  onPreviewClick,
+  onPreviewError,
   onRemove,
   uploading,
   compact,
@@ -125,15 +262,39 @@ function AttachmentCard({
         border: "1px solid var(--bg-hover)",
       }}
     >
-      {/* File icon */}
-      <div
-        className="shrink-0 flex items-center justify-center"
-        style={{
-          color: "var(--text-secondary)",
-        }}
-      >
-        {getFileIcon(attachment.mimeType, attachment.fileName)}
-      </div>
+      {previewSrc ? (
+        <button
+          data-testid="chat-attachment-image-preview-button"
+          type="button"
+          onClick={onPreviewClick}
+          className={compact
+            ? "h-10 w-10 shrink-0 overflow-hidden rounded-md"
+            : "h-12 w-12 shrink-0 overflow-hidden rounded-md"}
+          style={{
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--bg-hover)",
+          }}
+          aria-label={`Preview ${attachment.fileName}`}
+        >
+          <img
+            data-testid="chat-attachment-image-preview"
+            src={previewSrc}
+            alt={attachment.fileName}
+            loading="lazy"
+            className="h-full w-full object-cover"
+            onError={onPreviewError}
+          />
+        </button>
+      ) : (
+        <div
+          className="shrink-0 flex items-center justify-center"
+          style={{
+            color: "var(--text-secondary)",
+          }}
+        >
+          {getFileIcon(attachment.mimeType, attachment.fileName)}
+        </div>
+      )}
 
       {/* File info */}
       <div className="flex-1 min-w-0">

@@ -1236,65 +1236,81 @@ describe("AgentsView start conversation", () => {
     });
     vi.mocked(invoke).mockResolvedValue({ id: "attachment-1" });
 
+    const createObjectURL = vi.fn(() => "blob:starter-image-preview");
+    const originalCreateObjectURL = URL.createObjectURL;
+    Object.defineProperty(URL, "createObjectURL", {
+      value: createObjectURL,
+      configurable: true,
+    });
+
     const { queryClient } = renderAgentsView();
 
     const fileInput = screen.getByTestId("attachment-file-input");
-    const file = new File(["draft"], "notes.md", { type: "text/markdown" });
+    const file = new File(["draft"], "screenshot.png", { type: "image/png" });
 
-    fireEvent.change(fileInput, {
-      target: { files: [file] },
-    });
-    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "review this note" },
-    });
-    fireEvent.click(screen.getByTestId("agents-start-submit"));
+    try {
+      fireEvent.change(fileInput, {
+        target: { files: [file] },
+      });
+      fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+        target: { value: "review this note" },
+      });
+      fireEvent.click(screen.getByTestId("agents-start-submit"));
 
-    await waitFor(() =>
-      expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
-    );
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("upload_chat_attachment", {
-        input: expect.objectContaining({
-          conversationId: "conversation-seeded",
-          fileName: "notes.md",
-          mimeType: "text/markdown",
-        }),
-      })
-    );
-    await waitFor(() =>
-      expect(startAgentConversationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: "project-1",
-          content: "review this note",
-          conversationId: "conversation-seeded",
-          providerHarness: "codex",
-          modelId: "gpt-5.5",
-          logicalEffort: "xhigh",
-          mode: "edit",
-        })
-      )
-    );
-    await waitFor(() =>
-      expect(
-        queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
-      ).toEqual({
-        conversation: expect.objectContaining({ id: "conversation-seeded" }),
-        messages: [
-          expect.objectContaining({
+      await waitFor(() =>
+        expect(createConversationMock).toHaveBeenCalledWith("project", "project-1")
+      );
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("upload_chat_attachment", {
+          input: expect.objectContaining({
             conversationId: "conversation-seeded",
-            role: "user",
-            content: "review this note",
-            attachments: [
-              expect.objectContaining({
-                fileName: "notes.md",
-                fileSize: 5,
-                mimeType: "text/markdown",
-              }),
-            ],
+            fileName: "screenshot.png",
+            mimeType: "image/png",
           }),
-        ],
-      })
-    );
+        })
+      );
+      await waitFor(() =>
+        expect(startAgentConversationMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: "project-1",
+            content: "review this note",
+            conversationId: "conversation-seeded",
+            providerHarness: "codex",
+            modelId: "gpt-5.5",
+            logicalEffort: "xhigh",
+            mode: "edit",
+          })
+        )
+      );
+      await waitFor(() =>
+        expect(
+          queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
+        ).toEqual({
+          conversation: expect.objectContaining({ id: "conversation-seeded" }),
+          messages: [
+            expect.objectContaining({
+              conversationId: "conversation-seeded",
+              role: "user",
+              content: "review this note",
+              attachments: [
+                expect.objectContaining({
+                  fileName: "screenshot.png",
+                  fileSize: 5,
+                  mimeType: "image/png",
+                  previewUrl: "blob:starter-image-preview",
+                }),
+              ],
+            }),
+          ],
+        })
+      );
+      expect(createObjectURL).toHaveBeenCalledWith(file);
+    } finally {
+      Object.defineProperty(URL, "createObjectURL", {
+        value: originalCreateObjectURL,
+        configurable: true,
+      });
+    }
   });
 
 });

@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   ChatAttachmentGallery,
@@ -94,6 +94,82 @@ describe("ChatAttachmentGallery", () => {
     // Check if Lucide Image icon is rendered (it will have a specific SVG structure)
     const svg = container.querySelector("svg");
     expect(svg).toBeInTheDocument();
+  });
+
+  it("renders local image file previews in the composer gallery", async () => {
+    const createObjectURL = vi.fn(() => "blob:composer-image-preview");
+    const revokeObjectURL = vi.fn();
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, "createObjectURL", {
+      value: createObjectURL,
+      configurable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      value: revokeObjectURL,
+      configurable: true,
+    });
+
+    const file = new File(["image"], "photo.png", { type: "image/png" });
+
+    try {
+      render(
+        <ChatAttachmentGallery
+          attachments={[
+            {
+              id: "local-image",
+              fileName: "photo.png",
+              fileSize: file.size,
+              mimeType: "image/png",
+              file,
+            },
+          ]}
+          compact
+        />
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-attachment-image-preview")).toHaveAttribute(
+          "src",
+          "blob:composer-image-preview"
+        )
+      );
+      expect(createObjectURL).toHaveBeenCalledWith(file);
+      expect(screen.getByTestId("attachment-card").querySelector("svg")).not.toBeInTheDocument();
+    } finally {
+      Object.defineProperty(URL, "createObjectURL", {
+        value: originalCreateObjectURL,
+        configurable: true,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        value: originalRevokeObjectURL,
+        configurable: true,
+      });
+    }
+  });
+
+  it("opens a large preview from composer image thumbnails", async () => {
+    render(
+      <ChatAttachmentGallery
+        attachments={[
+          {
+            id: "preview-image",
+            fileName: "preview.png",
+            fileSize: 1024,
+            mimeType: "image/png",
+            previewUrl: "blob:preview-image",
+          },
+        ]}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId("chat-attachment-image-preview-button"));
+
+    expect(screen.getByTestId("chat-attachment-image-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-attachment-image-large")).toHaveAttribute(
+      "src",
+      "blob:preview-image"
+    );
   });
 
   it("shows correct file icon for text files", () => {

@@ -105,6 +105,34 @@ describe("chat-cache helpers", () => {
     expect(replaceMatchingOptimisticMessage([optimistic], backend)).toEqual([backend]);
   });
 
+  it("preserves frontend-only attachments when replacing a matching optimistic message", () => {
+    const optimistic = message({
+      id: "optimistic:conv-1:pending",
+      content: "same text",
+      attachments: [
+        {
+          id: "attachment-1",
+          fileName: "screenshot.png",
+          fileSize: 123,
+          filePath: "/tmp/screenshot.png",
+          mimeType: "image/png",
+        },
+      ],
+    });
+    const backend = message({
+      id: "message-backend",
+      content: "same text",
+      createdAt: "2026-01-01T00:00:05Z",
+    });
+
+    expect(replaceMatchingOptimisticMessage([optimistic], backend)).toEqual([
+      {
+        ...backend,
+        attachments: optimistic.attachments,
+      },
+    ]);
+  });
+
   it("keeps existing messages unchanged when the incoming id is already present", () => {
     const existing = message({ id: "message-existing" });
     const messages = [existing];

@@ -417,5 +417,8 @@ function buildOptimisticMessageAttachments(files: File[]): MessageAttachment[] |
     fileName: file.name || "attachment",
     fileSize: file.size,
     ...(file.type ? { mimeType: file.type } : {}),
+    ...(file.type.startsWith("image/") && typeof URL.createObjectURL === "function"
+      ? { previewUrl: URL.createObjectURL(file) }
+      : {}),
   }));
 }
