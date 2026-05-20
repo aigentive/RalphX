@@ -130,12 +130,16 @@ export function useAgentConversationActions({
 
   const handleSidebarSelectConversation = useCallback(
     (conversationProjectId: string, conversation: AgentConversation) => {
-      handleSelectConversation(conversationProjectId, conversation);
+      if (selectedConversationId === conversation.id) {
+        showStarterComposer(conversationProjectId);
+      } else {
+        handleSelectConversation(conversationProjectId, conversation);
+      }
       if (isSidebarOverlayOpen) {
         closeSidebarOverlay();
       }
     },
-    [closeSidebarOverlay, handleSelectConversation, isSidebarOverlayOpen]
+    [closeSidebarOverlay, handleSelectConversation, isSidebarOverlayOpen, selectedConversationId, showStarterComposer]
   );
 
   const handleSidebarCreateAgent = useCallback(() => {
