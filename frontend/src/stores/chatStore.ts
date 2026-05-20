@@ -222,7 +222,11 @@ export const useChatStore = create<ChatState & ChatActions>()(
     setAgentStatus: (contextKey, status) =>
       set((state) => {
         if (status === "idle") {
-          if (!(contextKey in state.agentStatus) && !(contextKey in state.activeAgentRunIds)) {
+          if (
+            !(contextKey in state.agentStatus)
+            && !(contextKey in state.activeAgentRunIds)
+            && !(contextKey in state.agentActivityLabels)
+          ) {
             return; // already absent — no-op
           }
           delete state.agentStatus[contextKey];
@@ -260,7 +264,11 @@ export const useChatStore = create<ChatState & ChatActions>()(
           if (state.agentStatus[contextKey] === "generating") return; // already generating — no-op
           state.agentStatus[contextKey] = "generating";
         } else {
-          if (!(contextKey in state.agentStatus) && !(contextKey in state.activeAgentRunIds)) {
+          if (
+            !(contextKey in state.agentStatus)
+            && !(contextKey in state.activeAgentRunIds)
+            && !(contextKey in state.agentActivityLabels)
+          ) {
             return; // already absent — no-op
           }
           delete state.agentStatus[contextKey];

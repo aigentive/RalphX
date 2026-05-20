@@ -264,6 +264,42 @@ describe("useGlobalAgentLifecycle", () => {
     );
   });
 
+  it("startup_progress falls back to the stage label when the payload label is not allowed", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:startup_progress", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        stage: "send_message",
+        label: "Launching the selected runtime",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conversation-1",
+      "Starting agent"
+    );
+  });
+
+  it("startup_progress ignores unknown stages without an allowed label", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:startup_progress", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        stage: "unsupported_stage",
+        label: "Launching the selected runtime",
+      });
+    });
+
+    expect(chatStoreMocks.updateLastAgentEvent).not.toHaveBeenCalled();
+    expect(chatStoreMocks.setAgentActivityLabel).not.toHaveBeenCalled();
+  });
+
   it("run_started calls updateLastAgentEvent when not already generating", () => {
     chatStoreMocks.agentStatus = {};
     renderHook(() => useGlobalAgentLifecycle());

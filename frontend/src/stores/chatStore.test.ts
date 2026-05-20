@@ -4,6 +4,7 @@ import {
   selectMessagesForContext,
   selectMessageCount,
   selectQueuedMessages,
+  selectAgentActivityLabel,
   selectIsAgentRunning,
   selectActiveConversationId,
   selectActiveAgentRunId,
@@ -391,11 +392,21 @@ describe("chatStore", () => {
     it("clears active run id when agent status is set to idle", () => {
       useChatStore.getState().setActiveAgentRun(storeKey, "run-123");
       useChatStore.getState().setAgentStatus(storeKey, "generating");
+      useChatStore.getState().setAgentActivityLabel(storeKey, "Agent working");
       useChatStore.getState().setAgentStatus(storeKey, "idle");
 
       const state = useChatStore.getState();
       expect(state.agentStatus[storeKey]).toBeUndefined();
       expect(state.activeAgentRunIds[storeKey]).toBeUndefined();
+      expect(state.agentActivityLabels[storeKey]).toBeUndefined();
+    });
+
+    it("clears an activity label when idle is set before a run id exists", () => {
+      useChatStore.getState().setAgentActivityLabel(storeKey, "Starting agent");
+
+      useChatStore.getState().setAgentStatus(storeKey, "idle");
+
+      expect(useChatStore.getState().agentActivityLabels[storeKey]).toBeUndefined();
     });
 
     it("selectActiveAgentRunId returns the stored active run id", () => {
@@ -417,10 +428,30 @@ describe("chatStore", () => {
 
     it("removes context when set to false", () => {
       useChatStore.getState().setAgentRunning(contextKey, true);
+      useChatStore.getState().setAgentActivityLabel(contextKey, "Agent working");
       useChatStore.getState().setAgentRunning(contextKey, false);
 
       const state = useChatStore.getState();
       expect(state.agentStatus[contextKey]).toBeUndefined();
+      expect(state.agentActivityLabels[contextKey]).toBeUndefined();
+    });
+
+    it("clears an activity label when stopped before status exists", () => {
+      useChatStore.getState().setAgentActivityLabel(contextKey, "Starting agent");
+
+      useChatStore.getState().setAgentRunning(contextKey, false);
+
+      expect(useChatStore.getState().agentActivityLabels[contextKey]).toBeUndefined();
+    });
+
+    it("clears an activity label when the agent is waiting for input", () => {
+      useChatStore.getState().setAgentStatus(contextKey, "generating");
+      useChatStore.getState().setAgentActivityLabel(contextKey, "Agent working");
+
+      useChatStore.getState().setAgentStatus(contextKey, "waiting_for_input");
+
+      expect(useChatStore.getState().agentStatus[contextKey]).toBe("waiting_for_input");
+      expect(useChatStore.getState().agentActivityLabels[contextKey]).toBeUndefined();
     });
 
     it("keeps separate states by context key", () => {
@@ -958,6 +989,22 @@ describe("selectors", () => {
       const result = selectIsAgentRunning(contextKey)(useChatStore.getState());
 
       expect(result).toBe(false);
+    });
+  });
+
+  describe("selectAgentActivityLabel", () => {
+    const contextKey = "project:conversation-1";
+
+    it("returns the trimmed activity label for a context", () => {
+      useChatStore.getState().setAgentActivityLabel(contextKey, "  Setup workspace  ");
+
+      expect(selectAgentActivityLabel(contextKey)(useChatStore.getState())).toBe(
+        "Setup workspace"
+      );
+    });
+
+    it("returns null when a context has no activity label", () => {
+      expect(selectAgentActivityLabel(contextKey)(useChatStore.getState())).toBeNull();
     });
   });
 
