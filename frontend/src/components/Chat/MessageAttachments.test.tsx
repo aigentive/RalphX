@@ -62,6 +62,13 @@ describe("MessageAttachments", () => {
     expect(chips).toHaveLength(3);
   });
 
+  it("should render inline previews for image attachments with file paths", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    const preview = screen.getByTestId("attachment-image-preview");
+    expect(preview).toHaveAttribute("src", "/path/to/screenshot.png");
+  });
+
   it("should truncate long file names", () => {
     const longName = [
       {

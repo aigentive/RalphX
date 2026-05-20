@@ -12,6 +12,7 @@ import {
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
 } from "@/api/chat";
+import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 import {
   chatKeys,
   createOptimisticConversationId,
@@ -206,10 +207,12 @@ export function useStartAgentConversation({
         updatedAt: now,
         archivedAt: null,
       };
+      const optimisticAttachments = buildOptimisticMessageAttachments(files);
       const optimisticUserMessage = buildOptimisticUserMessage({
         conversation: initialConversation,
         content,
         runtime: normalizedRuntime,
+        ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
       });
       const optimisticStoreKey = seedConversationState(initialConversation, null, [
         optimisticUserMessage,
@@ -242,6 +245,7 @@ export function useStartAgentConversation({
           conversation: seededConversation,
           content,
           runtime: normalizedRuntime,
+          ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
         });
         seedConversationState(seededConversation, null, [seededOptimisticUserMessage]);
         removeOptimisticConversation(initialConversation.id, optimisticStoreKey);
@@ -287,6 +291,7 @@ export function useStartAgentConversation({
                 conversation: resolvedConversation,
                 content,
                 runtime: normalizedRuntime,
+                ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
               });
         seedConversationState(
           resolvedConversation,
@@ -363,10 +368,12 @@ function buildOptimisticUserMessage({
   conversation,
   content,
   runtime,
+  attachments,
 }: {
   conversation: ChatConversation;
   content: string;
   runtime: AgentRuntimeSelection;
+  attachments?: MessageAttachment[];
 }): ChatMessageResponse {
   return {
     id: `optimistic:${conversation.id}:initial-user`,
@@ -380,6 +387,7 @@ function buildOptimisticUserMessage({
     conversationId: conversation.id,
     toolCalls: null,
     contentBlocks: null,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
     sender: null,
     attributionSource: null,
     providerHarness: runtime.provider,
@@ -397,4 +405,17 @@ function buildOptimisticUserMessage({
     estimatedUsd: null,
     createdAt: new Date().toISOString(),
   };
+}
+
+function buildOptimisticMessageAttachments(files: File[]): MessageAttachment[] | undefined {
+  if (files.length === 0) {
+    return undefined;
+  }
+
+  return files.map((file, index) => ({
+    id: `optimistic:${index}:${file.name}`,
+    fileName: file.name || "attachment",
+    fileSize: file.size,
+    ...(file.type ? { mimeType: file.type } : {}),
+  }));
 }

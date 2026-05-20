@@ -6,6 +6,8 @@
  */
 
 import { FileText, Image, FileCode, File } from "lucide-react";
+import { useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 
 // ============================================================================
 // Types
@@ -63,6 +65,14 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function getImagePreviewSrc(attachment: MessageAttachment): string | null {
+  if (!attachment.mimeType?.startsWith("image/") || !attachment.filePath) {
+    return null;
+  }
+
+  return convertFileSrc(attachment.filePath);
+}
+
 // ============================================================================
 // Component
 // ============================================================================
@@ -96,15 +106,7 @@ export function MessageAttachments({
           }}
           title={attachment.fileName}
         >
-          {/* File icon */}
-          <div
-            className="shrink-0"
-            style={{
-              color: "var(--text-secondary)",
-            }}
-          >
-            {getFileIcon(attachment.mimeType, attachment.fileName)}
-          </div>
+          <AttachmentVisual attachment={attachment} />
 
           {/* File name */}
           <span
@@ -131,6 +133,43 @@ export function MessageAttachments({
           </span>
         </button>
       ))}
+    </div>
+  );
+}
+
+function AttachmentVisual({ attachment }: { attachment: MessageAttachment }) {
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const previewSrc = previewFailed ? null : getImagePreviewSrc(attachment);
+
+  if (previewSrc) {
+    return (
+      <span
+        className="shrink-0 h-8 w-8 overflow-hidden rounded"
+        style={{
+          background: "var(--bg-surface)",
+          border: "1px solid var(--bg-hover)",
+        }}
+      >
+        <img
+          data-testid="attachment-image-preview"
+          src={previewSrc}
+          alt=""
+          loading="lazy"
+          className="h-full w-full object-cover"
+          onError={() => setPreviewFailed(true)}
+        />
+      </span>
+    );
+  }
+
+  return (
+    <div
+      className="shrink-0"
+      style={{
+        color: "var(--text-secondary)",
+      }}
+    >
+      {getFileIcon(attachment.mimeType, attachment.fileName)}
     </div>
   );
 }

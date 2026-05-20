@@ -1236,7 +1236,7 @@ describe("AgentsView start conversation", () => {
     });
     vi.mocked(invoke).mockResolvedValue({ id: "attachment-1" });
 
-    renderAgentsView();
+    const { queryClient } = renderAgentsView();
 
     const fileInput = screen.getByTestId("attachment-file-input");
     const file = new File(["draft"], "notes.md", { type: "text/markdown" });
@@ -1273,6 +1273,27 @@ describe("AgentsView start conversation", () => {
           mode: "edit",
         })
       )
+    );
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData(["chat", "conversations", "conversation-seeded"])
+      ).toEqual({
+        conversation: expect.objectContaining({ id: "conversation-seeded" }),
+        messages: [
+          expect.objectContaining({
+            conversationId: "conversation-seeded",
+            role: "user",
+            content: "review this note",
+            attachments: [
+              expect.objectContaining({
+                fileName: "notes.md",
+                fileSize: 5,
+                mimeType: "text/markdown",
+              }),
+            ],
+          }),
+        ],
+      })
     );
   });
 

@@ -10,6 +10,8 @@ use crate::domain::entities::{
 use crate::domain::repositories::ChatAttachmentRepository;
 use crate::error::{AppError, AppResult};
 
+use super::chat_attachment_storage::build_chat_attachment_file_path;
+
 /// Service for managing chat file attachments
 pub struct ChatAttachmentService<R: ChatAttachmentRepository> {
     /// Repository for ChatAttachment records
@@ -29,7 +31,8 @@ impl<R: ChatAttachmentRepository> ChatAttachmentService<R> {
 
     /// Upload a file attachment and create a database record
     ///
-    /// Storage path: {base}/chat_attachments/{conversation_id}/{attachment_id}/{file_name}
+    /// Storage path uses app-owned storage plus hash-derived conversation and attachment
+    /// components. The original file name remains metadata, not a raw path component.
     ///
     /// Returns the created attachment with generated ID
     pub async fn upload(
@@ -44,7 +47,13 @@ impl<R: ChatAttachmentRepository> ChatAttachmentService<R> {
 
         // Generate attachment ID and determine storage path
         let attachment_id = ChatAttachmentId::new();
-        let file_path = self.build_file_path(conversation_id, &attachment_id, &file_name);
+        let file_path = build_chat_attachment_file_path(
+            &self.storage_base_path,
+            conversation_id,
+            &attachment_id,
+            &file_name,
+        )
+        .map_err(AppError::Validation)?;
 
         // Create parent directories
         if let Some(parent) = file_path.parent() {
@@ -128,22 +137,6 @@ impl<R: ChatAttachmentRepository> ChatAttachmentService<R> {
 
         // Delete database record
         self.repository.delete(id).await
-    }
-
-    /// Build the file storage path for an attachment
-    ///
-    /// Pattern: {base}/chat_attachments/{conversation_id}/{attachment_id}/{file_name}
-    fn build_file_path(
-        &self,
-        conversation_id: &ChatConversationId,
-        attachment_id: &ChatAttachmentId,
-        file_name: &str,
-    ) -> PathBuf {
-        self.storage_base_path
-            .join("chat_attachments")
-            .join(conversation_id.as_str())
-            .join(attachment_id.as_str())
-            .join(file_name)
     }
 }
 
