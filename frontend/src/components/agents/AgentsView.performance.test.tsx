@@ -93,6 +93,42 @@ describe("AgentsView performance", () => {
     );
   });
 
+  it("opens the first-paint terminal shell from keyboard activation", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" })
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const host = await screen.findByTestId("agent-terminal-host-chat");
+    const shellHeader = await screen.findByTestId("agent-terminal-loading-shell-header");
+    expect(host).toHaveStyle({
+      height: "36px",
+    });
+
+    fireEvent.keyDown(shellHeader, { key: "Escape" });
+    expect(host).toHaveStyle({
+      height: "36px",
+    });
+
+    fireEvent.keyDown(shellHeader, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(host).toHaveStyle({
+        height: "260px",
+      })
+    );
+    expect(screen.getByTestId("agent-terminal-drawer")).toHaveAttribute(
+      "data-expanded",
+      "true"
+    );
+  });
+
   it("paints the artifact panel frame before hydrating the heavy pane", async () => {
     mockAgentViewData(
       conversation({

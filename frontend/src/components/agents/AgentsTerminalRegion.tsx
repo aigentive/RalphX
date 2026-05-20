@@ -585,13 +585,6 @@ export function AgentsTerminalRegion({
       clearDragState();
     }, TERMINAL_DRAG_END_CLEANUP_DELAY_MS);
   }, [cancelDragEndCleanup, clearDragState, dragOverDock, setTerminalPlacement]);
-  const handleTerminalShellToggle = useCallback(() => {
-    if (!conversationId) {
-      return;
-    }
-    setTerminalOpen(conversationId, !isExpanded);
-  }, [conversationId, isExpanded, setTerminalOpen]);
-
   useEffect(
     () => () => {
       cancelDragEndCleanup();
@@ -604,6 +597,9 @@ export function AgentsTerminalRegion({
   }
 
   const dockElement = dockTarget === "panel" ? panelDockElement : chatDockElement;
+  const handleTerminalShellToggle = () => {
+    setTerminalOpen(conversationId, !isExpanded);
+  };
 
   if (!contentMounted) {
     return (

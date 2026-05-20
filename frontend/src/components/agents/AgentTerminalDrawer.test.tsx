@@ -488,6 +488,62 @@ describe("AgentTerminalDrawer", () => {
     expect(isRalphxTerminalDockDragActive()).toBe(false);
   });
 
+  it("starts terminal dock drag after the header pointer moves past the click threshold", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const onCollapse = vi.fn();
+    const onPlacementDragStart = vi.fn();
+    const onPlacementDragEnd = vi.fn();
+    const dataTransfer = {
+      effectAllowed: "none",
+      setData: vi.fn(),
+    };
+
+    render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={onCollapse}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={onPlacementDragStart}
+          onPlacementDragEnd={onPlacementDragEnd}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const header = screen.getByTestId("agent-terminal-header");
+    fireEvent.pointerMove(header, { clientX: 28, clientY: 12 });
+    fireEvent.pointerDown(header, { clientX: 24, clientY: 12 });
+    fireEvent.pointerMove(header, { clientX: 28, clientY: 12 });
+    fireEvent.dragStart(header, { clientX: 28, clientY: 12, dataTransfer });
+
+    expect(isRalphxTerminalDockDragActive()).toBe(true);
+    expect(onPlacementDragStart).toHaveBeenCalledTimes(1);
+    expect(dataTransfer.effectAllowed).toBe("move");
+
+    fireEvent.dragEnd(header);
+    fireEvent.click(header);
+
+    expect(isRalphxTerminalDockDragActive()).toBe(false);
+    expect(onPlacementDragEnd).toHaveBeenCalledTimes(1);
+    expect(onCollapse).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+  });
+
   it("hides terminal session controls while collapsed", async () => {
     const dockElement = document.createElement("div");
     document.body.appendChild(dockElement);
@@ -621,6 +677,57 @@ describe("AgentTerminalDrawer", () => {
       expect.stringContaining("Failed to unlisten"),
       cleanupError,
     );
+  });
+
+  it("releases the terminal event listener when it resolves after unmount", async () => {
+    const dockElement = document.createElement("div");
+    document.body.appendChild(dockElement);
+    const lateUnlisten = vi.fn();
+    let resolveListen: (dispose: () => void) => void = () => undefined;
+    listenMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveListen = resolve;
+      }),
+    );
+
+    const { unmount } = render(
+      <TooltipProvider>
+        <AgentTerminalDrawer
+          conversationId="conversation-1"
+          workspace={workspace()}
+          height={220}
+          expanded={true}
+          onHeightChange={vi.fn()}
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+          placement="auto"
+          onPlacementChange={vi.fn()}
+          onPlacementDragStart={vi.fn()}
+          onPlacementDragEnd={vi.fn()}
+          dockElement={dockElement}
+        />
+      </TooltipProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      rafCallbacks[0]?.(0);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.dynamicImportSettled();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(listenMock).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    await act(async () => {
+      resolveListen(lateUnlisten);
+      await Promise.resolve();
+    });
+
+    expect(lateUnlisten).toHaveBeenCalledTimes(1);
   });
 
   it("requests visual collapse before waiting for the backend terminal close", async () => {
