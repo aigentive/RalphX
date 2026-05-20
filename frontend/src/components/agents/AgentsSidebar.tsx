@@ -88,6 +88,7 @@ import {
 import {
   useAgentSidebarProjectGroup,
   useAgentSidebarPublicationGroup,
+  useProjectGroupLatestOrder,
 } from "./useAgentSidebarPublicationGroup";
 import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
@@ -271,9 +272,28 @@ export function AgentsSidebar({
     selectedProjectFilterIds,
   ]);
   const { totalArchivedCount } = useArchivedConversationCounts(archivedCountProjectIds);
+  const { data: latestProjectOrder } = useProjectGroupLatestOrder({
+    projectIds: selectedProjectFilterIds,
+    archivedOnly: showArchived,
+    publicationStates: sidebarPublicationStateFilters,
+    enabled: sidebarGroupBy === "project" && projectSort === "latest",
+  });
   const orderedProjects = useMemo(() => {
     if (projectSort === "latest") {
-      return projects.filter((project) => selectedProjectFilterSet.has(project.id));
+      const filteredProjects = projects.filter((project) =>
+        selectedProjectFilterSet.has(project.id)
+      );
+      if (latestProjectOrder && latestProjectOrder.length > 0) {
+        const orderIndex = new Map(
+          latestProjectOrder.map((id, idx) => [id, idx])
+        );
+        return [...filteredProjects].sort((a, b) => {
+          const aIdx = orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+          const bIdx = orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+          return aIdx - bIdx;
+        });
+      }
+      return filteredProjects;
     }
 
     const sortedProjects = [...projects].sort((a, b) =>
@@ -281,7 +301,7 @@ export function AgentsSidebar({
     );
     const nextProjects = projectSort === "za" ? sortedProjects.reverse() : sortedProjects;
     return nextProjects.filter((project) => selectedProjectFilterSet.has(project.id));
-  }, [projectSort, projects, selectedProjectFilterSet]);
+  }, [projectSort, projects, selectedProjectFilterSet, latestProjectOrder]);
   const selectedPublicationStates = sidebarPublicationStateFilters;
 
   return (

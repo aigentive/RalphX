@@ -335,6 +335,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => ({
     useAgentSidebarProjectGroupMock(args),
   useAgentSidebarPublicationGroup: (args: Record<string, unknown>) =>
     useAgentSidebarPublicationGroupMock(args),
+  useProjectGroupLatestOrder: () => ({ data: undefined }),
 }));
 
 vi.mock("./AgentTerminalDrawer", async () => {

@@ -280,7 +280,9 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     let offsets = input.offsets.unwrap_or_default();
     let groups = match group_by {
         SidebarGroupBy::Publication => publication_groups(rows, selected_states, limit, &offsets),
-        SidebarGroupBy::Project => project_groups(rows, project_labels, limit, &offsets),
+        SidebarGroupBy::Project => {
+            project_groups(rows, project_labels, row_sort, limit, &offsets)
+        }
     };
 
     Ok(AgentSidebarConversationGroupsResponse { groups })
@@ -454,6 +456,7 @@ fn publication_groups(
 fn project_groups(
     rows: Vec<SidebarConversationRow>,
     project_labels: Vec<(String, String)>,
+    sort: SidebarRowSort,
     limit: u32,
     offsets: &HashMap<String, u32>,
 ) -> Vec<AgentSidebarConversationGroupResponse> {
@@ -468,7 +471,31 @@ fn project_groups(
         }
     }
 
-    project_labels
+    let mut ordered_labels = project_labels;
+    if sort == SidebarRowSort::Latest {
+        let latest_by_project: HashMap<&str, DateTime<Utc>> = rows_by_project
+            .iter()
+            .filter_map(|(pid, group_rows)| {
+                group_rows
+                    .iter()
+                    .map(|row| row.sort_at)
+                    .max()
+                    .map(|ts| (pid.as_str(), ts))
+            })
+            .collect();
+        ordered_labels.sort_by(|(a_id, _), (b_id, _)| {
+            let a_ts = latest_by_project.get(a_id.as_str());
+            let b_ts = latest_by_project.get(b_id.as_str());
+            match (b_ts, a_ts) {
+                (Some(b), Some(a)) => b.cmp(a),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+    }
+
+    ordered_labels
         .into_iter()
         .map(|(project_id, label)| {
             let rows = rows_by_project.remove(&project_id).unwrap_or_default();
@@ -1113,7 +1140,9 @@ mod tests {
         )
         .await;
         create_workspace(&state, &pinned, &alpha.id, Some(42), Some("open"), None).await;
-        let beta_conversation = create_conversation(&state, &beta.id, "Beta work", now).await;
+        let beta_conversation =
+            create_conversation(&state, &beta.id, "Beta work", now - chrono::Duration::seconds(1))
+                .await;
         create_workspace(
             &state,
             &beta_conversation,
