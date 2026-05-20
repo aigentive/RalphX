@@ -72,6 +72,9 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   terminalDrawerModuleLoadedMock: vi.fn(),
   terminalDrawerMountMock: vi.fn(),
   terminalDrawerUnmountMock: vi.fn(),
+  webviewDragDropHandlers: [] as Array<(event: { payload: unknown }) => unknown>,
+  webviewOnDragDropEventMock: vi.fn(),
+  webviewDragDropUnlistenMock: vi.fn(),
 }));
 
 const eventSubscriptions = new Map<string, ((payload: unknown) => void)[]>();
@@ -170,6 +173,9 @@ const {
   terminalDrawerModuleLoadedMock,
   terminalDrawerMountMock,
   terminalDrawerUnmountMock,
+  webviewDragDropHandlers,
+  webviewOnDragDropEventMock,
+  webviewDragDropUnlistenMock,
 } = agentsViewTestMocks;
 
 export function getAgentsViewTestMocks() {
@@ -204,6 +210,28 @@ export function fireAgentViewEvent<T>(event: string, payload: T) {
     handler(payload);
   }
 }
+
+export async function fireAgentViewNativeDragDropEvent(payload: unknown) {
+  for (const handler of [...webviewDragDropHandlers]) {
+    await handler({ payload });
+  }
+}
+
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: (handler: (event: { payload: unknown }) => unknown) => {
+      webviewOnDragDropEventMock(handler);
+      webviewDragDropHandlers.push(handler);
+      return Promise.resolve(() => {
+        webviewDragDropUnlistenMock(handler);
+        const index = webviewDragDropHandlers.indexOf(handler);
+        if (index >= 0) {
+          webviewDragDropHandlers.splice(index, 1);
+        }
+      });
+    },
+  }),
+}));
 
 vi.mock("@/hooks/useProjects", () => ({
   useProjects: () => useProjectsMock(),
@@ -319,6 +347,8 @@ vi.mock("./AgentTerminalDrawer", async () => {
       placement,
       expanded,
       onPlacementChange,
+      onPlacementDragStart,
+      onPlacementDragEnd,
       onExpand,
       onCollapse,
       dockElement,
@@ -326,6 +356,8 @@ vi.mock("./AgentTerminalDrawer", async () => {
       placement: string;
       expanded: boolean;
       onPlacementChange: (placement: "auto" | "chat" | "panel") => void;
+      onPlacementDragStart: () => void;
+      onPlacementDragEnd: () => void;
       onExpand: () => void;
       onCollapse: () => void;
       dockElement: HTMLElement | null;
@@ -343,17 +375,36 @@ vi.mock("./AgentTerminalDrawer", async () => {
           data-placement={placement}
           data-expanded={String(expanded)}
         >
+          <div
+            data-testid="agent-terminal-drag-handle"
+            draggable
+            onDragStart={(event) => {
+              const dataTransfer = (event as unknown as {
+                dataTransfer?: DataTransfer;
+              }).dataTransfer;
+              dataTransfer?.setData("text/plain", "conversation-1");
+              onPlacementDragStart();
+            }}
+            onDragEnd={onPlacementDragEnd}
+          >
+            drag
+          </div>
           <button
             type="button"
             data-testid="agent-terminal-placement"
-            onClick={() =>
-              onPlacementChange(
-                placement === "auto" ? "panel" : placement === "panel" ? "chat" : "auto"
-              )
-            }
           >
             {placement}
           </button>
+          {(["auto", "chat", "panel"] as const).map((nextPlacement) => (
+            <button
+              key={nextPlacement}
+              type="button"
+              data-testid={`agent-terminal-placement-${nextPlacement}`}
+              onClick={() => onPlacementChange(nextPlacement)}
+            >
+              {nextPlacement}
+            </button>
+          ))}
           <button
             type="button"
             data-testid="agent-terminal-expand"
@@ -1001,6 +1052,9 @@ export function setupAgentsViewTest() {
   terminalDrawerModuleLoadedMock.mockReset();
   terminalDrawerMountMock.mockReset();
   terminalDrawerUnmountMock.mockReset();
+  webviewDragDropHandlers.splice(0);
+  webviewOnDragDropEventMock.mockReset();
+  webviewDragDropUnlistenMock.mockReset();
 
   sendAgentMessageMock.mockResolvedValue({
     conversationId: "conversation-2",
@@ -1212,5 +1266,7 @@ export function setupAgentsViewTest() {
     heightByConversationId: {},
     activeTerminalByConversationId: {},
     placement: "auto",
+    draggingConversationId: null,
+    dragOverDock: null,
   });
 }
