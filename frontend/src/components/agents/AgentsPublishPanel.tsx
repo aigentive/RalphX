@@ -425,12 +425,31 @@ export function AgentPublishPanel({
     freshness?.baseRef ??
     workspace.baseRef ??
     base;
+  const pendingPrSupervision = prSupervisionMutation.variables;
+  const isPrSupervisionSaving = prSupervisionMutation.isPending;
+  const prAutofixEnabled =
+    pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
+  const prAutoMergeDesired =
+    pendingPrSupervision?.autoMergeDesired ?? workspace.prAutoMergeDesired ?? false;
+  const prAutoMergeCurrent = workspace.prAutoMergeCurrent ?? null;
+  const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
+  const shouldShowAutoMergeProgress =
+    prAutoMergeDesired &&
+    workspace.publicationPushStatus === "pushed" &&
+    hasPublishedPr &&
+    prAutoMergeCurrent !== true &&
+    !terminalPublicationStatus &&
+    prSupervisionStatus !== "fixing" &&
+    prSupervisionStatus !== "blocked";
   const shouldShowPublishPipeline =
-    effectivePublishing || workspace.publicationPushStatus === "description_failed";
+    effectivePublishing ||
+    workspace.publicationPushStatus === "description_failed" ||
+    shouldShowAutoMergeProgress;
   const publishDisabled =
     !onPublishWorkspace ||
     isPipelineOwnedWorkspace ||
     effectivePublishing ||
+    isPrSupervisionSaving ||
     baseBlocked ||
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
@@ -448,17 +467,11 @@ export function AgentPublishPanel({
     hasPublishedPr &&
     !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
-  const pendingPrSupervision = prSupervisionMutation.variables;
-  const prAutofixEnabled =
-    pendingPrSupervision?.autoFixEnabled ?? workspace.prAutofixEnabled ?? false;
-  const prAutoMergeDesired =
-    pendingPrSupervision?.autoMergeDesired ?? workspace.prAutoMergeDesired ?? false;
   const canConfigurePrSupervision =
     workspace.mode === "edit" && workspace.status !== "missing" && !terminalPublicationStatus;
-  const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
   const prSupervisionStatusLabel = (() => {
     if (terminalPublicationStatus) return null;
-    if (prSupervisionMutation.isPending) return "Saving PR supervision";
+    if (isPrSupervisionSaving) return "Saving PR supervision";
     if (prSupervisionStatus === "fixing") return "Fixing PR";
     if (prSupervisionStatus === "waiting_for_checks") return "Waiting for checks";
     if (prSupervisionStatus === "blocked") return "PR supervision blocked";
@@ -529,7 +542,7 @@ export function AgentPublishPanel({
     });
   };
   const confirmPublishWorkspace = () => {
-    if (!onPublishWorkspace) {
+    if (!onPublishWorkspace || publishDisabled) {
       return;
     }
     setPublishDialogPhase("confirm");
@@ -910,6 +923,9 @@ export function AgentPublishPanel({
           )}
           {shouldShowPublishPipeline && (
             <PublishPipelineSteps
+              autoMergeCurrent={prAutoMergeCurrent}
+              autoMergeDesired={prAutoMergeDesired}
+              prSupervisionStatus={prSupervisionStatus}
               status={pipelineStatus}
               isPublishing={effectivePublishing}
             />
@@ -1097,10 +1113,13 @@ export function AgentPublishPanel({
         </DialogContent>
       </Dialog>
       <PublishWorkspaceDialog
+        autoMergeCurrent={prAutoMergeCurrent}
+        autoMergeDesired={prAutoMergeDesired}
         open={publishDialogOpen}
         phase={publishDialogPhase}
         branch={branch}
         base={base}
+        prSupervisionStatus={prSupervisionStatus}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}
         confirmDisabled={publishDisabled}

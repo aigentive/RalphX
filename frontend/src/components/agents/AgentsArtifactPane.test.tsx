@@ -1182,6 +1182,40 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(publish).toHaveBeenCalledWith("conversation-1"));
   });
 
+  it("blocks publish while PR supervision preferences are saving", async () => {
+    const user = userEvent.setup();
+    const supervisionDeferred = deferred<AgentConversationWorkspace>();
+    setWorkspacePrSupervisionMock.mockReturnValueOnce(supervisionDeferred.promise);
+    const publish = vi.fn().mockResolvedValue(undefined);
+
+    renderPane("publish", workspace({ mode: "edit" }), publish);
+
+    await user.click(
+      screen.getByRole("switch", { name: "Enable GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-confirm")).toBeDisabled(),
+    );
+    expect(screen.getByText("Saving PR supervision")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(publish).not.toHaveBeenCalled();
+
+    await act(async () => {
+      supervisionDeferred.resolve(
+        workspace({
+          mode: "edit",
+          prAutoMergeDesired: true,
+          prAutoMergeMethod: "squash",
+          prSupervisionStatus: "monitoring",
+        }),
+      );
+    });
+  });
+
   it("turns the publish confirmation into dismissible progress after confirming", async () => {
     const publishDeferred = deferred<void>();
     const publish = vi.fn(() => publishDeferred.promise);
@@ -2146,6 +2180,27 @@ describe("AgentsArtifactPane", () => {
 
     expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
     expect(screen.getByText(/retry Commit & Publish/i)).toBeInTheDocument();
+  });
+
+  it("shows auto-merge request progress after the pull request is published", () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        prAutoMergeDesired: true,
+        prAutoMergeCurrent: false,
+        prSupervisionStatus: "waiting",
+      }),
+    );
+
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-step-auto_merge")).toHaveTextContent(
+      "Request auto-merge",
+    );
+    expect(screen.queryByText(/latest publish attempt failed/i)).not.toBeInTheDocument();
   });
 
   it("shows synced GitHub PR annotation count for published workspaces", async () => {
