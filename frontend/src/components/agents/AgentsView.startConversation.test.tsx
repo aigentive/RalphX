@@ -539,7 +539,7 @@ describe("AgentsView start conversation", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("agent-composer-runtime-pill")).toHaveTextContent(
-        "Claude",
+        "sonnet",
       )
     );
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
@@ -580,14 +580,10 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await user.click(screen.getByTestId("agent-composer-runtime-pill"));
-    expect(screen.getByTestId("agents-start-provider-claude")).toBeDisabled();
-    expect(screen.getByTestId("agents-start-provider-claude")).toHaveTextContent(
-      "Enable in Settings.",
-    );
-    await user.click(screen.getByTestId("agents-start-provider-settings"));
+    await user.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
 
-    expect(useUiStore.getState().activeModal).toBe("settings");
-    expect(useUiStore.getState().modalContext).toEqual({ section: "providers" });
+    expect(screen.getByText("Claude is not enabled")).toBeInTheDocument();
+    expect(screen.getByText("Enable this provider in settings to use its models.")).toBeInTheDocument();
   });
 
   it("blocks new agent runs when no provider is enabled and validated", async () => {
@@ -630,7 +626,7 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(screen.getByTestId("agents-start-provider-claude"));
+    await userEvent.click(screen.getByTestId("agent-composer-runtime-provider-claude"));
     await userEvent.click(screen.getByTestId("agents-start-model-opus"));
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
     await userEvent.click(screen.getByTestId("agents-start-effort-max"));
@@ -659,32 +655,14 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("uses a typed custom model from the existing runtime selector popover", async () => {
+  it("shows manage models link in the runtime selector popover", async () => {
     mockAgentViewData();
 
     renderAgentsView();
 
     await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    const customModelInput = screen.getByTestId("agents-start-model-custom-input");
-    await userEvent.clear(customModelInput);
-    await userEvent.type(customModelInput, "gpt-5.6{Enter}");
-    await userEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
-    await userEvent.click(screen.getByTestId("agents-start-effort-high"));
 
-    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "use a future model" },
-    });
-    fireEvent.click(screen.getByTestId("agents-start-submit"));
-
-    await waitFor(() =>
-      expect(startAgentConversationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerHarness: "codex",
-          modelId: "gpt-5.6",
-          logicalEffort: "high",
-        })
-      )
-    );
+    expect(screen.getByText("Manage models in Settings")).toBeInTheDocument();
   });
 
   it("paints the conversation shell after seeding before the heavy agent start resolves", async () => {

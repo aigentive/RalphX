@@ -19,7 +19,7 @@ function mockUseAgentModels() {
         provider: "codex",
         modelId: "gpt-5.5",
         label: "gpt-5.5",
-        menuLabel: "gpt-5.5 (Current)",
+        menuLabel: "gpt-5.5",
         description: "Frontier model.",
         supportedEfforts: ["low", "medium", "high", "xhigh"],
         defaultEffort: "xhigh",
@@ -72,7 +72,7 @@ describe("AgentModelsSection", () => {
   it("shows built-in and custom models", () => {
     render(<AgentModelsSection />);
 
-    expect(screen.getByText("gpt-5.5 (Current)")).toBeInTheDocument();
+    expect(screen.getAllByText("gpt-5.5").length).toBeGreaterThan(0);
     expect(screen.getByText("Built-in")).toBeInTheDocument();
     expect(screen.getAllByText("gpt-5.6").length).toBeGreaterThan(0);
     expect(screen.getByText("Custom")).toBeInTheDocument();
