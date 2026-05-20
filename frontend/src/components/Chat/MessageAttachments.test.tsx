@@ -136,6 +136,26 @@ describe("MessageAttachments", () => {
     expect(screen.getAllByText("screenshot.png")).toHaveLength(2);
   });
 
+  it("should fall back to a chip when image preview loading fails", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    fireEvent.error(screen.getByTestId("attachment-image-preview"));
+
+    expect(screen.queryByTestId("attachment-image-grid")).not.toBeInTheDocument();
+    expect(screen.getByTestId("attachment-chip")).toBeInTheDocument();
+    expect(screen.getByText("screenshot.png")).toBeInTheDocument();
+  });
+
+  it("should close the large preview when the selected image fails to load", () => {
+    render(<MessageAttachments attachments={[mockAttachments[1]]} />);
+
+    fireEvent.click(screen.getByTestId("attachment-image-tile"));
+    fireEvent.error(screen.getByTestId("attachment-image-large"));
+
+    expect(screen.queryByTestId("attachment-image-dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("attachment-chip")).toBeInTheDocument();
+  });
+
   it("should truncate long file names", () => {
     const longName = [
       {
@@ -216,6 +236,12 @@ describe("MessageAttachments", () => {
     render(<MessageAttachments attachments={[mockAttachments[0]]} />);
 
     const chip = screen.getByTestId("attachment-chip");
+    expect(chip).toHaveStyle({ background: "var(--bg-elevated)" });
+
+    fireEvent.mouseEnter(chip);
+    expect(chip).toHaveStyle({ background: "var(--bg-hover)" });
+
+    fireEvent.mouseLeave(chip);
     expect(chip).toHaveStyle({ background: "var(--bg-elevated)" });
   });
 

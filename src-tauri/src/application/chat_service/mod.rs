@@ -4296,7 +4296,7 @@ mod agent_workspace_send_tests {
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
-        ChatAttachment, MessageRole, Project, ProjectId, TaskId,
+        ChatAttachment, ChatAttachmentId, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -4587,6 +4587,67 @@ mod agent_workspace_send_tests {
         assert_eq!(
             unselected.message_id, None,
             "unselected pending attachments must not be linked to this user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_turn_attachments_selects_pending_or_reports_missing_ids() {
+        let state = AppState::new_test();
+        let conversation = ChatConversation::new_project(ProjectId::new());
+        let conversation_id = conversation.id;
+        let selected_attachment = state
+            .chat_attachment_repo
+            .create(ChatAttachment::new(
+                conversation_id,
+                "selected.txt",
+                "/tmp/selected.txt",
+                8,
+                Some("text/plain".to_string()),
+            ))
+            .await
+            .expect("selected attachment should persist");
+        let pending_attachment = state
+            .chat_attachment_repo
+            .create(ChatAttachment::new(
+                conversation_id,
+                "pending.txt",
+                "/tmp/pending.txt",
+                7,
+                Some("text/plain".to_string()),
+            ))
+            .await
+            .expect("pending attachment should persist");
+
+        let all_pending =
+            super::load_turn_attachments_from_repo(&state.chat_attachment_repo, &conversation_id, &[])
+                .await
+                .expect("empty selection should load all pending attachments");
+        assert_eq!(all_pending.len(), 2);
+
+        let selected = super::load_turn_attachments_from_repo(
+            &state.chat_attachment_repo,
+            &conversation_id,
+            &[selected_attachment.id],
+        )
+        .await
+        .expect("selected attachment should load");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, selected_attachment.id);
+
+        let missing_id = ChatAttachmentId::new();
+        let error = super::load_turn_attachments_from_repo(
+            &state.chat_attachment_repo,
+            &conversation_id,
+            &[selected_attachment.id, missing_id],
+        )
+        .await
+        .expect_err("missing selected attachment should be rejected");
+        assert!(error.contains(&missing_id.as_str()));
+        assert!(
+            all_pending
+                .iter()
+                .any(|attachment| attachment.id == pending_attachment.id),
+            "unselected pending attachment should remain available for later turns"
         );
     }
 

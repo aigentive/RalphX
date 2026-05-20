@@ -3972,6 +3972,170 @@ exit 0
     }
 
     #[tokio::test]
+    async fn project_launch_plans_fall_back_to_pending_attachment_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-pending-attachment-context".to_string());
+        let attachment_path = temp.path().join("pending.txt");
+        write_test_file(&attachment_path, "pending file body");
+        let harness_clis = [
+            (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
+            (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
+        ];
+
+        for (harness, cli_path) in harness_clis {
+            let conversation = ChatConversation::new_project(project_id.clone());
+            let attachment_repo = Arc::new(MemoryChatAttachmentRepository::new());
+            attachment_repo
+                .create(ChatAttachment::new(
+                    conversation.id,
+                    "pending.txt",
+                    attachment_path.to_string_lossy().to_string(),
+                    17,
+                    Some("text/plain".to_string()),
+                ))
+                .await
+                .expect("pending attachment should persist");
+            let resolved_spawn_settings =
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_names::AGENT_GENERAL_WORKER,
+                    Some(project_id.as_str()),
+                    ChatContextType::Project,
+                    None,
+                    Some(harness),
+                    None,
+                    None,
+                )
+                .await;
+
+            let launch_plan = build_launch_plan_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                "read the pending file",
+                Some(agent_names::AGENT_GENERAL_WORKER),
+                ChatContextType::Project,
+                project_id.as_str(),
+                temp.path(),
+                None,
+                Some(project_id.as_str()),
+                false,
+                attachment_repo,
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                false,
+                None,
+                &resolved_spawn_settings,
+                None,
+            )
+            .await
+            .expect("launch plan should build with pending attachment context");
+
+            let spawnable = launch_spawnable(&launch_plan);
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<filename>pending.txt</filename>")
+                    && prompt.contains("pending file body"),
+                "{} launch prompt should include pending attachment context",
+                harness
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_commands_append_captured_attachment_context_for_claude_and_codex() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let claude_session_id = "claude-resume-attachment";
+        let codex_session_id = "codex-resume-attachment";
+        write_test_file(
+            &provider_home
+                .join(".claude")
+                .join("projects")
+                .join("project")
+                .join(format!("{claude_session_id}.jsonl")),
+            "{}\n",
+        );
+        write_test_file(
+            &provider_home.join(".codex").join("session_index.jsonl"),
+            &format!(r#"{{"id":"{codex_session_id}"}}"#),
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("project-resume-attachment-context".to_string());
+        let attachment_context =
+            "\n\n<attachments>\n<attachment>\n<filename>resume.txt</filename>\n<content>\nresume file body\n</content>\n</attachment>\n</attachments>";
+        let harness_clis = [
+            (
+                AgentHarnessKind::Claude,
+                make_fake_claude_cli(&temp),
+                claude_session_id,
+            ),
+            (
+                AgentHarnessKind::Codex,
+                make_fake_codex_cli(&temp),
+                codex_session_id,
+            ),
+        ];
+
+        for (harness, cli_path, session_id) in harness_clis {
+            let command = build_resume_command_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                ChatContextType::Project,
+                project_id.as_str(),
+                "continue with the selected file",
+                temp.path(),
+                session_id,
+                Some(project_id.as_str()),
+                Some("conversation-id".to_string()),
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                None,
+                None,
+                None,
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                None,
+                None,
+                false,
+                Some(attachment_context),
+            )
+            .await
+            .expect("resume command should build with captured attachment context");
+
+            let spawnable = command.spawnable;
+            let prompt = spawnable
+                .get_stdin_prompt_for_test()
+                .map(str::to_string)
+                .unwrap_or_else(|| spawnable.get_args_for_test().join("\n"));
+            assert!(
+                prompt.contains("<filename>resume.txt</filename>")
+                    && prompt.contains("resume file body"),
+                "{} resume prompt should include captured attachment context",
+                harness
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn claude_project_launch_plan_resumes_stored_provider_session() {
         let temp = tempfile::tempdir().expect("tempdir");
         let provider_home = temp.path().join("provider-home");

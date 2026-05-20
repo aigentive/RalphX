@@ -205,18 +205,14 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             break;
         }
 
-        let queue_count = message_queue
-            .get_queued(context_type, queue_context_id)
-            .len();
+        let queue_count = message_queue.get_queued(context_type, queue_context_id).len();
 
         if queue_count == 0 {
             // Queue is empty, wait briefly then check once more for race condition
             if total_processed > 0 {
                 // We processed messages, give a small window for late arrivals
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let final_count = message_queue
-                    .get_queued(context_type, queue_context_id)
-                    .len();
+                let final_count = message_queue.get_queued(context_type, queue_context_id).len();
                 if final_count == 0 {
                     tracing::info!(
                         "[QUEUE] Queue processing complete: {} total messages processed",
@@ -246,7 +242,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
         // Inner loop: process all currently queued messages
         while let Some(queued_msg) = message_queue.pop(context_type, queue_context_id) {
             if queue_processing_blocked_by_pause(context_type, execution_state.as_ref()) {
-                message_queue.queue_front_existing(context_type, queue_context_id, queued_msg);
+                message_queue.queue_front_existing(
+                    context_type,
+                    queue_context_id,
+                    queued_msg,
+                );
                 tracing::info!(
                     %context_type,
                     context_id,
@@ -269,9 +269,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         if task.internal_status != InternalStatus::Executing
                             && task.internal_status != InternalStatus::ReExecuting
                         {
-                            let remaining = message_queue
-                                .get_queued(context_type, queue_context_id)
-                                .len();
+                            let remaining = message_queue.get_queued(context_type, queue_context_id).len();
                             tracing::info!(
                                 "[QUEUE] Task {} has transitioned to {:?}, draining {} queued messages without spawning",
                                 context_id,
@@ -283,19 +281,12 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         }
                     }
                     Ok(None) => {
-                        tracing::warn!(
-                            "[QUEUE] Task {} not found, draining queued messages",
-                            context_id
-                        );
+                        tracing::warn!("[QUEUE] Task {} not found, draining queued messages", context_id);
                         while message_queue.pop(context_type, queue_context_id).is_some() {}
                         break;
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "[QUEUE] Failed to check task state for {}: {}, proceeding cautiously",
-                            context_id,
-                            e
-                        );
+                        tracing::warn!("[QUEUE] Failed to check task state for {}: {}, proceeding cautiously", context_id, e);
                     }
                 }
             }
@@ -540,8 +531,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 false,
                 Some(attachment_context.as_str()),
             )
-            .await
-            {
+            .await {
                 Ok(spawnable) => spawnable,
                 Err(err) => {
                     tracing::warn!(
@@ -578,19 +568,17 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                         &[],
                         &[],
                     )
-                    .with_attribution(
-                        crate::domain::entities::ChatMessageAttribution {
-                            attribution_source: Some("native_runtime".to_string()),
-                            provider_harness: Some(harness),
-                            provider_session_id: Some(session_id.to_string()),
-                            upstream_provider: None,
-                            provider_profile: None,
-                            logical_model: None,
-                            effective_model_id: None,
-                            logical_effort: None,
-                            effective_effort: None,
-                        },
-                    );
+                    .with_attribution(crate::domain::entities::ChatMessageAttribution {
+                        attribution_source: Some("native_runtime".to_string()),
+                        provider_harness: Some(harness),
+                        provider_session_id: Some(session_id.to_string()),
+                        upstream_provider: None,
+                        provider_profile: None,
+                        logical_model: None,
+                        effective_model_id: None,
+                        logical_effort: None,
+                        effective_effort: None,
+                    });
                     let queue_assistant_msg_id = queue_assistant_msg.id.as_str().to_string();
                     let _ = chat_message_repo.create(queue_assistant_msg).await;
 
@@ -765,10 +753,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&metadata).expect("json");
 
         assert_eq!(value["source"], "queue");
-        assert_eq!(
-            value["composer_project_references"][0]["path"],
-            "src/main.rs"
-        );
+        assert_eq!(value["composer_project_references"][0]["path"], "src/main.rs");
         assert_eq!(value["composer_project_references"][0]["kind"], "file");
     }
 
@@ -801,8 +786,7 @@ mod tests {
         assert_eq!(value["hidden_from_ui"], true);
         assert_eq!(value["recovery_context"], true);
         assert_eq!(value["reason"], "verify");
-        assert!(
-            hidden_resume_in_place_marker_metadata(Some(r#"{"resume_in_place":true}"#)).is_none()
-        );
+        assert!(hidden_resume_in_place_marker_metadata(Some(r#"{"resume_in_place":true}"#))
+            .is_none());
     }
 }
