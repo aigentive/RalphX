@@ -4,6 +4,8 @@ import { immer } from "zustand/middleware/immer";
 
 import {
   normalizeAgentRuntimeSelection,
+  type AgentEffort,
+  type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
 import type { BranchBaseOption } from "@/components/shared/branchBaseOptions";
@@ -51,6 +53,7 @@ interface AgentSessionState {
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
   lastBranchBaseSelectionByProjectId: Record<string, string>;
+  lastModelEffortByProvider: Record<AgentProvider, { modelId: string; effort: AgentEffort }>;
 }
 
 interface AgentSessionActions {
@@ -103,7 +106,7 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 4;
+const AGENT_SESSION_STORE_VERSION = 5;
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
   if (!value || typeof value !== "object") {
@@ -159,6 +162,10 @@ export function migrateAgentSessionStore(
     nextState.pinnedConversationIds = {};
   }
 
+  if (version < 5) {
+    nextState.lastModelEffortByProvider = {};
+  }
+
   return nextState;
 }
 
@@ -195,6 +202,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       lastRuntimeByProjectId: {},
       branchBaseCacheByProjectId: {},
       lastBranchBaseSelectionByProjectId: {},
+      lastModelEffortByProvider: {} as Record<AgentProvider, { modelId: string; effort: AgentEffort }>,
 
       setFocusedProject: (projectId) =>
         set((state) => {
@@ -323,12 +331,20 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
           const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
           state.runtimeByConversationId[conversationId] = normalizedRuntime;
           state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          state.lastModelEffortByProvider[normalizedRuntime.provider] = {
+            modelId: normalizedRuntime.modelId,
+            effort: normalizedRuntime.effort,
+          };
         }),
 
       setLastRuntimeForProject: (projectId, runtime) =>
         set((state) => {
-          state.lastRuntimeByProjectId[projectId] =
-            normalizeAgentRuntimeSelection(runtime);
+          const normalizedRuntime = normalizeAgentRuntimeSelection(runtime);
+          state.lastRuntimeByProjectId[projectId] = normalizedRuntime;
+          state.lastModelEffortByProvider[normalizedRuntime.provider] = {
+            modelId: normalizedRuntime.modelId,
+            effort: normalizedRuntime.effort,
+          };
         }),
 
       setBranchBaseCacheForProject: (projectId, options, selectedKey) =>
@@ -370,6 +386,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         lastRuntimeByProjectId: state.lastRuntimeByProjectId,
         branchBaseCacheByProjectId: state.branchBaseCacheByProjectId,
         lastBranchBaseSelectionByProjectId: state.lastBranchBaseSelectionByProjectId,
+        lastModelEffortByProvider: state.lastModelEffortByProvider,
       }),
     }
   )

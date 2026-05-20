@@ -101,7 +101,7 @@ export const CODEX_MODEL_CATALOG = [
   {
     id: "gpt-5.5",
     label: "gpt-5.5 - Frontier model for complex coding, research, and real-world work.",
-    menuLabel: "gpt-5.5 (Current)",
+    menuLabel: "gpt-5.5",
     defaultEffort: "xhigh",
     supportedEfforts: ["low", "medium", "high", "xhigh"],
     description: "Frontier model for complex coding, research, and real-world work.",

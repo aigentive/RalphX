@@ -467,7 +467,7 @@ describe("IdeationHarnessSection", () => {
 
     openSelect("model-ideation_primary");
 
-    expect(screen.getByRole("option", { name: /gpt-5\.5 \(Current\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /gpt-5\.5/ })).toBeInTheDocument();
     expect(
       screen.getByRole("option", { name: /Frontier model for complex coding, research, and real-world work\./ })
     ).toBeInTheDocument();

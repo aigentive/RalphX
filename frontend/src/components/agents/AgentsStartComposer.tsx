@@ -155,6 +155,9 @@ export function AgentsStartComposer({
   const setLastBranchBaseSelectionForProject = useAgentSessionStore(
     (s) => s.setLastBranchBaseSelectionForProject
   );
+  const lastModelEffortByProvider = useAgentSessionStore(
+    (s) => s.lastModelEffortByProvider
+  );
 
   const providerSettingsReady =
     !isLoadingProviderSettings && !isPlaceholderProviderSettings;
@@ -316,10 +319,12 @@ export function AgentsStartComposer({
       if (providerOptions.find((option) => option.id === nextProvider)?.disabled) {
         return;
       }
+      const remembered = lastModelEffortByProvider[nextProvider];
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider: nextProvider,
-          modelId: defaultModelForProvider(nextProvider, modelRegistry),
+          modelId: remembered?.modelId ?? defaultModelForProvider(nextProvider, modelRegistry),
+          effort: remembered?.effort,
         },
         modelRegistry,
         supportedEffortsForProvider(providerOptions, nextProvider)
@@ -329,7 +334,7 @@ export function AgentsStartComposer({
       setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [modelRegistry, persistRuntimePreference, projectId, providerOptions]
+    [lastModelEffortByProvider, modelRegistry, persistRuntimePreference, projectId, providerOptions]
   );
 
   const handleModelChange = useCallback(
@@ -696,6 +701,13 @@ export function AgentsStartComposer({
                   testId="agents-start-provider-settings"
                 />
               ),
+              compactFooterAction: (
+                <AgentProviderSettingsButton
+                  onClick={openProviderSettings}
+                  testId="agents-start-provider-settings-compact"
+                  compact
+                />
+              ),
               testId: "agents-start-provider",
               className: "max-w-[172px] flex-none",
             }}
@@ -704,8 +716,7 @@ export function AgentsStartComposer({
               onValueChange: handleModelChange,
               options: modelOptions,
               disabled: Boolean(providerStatusMessage),
-              allowCustomValue: true,
-              customPlaceholder: "Custom model ID",
+              onOpenModelSettings: () => openModal("settings", { section: "models" }),
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
             }}
