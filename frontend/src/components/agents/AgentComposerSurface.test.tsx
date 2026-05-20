@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -25,6 +26,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
   });
   return render(
     <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
       <AgentComposerSurface
         project={{
           value: "project-1",
@@ -40,7 +42,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
         model={{
           value: "gpt-5.5",
           onValueChange: vi.fn(),
-          options: [{ id: "gpt-5.5", label: "gpt-5.5 (Current)" }],
+          options: [{ id: "gpt-5.5", label: "gpt-5.5" }],
         }}
         effort={{
           value: "xhigh",
@@ -56,6 +58,7 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
         actionTestId="agent-composer-submit"
         {...overrides}
       />
+      </TooltipProvider>
     </QueryClientProvider>
   );
 }

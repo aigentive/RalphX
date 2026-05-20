@@ -473,6 +473,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               testId="agents-conversation-provider-settings"
                             />
                           ),
+                          compactFooterAction: (
+                            <AgentProviderSettingsButton
+                              onClick={openProviderSettings}
+                              testId="agents-conversation-provider-settings-compact"
+                              compact
+                            />
+                          ),
                         },
                         model: {
                           value: selectableWorkspaceRuntime.modelId,
@@ -483,8 +490,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             ),
                           options: workspaceModelOptions,
                           disabled: Boolean(workspaceProviderStatusMessage),
-                          allowCustomValue: true,
-                          customPlaceholder: "Custom model ID",
+                          onOpenModelSettings: () => openModal("settings", { section: "models" }),
                         },
                         effort: {
                           value: selectableWorkspaceRuntime.effort,
