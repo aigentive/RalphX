@@ -11,7 +11,7 @@ use crate::domain::agents::{
 };
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
-    list_canonical_prompt_backed_agents, load_canonical_agent_definition,
+    internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
     AgentPromptHarness, CanonicalClaudeToolSpec,
@@ -1793,9 +1793,31 @@ pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
     get_agent_config(agent_name).and_then(|c| {
         let mut tools: Vec<String> = Vec::new();
         let mcp_server = &claude_runtime_config().mcp_server_name;
+        let lookup_name = super::canonical_short_agent_name(agent_name);
+        let metadata = try_load_canonical_claude_metadata(&canonical_agent_project_root(), lookup_name).ok();
+        let uses_external_transport = metadata
+            .as_ref()
+            .and_then(|metadata| metadata.mcp_transport.as_deref())
+            == Some("external");
+        let internal_server = internal_mcp_server_name(mcp_server);
+        let internal_tools = metadata
+            .as_ref()
+            .map(|metadata| metadata.internal_mcp_tools.as_slice())
+            .unwrap_or(&[]);
 
-        for t in &c.allowed_mcp_tools {
-            tools.push(format!("mcp__{}__{}", mcp_server, t));
+        if uses_external_transport {
+            if let Some(metadata) = metadata.as_ref() {
+                for t in &metadata.mcp_tools {
+                    tools.push(format!("mcp__{}__{}", mcp_server, t));
+                }
+            }
+            for t in internal_tools {
+                tools.push(format!("mcp__{}__{}", internal_server, t));
+            }
+        } else {
+            for t in &c.allowed_mcp_tools {
+                tools.push(format!("mcp__{}__{}", mcp_server, t));
+            }
         }
 
         // CLI tools the agent can use (--tools) are also pre-approved so they don't prompt.
@@ -1806,7 +1828,6 @@ pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
 
         if !c.mcp_only {
             // Memory skills only for dedicated memory agents
-            let lookup_name = super::canonical_short_agent_name(agent_name);
             if lookup_name == "ralphx-memory-maintainer" || lookup_name == "ralphx-memory-capture" {
                 for t in MEMORY_SKILLS {
                     tools.push((*t).to_string());
@@ -1818,10 +1839,18 @@ pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
         let mut seen = HashSet::new();
         tools.retain(|t| seen.insert(t.clone()));
 
-        // Always inject permission_request — required infrastructure tool, not agent-scoped.
-        let permission_tool = format!("mcp__{}__permission_request", mcp_server);
-        if !seen.contains(&permission_tool) {
-            tools.push(permission_tool);
+        // Always inject permission_request when an internal server is present — required
+        // infrastructure tool, not agent-scoped.
+        if !uses_external_transport || !internal_tools.is_empty() {
+            let permission_server = if uses_external_transport {
+                internal_server.as_str()
+            } else {
+                mcp_server.as_str()
+            };
+            let permission_tool = format!("mcp__{}__permission_request", permission_server);
+            if !seen.contains(&permission_tool) {
+                tools.push(permission_tool);
+            }
         }
 
         if tools.is_empty() {

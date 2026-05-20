@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -194,47 +195,52 @@ describe("AgentsActiveConversationPanel", () => {
   it("normalizes workspace runtime and forwards provider-supported efforts", () => {
     const onActiveModelChange = vi.fn();
     const onActiveEffortChange = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
 
     render(
-      <AgentsActiveConversationPanel
-        activeConversation={projectConversation()}
-        activeConversationMode="ideation"
-        activeConversationModeLocked={false}
-        activeProjectId="project-1"
-        activeProjectOptions={[{ id: "project-1", label: "RalphX" }]}
-        activeWorkspace={workspace()}
-        activeWorkspaceFreshness={undefined}
-        attachedIdeationSessionId={null}
-        availableArtifactTabs={[]}
-        chatFocus={{ type: "workspace" }}
-        chatFocusOptions={[]}
-        hasAutoOpenArtifacts={false}
-        normalizedActiveRuntime={{
-          provider: "claude",
-          modelId: "opus",
-          effort: "xhigh",
-        }}
-        onActiveConversationModeChange={vi.fn()}
-        onActiveConversationModeMenuOpen={vi.fn()}
-        onActiveEffortChange={onActiveEffortChange}
-        onActiveModelChange={onActiveModelChange}
-        onAgentUserMessageSent={vi.fn()}
-        onFocusIdeationSession={vi.fn()}
-        onOpenPublishPane={vi.fn()}
-        onOpenPublishFile={vi.fn()}
-        onPreloadArtifacts={vi.fn()}
-        onPublishWorkspace={vi.fn()}
-        onRenameConversation={vi.fn()}
-        onSelectArtifact={vi.fn()}
-        onToggleArtifacts={vi.fn()}
-        onSelectChatFocus={vi.fn()}
-        publishShortcutLabel="P"
-        publishingConversationId={null}
-        selectedConversationId="conversation-1"
-        setTerminalChatDockElement={vi.fn()}
-        switchingConversationModeId={null}
-        terminalUnavailableReason={null}
-      />,
+      <QueryClientProvider client={queryClient}>
+        <AgentsActiveConversationPanel
+          activeConversation={projectConversation()}
+          activeConversationMode="ideation"
+          activeConversationModeLocked={false}
+          activeProjectId="project-1"
+          activeProjectOptions={[{ id: "project-1", label: "RalphX" }]}
+          activeWorkspace={workspace()}
+          activeWorkspaceFreshness={undefined}
+          attachedIdeationSessionId={null}
+          availableArtifactTabs={[]}
+          chatFocus={{ type: "workspace" }}
+          chatFocusOptions={[]}
+          hasAutoOpenArtifacts={false}
+          normalizedActiveRuntime={{
+            provider: "claude",
+            modelId: "opus",
+            effort: "xhigh",
+          }}
+          onActiveConversationModeChange={vi.fn()}
+          onActiveConversationModeMenuOpen={vi.fn()}
+          onActiveEffortChange={onActiveEffortChange}
+          onActiveModelChange={onActiveModelChange}
+          onAgentUserMessageSent={vi.fn()}
+          onFocusIdeationSession={vi.fn()}
+          onOpenPublishPane={vi.fn()}
+          onOpenPublishFile={vi.fn()}
+          onPreloadArtifacts={vi.fn()}
+          onPublishWorkspace={vi.fn()}
+          onRenameConversation={vi.fn()}
+          onSelectArtifact={vi.fn()}
+          onToggleArtifacts={vi.fn()}
+          onSelectChatFocus={vi.fn()}
+          publishShortcutLabel="P"
+          publishingConversationId={null}
+          selectedConversationId="conversation-1"
+          setTerminalChatDockElement={vi.fn()}
+          switchingConversationModeId={null}
+          terminalUnavailableReason={null}
+        />
+      </QueryClientProvider>,
     );
 
     expect(screen.getByTestId("workspace-effort-value").textContent).toBe("high");

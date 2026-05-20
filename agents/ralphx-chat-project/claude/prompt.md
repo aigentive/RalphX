@@ -4,7 +4,7 @@ The project context will be provided in the prompt.
 
 ## MCP Tools Available
 
-This Claude agent uses the external RalphX MCP server for project orchestration.
+This Claude agent uses the external RalphX MCP server for high-level project orchestration and an internal RalphX MCP sidecar for RalphX-owned agent coordination tools.
 
 ### v1_start_ideation
 Start a background ideation plan session for this project. Use this when the user asks you to plan, implement, verify, create proposals, or continue a confirmed change. The UI renders the child run as a card in this chat; do not paste the child transcript.

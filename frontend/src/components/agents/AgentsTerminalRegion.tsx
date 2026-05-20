@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Terminal as TerminalIcon } from "lucide-react";
 
@@ -201,7 +201,17 @@ export function AgentsTerminalRegion({
     terminalUnavailableReason,
     hasAutoOpenArtifacts,
   });
-  const contentMounted = useAfterPaintMounted(canRender);
+  const [hasActivatedDrawer, setHasActivatedDrawer] = useState(false);
+  useEffect(() => {
+    if (!canRender) {
+      setHasActivatedDrawer(false);
+      return;
+    }
+    if (isExpanded) {
+      setHasActivatedDrawer(true);
+    }
+  }, [canRender, isExpanded]);
+  const contentMounted = useAfterPaintMounted(canRender && hasActivatedDrawer);
   const setTerminalHeight = useAgentTerminalStore((state) => state.setHeight);
   const setTerminalOpen = useAgentTerminalStore((state) => state.setOpen);
   const setTerminalPlacement = useAgentTerminalStore((state) => state.setPlacement);

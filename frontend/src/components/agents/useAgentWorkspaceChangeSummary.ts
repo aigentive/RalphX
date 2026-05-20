@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { diffApi } from "@/api/diff";
@@ -53,13 +53,65 @@ export function useAgentWorkspaceChangeSummary({
   conversationId: string;
   review: AgentWorkspaceReview | null;
 }): AgentWorkspaceChangeSummaryState {
-  const [mode, setMode] = useState<DiffFilterMode>("uncommitted");
+  const [selectedMode, setSelectedMode] = useState<DiffFilterMode>("uncommitted");
+  const [hasUserSelectedMode, setHasUserSelectedMode] = useState(false);
   const supportsWorktreeModes = review?.supportsWorktreeModes ?? true;
+  const canQueryWorktreeFiles = review != null && supportsWorktreeModes;
+  const setMode = useCallback((nextMode: DiffFilterMode) => {
+    setSelectedMode(nextMode);
+    setHasUserSelectedMode(true);
+  }, []);
+
+  useEffect(() => {
+    setSelectedMode("uncommitted");
+    setHasUserSelectedMode(false);
+  }, [conversationId]);
+
+  const stagedFilesQuery = useQuery({
+    queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged-files"],
+    queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
+    enabled: canQueryWorktreeFiles,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+  });
+
+  const unstagedFilesQuery = useQuery({
+    queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged-files"],
+    queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
+    enabled: canQueryWorktreeFiles,
+    staleTime: AGENT_WORKSPACE_STALE_MS,
+  });
+  const stagedCount = stagedFilesQuery.data?.length;
+  const unstagedCount = unstagedFilesQuery.data?.length;
+  const preferredMode = useMemo<DiffFilterMode>(() => {
+    if (!supportsWorktreeModes || hasUserSelectedMode) {
+      return selectedMode;
+    }
+    if (unstagedCount !== undefined && unstagedCount > 0) {
+      return "unstaged";
+    }
+    const unstagedKnownEmpty = unstagedCount === 0 || unstagedFilesQuery.isError;
+    if (unstagedKnownEmpty && stagedCount !== undefined && stagedCount > 0) {
+      return "staged";
+    }
+    const stagedKnownEmpty = stagedCount === 0 || stagedFilesQuery.isError;
+    if (unstagedKnownEmpty && stagedKnownEmpty) {
+      return "uncommitted";
+    }
+    return selectedMode;
+  }, [
+    hasUserSelectedMode,
+    selectedMode,
+    stagedCount,
+    stagedFilesQuery.isError,
+    supportsWorktreeModes,
+    unstagedCount,
+    unstagedFilesQuery.isError,
+  ]);
   const effectiveMode =
     !supportsWorktreeModes &&
-    (mode === "uncommitted" || mode === "staged" || mode === "unstaged")
+    (preferredMode === "uncommitted" || preferredMode === "staged" || preferredMode === "unstaged")
       ? "cumulative"
-      : mode;
+      : preferredMode;
   const isStagedMode = effectiveMode === "staged";
   const isUnstagedMode = effectiveMode === "unstaged";
   const isCumulativeMode = effectiveMode === "cumulative";
@@ -87,20 +139,6 @@ export function useAgentWorkspaceChangeSummary({
       return diffApi.getAgentConversationWorkspaceCommitFileChanges(conversationId, commitSha);
     },
     enabled: isCommitMode && Boolean(commitSha),
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-  });
-
-  const stagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
-    enabled: supportsWorktreeModes && isStagedMode,
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-  });
-
-  const unstagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
-    enabled: supportsWorktreeModes && isUnstagedMode,
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
 
@@ -153,7 +191,7 @@ export function useAgentWorkspaceChangeSummary({
   const totalDeletions = currentFiles.reduce((sum, file) => sum + file.deletions, 0);
 
   return {
-    mode,
+    mode: selectedMode,
     setMode,
     effectiveMode,
     refKind,
@@ -167,8 +205,8 @@ export function useAgentWorkspaceChangeSummary({
     commitSha,
     supportsWorktreeModes,
     workspaceChangeCount: review?.changes.length ?? 0,
-    stagedCount: stagedFilesQuery.data?.length,
-    unstagedCount: unstagedFilesQuery.data?.length,
+    stagedCount,
+    unstagedCount,
     totalAdditions,
     totalDeletions,
   };

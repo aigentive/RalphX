@@ -9,6 +9,7 @@ pub mod memory_agent_conversation_workspace_repo;
 pub mod memory_agent_model_registry_repo;
 pub mod memory_agent_profile_repo;
 pub mod memory_agent_provider_settings_repo;
+pub mod memory_agent_task_repo;
 pub mod memory_agent_run_repo;
 pub mod memory_app_state_repo;
 pub mod memory_artifact_bucket_repo;
@@ -61,6 +62,7 @@ pub use memory_agent_conversation_workspace_repo::MemoryAgentConversationWorkspa
 pub use memory_agent_model_registry_repo::MemoryAgentModelRegistryRepository;
 pub use memory_agent_profile_repo::MemoryAgentProfileRepository;
 pub use memory_agent_provider_settings_repo::MemoryAgentProviderSettingsRepository;
+pub use memory_agent_task_repo::MemoryAgentTaskRepository;
 pub use memory_agent_run_repo::MemoryAgentRunRepository;
 pub use memory_app_state_repo::MemoryAppStateRepository;
 pub use memory_artifact_bucket_repo::MemoryArtifactBucketRepository;

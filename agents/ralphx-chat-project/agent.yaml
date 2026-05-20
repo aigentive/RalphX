@@ -13,6 +13,12 @@ capabilities:
     - delegate_start
     - delegate_wait
     - delegate_cancel
+    - create_agent_task
+    - get_agent_task
+    - list_agent_tasks
+    - update_agent_task
+    - claim_agent_task
+    - complete_agent_task
   internal_skills:
     allowed:
       - ralphx-agent-workspace-swe
@@ -37,6 +43,20 @@ harnesses:
       - v1_get_proposal_detail
       - v1_get_session_tasks
       - v1_append_task_to_plan
+    internal_mcp_tools:
+      - search_memories
+      - get_memory
+      - get_memories_for_paths
+      - get_conversation_transcript
+      - delegate_start
+      - delegate_wait
+      - delegate_cancel
+      - create_agent_task
+      - get_agent_task
+      - list_agent_tasks
+      - update_agent_task
+      - claim_agent_task
+      - complete_agent_task
     tools:
       extends: readonly_tools
     disallowed_tools:
@@ -65,6 +85,20 @@ harnesses:
       - v1_get_proposal_detail
       - v1_get_session_tasks
       - v1_append_task_to_plan
+    internal_mcp_tools:
+      - search_memories
+      - get_memory
+      - get_memories_for_paths
+      - get_conversation_transcript
+      - delegate_start
+      - delegate_wait
+      - delegate_cancel
+      - create_agent_task
+      - get_agent_task
+      - list_agent_tasks
+      - update_agent_task
+      - claim_agent_task
+      - complete_agent_task
     runtime_features:
       shell_tool: false
 delegation:

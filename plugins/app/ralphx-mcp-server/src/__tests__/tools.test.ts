@@ -1742,6 +1742,50 @@ describe('delegation bridge tools', () => {
   });
 });
 
+// ===========================================================================
+// RalphX native agent task tools
+// ===========================================================================
+
+describe('agent task tools', () => {
+  const allTools = getAllTools();
+
+  it.each([
+    'create_agent_task',
+    'get_agent_task',
+    'list_agent_tasks',
+    'update_agent_task',
+    'claim_agent_task',
+    'complete_agent_task',
+  ])('%s should exist in ALL_TOOLS', (toolName) => {
+    expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
+  });
+
+  it('create_agent_task should require title and details without caller context fields', () => {
+    const tool = allTools.find((entry) => entry.name === 'create_agent_task');
+    expect(tool?.inputSchema.required).toEqual(
+      expect.arrayContaining(['title', 'details'])
+    );
+    expect(tool?.inputSchema.properties).not.toHaveProperty('context_type');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('actor_agent');
+  });
+
+  it.each([ORCHESTRATOR_IDEATION, CHAT_PROJECT, GENERAL_WORKER, WORKER])(
+    '%s should expose writable agent task tools',
+    (agent) => {
+      expect(toolsByAgent()[agent]).toContain('create_agent_task');
+      expect(toolsByAgent()[agent]).toContain('list_agent_tasks');
+      expect(toolsByAgent()[agent]).toContain('complete_agent_task');
+    }
+  );
+
+  it('getFilteredTools should include agent task tools for general worker', () => {
+    setAgentType(GENERAL_WORKER);
+    const toolNames = getFilteredTools().map((tool) => tool.name);
+    expect(toolNames).toContain('create_agent_task');
+    expect(toolNames).toContain('list_agent_tasks');
+  });
+});
+
 describe('verification round helper tools', () => {
   const allTools = getAllTools();
 

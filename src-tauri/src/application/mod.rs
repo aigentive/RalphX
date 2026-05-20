@@ -12,6 +12,7 @@ pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;
+pub mod agent_task_service;
 pub mod app_setup;
 pub mod app_state;
 pub mod http_shutdown;
@@ -106,6 +107,7 @@ pub use apply_service::{
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
+pub use agent_task_service::AgentTaskService;
 pub use chat_resumption::ChatResumptionRunner;
 pub use dependency_service::{DependencyAnalysis, DependencyService, ValidationResult};
 pub use event_cleanup_service::EventCleanupService;

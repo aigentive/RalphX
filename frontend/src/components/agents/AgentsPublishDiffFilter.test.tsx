@@ -239,6 +239,31 @@ describe("AgentsPublishDiffFilter", () => {
       expect(screen.getByTestId("diff-filter-option-staged")).toBeInTheDocument();
     });
 
+    it("shows staged and unstaged counts in popover options when available", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="uncommitted"
+            workspaceChangeCount={5}
+            stagedCount={2}
+            unstagedCount={3}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+
+      expect(screen.getByTestId("diff-filter-option-unstaged")).toHaveTextContent(
+        "Unstaged (3 files)",
+      );
+      expect(screen.getByTestId("diff-filter-option-staged")).toHaveTextContent(
+        "Staged (2 files)",
+      );
+    });
+
     it("shows All commits radio option in popover", async () => {
       const user = userEvent.setup();
       render(

@@ -75,8 +75,8 @@ use crate::domain::agents::{
     AgentProviderSettings, CLAUDE_DEFAULT_PERMISSION_MODE,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    load_canonical_claude_metadata, load_harness_agent_prompt, resolve_harness_agent_prompt_path,
-    resolve_project_root_from_plugin_dir, AgentPromptHarness,
+    internal_mcp_server_name, load_canonical_claude_metadata, load_harness_agent_prompt,
+    resolve_harness_agent_prompt_path, resolve_project_root_from_plugin_dir, AgentPromptHarness,
 };
 use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
 use crate::infrastructure::agents::mcp_runtime_context::{
@@ -821,8 +821,8 @@ pub fn sanitize_claude_user_state() {
 
 /// Validate a generated MCP config JSON value for required fields.
 ///
-/// Checks that the config has `mcpServers`, at least one server entry, and that
-/// each server entry has `command` and `args`. Returns an error message on failure.
+/// Checks that the config has `mcpServers` and that the named server is either
+/// HTTP (`url`) or stdio (`command` + `args`). Returns an error message on failure.
 pub(crate) fn validate_mcp_config_json(
     config: &serde_json::Value,
     server_name: &str,
@@ -922,167 +922,142 @@ pub(crate) fn build_mcp_config_with_runtime_context(
     let mcp_server_name = &claude_runtime_config().mcp_server_name;
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
     let claude_metadata = load_canonical_claude_metadata(&project_root, short_name);
+    let mut mcp_servers = serde_json::Map::new();
+    let mut server_names = Vec::new();
+
     if claude_metadata.mcp_transport.as_deref() == Some("external") {
-        return build_external_mcp_config(mcp_server_name, mcp_runtime_context);
-    }
+        mcp_servers.insert(
+            mcp_server_name.to_string(),
+            build_external_mcp_server_config(mcp_runtime_context),
+        );
+        server_names.push(mcp_server_name.to_string());
 
-    let mut server_cfg = serde_json::json!({
-        "type": "stdio",
-        "command": node_command,
-        "args": [mcp_server_path_str],
-    });
-
-    // Ensure server config is an object; otherwise fall back to sane defaults.
-    if !server_cfg.is_object() {
-        server_cfg = serde_json::json!({
-            "type": "stdio",
-            "command": node_command,
-            "args": [mcp_server_path_str]
-        });
-    }
-
-    if let Some(server_obj) = server_cfg.as_object_mut() {
-        if !server_obj.contains_key("type") {
-            server_obj.insert(
-                "type".to_string(),
-                serde_json::Value::String("stdio".to_string()),
+        if !claude_metadata.internal_mcp_tools.is_empty() {
+            let internal_server_name = internal_mcp_server_name(mcp_server_name);
+            let internal_server_cfg = build_internal_mcp_server_config(
+                &mcp_server_path_str,
+                &node_command,
+                short_name,
+                agent_type,
+                is_external_mcp,
+                mcp_runtime_context,
+                Some(&claude_metadata.internal_mcp_tools),
             );
+            mcp_servers.insert(internal_server_name.clone(), internal_server_cfg);
+            server_names.push(internal_server_name);
         }
-
-        // Always resolve bare "node" to its full path so macOS GUI apps (which have
-        // stripped PATH) can find node even when it's installed via nvm/Homebrew.
-        let current_command = server_obj
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("node");
-        let resolved_command = if current_command == "node" {
-            node_command.clone()
-        } else {
-            current_command.to_string()
-        };
-        server_obj.insert(
-            "command".to_string(),
-            serde_json::Value::String(resolved_command),
-        );
-
-        let mut args_vec: Vec<String> = server_obj
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if args_vec.is_empty() {
-            args_vec.push(mcp_server_path_str);
-        }
-
-        // Always pass/override --agent-type for MCP-side tool filtering.
-        if let Some(idx) = args_vec.iter().position(|a| a == "--agent-type") {
-            if idx + 1 < args_vec.len() {
-                args_vec[idx + 1] = short_name.to_string();
-            } else {
-                args_vec.push(short_name.to_string());
-            }
-        } else {
-            args_vec.push("--agent-type".to_string());
-            args_vec.push(short_name.to_string());
-        }
-        args_vec.push("--tauri-api-url".to_string());
-        args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
-        args_vec.push("--trace-dir".to_string());
-        args_vec.push(
-            crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
-                .to_string_lossy()
-                .into_owned(),
-        );
-
-        // Inject --allowed-tools from agent's mcp_tools config (Wave 3).
-        // - Agent not in config (None) → skip arg entirely (MCP server resolves canonical metadata,
-        //   then only server-side compatibility defaults if any remain)
-        // - Agent found, empty mcp_tools → inject __NONE__ sentinel (intentional zero tools)
-        // - Agent found, non-empty mcp_tools → validate names, join with commas, inject arg
-        // When is_external_mcp=true, strip interactive-only tools (e.g. ask_user_question) to
-        // prevent deadlocks where the agent waits for human input that will never arrive.
-        let validated_tools: Option<Vec<String>> = get_agent_config(agent_type).map(|cfg| {
-            let tools: Vec<String> = cfg.allowed_mcp_tools
-                .iter()
-                .filter(|name| {
-                    if validate_mcp_tool_name(name) {
-                        true
-                    } else {
-                        tracing::error!(
-                            "[RalphX] Invalid MCP tool name {:?} for agent {:?} (skipped from --allowed-tools)",
-                            name,
-                            agent_type
-                        );
-                        false
-                    }
-                })
-                .cloned()
-                .collect();
-            if is_external_mcp {
-                filter_interactive_tools(&tools)
-            } else {
-                tools
-            }
-        });
-        if let Some(arg_value) = format_allowed_tools_arg_value(validated_tools.as_deref()) {
-            args_vec.push(format!("--allowed-tools={}", arg_value));
-        }
-        append_mcp_runtime_args(&mut args_vec, mcp_runtime_context);
-
-        server_obj.insert(
-            "args".to_string(),
-            serde_json::Value::Array(
-                args_vec
-                    .into_iter()
-                    .map(serde_json::Value::String)
-                    .collect(),
+    } else {
+        mcp_servers.insert(
+            mcp_server_name.to_string(),
+            build_internal_mcp_server_config(
+                &mcp_server_path_str,
+                &node_command,
+                short_name,
+                agent_type,
+                is_external_mcp,
+                mcp_runtime_context,
+                None,
             ),
         );
+        server_names.push(mcp_server_name.to_string());
     }
 
     let mcp_config = serde_json::json!({
-        "mcpServers": {
-            mcp_server_name: server_cfg
-        }
+        "mcpServers": serde_json::Value::Object(mcp_servers)
     });
 
-    // Validate required fields before writing. This is always valid when built with
-    // serde_json::json!, but explicit validation catches future regressions early.
-    validate_mcp_config_json(&mcp_config, mcp_server_name)
-        .map_err(|e| format!("Critical: MCP server config invalid — {e}"))?;
+    for server_name in server_names {
+        validate_mcp_config_json(&mcp_config, &server_name)
+            .map_err(|e| format!("Critical: MCP server config invalid — {e}"))?;
+    }
 
     Ok(mcp_config)
 }
 
-fn build_external_mcp_config(
-    mcp_server_name: &str,
+fn build_internal_mcp_server_config(
+    mcp_server_path_str: &str,
+    node_command: &str,
+    short_name: &str,
+    agent_type: &str,
+    is_external_mcp: bool,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    explicit_allowed_tools: Option<&[String]>,
+) -> serde_json::Value {
+    let mut args_vec = vec![mcp_server_path_str.to_string()];
+
+    // Always pass --agent-type for MCP-side tool filtering.
+    args_vec.push("--agent-type".to_string());
+    args_vec.push(short_name.to_string());
+    args_vec.push("--tauri-api-url".to_string());
+    args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
+    args_vec.push("--trace-dir".to_string());
+    args_vec.push(
+        crate::utils::runtime_log_paths::ensure_mcp_proxy_trace_dir()
+            .to_string_lossy()
+            .into_owned(),
+    );
+
+    // Inject --allowed-tools from agent metadata.
+    // - Agent not in config and no explicit sidecar list → skip arg entirely.
+    // - Empty list → inject __NONE__ sentinel (intentional zero tools).
+    // - Non-empty list → validate names, join with commas, inject arg.
+    // When is_external_mcp=true, strip interactive-only tools to prevent unattended deadlocks.
+    let validated_tools: Option<Vec<String>> = if let Some(tools) = explicit_allowed_tools {
+        Some(validated_mcp_tools(agent_type, tools, is_external_mcp))
+    } else {
+        get_agent_config(agent_type)
+            .map(|cfg| validated_mcp_tools(agent_type, &cfg.allowed_mcp_tools, is_external_mcp))
+    };
+    if let Some(arg_value) = format_allowed_tools_arg_value(validated_tools.as_deref()) {
+        args_vec.push(format!("--allowed-tools={}", arg_value));
+    }
+    append_mcp_runtime_args(&mut args_vec, mcp_runtime_context);
+
+    serde_json::json!({
+        "type": "stdio",
+        "command": node_command,
+        "args": args_vec,
+    })
+}
+
+fn validated_mcp_tools(agent_type: &str, tools: &[String], is_external_mcp: bool) -> Vec<String> {
+    let valid_tools: Vec<String> = tools
+        .iter()
+        .filter(|name| {
+            if validate_mcp_tool_name(name) {
+                true
+            } else {
+                tracing::error!(
+                    "[RalphX] Invalid MCP tool name {:?} for agent {:?} (skipped from --allowed-tools)",
+                    name,
+                    agent_type
+                );
+                false
+            }
+        })
+        .cloned()
+        .collect();
+    if is_external_mcp {
+        filter_interactive_tools(&valid_tools)
+    } else {
+        valid_tools
+    }
+}
+
+fn build_external_mcp_server_config(
     runtime_context: Option<&McpRuntimeContext>,
-) -> Result<serde_json::Value, String> {
+) -> serde_json::Value {
     let cfg = external_mcp_config();
     let token = ensure_tauri_mcp_bypass_token();
     let mut url = format!("http://{}:{}/mcp", cfg.host, cfg.port);
     append_mcp_runtime_query(&mut url, runtime_context);
-    let mcp_config = serde_json::json!({
-        "mcpServers": {
-            mcp_server_name: {
-                "type": "http",
-                "url": url,
-                "headers": {
-                    "Authorization": format!("Bearer {token}")
-                }
-            }
+    serde_json::json!({
+        "type": "http",
+        "url": url,
+        "headers": {
+            "Authorization": format!("Bearer {token}")
         }
-    });
-
-    validate_mcp_config_json(&mcp_config, mcp_server_name)
-        .map_err(|e| format!("Critical: MCP server config invalid — {e}"))?;
-
-    Ok(mcp_config)
+    })
 }
 
 fn write_mcp_config_temp(mcp_config: &serde_json::Value) -> Result<PathBuf, String> {

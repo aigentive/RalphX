@@ -57,6 +57,8 @@ import {
   callAgentWorkspaceTool,
   isAgentWorkspaceToolName,
 } from "./agent-workspace-tools.js";
+import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
+import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
@@ -787,6 +789,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callTauri("coordination/delegate/wait", args as Record<string, unknown>);
     } else if (name === "delegate_cancel") {
       result = await callTauri("coordination/delegate/cancel", args as Record<string, unknown>);
+    } else if ((AGENT_TASK_TOOL_NAMES as string[]).includes(name)) {
+      const endpointByTool: Record<string, string> = {
+        create_agent_task: "agent_tasks/create",
+        get_agent_task: "agent_tasks/get",
+        list_agent_tasks: "agent_tasks/list",
+        update_agent_task: "agent_tasks/update",
+        claim_agent_task: "agent_tasks/claim",
+        complete_agent_task: "agent_tasks/complete",
+      };
+      const endpoint = endpointByTool[name];
+      result = await callTauri(
+        endpoint,
+        withAgentTaskRuntimeContext(args as Record<string, unknown>, {
+          contextType: RALPHX_CONTEXT_TYPE,
+          contextId: RALPHX_CONTEXT_ID,
+          projectId: RALPHX_PROJECT_ID,
+          actorAgent: AGENT_TYPE,
+          parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+        })
+      );
     } else if (name === "get_project_analysis") {
       // GET /api/projects/:project_id/analysis?task_id=
       const { project_id, task_id } = args as { project_id: string; task_id?: string };

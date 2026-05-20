@@ -381,6 +381,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               <>
                 <AgentsComposerWorkspaceChangesCard
                   conversationId={selectedConversationId}
+                  projectId={activeProjectId}
                   workspace={activeWorkspace}
                   isFocusedChildChat={isFocusedChildChat}
                   isAgentGenerating={composerProps.agentStatus === "generating"}

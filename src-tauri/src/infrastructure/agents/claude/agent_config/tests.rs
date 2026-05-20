@@ -119,6 +119,18 @@ fn test_get_preapproved_tools_worker_contains_expected() {
 }
 
 #[test]
+fn test_get_preapproved_tools_project_chat_mixes_external_and_internal_mcp_prefixes() {
+    let tools = get_preapproved_tools("ralphx-chat-project").unwrap();
+    let tool_list: HashSet<_> = tools.split(',').collect();
+
+    assert!(tool_list.contains("mcp__ralphx__v1_start_ideation"));
+    assert!(tool_list.contains("mcp__ralphx_internal__create_agent_task"));
+    assert!(tool_list.contains("mcp__ralphx_internal__delegate_start"));
+    assert!(tool_list.contains("mcp__ralphx_internal__permission_request"));
+    assert!(!tool_list.contains("mcp__ralphx__create_agent_task"));
+}
+
+#[test]
 fn test_default_base_tool_set_present_in_worker() {
     let tools = get_allowed_tools("ralphx-execution-worker").unwrap();
     for t in super::tool_sets::canonical_claude_tool_sets()

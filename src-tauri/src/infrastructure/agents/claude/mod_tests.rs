@@ -9,6 +9,7 @@
 /// - create_mcp_config(): no --allowed-tools arg when agent has no mcp_tools config
 use super::*;
 use crate::infrastructure::agents::harness_agent_catalog::{
+    internal_mcp_server_name,
     load_canonical_agent_definition, load_canonical_claude_metadata, load_harness_agent_prompt,
     AgentPromptHarness,
 };
@@ -170,20 +171,31 @@ fn expected_frontmatter_tools(agent_name: &str) -> BTreeSet<String> {
     }
     let project_root = repo_project_root();
     let claude_metadata = load_canonical_claude_metadata(&project_root, agent_name);
-    let mcp_tools = if claude_metadata.mcp_transport.as_deref() == Some("external")
-        && !claude_metadata.mcp_tools.is_empty()
-    {
-        &claude_metadata.mcp_tools
+    if claude_metadata.mcp_transport.as_deref() == Some("external") {
+        tools.extend(claude_metadata.mcp_tools.iter().map(|tool| {
+            if tool.starts_with("mcp__") {
+                tool.to_string()
+            } else {
+                format!("mcp__{mcp_server_name}__{tool}")
+            }
+        }));
+        let internal_server_name = internal_mcp_server_name(mcp_server_name);
+        tools.extend(claude_metadata.internal_mcp_tools.iter().map(|tool| {
+            if tool.starts_with("mcp__") {
+                tool.to_string()
+            } else {
+                format!("mcp__{internal_server_name}__{tool}")
+            }
+        }));
     } else {
-        &agent_config.allowed_mcp_tools
-    };
-    tools.extend(mcp_tools.iter().map(|tool| {
-        if tool.starts_with("mcp__") {
-            tool.to_string()
-        } else {
-            format!("mcp__{mcp_server_name}__{tool}")
-        }
-    }));
+        tools.extend(agent_config.allowed_mcp_tools.iter().map(|tool| {
+            if tool.starts_with("mcp__") {
+                tool.to_string()
+            } else {
+                format!("mcp__{mcp_server_name}__{tool}")
+            }
+        }));
+    }
     tools.extend(agent_config.preapproved_cli_tools.iter().cloned());
     tools
 }
@@ -662,6 +674,56 @@ harnesses:
     assert!(
         server.get("args").is_none(),
         "external MCP config must not launch the bundled stdio server"
+    );
+}
+
+#[test]
+fn test_create_mcp_config_mixes_external_transport_with_internal_sidecar_tools() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    std::fs::create_dir_all(root.join("agents/ralphx-chat-project"))
+        .expect("create canonical agent dir");
+    std::fs::write(
+        root.join("agents/ralphx-chat-project/agent.yaml"),
+        r#"name: ralphx-chat-project
+role: project_chat
+harnesses:
+  claude:
+    mcp_transport: external
+    mcp_tools:
+      - v1_start_ideation
+    internal_mcp_tools:
+      - create_agent_task
+      - list_agent_tasks
+"#,
+    )
+    .expect("write agent definition");
+
+    let json = build_mcp_config_with_runtime_context(
+        &plugin_dir,
+        "ralphx-chat-project",
+        false,
+        None,
+    )
+    .expect("should create mixed MCP config");
+    let external_server = &json["mcpServers"]["ralphx"];
+    let internal_server = &json["mcpServers"]["ralphx_internal"];
+
+    assert_eq!(external_server["type"].as_str(), Some("http"));
+    assert!(
+        external_server.get("args").is_none(),
+        "external MCP server should remain HTTP-only: {external_server:?}"
+    );
+    assert_eq!(internal_server["type"].as_str(), Some("stdio"));
+    let args = internal_server["args"]
+        .as_array()
+        .expect("internal sidecar args")
+        .iter()
+        .filter_map(|arg| arg.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        args.iter()
+            .any(|arg| *arg == "--allowed-tools=create_agent_task,list_agent_tasks"),
+        "internal sidecar should be narrowed to declared internal tools: {args:?}"
     );
 }
 

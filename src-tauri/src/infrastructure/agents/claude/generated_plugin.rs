@@ -2,9 +2,10 @@ use crate::infrastructure::agents::claude::{
     claude_runtime_config, find_base_plugin_dir, get_agent_config,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    list_canonical_agent_names, load_canonical_agent_definition, load_harness_agent_prompt,
-    resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
-    CanonicalAgentDefinition, CanonicalClaudeAgentMetadata,
+    internal_mcp_server_name, list_canonical_agent_names, load_canonical_agent_definition,
+    load_harness_agent_prompt, resolve_project_root_from_plugin_dir,
+    try_load_canonical_claude_metadata, AgentPromptHarness, CanonicalAgentDefinition,
+    CanonicalClaudeAgentMetadata,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -551,7 +552,8 @@ fn build_claude_frontmatter(
     })?;
     let mcp_server_name = &claude_runtime_config().mcp_server_name;
     let tools = build_claude_frontmatter_tools(agent_config, claude_metadata, mcp_server_name);
-    let mcp_tools = resolved_claude_mcp_tools(agent_config, claude_metadata);
+    let primary_mcp_tools = resolved_claude_primary_mcp_tools(agent_config, claude_metadata);
+    let internal_sidecar_tools = resolved_claude_internal_sidecar_tools(claude_metadata);
 
     let mut lines = vec![
         "---".to_string(),
@@ -569,10 +571,14 @@ fn build_claude_frontmatter(
         }
     }
 
-    if !mcp_tools.is_empty() {
+    if !primary_mcp_tools.is_empty() || !internal_sidecar_tools.is_empty() {
         lines.push("mcpServers:".to_string());
-        lines.push(format!("  - {}:", yaml_scalar(mcp_server_name)?));
-        if claude_metadata.mcp_transport.as_deref() == Some("external") {
+        if !primary_mcp_tools.is_empty() {
+            lines.push(format!("  - {}:", yaml_scalar(mcp_server_name)?));
+        }
+        if claude_metadata.mcp_transport.as_deref() == Some("external")
+            && !primary_mcp_tools.is_empty()
+        {
             lines.push("      type: http".to_string());
             lines.push(format!(
                 "      url: {}",
@@ -583,16 +589,15 @@ fn build_claude_frontmatter(
                 "        Authorization: {}",
                 yaml_scalar("Bearer ${RALPHX_TAURI_MCP_BYPASS_TOKEN}")?
             ));
-        } else {
-            lines.push("      type: stdio".to_string());
-            lines.push("      command: node".to_string());
-            lines.push("      args:".to_string());
+        } else if !primary_mcp_tools.is_empty() {
+            push_stdio_mcp_server_frontmatter(&mut lines, agent_name, None)?;
+        }
+        if !internal_sidecar_tools.is_empty() {
             lines.push(format!(
-                "        - {}",
-                yaml_scalar("${CLAUDE_PLUGIN_ROOT}/ralphx-mcp-server/build/index.js")?
+                "  - {}:",
+                yaml_scalar(&internal_mcp_server_name(mcp_server_name))?
             ));
-            lines.push(format!("        - {}", yaml_scalar("--agent-type")?));
-            lines.push(format!("        - {}", yaml_scalar(agent_name)?));
+            push_stdio_mcp_server_frontmatter(&mut lines, agent_name, Some(internal_sidecar_tools))?;
         }
     }
 
@@ -632,11 +637,11 @@ fn build_claude_frontmatter_tools(
         tools.extend(agent_config.resolved_cli_tools.iter().cloned());
     }
 
-    tools.extend(
-        resolved_claude_mcp_tools(agent_config, claude_metadata)
-            .iter()
-            .map(|tool| normalize_frontmatter_mcp_tool(tool, mcp_server_name)),
-    );
+    tools.extend(resolved_claude_frontmatter_mcp_tools(
+        agent_config,
+        claude_metadata,
+        mcp_server_name,
+    ));
     tools.extend(agent_config.preapproved_cli_tools.iter().cloned());
 
     let mut seen = HashSet::new();
@@ -644,7 +649,7 @@ fn build_claude_frontmatter_tools(
     tools
 }
 
-fn resolved_claude_mcp_tools<'a>(
+fn resolved_claude_primary_mcp_tools<'a>(
     agent_config: &'a crate::infrastructure::agents::claude::AgentConfig,
     claude_metadata: &'a CanonicalClaudeAgentMetadata,
 ) -> &'a [String] {
@@ -654,6 +659,65 @@ fn resolved_claude_mcp_tools<'a>(
         &claude_metadata.mcp_tools
     } else {
         &agent_config.allowed_mcp_tools
+    }
+}
+
+fn resolved_claude_internal_sidecar_tools(
+    claude_metadata: &CanonicalClaudeAgentMetadata,
+) -> &[String] {
+    if claude_metadata.mcp_transport.as_deref() == Some("external") {
+        &claude_metadata.internal_mcp_tools
+    } else {
+        &[]
+    }
+}
+
+fn resolved_claude_frontmatter_mcp_tools(
+    agent_config: &crate::infrastructure::agents::claude::AgentConfig,
+    claude_metadata: &CanonicalClaudeAgentMetadata,
+    mcp_server_name: &str,
+) -> Vec<String> {
+    let mut tools = resolved_claude_primary_mcp_tools(agent_config, claude_metadata)
+        .iter()
+        .map(|tool| normalize_frontmatter_mcp_tool(tool, mcp_server_name))
+        .collect::<Vec<_>>();
+    let internal_server_name = internal_mcp_server_name(mcp_server_name);
+    tools.extend(
+        resolved_claude_internal_sidecar_tools(claude_metadata)
+            .iter()
+            .map(|tool| normalize_frontmatter_mcp_tool(tool, &internal_server_name)),
+    );
+    tools
+}
+
+fn push_stdio_mcp_server_frontmatter(
+    lines: &mut Vec<String>,
+    agent_name: &str,
+    allowed_tools: Option<&[String]>,
+) -> Result<(), String> {
+    lines.push("      type: stdio".to_string());
+    lines.push("      command: node".to_string());
+    lines.push("      args:".to_string());
+    lines.push(format!(
+        "        - {}",
+        yaml_scalar("${CLAUDE_PLUGIN_ROOT}/ralphx-mcp-server/build/index.js")?
+    ));
+    lines.push(format!("        - {}", yaml_scalar("--agent-type")?));
+    lines.push(format!("        - {}", yaml_scalar(agent_name)?));
+    if let Some(tools) = allowed_tools {
+        lines.push(format!(
+            "        - {}",
+            yaml_scalar(&format!("--allowed-tools={}", allowed_tools_arg(tools)))?
+        ));
+    }
+    Ok(())
+}
+
+fn allowed_tools_arg(tools: &[String]) -> String {
+    if tools.is_empty() {
+        "__NONE__".to_string()
+    } else {
+        tools.join(",")
     }
 }
 

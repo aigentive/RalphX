@@ -35,7 +35,10 @@ export const TOOL_CATEGORIES = {
         "v1_get_session_tasks",
         "v1_append_task_to_plan",
     ],
-    tasks: ["v1_get_task_steps", "v1_batch_task_status"],
+    tasks: [
+        "v1_get_task_steps",
+        "v1_batch_task_status",
+    ],
     pipeline: [
         "v1_get_task_detail",
         "v1_get_task_diff",

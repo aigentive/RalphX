@@ -16,8 +16,8 @@ use crate::infrastructure::agents::claude::{
     validate_mcp_tool_name,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    load_canonical_codex_metadata, load_harness_agent_prompt, resolve_project_root_from_plugin_dir,
-    AgentPromptHarness, CanonicalCodexAgentMetadata,
+    internal_mcp_server_name, load_canonical_codex_metadata, load_harness_agent_prompt,
+    resolve_project_root_from_plugin_dir, AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
 use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
 use crate::infrastructure::agents::mcp_runtime_context::{
@@ -139,13 +139,48 @@ pub fn build_codex_mcp_overrides(
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
     let codex_metadata = load_canonical_codex_metadata(&project_root, short_name);
     if codex_metadata.mcp_transport.as_deref() == Some("external") {
-        return build_codex_external_mcp_overrides(
+        let mut overrides = build_codex_external_mcp_overrides(
             &mcp_server_name,
-            codex_metadata,
+            codex_metadata.clone(),
             runtime_context,
-        );
+        )?;
+        if !codex_metadata.internal_mcp_tools.is_empty() {
+            overrides.extend(build_codex_internal_mcp_overrides(
+                &internal_mcp_server_name(&mcp_server_name),
+                plugin_dir,
+                short_name,
+                is_external_mcp,
+                runtime_context,
+                Some(&codex_metadata.internal_mcp_tools),
+            )?);
+        }
+        return Ok(overrides);
     }
 
+    let mut overrides = build_codex_internal_mcp_overrides(
+        &mcp_server_name,
+        plugin_dir,
+        short_name,
+        is_external_mcp,
+        runtime_context,
+        None,
+    )?;
+
+    for (feature_name, enabled) in codex_metadata.runtime_features {
+        overrides.push(format!("features.{feature_name}={enabled}"));
+    }
+
+    Ok(overrides)
+}
+
+fn build_codex_internal_mcp_overrides(
+    mcp_server_name: &str,
+    plugin_dir: &Path,
+    short_name: &str,
+    is_external_mcp: bool,
+    runtime_context: Option<&CodexMcpRuntimeContext>,
+    explicit_allowed_tools: Option<&[String]>,
+) -> Result<Vec<String>, String> {
     let mcp_server_path = plugin_dir.join("ralphx-mcp-server/build/index.js");
 
     let node_command = node_utils::find_node_binary()
@@ -166,19 +201,12 @@ pub fn build_codex_mcp_overrides(
 
     append_mcp_runtime_args(&mut mcp_args, runtime_context);
 
-    let enabled_tools = get_agent_config(short_name).map(|config| {
-        let tools: Vec<String> = config
-            .allowed_mcp_tools
-            .iter()
-            .filter(|name| validate_mcp_tool_name(name))
-            .cloned()
-            .collect();
-        if is_external_mcp {
-            filter_interactive_tools(&tools)
-        } else {
-            tools
-        }
-    });
+    let enabled_tools = if let Some(tools) = explicit_allowed_tools {
+        Some(valid_codex_mcp_tools(tools, is_external_mcp))
+    } else {
+        get_agent_config(short_name)
+            .map(|config| valid_codex_mcp_tools(&config.allowed_mcp_tools, is_external_mcp))
+    };
 
     if let Some(arg_value) = format_allowed_tools_arg_value(enabled_tools.as_deref()) {
         mcp_args.push(format!("--allowed-tools={arg_value}"));
@@ -203,11 +231,20 @@ pub fn build_codex_mcp_overrides(
         ));
     }
 
-    for (feature_name, enabled) in codex_metadata.runtime_features {
-        overrides.push(format!("features.{feature_name}={enabled}"));
-    }
-
     Ok(overrides)
+}
+
+fn valid_codex_mcp_tools(tools: &[String], is_external_mcp: bool) -> Vec<String> {
+    let valid_tools = tools
+        .iter()
+        .filter(|name| validate_mcp_tool_name(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if is_external_mcp {
+        filter_interactive_tools(&valid_tools)
+    } else {
+        valid_tools
+    }
 }
 
 fn build_codex_external_mcp_overrides(
