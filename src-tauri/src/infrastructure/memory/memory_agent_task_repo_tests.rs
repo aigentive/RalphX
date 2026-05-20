@@ -140,3 +140,196 @@ async fn dependency_cycle_is_rejected() {
         .unwrap_err();
     assert!(err.to_string().contains("cycle"));
 }
+
+#[tokio::test]
+async fn update_changes_all_mutable_fields_and_supports_id_refs() {
+    let repo = MemoryAgentTaskRepository::new();
+    let scope = scope();
+    let created = repo.create_task(&scope, create("Draft")).await.unwrap();
+    let task_id = created.task.task_id.to_string();
+
+    let updated = repo
+        .update_task(
+            &scope,
+            &task_id,
+            AgentTaskPatch {
+                title: Some("Draft refined".to_string()),
+                details: Some("Updated details".to_string()),
+                active_label: Some(Some("Refining".to_string())),
+                owner_agent: Some(Some("planner".to_string())),
+                state: Some(AgentTaskState::Active),
+                metadata_patch: Some(json!({"priority": "high"})),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        updated.changed_fields,
+        vec![
+            "active_label",
+            "details",
+            "metadata",
+            "owner_agent",
+            "state",
+            "title"
+        ]
+    );
+    assert_eq!(updated.task.title, "Draft refined");
+    assert_eq!(updated.task.details, "Updated details");
+    assert_eq!(updated.task.active_label.as_deref(), Some("Refining"));
+    assert_eq!(updated.task.owner_agent.as_deref(), Some("planner"));
+    assert_eq!(updated.task.state, AgentTaskState::Active);
+    assert_eq!(updated.task.version, 2);
+    assert!(updated.task.completed_at.is_none());
+    assert_eq!(updated.state_change.unwrap().from, AgentTaskState::Open);
+
+    let fetched = repo.get_task(&scope, &task_id).await.unwrap().unwrap();
+    assert_eq!(fetched.task_number, 1);
+}
+
+#[tokio::test]
+async fn remove_dependencies_and_filter_done_tasks() {
+    let repo = MemoryAgentTaskRepository::new();
+    let scope = scope();
+    repo.create_task(&scope, create("Blocker")).await.unwrap();
+    repo.create_task(
+        &scope,
+        AgentTaskCreate {
+            blocked_by: vec!["1".to_string()],
+            ..create("Blocked")
+        },
+    )
+    .await
+    .unwrap();
+
+    let blocked = repo.get_task(&scope, "2").await.unwrap().unwrap();
+    assert_eq!(blocked.blocked_by, vec!["1"]);
+    assert_eq!(blocked.unresolved_blocked_by, vec!["1"]);
+
+    let removed = repo
+        .update_task(
+            &scope,
+            "2",
+            AgentTaskPatch {
+                remove_blocked_by: vec!["1".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(removed.changed_fields, vec!["dependencies"]);
+    assert!(removed.task.blocked_by.is_empty());
+
+    let completed = repo
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                add_blocks: vec!["2".to_string()],
+                state: Some(AgentTaskState::Done),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(completed.task.completed_at.is_some());
+
+    let active_only = repo
+        .list_tasks(&scope, AgentTaskListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(active_only.len(), 1);
+    assert_eq!(active_only[0].task_number, 2);
+
+    let all_tasks = repo
+        .list_tasks(&scope, AgentTaskListOptions { include_done: true })
+        .await
+        .unwrap();
+    assert_eq!(all_tasks.len(), 2);
+
+    repo.update_task(
+        &scope,
+        "1",
+        AgentTaskPatch {
+            remove_blocks: vec!["2".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(repo
+        .get_task(&scope, "1")
+        .await
+        .unwrap()
+        .unwrap()
+        .blocks
+        .is_empty());
+}
+
+#[tokio::test]
+async fn validates_missing_tasks_and_blank_fields() {
+    let repo = MemoryAgentTaskRepository::new();
+    let scope = scope();
+
+    assert!(repo.get_task(&scope, "1").await.unwrap().is_none());
+    assert!(repo
+        .list_tasks(&scope, AgentTaskListOptions::default())
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repo
+        .update_task(&scope, "1", AgentTaskPatch::default())
+        .await
+        .unwrap()
+        .is_none());
+
+    let title_err = repo.create_task(&scope, create("")).await.unwrap_err();
+    assert!(title_err.to_string().contains("title"));
+
+    repo.create_task(&scope, create("Valid")).await.unwrap();
+    let details_err = repo
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                details: Some(" ".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(details_err.to_string().contains("details"));
+
+    let missing_dependency = repo
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                add_blocked_by: vec!["missing".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(missing_dependency
+        .to_string()
+        .contains("dependency not found"));
+
+    let self_dependency = repo
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                add_blocks: vec!["1".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(self_dependency.to_string().contains("reference itself"));
+}

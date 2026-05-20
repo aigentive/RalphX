@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use crate::application::AgentTaskService;
-use crate::domain::entities::{AgentTaskCreate, AgentTaskPatch, AgentTaskScope};
-use crate::domain::repositories::AgentTaskRepository;
+use serde_json::json;
+
+use crate::domain::entities::{AgentTaskCreate, AgentTaskPatch, AgentTaskScope, AgentTaskState};
+use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::infrastructure::memory::MemoryAgentTaskRepository;
 
 fn service() -> AgentTaskService {
@@ -51,4 +53,110 @@ async fn claim_task_rejects_unresolved_blockers() {
 
     let err = service.claim_task(&scope, "2", None).await.unwrap_err();
     assert!(err.to_string().contains("blocked"));
+}
+
+#[tokio::test]
+async fn service_forwards_crud_operations() {
+    let service = service();
+    let scope = scope();
+
+    let created = service.create_task(&scope, create("Plan")).await.unwrap();
+    assert_eq!(created.task.task_number, 1);
+
+    let listed = service
+        .list_tasks(&scope, AgentTaskListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+
+    let updated = service
+        .update_task(
+            &scope,
+            "1",
+            AgentTaskPatch {
+                title: Some("Plan updated".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.task.title, "Plan updated");
+
+    let fetched = service.get_task(&scope, "1").await.unwrap().unwrap();
+    assert_eq!(fetched.title, "Plan updated");
+}
+
+#[tokio::test]
+async fn claim_task_uses_scope_actor_or_explicit_owner() {
+    let service = service();
+    let scope = scope();
+    service
+        .create_task(&scope, create("Claim me"))
+        .await
+        .unwrap();
+
+    let claimed = service
+        .claim_task(&scope, "1", None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claimed.task.owner_agent.as_deref(),
+        Some("ralphx-general-worker")
+    );
+    assert_eq!(claimed.task.state, AgentTaskState::Active);
+
+    let reassigned = service
+        .claim_task(&scope, "1", Some("verifier".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reassigned.task.owner_agent.as_deref(), Some("verifier"));
+}
+
+#[tokio::test]
+async fn claim_and_complete_missing_tasks_return_none() {
+    let service = service();
+    let scope = scope();
+
+    assert!(service
+        .claim_task(&scope, "missing", None)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(service
+        .complete_task(&scope, "missing", None)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn complete_task_marks_done_and_merges_metadata() {
+    let service = service();
+    let scope = scope();
+    service
+        .create_task(
+            &scope,
+            AgentTaskCreate {
+                metadata: Some(json!({"priority": "high", "stale": true})),
+                ..create("Complete me")
+            },
+        )
+        .await
+        .unwrap();
+
+    let completed = service
+        .complete_task(&scope, "1", Some(json!({"stale": null, "verified": true})))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(completed.task.state, AgentTaskState::Done);
+    assert_eq!(
+        completed.task.metadata,
+        Some(json!({"priority": "high", "verified": true}))
+    );
+    assert_eq!(completed.state_change.unwrap().to, AgentTaskState::Done);
 }

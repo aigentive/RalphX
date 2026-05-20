@@ -241,3 +241,100 @@ pub struct AgentTaskMutationResult {
     pub changed_fields: Vec<String>,
     pub state_change: Option<AgentTaskStateChange>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use serde_json::json;
+
+    #[test]
+    fn identifiers_display_and_expose_inner_value() {
+        let list_id = AgentTaskListId::from_string("list-1");
+        let task_id = AgentTaskId::from_string("task-1");
+
+        assert_eq!(list_id.as_str(), "list-1");
+        assert_eq!(task_id.as_str(), "task-1");
+        assert_eq!(list_id.to_string(), "list-1");
+        assert_eq!(task_id.to_string(), "task-1");
+        assert!(!AgentTaskListId::new().as_str().is_empty());
+        assert!(!AgentTaskId::new().as_str().is_empty());
+    }
+
+    #[test]
+    fn task_state_serializes_and_parses_expected_values() {
+        assert_eq!(AgentTaskState::Open.as_str(), "open");
+        assert_eq!(AgentTaskState::Active.to_string(), "active");
+        assert_eq!(
+            "done".parse::<AgentTaskState>().unwrap(),
+            AgentTaskState::Done
+        );
+        assert_eq!(
+            "dropped".parse::<AgentTaskState>().unwrap(),
+            AgentTaskState::Dropped
+        );
+        assert!(AgentTaskState::Done.is_resolved());
+        assert!(AgentTaskState::Dropped.is_resolved());
+        assert!(!AgentTaskState::Open.is_resolved());
+        assert!("invalid".parse::<AgentTaskState>().is_err());
+    }
+
+    #[test]
+    fn scope_constructor_sets_minimal_defaults() {
+        let scope = AgentTaskScope::new("conversation", "conv-1");
+
+        assert_eq!(scope.scope_type, "conversation");
+        assert_eq!(scope.scope_id, "conv-1");
+        assert!(scope.project_id.is_none());
+        assert!(scope.actor_agent.is_none());
+    }
+
+    #[test]
+    fn detail_availability_reflects_unresolved_blockers() {
+        let now = Utc::now();
+        let mut detail = AgentTaskDetail {
+            task_id: AgentTaskId::from_string("task-1"),
+            task_number: 1,
+            title: "Task".to_string(),
+            details: "Details".to_string(),
+            active_label: None,
+            owner_agent: None,
+            state: AgentTaskState::Open,
+            metadata: None,
+            blocked_by: vec!["2".to_string()],
+            unresolved_blocked_by: vec!["2".to_string()],
+            blocks: Vec::new(),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+
+        assert_eq!(detail.availability(), "blocked");
+        detail.unresolved_blocked_by.clear();
+        assert_eq!(detail.availability(), "ready");
+    }
+
+    #[test]
+    fn metadata_merge_handles_replacements_removals_and_empty_results() {
+        assert_eq!(
+            merge_agent_task_metadata(Some(json!({"old": true})), json!("replace")),
+            Some(json!("replace"))
+        );
+        assert_eq!(
+            merge_agent_task_metadata(
+                Some(json!({"priority": "high", "old": true})),
+                json!({"old": null, "lane": "test"})
+            ),
+            Some(json!({"priority": "high", "lane": "test"}))
+        );
+        assert_eq!(
+            merge_agent_task_metadata(Some(json!({"old": true})), json!({"old": null})),
+            None
+        );
+        assert_eq!(
+            merge_agent_task_metadata(None, json!({"created": true})),
+            Some(json!({"created": true}))
+        );
+    }
+}
