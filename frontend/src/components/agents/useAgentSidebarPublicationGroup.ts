@@ -1,4 +1,4 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
   chatApi,
@@ -191,6 +191,43 @@ function useAgentSidebarGroup({
       rows: pages.flatMap((page) => page.rows),
     },
   };
+}
+
+export function useProjectGroupLatestOrder({
+  projectIds,
+  archivedOnly,
+  publicationStates,
+  enabled = true,
+}: {
+  projectIds: string[];
+  archivedOnly: boolean;
+  publicationStates: AgentSidebarPublicationState[];
+  enabled?: boolean;
+}) {
+  return useQuery({
+    queryKey: [
+      ...agentSidebarConversationKeys.all,
+      "project-order",
+      projectIds,
+      archivedOnly,
+      publicationStates,
+    ],
+    queryFn: async () => {
+      const response = await chatApi.listAgentSidebarConversations({
+        projectIds,
+        archivedOnly,
+        groupBy: "project",
+        sort: "latest",
+        limitPerGroup: 1,
+        publicationStates,
+      });
+      return response.groups
+        .filter((g) => g.rows.length > 0)
+        .map((g) => g.key);
+    },
+    enabled: enabled && projectIds.length > 0,
+    staleTime: 10_000,
+  });
 }
 
 function emptyGroup(groupKey: string): AgentSidebarConversationGroup {
