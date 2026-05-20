@@ -222,10 +222,15 @@ export function AgentsPublishInlineDiffs({
     return map;
   }, [annotations, canRenderPrAnnotations]);
 
-  // ── Mode change → reset hydrated set (new mode = new file list) ─────────
+  // ── Conversation/mode changes reset hydrated paths; keep same-list viewport ranges ──
   useEffect(() => {
     setHydratedPaths(new Set());
     setVisibleRange(null);
+    setFocusTargetPath(null);
+  }, [conversationId]);
+
+  useEffect(() => {
+    setHydratedPaths(new Set());
     setFocusTargetPath(null);
   }, [conversationId, effectiveMode]);
 
@@ -276,6 +281,13 @@ export function AgentsPublishInlineDiffs({
     },
     [currentFiles],
   );
+
+  useEffect(() => {
+    if (!visibleRange || currentFiles.length === 0) {
+      return;
+    }
+    hydrateVisibleRange(visibleRange);
+  }, [currentFiles, hydrateVisibleRange, visibleRange]);
 
   // Only fetch diffs for visible expanded files — collapsed/off-range cards pay no query cost.
   const expandedFiles = useMemo(

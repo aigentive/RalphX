@@ -1450,6 +1450,25 @@ async fn sync_agent_workspace_auto_merge_preference(
     Ok(current)
 }
 
+pub async fn sync_agent_workspace_auto_merge_preference_for_workspace(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    pr_number: i64,
+    workspace: &AgentConversationWorkspace,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+) -> crate::AppResult<bool> {
+    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    sync_agent_workspace_auto_merge_preference(
+        github,
+        working_dir,
+        pr_number,
+        workspace,
+        &health,
+        workspace_repo,
+    )
+    .await
+}
+
 fn classify_agent_workspace_pr_autofix_issue(
     pr_number: i64,
     health: &PrHealth,
