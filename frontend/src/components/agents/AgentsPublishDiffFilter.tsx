@@ -6,13 +6,13 @@
  * Content:
  *   VIEW section:
  *   - Radio "Workspace changes (N files)"
- *   - Radio "Unstaged"  (lazy count — shown when selected)
- *   - Radio "Staged"    (lazy count — shown when selected)
+ *   - Radio "Unstaged (N files)"
+ *   - Radio "Staged (N files)"
  *   - Radio "All commits (N commits)"
  *   - Collapsible "SPECIFIC COMMIT" section: filter input + commit radio list.
  *
- * Staged/Unstaged counts are optional props; parent passes them once the mode is active
- * and the query resolves. Until then the trigger shows "Staged" / "Unstaged" without count.
+ * Staged/Unstaged counts are optional props; parent passes them once the worktree
+ * file-list queries resolve. Until then the trigger and options omit the count.
  *
  * Modeled on AgentsSidebar.tsx filter popover pattern.
  * WKWebView CSS: longhand background-color / border-color with literal or shallow-chain tokens.
@@ -127,6 +127,13 @@ function getTriggerLabel(
   return mode.slice(0, 7);
 }
 
+function formatFileCount(count: number | undefined): string {
+  if (count === undefined) {
+    return "";
+  }
+  return ` (${count} ${count === 1 ? "file" : "files"})`;
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function AgentsPublishDiffFilter({
@@ -225,14 +232,14 @@ export function AgentsPublishDiffFilter({
                   onClick={() => handleSelect("unstaged")}
                   testId="diff-filter-option-unstaged"
                 >
-                  Unstaged
+                  Unstaged{formatFileCount(unstagedCount)}
                 </FilterRadioRow>
                 <FilterRadioRow
                   selected={mode === "staged"}
                   onClick={() => handleSelect("staged")}
                   testId="diff-filter-option-staged"
                 >
-                  Staged
+                  Staged{formatFileCount(stagedCount)}
                 </FilterRadioRow>
               </>
             )}

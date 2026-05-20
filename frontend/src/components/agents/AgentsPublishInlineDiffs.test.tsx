@@ -89,6 +89,8 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     onModeChange,
     workspaceChangeCount,
     workspaceChangeLabel,
+    stagedCount,
+    unstagedCount,
     supportsWorktreeModes,
   }: {
     mode: string;
@@ -105,6 +107,8 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
       data-mode={mode}
       data-count={workspaceChangeCount}
       data-label={workspaceChangeLabel ?? ""}
+      data-staged-count={stagedCount ?? ""}
+      data-unstaged-count={unstagedCount ?? ""}
       data-supports-worktree-modes={String(supportsWorktreeModes)}
     >
       <button onClick={() => onModeChange("uncommitted")}>
@@ -305,8 +309,8 @@ describe("AgentsPublishInlineDiffs", () => {
     mockGetUncommittedDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
     mockGetCommitDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
     mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
-    mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
-    mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
+    mockGetStagedFiles.mockResolvedValue([]);
+    mockGetUnstagedFiles.mockResolvedValue([]);
     mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/CumulativeFile.tsx")]);
     mockGetStagedFileDiff.mockResolvedValue(makeHunkDiff("src/StagedFile.tsx"));
     mockGetUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
@@ -495,6 +499,76 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       expect(screen.getByTestId("inline-diffs-empty")).toBeInTheDocument();
+    });
+
+    it("auto-selects unstaged files before staged and workspace changes", async () => {
+      mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
+      mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview([makeFileChange("src/WorkspaceFile.tsx")])}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-mode", "unstaged"),
+      );
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-unstaged-count", "1");
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-staged-count", "1");
+      expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeInTheDocument();
+      expect(screen.queryByTestId("mock-file-diff-src-WorkspaceFile.tsx")).toBeNull();
+    });
+
+    it("auto-selects staged files when there are no unstaged files", async () => {
+      mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
+      mockGetUnstagedFiles.mockResolvedValue([]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview([makeFileChange("src/WorkspaceFile.tsx")])}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-mode", "staged"),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toBeInTheDocument();
+      expect(screen.queryByTestId("mock-file-diff-src-WorkspaceFile.tsx")).toBeNull();
+    });
+
+    it("uses mode-specific empty copy for unstaged and staged views", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview([makeFileChange("src/WorkspaceFile.tsx")])}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Unstaged" }));
+      await waitFor(() => expect(screen.getByText("No unstaged files")).toBeInTheDocument());
+      expect(
+        screen.getByText("No unstaged changes detected in this workspace."),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+      await waitFor(() => expect(screen.getByText("No staged files")).toBeInTheDocument());
+      expect(screen.getByText("No staged changes detected in this workspace.")).toBeInTheDocument();
     });
 
     it("all file cards default to expanded", () => {
@@ -787,6 +861,10 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("mode=staged — diff fetching", () => {
+    beforeEach(() => {
+      mockGetStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
+    });
+
     it("fetches staged file changes when mode switches to staged", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
@@ -919,6 +997,10 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("mode=unstaged — diff fetching", () => {
+    beforeEach(() => {
+      mockGetUnstagedFiles.mockResolvedValue([makeFileChange("src/UnstagedFile.tsx")]);
+    });
+
     it("fetches unstaged file changes when mode switches to unstaged", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];

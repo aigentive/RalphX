@@ -1,15 +1,16 @@
 // Request/Response types for HTTP server endpoints
 
 use axum::{http::StatusCode, response::IntoResponse, Json};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 
 use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
-    Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary, TaskProposal,
-    TaskStep,
+    AgentTaskState, Artifact, ArtifactContent, AuditLogEntry, MemoryEntry, StepProgressSummary,
+    TaskProposal, TaskStep,
 };
 use crate::http_server::delegation::DelegationService;
 use crate::http_server::handlers::artifacts::EditError;
@@ -141,6 +142,162 @@ pub struct DelegatedSessionStatusResponse {
     pub conversation_id: Option<String>,
     pub latest_run: Option<DelegatedRunSummary>,
     pub recent_messages: Option<Vec<ChatMessageSummary>>,
+}
+
+// ============================================================================
+// Request/Response Types - Native Agent Tasks
+// ============================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentTaskContextFields {
+    pub context_type: Option<String>,
+    pub context_id: Option<String>,
+    pub project_id: Option<String>,
+    pub actor_agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentTaskRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    pub title: String,
+    pub details: String,
+    pub active_label: Option<String>,
+    pub owner_agent: Option<String>,
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
+    #[serde(default)]
+    pub blocks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetAgentTaskRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    #[serde(alias = "task_id")]
+    pub task_ref: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListAgentTasksRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    #[serde(default)]
+    pub include_done: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAgentTaskRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    #[serde(alias = "task_id")]
+    pub task_ref: String,
+    pub title: Option<String>,
+    pub details: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_patch")]
+    pub active_label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_string_patch")]
+    pub owner_agent: Option<Option<String>>,
+    pub state: Option<AgentTaskState>,
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub add_blocked_by: Vec<String>,
+    #[serde(default)]
+    pub add_blocks: Vec<String>,
+    #[serde(default)]
+    pub remove_blocked_by: Vec<String>,
+    #[serde(default)]
+    pub remove_blocks: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClaimAgentTaskRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    #[serde(alias = "task_id")]
+    pub task_ref: String,
+    pub owner_agent: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompleteAgentTaskRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    #[serde(alias = "task_id")]
+    pub task_ref: String,
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTaskStateChangeDto {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTaskDto {
+    pub task_id: String,
+    pub task_number: i64,
+    pub title: String,
+    pub details: String,
+    pub active_label: Option<String>,
+    pub owner_agent: Option<String>,
+    pub state: String,
+    pub metadata: Option<Value>,
+    pub blocked_by: Vec<String>,
+    pub unresolved_blocked_by: Vec<String>,
+    pub blocks: Vec<String>,
+    pub availability: String,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTaskSummaryDto {
+    pub task_id: String,
+    pub task_number: i64,
+    pub title: String,
+    pub state: String,
+    pub owner_agent: Option<String>,
+    pub blocked_by: Vec<String>,
+    pub blocks: Vec<String>,
+    pub availability: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentTaskMutationResponse {
+    pub success: bool,
+    pub task: Option<AgentTaskDto>,
+    pub changed_fields: Vec<String>,
+    pub state_change: Option<AgentTaskStateChangeDto>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentTaskGetResponse {
+    pub success: bool,
+    pub task: Option<AgentTaskDto>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentTaskListResponse {
+    pub success: bool,
+    pub tasks: Vec<AgentTaskSummaryDto>,
+    pub error: Option<String>,
+}
+
+fn deserialize_optional_string_patch<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

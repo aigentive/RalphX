@@ -18,6 +18,11 @@ const DEBUG_PROFILE_GENERATED_PLUGIN_DIR_COMPONENTS: &[&str] =
     &["generated", "debug", "claude-plugin"];
 const DEBUG_GENERATED_PLUGIN_DIR_COMPONENTS: &[&str] =
     &[".artifacts", "generated", "claude-plugin"];
+const INTERNAL_MCP_SERVER_NAME_SUFFIX: &str = "_internal";
+
+pub fn internal_mcp_server_name(primary_server_name: &str) -> String {
+    format!("{primary_server_name}{INTERNAL_MCP_SERVER_NAME_SUFFIX}")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,6 +93,8 @@ pub struct CanonicalClaudeAgentMetadata {
     #[serde(default)]
     pub mcp_tools: Vec<String>,
     #[serde(default)]
+    pub internal_mcp_tools: Vec<String>,
+    #[serde(default)]
     pub tools: Option<CanonicalClaudeToolSpec>,
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
@@ -118,6 +125,7 @@ impl CanonicalClaudeAgentMetadata {
             && self.effort.is_none()
             && self.mcp_transport.is_none()
             && self.mcp_tools.is_empty()
+            && self.internal_mcp_tools.is_empty()
             && self.tools.is_none()
             && self.disallowed_tools.is_empty()
             && self.preapproved_cli_tools.is_empty()
@@ -138,6 +146,9 @@ impl CanonicalClaudeAgentMetadata {
         }
         if !self.mcp_tools.is_empty() {
             base.mcp_tools = self.mcp_tools;
+        }
+        if !self.internal_mcp_tools.is_empty() {
+            base.internal_mcp_tools = self.internal_mcp_tools;
         }
         if self.tools.is_some() {
             base.tools = self.tools;
@@ -170,6 +181,8 @@ pub struct CanonicalCodexAgentMetadata {
     pub mcp_transport: Option<String>,
     #[serde(default)]
     pub mcp_tools: Vec<String>,
+    #[serde(default)]
+    pub internal_mcp_tools: Vec<String>,
 }
 
 impl CanonicalCodexAgentMetadata {
@@ -177,6 +190,7 @@ impl CanonicalCodexAgentMetadata {
         self.runtime_features.is_empty()
             && self.mcp_transport.is_none()
             && self.mcp_tools.is_empty()
+            && self.internal_mcp_tools.is_empty()
     }
 }
 
@@ -686,6 +700,10 @@ pub fn load_harness_agent_prompt(
         prompt.push_str("\n\n");
         prompt.push_str(&generated_appendix);
     }
+    if let Some(generated_appendix) = build_generated_agent_task_appendix(&definition, harness) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&generated_appendix);
+    }
     Some(prompt)
 }
 
@@ -737,6 +755,88 @@ fn build_generated_delegation_appendix(definition: &CanonicalAgentDefinition) ->
         for guidance in general_target_guidance {
             lines.push(guidance);
         }
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn build_generated_agent_task_appendix(
+    definition: &CanonicalAgentDefinition,
+    harness: AgentPromptHarness,
+) -> Option<String> {
+    let (harness_tools, internal_harness_tools) = match harness {
+        AgentPromptHarness::Claude => (
+            &definition.harnesses.claude.mcp_tools,
+            &definition.harnesses.claude.internal_mcp_tools,
+        ),
+        AgentPromptHarness::Codex => (
+            &definition.harnesses.codex.mcp_tools,
+            &definition.harnesses.codex.internal_mcp_tools,
+        ),
+    };
+    let tools: Vec<&str> = if harness_tools.is_empty() && internal_harness_tools.is_empty() {
+        definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .map(String::as_str)
+            .collect()
+    } else {
+        harness_tools
+            .iter()
+            .chain(internal_harness_tools.iter())
+            .map(String::as_str)
+            .collect()
+    };
+    let tool_name = |name: &'static str| -> Option<&'static str> {
+        tools.iter().any(|tool| *tool == name).then_some(name)
+    };
+    let create_tool = tool_name("create_agent_task");
+    let get_tool = tool_name("get_agent_task");
+    let list_tool = tool_name("list_agent_tasks");
+    let update_tool = tool_name("update_agent_task");
+    let claim_tool = tool_name("claim_agent_task");
+    let complete_tool = tool_name("complete_agent_task");
+    if [
+        create_tool,
+        get_tool,
+        list_tool,
+        update_tool,
+        claim_tool,
+        complete_tool,
+    ]
+    .iter()
+    .all(Option::is_none)
+    {
+        return None;
+    }
+
+    let mut lines = vec![
+        "## RalphX Agent Task Ledger (AUTO-GENERATED)".to_string(),
+        "Use the RalphX agent task ledger for multi-step work, dependencies, and delegated follow-up that should survive across tool calls in this context.".to_string(),
+    ];
+
+    if let Some(tool) = list_tool {
+        lines.push(format!("- Use `{tool}` before depending on prior ledger state or when resuming a multi-step thread."));
+    }
+    if let Some(tool) = create_tool {
+        lines.push(format!("- Use `{tool}` for concrete work items with a clear title and details; connect blockers with `blocked_by` or `blocks` when ordering matters."));
+    }
+    if let Some(tool) = claim_tool {
+        lines.push(format!("- Use `{tool}` before starting a ready ledger item; the backend rejects claims that still have unresolved blockers."));
+    } else if let Some(tool) = update_tool {
+        lines.push(format!(
+            "- Use `{tool}` to mark a task `active` only when its unresolved blockers are clear."
+        ));
+    }
+    if let Some(tool) = update_tool {
+        lines.push(format!("- Use `{tool}` to update fields, owner, state, metadata, or dependency links as the plan changes."));
+    }
+    if let Some(tool) = complete_tool {
+        lines.push(format!("- Use `{tool}` when the item is actually done, optionally adding concise completion metadata."));
+    }
+    if let Some(tool) = get_tool {
+        lines.push(format!("- Use `{tool}` when you need full details, including resolved blockers that list views may omit."));
     }
 
     Some(lines.join("\n"))

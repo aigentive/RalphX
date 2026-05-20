@@ -11,6 +11,12 @@ capabilities:
     - check_agent_workspace_publish_readiness
     - update_agent_workspace_from_base
     - publish_agent_workspace
+    - create_agent_task
+    - get_agent_task
+    - list_agent_tasks
+    - update_agent_task
+    - claim_agent_task
+    - complete_agent_task
     - search_memories
     - get_memory
     - get_memories_for_paths

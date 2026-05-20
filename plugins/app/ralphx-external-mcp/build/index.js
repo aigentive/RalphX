@@ -2,7 +2,7 @@
 /**
  * ralphx-external-mcp — External MCP Server for RalphX Orchestration API
  *
- * Exposes 27 orchestration-level tools to external agents (reefbot.ai, etc.) via
+ * Exposes orchestration-level tools to external agents (reefbot.ai, etc.) via
  * MCP over HTTP+SSE (Streamable HTTP Transport).
  *
  * Architecture:

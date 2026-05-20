@@ -62,6 +62,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceStagedDiffMock: vi.fn(),
   getWorkspaceUnstagedDiffMock: vi.fn(),
   getWorkspaceCumulativeDiffMock: vi.fn(),
+  listAgentTasksMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
@@ -162,6 +163,7 @@ const {
   getWorkspaceStagedDiffMock,
   getWorkspaceUnstagedDiffMock,
   getWorkspaceCumulativeDiffMock,
+  listAgentTasksMock,
   toastErrorMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
@@ -564,6 +566,12 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceUnstagedDiffMock(...args),
     getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
       getWorkspaceCumulativeDiffMock(...args),
+  },
+}));
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listConversationTasks: (...args: unknown[]) => listAgentTasksMock(...args),
   },
 }));
 
@@ -1027,6 +1035,13 @@ export function setupAgentsViewTest() {
   getWorkspaceCommitsMock.mockReset();
   getWorkspaceCommitChangesMock.mockReset();
   getWorkspaceCommitDiffMock.mockReset();
+  getWorkspaceStagedChangesMock.mockReset();
+  getWorkspaceUnstagedChangesMock.mockReset();
+  getWorkspaceCumulativeChangesMock.mockReset();
+  getWorkspaceStagedDiffMock.mockReset();
+  getWorkspaceUnstagedDiffMock.mockReset();
+  getWorkspaceCumulativeDiffMock.mockReset();
+  listAgentTasksMock.mockReset();
   precomputePrDescriptionMock.mockReset();
   toastErrorMock.mockReset();
   toastSuccessMock.mockReset();
@@ -1087,6 +1102,7 @@ export function setupAgentsViewTest() {
   getWorkspaceStagedDiffMock.mockResolvedValue("");
   getWorkspaceUnstagedDiffMock.mockResolvedValue("");
   getWorkspaceCumulativeDiffMock.mockResolvedValue("");
+  listAgentTasksMock.mockResolvedValue([]);
   precomputePrDescriptionMock.mockResolvedValue({
     conversationId: "conversation-1",
     status: "skipped",

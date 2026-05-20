@@ -28,6 +28,8 @@ import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runti
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
+import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
+import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 /**
  * Semantic keyword patterns for cross-project detection in plan text.
  * Exported for unit testing.
@@ -640,6 +642,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         else if (name === "delegate_cancel") {
             result = await callTauri("coordination/delegate/cancel", args);
+        }
+        else if (AGENT_TASK_TOOL_NAMES.includes(name)) {
+            const endpointByTool = {
+                create_agent_task: "agent_tasks/create",
+                get_agent_task: "agent_tasks/get",
+                list_agent_tasks: "agent_tasks/list",
+                update_agent_task: "agent_tasks/update",
+                claim_agent_task: "agent_tasks/claim",
+                complete_agent_task: "agent_tasks/complete",
+            };
+            const endpoint = endpointByTool[name];
+            result = await callTauri(endpoint, withAgentTaskRuntimeContext(args, {
+                contextType: RALPHX_CONTEXT_TYPE,
+                contextId: RALPHX_CONTEXT_ID,
+                projectId: RALPHX_PROJECT_ID,
+                actorAgent: AGENT_TYPE,
+                parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+            }));
         }
         else if (name === "get_project_analysis") {
             // GET /api/projects/:project_id/analysis?task_id=
