@@ -56,6 +56,9 @@ const { publicationGroupCalls } = vi.hoisted(() => ({
     sort: string;
   }>,
 }));
+const { latestProjectOrderData } = vi.hoisted(() => ({
+  latestProjectOrderData: { current: null as string[] | null },
+}));
 
 vi.mock("./useProjectAgentConversations", () => ({
   useProjectAgentConversations: (
@@ -325,6 +328,10 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
         isLoading: projectResult?.isLoading,
       });
     },
+    useProjectGroupLatestOrder: () => ({
+      data: latestProjectOrderData.current,
+      isLoading: false,
+    }),
   };
 });
 
@@ -439,6 +446,7 @@ describe("AgentsSidebar", () => {
     workspacesByProject.clear();
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
+    latestProjectOrderData.current = null;
     useChatStore.setState({ activeConversationIds: {}, agentStatus: {} });
     useAgentSessionStore.setState({
       expandedProjectIds: { "project-1": true, "project-2": false },
@@ -1227,7 +1235,53 @@ describe("AgentsSidebar", () => {
     expect(screen.getByRole("menuitemradio", { name: "Latest" })).toBeInTheDocument();
   });
 
-  it("preserves incoming project order for latest sort and can sort projects alphabetically", async () => {
+  it("sorts project groups by most recent conversation when sort is latest", () => {
+    const alpha = project({ id: "project-1", name: "alpha" });
+    const beta = project({ id: "project-2", name: "beta" });
+    const gamma = project({ id: "project-3", name: "gamma" });
+
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-1", projectId: "project-1", contextId: "project-1" })],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [conversation({ id: "conversation-2", projectId: "project-2", contextId: "project-2" })],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-3", {
+      data: [conversation({ id: "conversation-3", projectId: "project-3", contextId: "project-3" })],
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    useAgentSessionStore.setState({
+      expandedProjectIds: {
+        "project-1": true,
+        "project-2": true,
+        "project-3": true,
+      },
+    });
+
+    latestProjectOrderData.current = ["project-3", "project-1", "project-2"];
+
+    renderSidebar([alpha, beta, gamma]);
+
+    expect(getProjectRowOrder()).toEqual([
+      "agents-project-project-3",
+      "agents-project-project-1",
+      "agents-project-project-2",
+    ]);
+  });
+
+  it("can sort projects alphabetically after latest sort", async () => {
     const user = userEvent.setup();
     const alpha = project({ id: "project-1", name: "alpha" });
     const beta = project({ id: "project-2", name: "beta" });
@@ -1247,7 +1301,9 @@ describe("AgentsSidebar", () => {
       fetchNextPage: vi.fn(),
     });
 
-    renderSidebar([beta, alpha]);
+    latestProjectOrderData.current = ["project-2", "project-1"];
+
+    renderSidebar([alpha, beta]);
 
     expect(getProjectRowOrder()).toEqual([
       "agents-project-project-2",
