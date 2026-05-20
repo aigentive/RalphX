@@ -1682,36 +1682,70 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
         let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Codex)
             .unwrap_or_else(|| panic!("missing codex prompt for {agent_name}"));
         assert!(
-            prompt.contains("## RalphX Agent Task Ledger (AUTO-GENERATED)"),
-            "prompt for {agent_name} should include the generated agent task appendix"
+            prompt.contains("<agent_task_ledger_contract>"),
+            "prompt for {agent_name} should include the generated XML-style agent task contract"
         );
         assert!(
             prompt.contains("list_agent_tasks"),
             "prompt for {agent_name} should mention live agent task tools"
         );
         assert!(
-            prompt.contains("For any non-trivial or multi-turn task"),
-            "prompt for {agent_name} should include the strengthened agent task trigger"
+            prompt.contains("Before search, read, edit, shell, or other tool-backed work"),
+            "prompt for {agent_name} should require ledger listing before work starts"
         );
         assert!(
-            prompt.contains("For simple questions or conversational replies"),
+            prompt.contains("do not perform search, read, shell, edit, or other tool-backed work"),
+            "prompt for {agent_name} should hard-gate empty-ledger required work"
+        );
+        assert!(
+            prompt.contains("Read-only audits, multi-file investigations, prompt-surface reviews"),
+            "prompt for {agent_name} should classify read-only investigation as tool-backed work"
+        );
+        assert!(
+            prompt.contains("For simple conversational turns or simple questions"),
             "prompt for {agent_name} should include the simple-chat exception"
         );
         assert!(
-            prompt.contains("### When To Use The Ledger"),
-            "prompt for {agent_name} should include explicit usage criteria"
+            prompt.contains("<breakdown_rules>"),
+            "prompt for {agent_name} should include explicit breakdown rules"
         );
         assert!(
-            prompt.contains("### Task State Rules"),
+            prompt.contains(
+                "For user-provided numbered audit, check, or investigation lists"
+            ),
+            "prompt for {agent_name} should require task splitting for numbered audits"
+        );
+        assert!(
+            prompt.contains("A single umbrella task is acceptable only for a single-question investigation"),
+            "prompt for {agent_name} should restrict umbrella tasks to non-independent work"
+        );
+        assert!(
+            prompt.contains("Do not create one umbrella task for multiple independent fixes, checks, audit items, or investigation streams"),
+            "prompt for {agent_name} should forbid umbrella tasks for independent work"
+        );
+        assert!(
+            prompt.contains("For two or more requested fixes, checks, audit items, or investigation streams"),
+            "prompt for {agent_name} should require one task per independent requested fix"
+        );
+        assert!(
+            prompt.contains("<state_rules>"),
             "prompt for {agent_name} should include task state rules"
         );
         assert!(
-            prompt.contains("### Examples When To Use The Ledger"),
+            prompt.contains("<examples>"),
             "prompt for {agent_name} should include original usage examples"
         );
         assert!(
             prompt.contains("provider-spawn bug requires checking logs"),
             "prompt for {agent_name} should include RalphX-specific examples"
+        );
+        assert!(
+            prompt.contains("three-part read-only audit covering Codex prompt injection"),
+            "prompt for {agent_name} should include a read-only audit splitting example"
+        );
+        assert!(
+            !prompt.contains("### When To Use The Ledger"),
+            "prompt for {agent_name} should not use the legacy markdown ledger headings"
         );
     }
 
@@ -1719,12 +1753,12 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
         load_harness_agent_prompt(&root, "ralphx-general-worker", AgentPromptHarness::Claude)
             .expect("missing general worker claude prompt");
     assert!(
-        claude_general_worker.contains("For any non-trivial or multi-turn task"),
-        "Claude prompt should include the strengthened agent task trigger"
+        claude_general_worker.contains("<agent_task_ledger_contract>"),
+        "Claude prompt should include the XML-style agent task contract"
     );
     assert!(
-        claude_general_worker.contains("### Examples When Not To Use The Ledger"),
-        "Claude prompt should include examples for skipping noisy ledger use"
+        claude_general_worker.contains("For two or more requested fixes, checks, audit items, or investigation streams"),
+        "Claude prompt should include the concrete multi-fix breakdown rule"
     );
 
     let session_namer = load_harness_agent_prompt(
@@ -1734,7 +1768,7 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
     )
     .expect("missing session namer codex prompt");
     assert!(
-        !session_namer.contains("## RalphX Agent Task Ledger (AUTO-GENERATED)"),
+        !session_namer.contains("<agent_task_ledger_contract>"),
         "non-agent-task prompt should not include the generated agent task appendix"
     );
 }
