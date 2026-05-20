@@ -736,6 +736,9 @@ describe("AgentsView start conversation", () => {
       useChatStore.getState().isSending["project:conversation-seeded"]
     ).toBe(true);
     expect(
+      useChatStore.getState().agentActivityLabels["project:conversation-seeded"]
+    ).toBe("Setup workspace");
+    expect(
       useAgentSessionStore.getState().runtimeByConversationId["conversation-seeded"]
     ).toEqual({
       provider: "codex",
@@ -854,6 +857,9 @@ describe("AgentsView start conversation", () => {
     ).toBeUndefined();
     expect(
       useChatStore.getState().isSending["project:conversation-failed-start"]
+    ).toBeUndefined();
+    expect(
+      useChatStore.getState().agentActivityLabels["project:conversation-failed-start"]
     ).toBeUndefined();
   });
 

@@ -71,6 +71,7 @@ export function useStartAgentConversation({
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
   const queueMessage = useChatStore((s) => s.queueMessage);
+  const setAgentActivityLabel = useChatStore((s) => s.setAgentActivityLabel);
   const setAgentRunning = useChatStore((s) => s.setAgentRunning);
   const setSending = useChatStore((s) => s.setSending);
   const setEffectiveModel = useChatStore((s) => s.setEffectiveModel);
@@ -182,6 +183,7 @@ export function useStartAgentConversation({
         );
         queryClient.removeQueries({ queryKey: chatKeys.conversation(conversationId) });
         setActiveConversation(storeKey, null);
+        setAgentActivityLabel(storeKey, null);
         setAgentRunning(storeKey, false);
         setSending(storeKey, false);
       };
@@ -212,6 +214,7 @@ export function useStartAgentConversation({
       const optimisticStoreKey = seedConversationState(initialConversation, null, [
         optimisticUserMessage,
       ]);
+      setAgentActivityLabel(optimisticStoreKey, "Creating chat");
       setEffectiveModel(optimisticStoreKey, {
         id: normalizedRuntime.modelId,
         label: getModelLabel(normalizedRuntime.modelId),
@@ -246,6 +249,7 @@ export function useStartAgentConversation({
           id: normalizedRuntime.modelId,
           label: getModelLabel(normalizedRuntime.modelId),
         });
+        setAgentActivityLabel(storeKey, files.length > 0 ? "Uploading files" : "Setup workspace");
         setAgentRunning(storeKey, true);
         setSending(storeKey, true);
 
@@ -253,6 +257,7 @@ export function useStartAgentConversation({
           await Promise.all(
             files.map((file) => uploadDraftAttachment(seededConversation.id, file))
           );
+          setAgentActivityLabel(storeKey, "Setup workspace");
         }
 
         const result = await chatApi.startAgentConversation({
@@ -289,6 +294,7 @@ export function useStartAgentConversation({
           [resolvedOptimisticUserMessage]
         );
         if (resolvedStoreKey !== storeKey) {
+          setAgentActivityLabel(storeKey, null);
           setAgentRunning(storeKey, false);
           setSending(storeKey, false);
           setEffectiveModel(resolvedStoreKey, {
@@ -297,6 +303,7 @@ export function useStartAgentConversation({
           });
           setAgentRunning(resolvedStoreKey, true);
         }
+        setAgentActivityLabel(resolvedStoreKey, "Agent working");
         if (
           result.sendResult.wasQueued &&
           result.sendResult.queuedMessageId != null
@@ -321,6 +328,7 @@ export function useStartAgentConversation({
         });
       } catch (err) {
         if (seededStoreKey) {
+          setAgentActivityLabel(seededStoreKey, null);
           setAgentRunning(seededStoreKey, false);
           setSending(seededStoreKey, false);
         }
@@ -336,6 +344,7 @@ export function useStartAgentConversation({
       queueMessage,
       selectConversation,
       setActiveConversation,
+      setAgentActivityLabel,
       setAgentRunning,
       setEffectiveModel,
       setFocusedProject,
