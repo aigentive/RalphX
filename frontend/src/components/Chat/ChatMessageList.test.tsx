@@ -2339,6 +2339,24 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(container.querySelectorAll('[data-chat-message-item="true"]')).toHaveLength(0);
       expect(container.querySelectorAll('[data-testid="message-meta"]')).toHaveLength(0);
       expect(typingIndicator.querySelectorAll("svg.lucide-bot")).toHaveLength(1);
+      expect(typingIndicator).toHaveTextContent("Agent working");
+    });
+
+    it("renders an explicit activity label in the typing indicator", () => {
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isSending={true}
+          typingIndicatorLabel="Setup workspace"
+          streamingToolCalls={[]}
+          streamingContentBlocks={undefined}
+        />
+      );
+
+      expect(screen.getByTestId("chat-typing-indicator")).toHaveTextContent(
+        "Setup workspace"
+      );
     });
 
     it("(2) agent running + tool calls + no content blocks → shows tool fallback and typing indicator", () => {

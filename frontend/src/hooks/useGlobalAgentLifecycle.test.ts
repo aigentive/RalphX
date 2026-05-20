@@ -29,6 +29,7 @@ const chatStoreMocks = vi.hoisted(() => ({
   activeAgentRunIds: {} as Record<string, string>,
   lastAgentEventTimestamp: {} as Record<string, number>,
   updateLastAgentEvent: vi.fn(),
+  setAgentActivityLabel: vi.fn(),
   isTeamActive: {} as Record<string, boolean>,
   activeConversationIds: {} as Record<string, string | null>,
   setActiveConversation: vi.fn(),
@@ -184,6 +185,7 @@ describe("useGlobalAgentLifecycle", () => {
     mockGetQueryData.mockReturnValue(undefined);
     chatStoreMocks.setAgentStatus.mockClear();
     chatStoreMocks.updateLastAgentEvent.mockClear();
+    chatStoreMocks.setAgentActivityLabel.mockClear();
     chatStoreMocks.setActiveConversation.mockClear();
     chatStoreMocks.setActiveAgentRun.mockClear();
     chatStoreMocks.clearActiveAgentRun.mockClear();
@@ -219,6 +221,83 @@ describe("useGlobalAgentLifecycle", () => {
     });
 
     expect(chatStoreMocks.setAgentStatus).toHaveBeenCalledWith("session:session-1", "generating");
+  });
+
+  it("run_started marks active turns as agent working", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:run_started", {
+        run_id: "run-1",
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        teammate_name: null,
+      });
+    });
+
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conversation-1",
+      "Agent working"
+    );
+  });
+
+  it("startup_progress hydrates the project conversation activity label", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:startup_progress", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        stage: "prepare_workspace",
+        label: "Setup workspace",
+      });
+    });
+
+    expect(chatStoreMocks.updateLastAgentEvent).toHaveBeenCalledWith(
+      "project:conversation-1"
+    );
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conversation-1",
+      "Setup workspace"
+    );
+  });
+
+  it("startup_progress falls back to the stage label when the payload label is not allowed", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:startup_progress", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        stage: "send_message",
+        label: "Launching the selected runtime",
+      });
+    });
+
+    expect(chatStoreMocks.setAgentActivityLabel).toHaveBeenCalledWith(
+      "project:conversation-1",
+      "Starting agent"
+    );
+  });
+
+  it("startup_progress ignores unknown stages without an allowed label", () => {
+    renderHook(() => useGlobalAgentLifecycle());
+
+    act(() => {
+      fireEvent("agent:startup_progress", {
+        context_type: "project",
+        context_id: "project-1",
+        conversation_id: "conversation-1",
+        stage: "unsupported_stage",
+        label: "Launching the selected runtime",
+      });
+    });
+
+    expect(chatStoreMocks.updateLastAgentEvent).not.toHaveBeenCalled();
+    expect(chatStoreMocks.setAgentActivityLabel).not.toHaveBeenCalled();
   });
 
   it("run_started calls updateLastAgentEvent when not already generating", () => {

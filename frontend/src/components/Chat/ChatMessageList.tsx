@@ -417,6 +417,8 @@ interface ChatMessageListProps {
   /** Is agent currently sending/responding */
   isSending: boolean;
   isAgentRunning: boolean;
+  /** Short label shown beside the active typing indicator */
+  typingIndicatorLabel?: string | null | undefined;
   /** Streaming tool calls to display */
   streamingToolCalls: ToolCall[];
   /** Streaming subagent tasks — Map keyed by tool_use_id */
@@ -461,6 +463,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       onDismissFailedRun,
       isSending,
       isAgentRunning,
+      typingIndicatorLabel,
       streamingToolCalls,
       streamingTasks,
       streamingContentBlocks,
@@ -735,6 +738,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     );
 
     const shouldShowActiveTypingIndicator = isSending || isAgentRunning;
+    const activeTypingIndicatorLabel =
+      typingIndicatorLabel?.trim()
+        || (isSending ? "Starting agent" : isAgentRunning ? "Agent working" : undefined);
     const shouldShowFooterFallback = (isSending || isAgentRunning) && !hasRenderableStreamingBlocks;
     const hasFooterStreamingContent = hasRenderableStreamingBlocks || shouldShowFooterFallback;
     const hasVisiblePendingToolFallback =
@@ -1486,7 +1492,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             </MessageItem>
           )}
           {shouldShowActiveTypingIndicator && (
-            <TypingIndicator label={isSending ? "Starting agent" : undefined} />
+            <TypingIndicator label={activeTypingIndicatorLabel} />
           )}
         </>
       );
@@ -1497,7 +1503,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       renderedStreamingContentBlocks,
       providerHarness,
       providerSessionId,
-      isSending,
+      activeTypingIndicatorLabel,
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,
