@@ -473,10 +473,14 @@ fn project_groups(
 
     let mut ordered_labels = project_labels;
     if sort == SidebarRowSort::Latest {
-        let latest_by_project: HashMap<&str, &DateTime<Utc>> = rows_by_project
+        let latest_by_project: HashMap<&str, DateTime<Utc>> = rows_by_project
             .iter()
             .filter_map(|(pid, group_rows)| {
-                group_rows.first().map(|row| (pid.as_str(), &row.sort_at))
+                group_rows
+                    .iter()
+                    .map(|row| row.sort_at)
+                    .max()
+                    .map(|ts| (pid.as_str(), ts))
             })
             .collect();
         ordered_labels.sort_by(|(a_id, _), (b_id, _)| {
@@ -1136,7 +1140,9 @@ mod tests {
         )
         .await;
         create_workspace(&state, &pinned, &alpha.id, Some(42), Some("open"), None).await;
-        let beta_conversation = create_conversation(&state, &beta.id, "Beta work", now).await;
+        let beta_conversation =
+            create_conversation(&state, &beta.id, "Beta work", now - chrono::Duration::seconds(1))
+                .await;
         create_workspace(
             &state,
             &beta_conversation,
