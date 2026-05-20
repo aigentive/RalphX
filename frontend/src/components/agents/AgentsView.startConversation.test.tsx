@@ -158,7 +158,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("keeps a clicked sidebar conversation selected while its list page is stale", async () => {
+  it("deselects a clicked sidebar conversation on second click and shows the starter", async () => {
     const firstConversation = conversation({
       id: "conversation-1",
       title: "Current agent",
@@ -219,10 +219,10 @@ describe("AgentsView start conversation", () => {
 
     fireEvent.click(clickedButton);
 
-    expect(useAgentSessionStore.getState().selectedConversationId).toBe(
-      clickedConversation.id
+    await waitFor(() =>
+      expect(useAgentSessionStore.getState().selectedConversationId).toBeNull()
     );
-    expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument();
   });
 
   it("starts a new conversation directly from the starter composer and triggers the session namer", async () => {
