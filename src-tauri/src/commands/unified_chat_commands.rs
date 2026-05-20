@@ -11,6 +11,7 @@
 // - agent:run_completed - Agent finished successfully (or agent:turn_completed in interactive mode)
 // - agent:error - Agent failed
 // - agent:queue_sent - Queued message sent
+// - agent:startup_progress - Project agent startup phase label for chat typing indicator
 
 use std::{
     collections::HashMap,
@@ -2293,6 +2294,34 @@ fn log_start_agent_conversation_phase(
     );
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct AgentStartupProgressPayload<'a> {
+    conversation_id: String,
+    context_type: &'static str,
+    context_id: &'a str,
+    stage: &'static str,
+    label: &'static str,
+}
+
+fn emit_start_agent_conversation_progress<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    project_id: &str,
+    conversation_id: &ChatConversationId,
+    stage: &'static str,
+    label: &'static str,
+) {
+    let _ = app.emit(
+        "agent:startup_progress",
+        AgentStartupProgressPayload {
+            conversation_id: conversation_id.as_str(),
+            context_type: "project",
+            context_id: project_id,
+            stage,
+            label,
+        },
+    );
+}
+
 // ============================================================================
 // Commands
 // ============================================================================
@@ -2401,6 +2430,24 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
 
     let should_create_conversation = draft_conversation_id.is_none();
     let workspace_prepare_started = Instant::now();
+    if should_create_conversation {
+        emit_start_agent_conversation_progress(
+            &app,
+            &input.project_id,
+            &conversation.id,
+            "resolve_conversation",
+            "Creating chat",
+        );
+    }
+    if agent_mode_requires_workspace(mode) {
+        emit_start_agent_conversation_progress(
+            &app,
+            &input.project_id,
+            &conversation.id,
+            "prepare_workspace",
+            "Setup workspace",
+        );
+    }
     let workspace = if agent_mode_requires_workspace(mode) {
         Some(
             prepare_agent_conversation_workspace_with_setup_mode(
@@ -2434,6 +2481,13 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     );
 
     let conversation_persist_started = Instant::now();
+    emit_start_agent_conversation_progress(
+        &app,
+        &input.project_id,
+        &conversation.id,
+        "persist_conversation",
+        "Saving chat",
+    );
     let conversation = if should_create_conversation {
         state
             .chat_conversation_repo
@@ -2456,6 +2510,15 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     );
 
     let workspace_persist_started = Instant::now();
+    if workspace.is_some() {
+        emit_start_agent_conversation_progress(
+            &app,
+            &input.project_id,
+            &conversation.id,
+            "persist_workspace",
+            "Saving chat",
+        );
+    }
     let workspace = match workspace {
         Some(workspace) => match state
             .agent_conversation_workspace_repo
@@ -2500,7 +2563,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     let service_create_started = Instant::now();
     let service = create_chat_service(
         &state,
-        app,
+        app.clone(),
         &execution_state,
         Some(team_service.inner().clone()),
     );
@@ -2544,6 +2607,13 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     );
 
     let send_message_started = Instant::now();
+    emit_start_agent_conversation_progress(
+        &app,
+        &input.project_id,
+        &conversation.id,
+        "send_message",
+        "Starting agent",
+    );
     let send_result = service
         .send_message(
             ChatContextType::Project,

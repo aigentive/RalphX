@@ -1235,6 +1235,7 @@ export function setupAgentsViewTest() {
     activeConversationIds: {},
     queuedMessages: {},
     agentStatus: {},
+    agentActivityLabels: {},
     isSending: {},
   });
   useUiStore.getState().closeModal();

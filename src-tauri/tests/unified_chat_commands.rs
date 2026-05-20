@@ -2137,6 +2137,80 @@ mod ipc_contract {
         assert!(workspace.is_none());
     }
 
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_edit_mode_persists_workspace() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-start-agent-edit-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Edit".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Prepare an editable workspace".to_string(),
+                conversation_id: None,
+                provider_harness: None,
+                model_override: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("edit".to_string()),
+                base_ref_kind: Some("project_default".to_string()),
+                base_ref: None,
+                base_display_name: None,
+                composer_project_references: Vec::new(),
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("edit-mode start should succeed");
+
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode, "edit");
+        assert_eq!(workspace.base_ref_kind, "project_default");
+        assert!(response.send_result.was_queued);
+
+        let persisted_workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(
+                response.conversation.id.clone(),
+            ))
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should persist");
+        assert_eq!(persisted_workspace.mode, AgentConversationWorkspaceMode::Edit);
+    }
+
     struct FakeCliOnPath {
         _temp_dir: tempfile::TempDir,
         previous_path: Option<OsString>,
