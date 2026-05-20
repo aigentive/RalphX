@@ -1689,7 +1689,43 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             prompt.contains("list_agent_tasks"),
             "prompt for {agent_name} should mention live agent task tools"
         );
+        assert!(
+            prompt.contains("For any non-trivial or multi-turn task"),
+            "prompt for {agent_name} should include the strengthened agent task trigger"
+        );
+        assert!(
+            prompt.contains("For simple questions or conversational replies"),
+            "prompt for {agent_name} should include the simple-chat exception"
+        );
+        assert!(
+            prompt.contains("### When To Use The Ledger"),
+            "prompt for {agent_name} should include explicit usage criteria"
+        );
+        assert!(
+            prompt.contains("### Task State Rules"),
+            "prompt for {agent_name} should include task state rules"
+        );
+        assert!(
+            prompt.contains("### Examples When To Use The Ledger"),
+            "prompt for {agent_name} should include original usage examples"
+        );
+        assert!(
+            prompt.contains("provider-spawn bug requires checking logs"),
+            "prompt for {agent_name} should include RalphX-specific examples"
+        );
     }
+
+    let claude_general_worker =
+        load_harness_agent_prompt(&root, "ralphx-general-worker", AgentPromptHarness::Claude)
+            .expect("missing general worker claude prompt");
+    assert!(
+        claude_general_worker.contains("For any non-trivial or multi-turn task"),
+        "Claude prompt should include the strengthened agent task trigger"
+    );
+    assert!(
+        claude_general_worker.contains("### Examples When Not To Use The Ledger"),
+        "Claude prompt should include examples for skipping noisy ledger use"
+    );
 
     let session_namer = load_harness_agent_prompt(
         &root,

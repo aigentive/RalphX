@@ -902,6 +902,68 @@ Report only unless workspace intervention is explicit.
 }
 
 #[test]
+fn build_spawnable_command_prompt_file_uses_generated_claude_prompt() {
+    let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    let agent_root = root.join("agents/ralphx-general-worker");
+    std::fs::create_dir_all(agent_root.join("shared")).expect("create shared prompt dir");
+    std::fs::write(
+        agent_root.join("agent.yaml"),
+        r#"name: ralphx-general-worker
+role: general_worker
+capabilities:
+  mcp_tools:
+    - list_agent_tasks
+    - create_agent_task
+    - claim_agent_task
+    - update_agent_task
+    - complete_agent_task
+"#,
+    )
+    .expect("write agent definition");
+    let raw_prompt_path = agent_root.join("shared/prompt.md");
+    std::fs::write(&raw_prompt_path, "General worker prompt").expect("write shared prompt");
+    let raw_prompt_path_str = raw_prompt_path.to_string_lossy().into_owned();
+
+    let spawnable = build_spawnable_command_with_mcp_runtime_context_for_test(
+        Path::new("/fake/claude"),
+        &plugin_dir,
+        "Implement a scoped change.",
+        Some("ralphx:ralphx-general-worker"),
+        None,
+        Path::new("/tmp"),
+        None,
+        None,
+        None,
+    )
+    .expect("build spawnable");
+    let args = spawnable.get_args_for_test();
+    let prompt_index = args
+        .iter()
+        .position(|arg| arg == "--append-system-prompt-file")
+        .expect("expected generated system prompt file");
+    let generated_prompt_path = &args[prompt_index + 1];
+    assert_ne!(
+        generated_prompt_path.as_str(),
+        raw_prompt_path_str.as_str(),
+        "Claude must not use the raw canonical prompt file when generated appendices are present"
+    );
+    let generated_prompt =
+        std::fs::read_to_string(generated_prompt_path.as_str()).expect("read generated prompt");
+    assert!(
+        generated_prompt.contains("General worker prompt"),
+        "generated prompt should preserve the canonical prompt body"
+    );
+    assert!(
+        generated_prompt.contains("## RalphX Agent Task Ledger (AUTO-GENERATED)"),
+        "generated prompt file should include the task ledger appendix"
+    );
+    assert!(
+        generated_prompt.contains("For any non-trivial or multi-turn task"),
+        "generated prompt file should include the strengthened task-ledger trigger"
+    );
+}
+
+#[test]
 fn test_materialize_generated_plugin_dir_skips_canonical_agent_symlinks_outside_project_root() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     let outside_dir = tempfile::TempDir::new().expect("create outside dir");
