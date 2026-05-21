@@ -40,3 +40,33 @@ impl AtlassianIntegrationSettingsRepository for MemoryAtlassianIntegrationSettin
         Ok(current.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn defaults_and_persists_settings() {
+        let repo = MemoryAtlassianIntegrationSettingsRepository::default();
+
+        assert!(!repo.get().await.unwrap().enabled);
+
+        let mut settings = AtlassianIntegrationSettings::default();
+        settings.enabled = true;
+        settings.site_url = Some("https://example.atlassian.net".to_string());
+
+        let saved = repo.upsert(&settings).await.unwrap();
+        assert!(saved.enabled);
+        assert_eq!(
+            saved.site_url.as_deref(),
+            Some("https://example.atlassian.net")
+        );
+
+        let reloaded = repo.get().await.unwrap();
+        assert!(reloaded.enabled);
+        assert_eq!(
+            reloaded.site_url.as_deref(),
+            Some("https://example.atlassian.net")
+        );
+    }
+}

@@ -135,3 +135,51 @@ pub trait AtlassianIntegrationSettingsRepository: Send + Sync {
         settings: &AtlassianIntegrationSettings,
     ) -> Result<AtlassianIntegrationSettings, Box<dyn std::error::Error>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn validation_status_round_trips_storage_values() {
+        let cases = [
+            (IntegrationValidationStatus::NotConfigured, "not_configured"),
+            (IntegrationValidationStatus::Pending, "pending"),
+            (IntegrationValidationStatus::Valid, "valid"),
+            (IntegrationValidationStatus::Invalid, "invalid"),
+        ];
+
+        for (status, value) in cases {
+            assert_eq!(status.as_str(), value);
+            assert_eq!(
+                IntegrationValidationStatus::from_str(value).unwrap(),
+                status
+            );
+        }
+        assert_eq!(
+            IntegrationValidationStatus::default(),
+            IntegrationValidationStatus::NotConfigured
+        );
+        assert!(IntegrationValidationStatus::from_str("expired").is_err());
+    }
+
+    #[test]
+    fn auth_method_round_trips_storage_values() {
+        let cases = [
+            (AtlassianAuthMethod::ApiToken, "api_token"),
+            (AtlassianAuthMethod::OAuth, "oauth"),
+        ];
+
+        for (method, value) in cases {
+            assert_eq!(method.as_str(), value);
+            assert_eq!(AtlassianAuthMethod::from_str(value).unwrap(), method);
+        }
+        assert_eq!(
+            AtlassianAuthMethod::default(),
+            AtlassianAuthMethod::ApiToken
+        );
+        assert!(AtlassianAuthMethod::from_str("password").is_err());
+    }
+}

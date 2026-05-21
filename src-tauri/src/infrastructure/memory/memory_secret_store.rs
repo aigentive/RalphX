@@ -43,3 +43,24 @@ impl SecretStore for MemorySecretStore {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stores_reads_and_deletes_secrets() {
+        let store = MemorySecretStore::default();
+
+        assert_eq!(store.get_secret("atlassian").await.unwrap(), None);
+
+        store.put_secret("atlassian", "token-value").await.unwrap();
+        assert_eq!(
+            store.get_secret("atlassian").await.unwrap().as_deref(),
+            Some("token-value")
+        );
+
+        store.delete_secret("atlassian").await.unwrap();
+        assert_eq!(store.get_secret("atlassian").await.unwrap(), None);
+    }
+}

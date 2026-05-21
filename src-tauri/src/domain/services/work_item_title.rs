@@ -127,4 +127,46 @@ mod tests {
             Some("RX-42")
         );
     }
+
+    #[test]
+    fn ignores_non_jira_composer_references() {
+        let metadata = r#"{
+            "composer_integration_references": [
+                { "provider": "github", "kind": "jira", "key": "RX-42" },
+                { "provider": "atlassian", "kind": "confluence", "id": "RX-43" }
+            ]
+        }"#;
+
+        assert_eq!(
+            primary_jira_key_from_composer_metadata(Some(metadata)),
+            None
+        );
+    }
+
+    #[test]
+    fn accepts_unclosed_bracket_title_key() {
+        assert_eq!(
+            primary_jira_key_from_title("[rx-42").as_deref(),
+            Some("RX-42")
+        );
+    }
+
+    #[test]
+    fn leaves_title_unchanged_for_invalid_jira_key() {
+        assert_eq!(
+            normalize_title_with_jira_key("  Existing title  ", "not-a-key"),
+            "Existing title"
+        );
+    }
+
+    #[test]
+    fn collapses_title_that_only_contains_jira_key() {
+        assert_eq!(normalize_title_with_jira_key("[RX-42]", "RX-42"), "RX-42");
+        assert_eq!(normalize_title_with_jira_key("RX-42", "RX-42"), "RX-42");
+    }
+
+    #[test]
+    fn rejects_invalid_title_key() {
+        assert_eq!(primary_jira_key_from_title("abc"), None);
+    }
 }

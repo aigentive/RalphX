@@ -508,4 +508,32 @@ mod tests {
             Some("## Summary\n\nUpdated body")
         );
     }
+
+    #[tokio::test]
+    async fn agent_workspace_publisher_prefixes_pr_title_with_jira_key() {
+        let (mut conversation, workspace) = agent_workspace_fixture();
+        conversation.title = Some("rx-42: Fix composer references".to_string());
+        let description = AgentWorkspacePrDescription::new(
+            Some("Fix composer references".to_string()),
+            "## Summary\n\nGenerated body".to_string(),
+        );
+        let github = Arc::new(MockGithubService::new());
+        github.will_create_pr(42, "https://github.com/mock/repo/pull/42");
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let publisher = AgentWorkspacePrPublisher::new(&github_trait);
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        let outcome = publisher
+            .publish_draft_pr(temp_dir.path(), &conversation, &workspace, &description)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.pr_number, 42);
+        let state = github.state();
+        let (_, _, title, _) = state
+            .last_create_draft_pr_args
+            .clone()
+            .expect("draft PR args should be captured");
+        assert_eq!(title, "RX-42: Fix composer references");
+    }
 }
