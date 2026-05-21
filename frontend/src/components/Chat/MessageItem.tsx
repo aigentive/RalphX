@@ -18,6 +18,8 @@ import { TextBubble } from "./TextBubble";
 import { formatTimestamp, formatTimestampTitle } from "./MessageItem.utils";
 import { isTaskToolCall } from "./DiffToolCallView.utils";
 import { MessageAttachments, type MessageAttachment } from "./MessageAttachments";
+import { MessageReferences } from "./MessageReferences";
+import type { MessageComposerReferences } from "./MessageReferences.parse";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -74,6 +76,8 @@ export interface MessageItemProps {
   contentBlocks?: ContentBlockItem[] | null;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
+  /** Structured project and integration references for user messages */
+  composerReferences?: MessageComposerReferences;
   /** Teammate name for team mode messages */
   teammateName?: string | null | undefined;
   /** Teammate color for left-border indicator */
@@ -175,6 +179,7 @@ export const MessageItem = React.memo(function MessageItem({
   toolCalls,
   contentBlocks,
   attachments,
+  composerReferences,
   teammateName,
   teammateColor,
   providerHarness,
@@ -337,6 +342,13 @@ export const MessageItem = React.memo(function MessageItem({
           <MessageAttachments attachments={attachments} />
         )}
 
+        {isUser && composerReferences && (
+          <MessageReferences
+            projectReferences={composerReferences.projectReferences}
+            integrationReferences={composerReferences.integrationReferences}
+          />
+        )}
+
         {hasCustomBody ? (
           children
         ) : hasContentBlocks ? (
@@ -426,6 +438,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks
     && prev.attachments === next.attachments
+    && prev.composerReferences === next.composerReferences
     && prev.teammateName === next.teammateName
     && prev.teammateColor === next.teammateColor
     && prev.providerHarness === next.providerHarness

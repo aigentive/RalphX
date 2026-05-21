@@ -18,11 +18,14 @@ use crate::application::runtime_factory::{
 use crate::application::startup_git_auth_preflight::StartupGitAuthRecoveryState;
 use crate::application::AgentClientBundle;
 use crate::application::AgentTerminalService;
+use crate::application::AtlassianIntegrationService;
+use crate::application::EmptyAtlassianApiClient;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
 use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
+use crate::application::UnavailableAtlassianApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
@@ -59,8 +62,9 @@ use crate::infrastructure::memory::{
     MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
     MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
     MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
-    MemoryChatAttachmentRepository, MemoryChatConversationRepository, MemoryChatMessageRepository,
-    MemoryChatTimelineRepository, MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryChatAttachmentRepository,
+    MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
+    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
     MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
     MemoryGlobalExecutionSettingsRepository, MemoryIdeationEffortSettingsRepository,
     MemoryIdeationModelSettingsRepository, MemoryIdeationSessionRepository,
@@ -69,11 +73,12 @@ use crate::infrastructure::memory::{
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
     MemoryProjectRepository, MemoryProposalDependencyRepository, MemoryQuestionRepository,
     MemoryReviewIssueRepository, MemoryReviewRepository, MemoryReviewSettingsRepository,
-    MemorySessionLinkRepository, MemoryTaskDependencyRepository, MemoryTaskProposalRepository,
-    MemoryTaskQARepository, MemoryTaskRepository, MemoryTaskStepRepository,
-    MemoryTeamMessageRepository, MemoryTeamSessionRepository, MemoryWebhookRegistrationRepository,
-    MemoryWorkflowRepository,
+    MemorySecretStore, MemorySessionLinkRepository, MemoryTaskDependencyRepository,
+    MemoryTaskProposalRepository, MemoryTaskQARepository, MemoryTaskRepository,
+    MemoryTaskStepRepository, MemoryTeamMessageRepository, MemoryTeamSessionRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
 };
+use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
@@ -82,7 +87,8 @@ use crate::infrastructure::sqlite::{
     SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
     SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
     SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
-    SqliteArtifactFlowRepository, SqliteArtifactRepository, SqliteChatAttachmentRepository,
+    SqliteArtifactFlowRepository, SqliteArtifactRepository,
+    SqliteAtlassianIntegrationSettingsRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
     SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
@@ -100,6 +106,7 @@ use crate::infrastructure::sqlite::{
     SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
 use crate::infrastructure::GhCliGithubService;
+use crate::infrastructure::HyperAtlassianApiClient;
 
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
@@ -121,6 +128,8 @@ pub struct AppState {
     pub project_repo: Arc<dyn ProjectRepository>,
     /// API key repository for external API authentication
     pub api_key_repo: Arc<dyn ApiKeyRepository>,
+    /// Native Atlassian/Jira/Confluence integration service.
+    pub atlassian_integration_service: Arc<AtlassianIntegrationService>,
     /// Agent profile repository (SQLite in production)
     pub agent_profile_repo: Arc<dyn AgentProfileRepository>,
     /// TaskQA repository for QA artifacts
@@ -268,6 +277,37 @@ impl AppState {
 
     fn mock_agent_clients() -> AgentClientBundle {
         AgentClientBundle::standard_mock_runtime_clients()
+    }
+
+    fn production_atlassian_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<AtlassianIntegrationService> {
+        let client: Arc<dyn crate::application::AtlassianApiClient> =
+            match HyperAtlassianApiClient::new() {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Atlassian HTTP client unavailable; integration validation will fail until TLS roots are available"
+                    );
+                    Arc::new(UnavailableAtlassianApiClient::new(error))
+                }
+            };
+        Arc::new(AtlassianIntegrationService::new(
+            Arc::new(SqliteAtlassianIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            client,
+        ))
+    }
+
+    fn memory_atlassian_integration_service() -> Arc<AtlassianIntegrationService> {
+        Arc::new(AtlassianIntegrationService::new(
+            Arc::new(MemoryAtlassianIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyAtlassianApiClient),
+        ))
     }
 
     fn enable_claude_test_mode() {
@@ -634,6 +674,9 @@ impl AppState {
             api_key_repo: Arc::new(SqliteApiKeyRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            atlassian_integration_service: Self::production_atlassian_integration_service(
+                &shared_conn,
+            ),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -850,6 +893,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -972,6 +1016,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo: Arc::new(MemoryProjectRepository::new()),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1104,6 +1149,7 @@ impl AppState {
                 &shared_conn,
             ))),
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1230,6 +1276,7 @@ impl AppState {
             task_step_repo: Arc::new(MemoryTaskStepRepository::new()),
             project_repo,
             api_key_repo: Arc::new(MemoryApiKeyRepository::new()),
+            atlassian_integration_service: Self::memory_atlassian_integration_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),

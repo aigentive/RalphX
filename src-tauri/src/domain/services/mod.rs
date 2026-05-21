@@ -20,10 +20,12 @@ pub mod research_service;
 pub mod rule_ingestion_service;
 pub mod rule_parser;
 pub mod running_agent_registry;
+pub mod secret_store;
 pub mod text_similarity;
 pub mod verification_events;
 pub mod verification_gate;
 pub mod verification_state;
+pub mod work_item_title;
 pub mod workflow_service;
 pub mod worktree_guard;
 
@@ -51,7 +53,8 @@ pub use verification_state::{
 };
 // Unified message queue - keyed by (context_type, context_id)
 pub use message_queue::{
-    ComposerProjectReference, ComposerProjectReferenceKind, MessageQueue, QueueKey, QueuedMessage,
+    ComposerIntegrationReference, ComposerProjectReference, ComposerProjectReferenceKind,
+    MessageQueue, QueueKey, QueuedMessage,
 };
 pub use methodology_service::{MethodologyActivationResult, MethodologyService};
 pub use pr_publish_service::{AgentWorkspacePrPublisher, PlanPrPublisher, PrReviewState};
@@ -67,6 +70,11 @@ pub use running_agent_registry::{
     is_process_alive, kill_process, kill_process_immediate, kill_worktree_processes,
     kill_worktree_processes_async, MemoryRunningAgentRegistry, RunningAgentInfo, RunningAgentKey,
     RunningAgentRegistry,
+};
+pub use secret_store::{SecretStore, SecretStoreError};
+pub use work_item_title::{
+    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
+    primary_jira_key_from_title,
 };
 pub use workflow_service::{
     AppliedColumn, AppliedWorkflow, ColumnMappingError, ValidationResult, WorkflowService,

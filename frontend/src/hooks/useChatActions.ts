@@ -21,10 +21,12 @@ import {
   removeOptimisticMessageFromConversationCache,
 } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
 import type {
+  ComposerIntegrationReference,
   ComposerProjectReference,
   SendAgentMessageOptions,
   SendAgentMessageResult,
@@ -55,6 +57,7 @@ interface UseChatActionsProps {
       attachmentIds?: string[];
       target?: string;
       composerProjectReferences?: ComposerProjectReference[];
+      composerIntegrationReferences?: ComposerIntegrationReference[];
     }) => Promise<SendAgentMessageResult>;
   };
   /** Current visible conversation ID, used by direct review/merge sends for immediate local echo. */
@@ -109,7 +112,10 @@ export function useChatActions({
       content: string,
       attachmentIds?: string[],
       target?: string,
-      composerOptions?: { projectReferences?: ComposerProjectReference[] },
+      composerOptions?: {
+        projectReferences?: ComposerProjectReference[];
+        integrationReferences?: ComposerIntegrationReference[];
+      },
     ) => {
       if (!content.trim() || sendMessage.isPending) return;
 
@@ -129,11 +135,22 @@ export function useChatActions({
           setSending(storeContextKey, true);
           try {
             if (activeConversationId && !target) {
-              const message = addOptimisticUserMessageToConversationCache(
-                queryClient,
-                activeConversationId,
-                content
-              );
+              const referenceMetadata = serializeComposerReferencesMetadata({
+                projectReferences: composerOptions?.projectReferences,
+                integrationReferences: composerOptions?.integrationReferences,
+              });
+              const message = referenceMetadata
+                ? addOptimisticUserMessageToConversationCache(
+                    queryClient,
+                    activeConversationId,
+                    content,
+                    { metadata: referenceMetadata },
+                  )
+                : addOptimisticUserMessageToConversationCache(
+                    queryClient,
+                    activeConversationId,
+                    content,
+                  );
               optimisticMessage = {
                 conversationId: activeConversationId,
                 messageId: message.id,
@@ -146,7 +163,20 @@ export function useChatActions({
               attachmentIds,
               target,
               composerOptions?.projectReferences?.length
-                ? { composerProjectReferences: composerOptions.projectReferences }
+                ? {
+                    composerProjectReferences: composerOptions.projectReferences,
+                    ...(composerOptions.integrationReferences?.length
+                      ? {
+                          composerIntegrationReferences:
+                            composerOptions.integrationReferences,
+                        }
+                      : {}),
+                  }
+                : composerOptions?.integrationReferences?.length
+                  ? {
+                      composerIntegrationReferences:
+                        composerOptions.integrationReferences,
+                    }
                 : undefined,
             );
             sentResult = result;
@@ -176,6 +206,7 @@ export function useChatActions({
             attachmentIds?: string[];
             target?: string;
             composerProjectReferences?: ComposerProjectReference[];
+            composerIntegrationReferences?: ComposerIntegrationReference[];
           } = { content };
           if (attachmentIds !== undefined) {
             params.attachmentIds = attachmentIds;
@@ -185,6 +216,10 @@ export function useChatActions({
           }
           if (composerOptions?.projectReferences?.length) {
             params.composerProjectReferences = composerOptions.projectReferences;
+          }
+          if (composerOptions?.integrationReferences?.length) {
+            params.composerIntegrationReferences =
+              composerOptions.integrationReferences;
           }
           const result = await sendMessage.mutateAsync(params);
           sentResult = result;

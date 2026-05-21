@@ -1,15 +1,30 @@
-export type AgentComposerTriggerKind = "path" | "skill" | "slash-command";
+export type AgentComposerTriggerKind =
+  | "path"
+  | "skill"
+  | "slash-command"
+  | "integration";
+export type AgentComposerIntegrationKind = "jira" | "confluence";
 
 export interface AgentComposerTrigger {
   kind: AgentComposerTriggerKind;
   query: string;
   rangeStart: number;
   rangeEnd: number;
+  integrationKind?: AgentComposerIntegrationKind;
 }
 
 export interface AgentComposerProjectReference {
   path: string;
   kind?: "file" | "directory";
+}
+
+export interface AgentComposerIntegrationReference {
+  provider: "atlassian";
+  kind: AgentComposerIntegrationKind;
+  id: string;
+  key?: string;
+  title?: string;
+  url?: string;
 }
 
 const TOKEN_BOUNDARY_PATTERN = /\s/;
@@ -45,6 +60,18 @@ export function detectAgentComposerTrigger(
   const query = text.slice(rangeStart + 1, safeCursor);
   if (query.includes("@") || query.includes("$")) {
     return null;
+  }
+  if (marker === "@") {
+    const integrationTrigger = parseIntegrationTriggerQuery(query);
+    if (integrationTrigger) {
+      return {
+        kind: "integration",
+        query: integrationTrigger.query,
+        integrationKind: integrationTrigger.kind,
+        rangeStart,
+        rangeEnd: safeCursor,
+      };
+    }
   }
 
   return {
@@ -87,10 +114,34 @@ export function extractComposerPathTokens(text: string): AgentComposerProjectRef
   const references = new Map<string, AgentComposerProjectReference>();
   for (const match of text.matchAll(/@([^\s]+)/g)) {
     const rawPath = match[1]?.replace(/[),.;:]+$/g, "");
-    if (!rawPath || rawPath.includes("\0")) {
+    if (!rawPath || rawPath.includes("\0") || isIntegrationReferenceToken(rawPath)) {
       continue;
     }
     references.set(rawPath, { path: rawPath });
+  }
+  return [...references.values()];
+}
+
+export function extractComposerIntegrationTokens(
+  text: string,
+): AgentComposerIntegrationReference[] {
+  const references = new Map<string, AgentComposerIntegrationReference>();
+  for (const match of text.matchAll(/@(jira|confluence|conf):([^\s]+)/gi)) {
+    const rawKind = match[1]?.toLowerCase();
+    const rawId = match[2]?.replace(/[),.;]+$/g, "");
+    if (!rawKind || !rawId || rawId.includes("\0")) {
+      continue;
+    }
+    const kind: AgentComposerIntegrationKind =
+      rawKind === "jira" ? "jira" : "confluence";
+    const id = kind === "jira" ? rawId.toUpperCase() : rawId;
+    const reference: AgentComposerIntegrationReference = {
+      provider: "atlassian",
+      kind,
+      id,
+      ...(kind === "jira" ? { key: id } : {}),
+    };
+    references.set(`${kind}:${id}`, reference);
   }
   return [...references.values()];
 }
@@ -126,6 +177,52 @@ export function normalizeComposerProjectReferences(
     );
   }
   return [...safeReferences.values()];
+}
+
+export function normalizeComposerIntegrationReferences(
+  references: readonly AgentComposerIntegrationReference[],
+): AgentComposerIntegrationReference[] {
+  const safeReferences = new Map<string, AgentComposerIntegrationReference>();
+  for (const reference of references) {
+    if (reference.provider !== "atlassian") {
+      continue;
+    }
+    const id = reference.id.trim();
+    if (
+      !id ||
+      id.includes("\n") ||
+      id.includes("\r") ||
+      id.includes("\0") ||
+      (reference.kind !== "jira" && reference.kind !== "confluence")
+    ) {
+      continue;
+    }
+    const key = reference.kind === "jira" ? (reference.key ?? id).trim() : undefined;
+    safeReferences.set(`${reference.kind}:${id}`, {
+      provider: "atlassian",
+      kind: reference.kind,
+      id,
+      ...(key ? { key } : {}),
+      ...(reference.title ? { title: reference.title.trim() } : {}),
+      ...(reference.url ? { url: reference.url.trim() } : {}),
+    });
+  }
+  return [...safeReferences.values()];
+}
+
+function parseIntegrationTriggerQuery(
+  query: string,
+): { kind: AgentComposerIntegrationKind; query: string } | null {
+  const match = /^(jira|confluence|conf):(.*)$/i.exec(query);
+  if (!match) {
+    return null;
+  }
+  const kind = match[1]?.toLowerCase() === "jira" ? "jira" : "confluence";
+  return { kind, query: match[2] ?? "" };
+}
+
+function isIntegrationReferenceToken(token: string): boolean {
+  return /^(jira|confluence|conf):/i.test(token);
 }
 
 function findCurrentTokenStart(text: string, cursor: number): number {

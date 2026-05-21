@@ -29,6 +29,21 @@ pub struct ComposerProjectReference {
     pub kind: Option<ComposerProjectReferenceKind>,
 }
 
+/// An external integration reference selected in the chat composer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerIntegrationReference {
+    pub provider: String,
+    pub kind: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
 /// Key for the message queue - combines context type and ID
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct QueueKey {
@@ -84,6 +99,9 @@ pub struct QueuedMessage {
     /// Optional composer project references used for runtime-only prompt expansion.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Optional external integration references used for runtime-only prompt expansion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
     /// Optional chat attachments selected by the composer for this queued turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<ChatAttachmentId>,
@@ -101,6 +119,7 @@ impl QueuedMessage {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
             attachment_ids: Vec::new(),
         }
     }
@@ -117,6 +136,7 @@ impl QueuedMessage {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
             attachment_ids: Vec::new(),
         }
     }
@@ -233,6 +253,7 @@ impl MessageQueue {
             harness_override,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -246,6 +267,7 @@ impl MessageQueue {
         created_at_override: Option<String>,
         harness_override: Option<AgentHarnessKind>,
         composer_project_references: Vec<ComposerProjectReference>,
+        composer_integration_references: Vec<ComposerIntegrationReference>,
         attachment_ids: Vec<ChatAttachmentId>,
     ) -> QueuedMessage {
         let key = QueueKey::new(context_type, context_id);
@@ -254,6 +276,7 @@ impl MessageQueue {
         message.created_at_override = created_at_override;
         message.harness_override = harness_override;
         message.composer_project_references = composer_project_references;
+        message.composer_integration_references = composer_integration_references;
         message.attachment_ids = attachment_ids;
         let mut queues = self.queues.lock().unwrap();
         queues.entry(key).or_default().push(message.clone());

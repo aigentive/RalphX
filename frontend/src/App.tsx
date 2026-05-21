@@ -62,6 +62,7 @@ import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
+import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import { tasksApi } from "@/api/tasks";
@@ -74,6 +75,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 
 const queryClient = getQueryClient();
+const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
 
 /**
  * Test page router - checks URL params and returns test page if applicable
@@ -264,6 +266,9 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings;
   const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
+  const shouldShowAtlassianAwarenessAfterUpdateRef = useRef(
+    readFreshPostUpdatePreparingMarker() !== null,
+  );
 
   // Use active project ID (queries are disabled when null)
   const currentProjectId = activeProjectId ?? "";
@@ -531,6 +536,42 @@ function AppContent() {
   const handleOpenProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
+
+  const handleOpenIntegrationSettings = useCallback(() => {
+    openModal("settings", { section: "integrations" });
+  }, [openModal]);
+
+  useEffect(() => {
+    if (
+      !postUpdateAppReady ||
+      isPostUpdatePreparing ||
+      !shouldShowAtlassianAwarenessAfterUpdateRef.current ||
+      hasNoProjects ||
+      providerSetupRequired
+    ) {
+      return;
+    }
+    if (window.localStorage.getItem(ATLASSIAN_AWARENESS_TOAST_KEY) === "seen") {
+      shouldShowAtlassianAwarenessAfterUpdateRef.current = false;
+      return;
+    }
+    shouldShowAtlassianAwarenessAfterUpdateRef.current = false;
+    window.localStorage.setItem(ATLASSIAN_AWARENESS_TOAST_KEY, "seen");
+    toast.info("Atlassian integrations are available", {
+      description: "Connect Jira and Confluence from Settings.",
+      action: {
+        label: "Open Integrations",
+        onClick: handleOpenIntegrationSettings,
+      },
+      duration: 10000,
+    });
+  }, [
+    handleOpenIntegrationSettings,
+    hasNoProjects,
+    isPostUpdatePreparing,
+    postUpdateAppReady,
+    providerSetupRequired,
+  ]);
 
   const handleBattleModeToggle = useCallback(() => {
     if (battleModeActive) {
@@ -891,6 +932,7 @@ function AppContent() {
         <WelcomeScreen
           onCreateProject={handleOpenProjectWizard}
           onSetupProviders={handleOpenProviderSettings}
+          onSetupIntegrations={handleOpenIntegrationSettings}
           providerSetupRequired={providerSetupRequired}
           hasProjects={!hasNoProjects}
           onClose={showWelcomeOverlay && !providerSetupRequired ? handleCloseWelcomeOverlay : undefined}

@@ -10,6 +10,7 @@ pub mod branch_helpers;
 pub mod api_key_commands;
 pub mod agent_profile_commands;
 pub(crate) mod agent_workspace_auto_publish;
+pub mod atlassian_commands;
 pub mod artifact_commands;
 pub mod chat_attachment_commands;
 pub mod conversation_stats_commands;
@@ -82,6 +83,16 @@ pub use artifact_commands::{
     update_artifact, AddRelationInput, ArtifactRelationResponse, ArtifactResponse, BucketResponse,
     CreateArtifactInput, CreateBucketInput, GetTeamArtifactsResponse, TeamArtifactSummaryResponse,
     UpdateArtifactInput,
+};
+pub use atlassian_commands::{
+    build_atlassian_oauth_authorization_url, complete_atlassian_oauth_local_callback,
+    exchange_atlassian_oauth_code,
+    get_atlassian_integration_settings, save_atlassian_integration_settings,
+    search_atlassian_resources, start_atlassian_oauth_local_callback,
+    validate_atlassian_integration, AtlassianIntegrationSettingsResponse,
+    CompleteAtlassianOAuthLocalCallbackInput, ExchangeAtlassianOAuthCodeInput,
+    SaveAtlassianIntegrationSettingsInput, SearchAtlassianResourcesInput,
+    SearchAtlassianResourcesResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
