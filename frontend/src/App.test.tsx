@@ -374,6 +374,7 @@ function resetStores() {
 
 describe("App", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     resetStores();
     vi.mocked(useHarnessProviders).mockReturnValue({
       settings: {
@@ -416,6 +417,15 @@ describe("App", () => {
     render(<App />);
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByTestId("nav-agents")).toHaveAttribute("aria-current", "page");
+  });
+
+  it("does not show Atlassian awareness on a normal app load", async () => {
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument()
+    );
+    expect(toast.info).not.toHaveBeenCalled();
   });
 
   it("shows the post-update preparing screen instead of the normal shell", () => {
