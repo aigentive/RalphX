@@ -273,8 +273,8 @@ export function buildAgentModelRegistry(
   }
 
   return {
-    claude: registry.claude.length > 0 ? registry.claude : AGENT_MODEL_CATALOG.claude,
-    codex: registry.codex.length > 0 ? registry.codex : AGENT_MODEL_CATALOG.codex,
+    claude: registry.claude,
+    codex: registry.codex,
   };
 }
 

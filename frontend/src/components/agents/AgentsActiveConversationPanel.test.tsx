@@ -32,6 +32,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
 
 vi.mock("@/hooks/useAgentModels", () => ({
   useAgentModels: () => ({
+    isReady: true,
     registry: {
       claude: [
         {
