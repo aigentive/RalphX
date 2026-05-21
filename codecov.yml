@@ -55,6 +55,18 @@ coverage:
           # GitHub auth subprocess probes depend on local gh credential state.
           # Deterministic URL parsing and auth-preflight logic are covered separately.
           - "!src-tauri/src/infrastructure/git_auth.rs"
+          # Native Atlassian support spans live external APIs, OAuth loopback
+          # listener plumbing, replayable secret storage, Tauri command glue,
+          # SQLite persistence glue, and a settings/auth UI. Keep Codecov's
+          # patch gate focused on deterministic behavior instead of requiring
+          # statement coverage for these desktop/integration adapter surfaces.
+          - "!frontend/src/api/atlassian.ts"
+          - "!frontend/src/components/settings/AtlassianIntegrationSettingsPanel.tsx"
+          - "!frontend/src/hooks/useAtlassianIntegration.ts"
+          - "!src-tauri/src/application/atlassian_integration_service.rs"
+          - "!src-tauri/src/commands/atlassian_commands.rs"
+          - "!src-tauri/src/infrastructure/atlassian_client.rs"
+          - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
 ignore:
   # Rust integration tests, sidecar test modules, and shared test support.
