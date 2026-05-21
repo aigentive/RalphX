@@ -89,6 +89,7 @@ function diagnosticsHttps() {
     fetchKind: "HTTPS",
     pushKind: "HTTPS",
     mixedAuthModes: false,
+    githubHttpsCredentialHelperConfigured: false,
     canSwitchToSsh: true,
     suggestedSshUrl: "git@github.com:owner/repo.git",
   };
@@ -101,6 +102,7 @@ function diagnosticsSsh() {
     fetchKind: "SSH",
     pushKind: "SSH",
     mixedAuthModes: false,
+    githubHttpsCredentialHelperConfigured: false,
     canSwitchToSsh: false,
     suggestedSshUrl: null,
   };

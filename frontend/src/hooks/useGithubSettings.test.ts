@@ -123,6 +123,7 @@ describe("useGitAuthDiagnostics", () => {
       fetchKind: "HTTPS",
       pushKind: "SSH",
       mixedAuthModes: true,
+      githubHttpsCredentialHelperConfigured: false,
       canSwitchToSsh: true,
       suggestedSshUrl: "git@github.com:org/repo.git",
     };
@@ -204,6 +205,7 @@ describe("git auth repair mutations", () => {
       fetchKind: "SSH",
       pushKind: "SSH",
       mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
       canSwitchToSsh: false,
       suggestedSshUrl: null,
     });
