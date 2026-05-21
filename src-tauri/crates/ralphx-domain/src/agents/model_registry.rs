@@ -210,7 +210,7 @@ pub fn built_in_agent_models() -> Vec<AgentModelDefinition> {
             AgentHarnessKind::Codex,
             "gpt-5.5",
             "gpt-5.5 - Frontier model for complex coding, research, and real-world work.",
-            "gpt-5.5 (Current)",
+            "gpt-5.5",
             Some("Frontier model for complex coding, research, and real-world work."),
             vec![
                 LogicalEffort::Low,

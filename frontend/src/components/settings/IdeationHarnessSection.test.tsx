@@ -26,8 +26,8 @@ vi.mock("@/hooks/useAgentModels", async () => {
     useAgentModels: () => ({
       models: [],
       registry: actual.AGENT_MODEL_CATALOG,
+      isReady: true,
       isLoading: false,
-      isPlaceholderData: false,
       isError: false,
       error: null,
       upsertModel: vi.fn(),
