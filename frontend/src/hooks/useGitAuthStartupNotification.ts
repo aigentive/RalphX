@@ -44,13 +44,19 @@ export function hasStartupGitAuthIssue(
   if (diagnostics.mixedAuthModes) {
     return true;
   }
+  const hasGithubHttpsRemote =
+    isGithubHttpsRemote(diagnostics.fetchUrl) ||
+    isGithubHttpsRemote(diagnostics.pushUrl);
+  if (
+    hasGithubHttpsRemote &&
+    diagnostics.githubHttpsCredentialHelperConfigured !== true
+  ) {
+    return true;
+  }
   if (project.githubPrEnabled && ghAuthenticated === false) {
     return true;
   }
-  return (
-    ghAuthenticated === false &&
-    (isGithubHttpsRemote(diagnostics.fetchUrl) || isGithubHttpsRemote(diagnostics.pushUrl))
-  );
+  return ghAuthenticated === false && hasGithubHttpsRemote;
 }
 
 export function useGitAuthStartupNotification() {
@@ -80,6 +86,7 @@ export function useGitAuthStartupNotification() {
       diagnostics?.fetchKind ?? "unknown-fetch",
       diagnostics?.pushKind ?? "unknown-push",
       diagnostics?.mixedAuthModes ? "mixed" : "same",
+      diagnostics?.githubHttpsCredentialHelperConfigured ? "helper-ok" : "helper-missing",
       ghAuthQuery.data === false ? "gh-missing" : "gh-ok",
       diagnosticsQuery.isError ? "diagnostics-error" : "diagnostics-ok",
     ].join(":");
