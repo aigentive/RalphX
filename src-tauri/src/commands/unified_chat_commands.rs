@@ -196,7 +196,7 @@ impl From<SendResult> for SendAgentMessageResponse {
 }
 
 /// Input for creating a project-backed agent conversation with an isolated workspace.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentWorkspaceSourcePullRequestInput {
     pub number: i64,
@@ -6605,8 +6605,9 @@ mod tests {
         get_agent_timeline_item_tool_call_detail_for_app_state,
         invalidate_agent_workspace_freshness_cache,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
-        normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
-        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
+        normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
+        normalize_explicit_publish_base_selection, normalized_effort_for_supported,
+        parse_wrapped_mcp_result_object,
         persist_workspace_base_resolution_if_retargeted,
         precompute_agent_conversation_workspace_pr_description_for_app_state,
         project_plan_branch_publication_into_workspace_response,
@@ -6630,7 +6631,8 @@ mod tests {
         AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
         AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
         AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
+        AgentWorkspaceSourcePullRequestInput, DelegatedToolRuntimeSnapshot,
+        SwitchAgentConversationModeInput,
         AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
@@ -6708,6 +6710,74 @@ mod tests {
         assert_eq!(
             normalized_effort_for_supported(None, &supported, LogicalEffort::Low),
             LogicalEffort::Low
+        );
+    }
+
+    #[test]
+    fn normalize_agent_workspace_source_pull_request_trims_and_maps_valid_metadata() {
+        let normalized = normalize_agent_workspace_source_pull_request(
+            Some(AgentWorkspaceSourcePullRequestInput {
+                number: 123,
+                url: Some(" https://github.com/owner/repo/pull/123 ".to_string()),
+                title: Some(" Add PR source context ".to_string()),
+                head_ref_name: " feature/source-pr ".to_string(),
+                base_ref_name: Some(" main ".to_string()),
+                head_ref_oid: Some(" abc123 ".to_string()),
+            }),
+            Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            Some("feature/source-pr"),
+        )
+        .expect("valid source PR metadata should normalize")
+        .expect("source PR metadata should be present");
+
+        assert_eq!(normalized.number, 123);
+        assert_eq!(
+            normalized.url.as_deref(),
+            Some("https://github.com/owner/repo/pull/123")
+        );
+        assert_eq!(normalized.title.as_deref(), Some("Add PR source context"));
+        assert_eq!(normalized.head_ref_name, "feature/source-pr");
+        assert_eq!(normalized.base_ref_name.as_deref(), Some("main"));
+        assert_eq!(normalized.head_ref_oid.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn normalize_agent_workspace_source_pull_request_validates_pr_base_contract() {
+        let input = AgentWorkspaceSourcePullRequestInput {
+            number: 123,
+            url: None,
+            title: None,
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: None,
+            head_ref_oid: None,
+        };
+
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(input.clone()),
+                Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                Some("main"),
+            )
+            .expect_err("source PR metadata must use local branch base"),
+            "Source pull request metadata requires a local_branch base ref"
+        );
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(input.clone()),
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some("different-branch"),
+            )
+            .expect_err("source PR head must match selected base"),
+            "Source pull request head branch must match the selected base ref"
+        );
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(AgentWorkspaceSourcePullRequestInput { number: 0, ..input }),
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some("feature/source-pr"),
+            )
+            .expect_err("source PR number must be positive"),
+            "Source pull request number must be positive"
         );
     }
 

@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { StartSessionPanel } from "./StartSessionPanel";
 
 // Mock dependencies
@@ -47,6 +48,7 @@ vi.mock("@/stores/projectStore", () => ({
 const mockGetGitDefaultBranch = vi.fn();
 const mockGetGitCurrentBranch = vi.fn();
 const mockGetGitBranches = vi.fn();
+const mockSearchGithubPullRequests = vi.fn();
 const mockGetPlanBranches = vi.fn();
 const mockListIdeationSessions = vi.fn();
 const mockListConversations = vi.fn();
@@ -55,6 +57,7 @@ vi.mock("@/api/projects", () => ({
   getGitDefaultBranch: (...args: unknown[]) => mockGetGitDefaultBranch(...args),
   getGitCurrentBranch: (...args: unknown[]) => mockGetGitCurrentBranch(...args),
   getGitBranches: (...args: unknown[]) => mockGetGitBranches(...args),
+  searchGithubPullRequests: (...args: unknown[]) => mockSearchGithubPullRequests(...args),
 }));
 vi.mock("@/api/plan-branch", () => ({
   planBranchApi: {
@@ -129,6 +132,7 @@ describe("StartSessionPanel", () => {
     mockGetGitDefaultBranch.mockResolvedValue("main");
     mockGetGitCurrentBranch.mockResolvedValue("main");
     mockGetGitBranches.mockResolvedValue(["main", "feature/mock"]);
+    mockSearchGithubPullRequests.mockResolvedValue([]);
     mockGetPlanBranches.mockResolvedValue([]);
     mockListIdeationSessions.mockResolvedValue([]);
     mockListConversations.mockResolvedValue([]);
@@ -214,6 +218,59 @@ describe("StartSessionPanel", () => {
           }),
           teamMode: "research",
           teamConfig: expect.objectContaining({ maxTeammates: 5 }),
+        }),
+      );
+    });
+
+    it("starts team ideation from a selected pull request head branch", async () => {
+      const user = userEvent.setup();
+      mockSearchGithubPullRequests.mockResolvedValueOnce([
+        {
+          number: 42,
+          title: "Add PR picker",
+          url: "https://github.com/owner/repo/pull/42",
+          headRefName: "feature/pr-picker",
+          headRefOid: "abc123",
+          baseRefName: "main",
+          isDraft: false,
+          updatedAt: "2026-05-21T10:00:00Z",
+          authorLogin: "dev",
+          isCrossRepository: false,
+        },
+      ]);
+
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      await expectStartFromLabel("Project default (main)");
+
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(screen.getByRole("tab", { name: /PRs/i }));
+      await waitFor(() =>
+        expect(mockSearchGithubPullRequests).toHaveBeenCalledWith({
+          projectId: "project-1",
+          query: "",
+          limit: 30,
+        })
+      );
+      await user.click(await screen.findByText("#42 Add PR picker"));
+      fireEvent.click(screen.getByText(/Research Team/));
+
+      await act(async () => {
+        fireEvent.click(screen.getByText("Start Research Session"));
+      });
+
+      expect(mockMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          analysisBase: expect.objectContaining({
+            kind: "local_branch",
+            ref: "feature/pr-picker",
+            displayName: "PR #42: Add PR picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+              baseRefName: "main",
+              headRefOid: "abc123",
+            }),
+          }),
         }),
       );
     });

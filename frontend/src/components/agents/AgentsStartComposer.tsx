@@ -153,9 +153,6 @@ export function AgentsStartComposer({
     isLoading: isLoadingProviderSettings,
     isPlaceholderData: isPlaceholderProviderSettings,
   } = useHarnessProviders();
-  const branchBaseCacheByProjectId = useAgentSessionStore(
-    (s) => s.branchBaseCacheByProjectId
-  );
   const lastBranchBaseSelectionByProjectId = useAgentSessionStore(
     (s) => s.lastBranchBaseSelectionByProjectId
   );
@@ -456,11 +453,15 @@ export function AgentsStartComposer({
       return;
     }
 
+    const {
+      branchBaseCacheByProjectId: cachedBranchBaseByProjectId,
+      lastBranchBaseSelectionByProjectId: rememberedBranchBaseByProjectId,
+    } = useAgentSessionStore.getState();
     const fallback = fallbackBranchBaseOptions(activeProjectBaseBranch);
-    const cached = branchBaseCacheByProjectId[activeProjectId];
+    const cached = cachedBranchBaseByProjectId[activeProjectId];
     const options = cached?.options.length ? cached.options : fallback.options;
     const preferredKey =
-      lastBranchBaseSelectionByProjectId[activeProjectId] ??
+      rememberedBranchBaseByProjectId[activeProjectId] ??
       cached?.selectedKey ??
       fallback.selectedKey;
     setStartFromOptions(options);
@@ -474,8 +475,6 @@ export function AgentsStartComposer({
     activeProjectBaseBranch,
     activeProjectId,
     activeProjectWorkingDirectory,
-    branchBaseCacheByProjectId,
-    lastBranchBaseSelectionByProjectId,
   ]);
 
   const searchPullRequestStartFromOptions = useCallback(
@@ -556,14 +555,18 @@ export function AgentsStartComposer({
             : null) ??
           selectedStartFromKey ??
           result.selectedKey;
-        const nextSelectedKey =
+        const nextBranchSelectedKey =
           resolveBranchSelectionKey(result.options, preferredKey) ??
           resolveBranchSelectionKey(result.options, result.selectedKey) ??
           result.selectedKey;
         setStartFromOptions(result.options);
-        setSelectedStartFromKey(nextSelectedKey);
-        setBranchBaseCacheForProject(activeProjectId, result.options, nextSelectedKey);
-        setLastBranchBaseSelectionForProject(activeProjectId, nextSelectedKey);
+        setSelectedStartFromKey((currentKey) =>
+          currentKey.startsWith("pull_request:")
+            ? currentKey
+            : nextBranchSelectedKey
+        );
+        setBranchBaseCacheForProject(activeProjectId, result.options, nextBranchSelectedKey);
+        setLastBranchBaseSelectionForProject(activeProjectId, nextBranchSelectedKey);
         setHydratedStartFromProjectId(activeProjectId);
         setIsLoadingStartFrom(false);
       })

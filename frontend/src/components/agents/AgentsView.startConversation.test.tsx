@@ -287,6 +287,82 @@ describe("AgentsView start conversation", () => {
     invalidateSpy.mockRestore();
   });
 
+  it("starts a new conversation from a selected pull request head branch", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "get_git_default_branch") {
+        return Promise.resolve("main");
+      }
+      if (command === "get_git_current_branch") {
+        return Promise.resolve("main");
+      }
+      if (command === "get_git_branches") {
+        return Promise.resolve(["main", "feature/pr-picker"]);
+      }
+      if (command === "search_github_pull_requests") {
+        expect(args).toEqual({
+          input: {
+            projectId: "project-1",
+            query: "",
+            limit: 30,
+          },
+        });
+        return Promise.resolve([
+          {
+            number: 42,
+            title: "Add PR picker",
+            url: "https://github.com/owner/repo/pull/42",
+            headRefName: "feature/pr-picker",
+            headRefOid: "abc123",
+            baseRefName: "main",
+            isDraft: false,
+            updatedAt: "2026-05-21T10:00:00Z",
+            authorLogin: "dev",
+            isCrossRepository: false,
+          },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    const prOption = await screen.findByText("#42 Add PR picker");
+    const prOptionButton = prOption.closest("button");
+    expect(prOptionButton).not.toBeNull();
+    await user.click(prOptionButton as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this PR" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "review this PR",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            ref: "feature/pr-picker",
+            displayName: "PR #42: Add PR picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+              baseRefName: "main",
+              headRefOid: "abc123",
+            }),
+          }),
+        })
+      )
+    );
+  });
+
   it("paints the conversation shell before the draft conversation IPC resolves", async () => {
     mockAgentViewData();
     const reservedConversation = conversation({

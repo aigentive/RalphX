@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { BranchBasePicker } from "./BranchBasePicker";
@@ -135,5 +135,35 @@ describe("BranchBasePicker", () => {
 
     await user.click(screen.getByText("#42 Add PR picker"));
     expect(onValueChange).toHaveBeenCalledWith("pull_request:42:feature/pr-picker");
+  });
+
+  it("debounces pull request searches and renders pull request status", async () => {
+    const user = userEvent.setup();
+    const onPullRequestSearch = vi.fn();
+
+    render(
+      <BranchBasePicker
+        value=""
+        onValueChange={vi.fn()}
+        options={options}
+        enablePullRequests
+        isLoadingPullRequests
+        pullRequestMessage="Unable to search pull requests"
+        onPullRequestSearch={onPullRequestSearch}
+        placeholder="Select base"
+        testId="picker"
+      />,
+    );
+
+    await user.click(screen.getByTestId("picker"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+    expect(screen.getByText("Searching pull requests...")).toBeInTheDocument();
+    expect(screen.getByText("Unable to search pull requests")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText(/Search pull requests/i), "fix");
+    await waitFor(() => {
+      expect(onPullRequestSearch).toHaveBeenLastCalledWith("fix");
+    });
   });
 });
