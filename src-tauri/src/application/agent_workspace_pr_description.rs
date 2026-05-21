@@ -681,6 +681,8 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
          Write a reviewer-focused pull request description for this agent conversation workspace publish.\n\
          Follow the supplied pull request template structure exactly. If a section is not applicable, keep the heading and say so briefly.\n\
          Use only the supplied conversation, commit, and diff context. Do not invent validation, test results, product impact, or user-visible behavior.\n\
+         Describe the final net changes shown by the diff context, not the order of commits, recent fix iterations, or agent conversation chronology.\n\
+         Treat commit summaries and conversation context as secondary clues for intent only; do not narrate them as the work itself.\n\
          Do not include command transcripts, local validation logs, or agent progress diaries.\n\
          Do not mention bounded input limits, excerpt truncation, omitted prompt context, or ask reviewers to compensate for missing helper input.\n\
          If the supplied code context is genuinely ambiguous, name only the product or technical risk you can infer.\n\
@@ -700,11 +702,11 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
          <review_base>{review_base}</review_base>\n\
          <template source=\"{template_source}\">\n{template}\n</template>\n\
          <diff_summary>{diff_summary}</diff_summary>\n\
-         <commit_summaries>\n{commit_summaries}\n</commit_summaries>\n\
          <changed_files>\n{changed_files}\n</changed_files>\n\
          <name_status>\n{name_status}\n</name_status>\n\
          <diff_stat>\n{diff_stat}\n</diff_stat>\n\
          <patch_excerpt>\n{patch_excerpt}\n</patch_excerpt>\n\
+         <commit_summaries secondary=\"true\" order=\"oldest_first\" merge_commits=\"omitted\">\n{commit_summaries}\n</commit_summaries>\n\
          <conversation_context>\n{conversation_context}\n</conversation_context>\n\
          </data>",
         conversation_id = ctx.workspace.conversation_id,
@@ -735,6 +737,8 @@ fn format_commit_summaries(commits: &[crate::application::git_service::CommitInf
 
     let lines = commits
         .iter()
+        .rev()
+        .filter(|commit| !is_pr_description_commit_noise(&commit.message))
         .take(MAX_COMMIT_SUMMARIES)
         .map(|commit| {
             format!(
@@ -743,7 +747,18 @@ fn format_commit_summaries(commits: &[crate::application::git_service::CommitInf
             )
         })
         .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return "No non-merge commit summaries were available.".to_string();
+    }
     lines.join("\n")
+}
+
+fn is_pr_description_commit_noise(message: &str) -> bool {
+    let trimmed = message.trim();
+    trimmed.starts_with("Merge ")
+        || trimmed.starts_with("merge ")
+        || trimmed.starts_with("Merged ")
+        || trimmed.starts_with("merged ")
 }
 
 fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats) -> String {
@@ -1352,6 +1367,14 @@ mod tests {
             prompt.contains("Do not mention bounded input limits"),
             "prompt should explicitly keep bounded-context mechanics out of reviewer-facing PR bodies"
         );
+        assert!(
+            prompt.contains("Describe the final net changes shown by the diff context"),
+            "prompt should steer the PR describer away from commit chronology"
+        );
+        assert!(
+            prompt.contains("<commit_summaries secondary=\"true\" order=\"oldest_first\" merge_commits=\"omitted\">"),
+            "commit context should be marked as secondary evidence"
+        );
         assert!(prompt.contains("use &lt;context&gt; &amp; facts"));
     }
 
@@ -1375,6 +1398,49 @@ mod tests {
         assert_eq!(
             escape_xml_text("a < b && c > d"),
             "a &lt; b &amp;&amp; c &gt; d"
+        );
+    }
+
+    #[test]
+    fn commit_summaries_are_oldest_first_and_omit_merge_noise() {
+        let commits = vec![
+            crate::application::git_service::CommitInfo {
+                sha: "3".repeat(40),
+                short_sha: "3333333".to_string(),
+                message: "Polish latest review feedback".to_string(),
+                author: "Agent".to_string(),
+                timestamp: "2026-05-06T00:03:00Z".to_string(),
+            },
+            crate::application::git_service::CommitInfo {
+                sha: "2".repeat(40),
+                short_sha: "2222222".to_string(),
+                message: "Merge branch 'main' into feature".to_string(),
+                author: "Agent".to_string(),
+                timestamp: "2026-05-06T00:02:00Z".to_string(),
+            },
+            crate::application::git_service::CommitInfo {
+                sha: "1".repeat(40),
+                short_sha: "1111111".to_string(),
+                message: "Add publish description net-diff context".to_string(),
+                author: "Agent".to_string(),
+                timestamp: "2026-05-06T00:01:00Z".to_string(),
+            },
+        ];
+
+        let summary = format_commit_summaries(&commits);
+
+        assert!(summary.contains("Add publish description net-diff context"));
+        assert!(summary.contains("Polish latest review feedback"));
+        assert!(!summary.contains("Merge branch"));
+        let first_summary = summary
+            .find("Add publish description net-diff context")
+            .expect("oldest commit summary should be present");
+        let latest_summary = summary
+            .find("Polish latest review feedback")
+            .expect("latest commit summary should be present");
+        assert!(
+            first_summary < latest_summary,
+            "commit summaries should be oldest-first so the latest iteration is not first"
         );
     }
 
