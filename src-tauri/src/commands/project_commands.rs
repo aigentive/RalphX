@@ -88,6 +88,46 @@ pub struct ProjectResponse {
     pub updated_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchGithubPullRequestsInput {
+    pub project_id: String,
+    pub query: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubPullRequestSearchResult {
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub head_ref_name: String,
+    pub head_ref_oid: Option<String>,
+    pub base_ref_name: String,
+    pub is_draft: bool,
+    pub updated_at: Option<String>,
+    pub author_login: Option<String>,
+    pub is_cross_repository: bool,
+}
+
+impl From<crate::domain::services::PrSearchResult> for GithubPullRequestSearchResult {
+    fn from(result: crate::domain::services::PrSearchResult) -> Self {
+        Self {
+            number: result.number,
+            title: result.title,
+            url: result.url,
+            head_ref_name: result.head_ref_name,
+            head_ref_oid: result.head_ref_oid,
+            base_ref_name: result.base_ref_name,
+            is_draft: result.is_draft,
+            updated_at: result.updated_at,
+            author_login: result.author_login,
+            is_cross_repository: result.is_cross_repository,
+        }
+    }
+}
+
 impl From<Project> for ProjectResponse {
     fn from(project: Project) -> Self {
         Self {
@@ -486,6 +526,35 @@ pub async fn get_git_branches(working_directory: String) -> Result<Vec<String>, 
 
     GitService::list_branches(repo_path)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// Search open GitHub pull requests for the project repository.
+#[tauri::command]
+pub async fn search_github_pull_requests(
+    input: SearchGithubPullRequestsInput,
+    state: State<'_, AppState>,
+) -> Result<Vec<GithubPullRequestSearchResult>, String> {
+    let working_dir = get_project_working_directory(&input.project_id, &state).await?;
+    let Some(github_service) = state.github_service.as_ref() else {
+        return Err("GitHub pull request search is unavailable".to_string());
+    };
+    let query = input
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let limit = input.limit.unwrap_or(20).clamp(1, 50) as usize;
+
+    github_service
+        .search_pull_requests(&working_dir, query, limit)
+        .await
+        .map(|results| {
+            results
+                .into_iter()
+                .map(GithubPullRequestSearchResult::from)
+                .collect()
+        })
         .map_err(|e| e.to_string())
 }
 

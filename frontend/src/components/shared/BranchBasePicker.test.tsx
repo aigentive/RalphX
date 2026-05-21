@@ -97,4 +97,43 @@ describe("BranchBasePicker", () => {
     expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
     expect(screen.getAllByText("feature/x").length).toBeGreaterThan(0);
   });
+
+  it("switches to pull request results and selects a PR head branch option", async () => {
+    const user = userEvent.setup();
+    const onValueChange = vi.fn();
+    const pullRequestOptions: BranchBaseOption[] = [
+      {
+        key: "pull_request:42:feature/pr-picker",
+        label: "#42 Add PR picker",
+        detail: "feature/pr-picker -> main",
+        source: "pull_request",
+        selection: {
+          kind: "local_branch",
+          ref: "feature/pr-picker",
+          displayName: "PR #42: Add PR picker",
+        },
+      },
+    ];
+
+    render(
+      <BranchBasePicker
+        value=""
+        onValueChange={onValueChange}
+        options={options}
+        pullRequestOptions={pullRequestOptions}
+        enablePullRequests
+        placeholder="Select base"
+        testId="picker"
+      />,
+    );
+
+    await user.click(screen.getByTestId("picker"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+    expect(screen.getByPlaceholderText(/Search pull requests/i)).toBeInTheDocument();
+    expect(screen.getByText("#42 Add PR picker")).toBeInTheDocument();
+
+    await user.click(screen.getByText("#42 Add PR picker"));
+    expect(onValueChange).toHaveBeenCalledWith("pull_request:42:feature/pr-picker");
+  });
 });

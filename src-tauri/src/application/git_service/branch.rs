@@ -28,6 +28,51 @@ impl GitService {
         Ok(())
     }
 
+    /// Ensure a selected branch name exists locally, creating it from `origin/<branch>` if needed.
+    pub async fn ensure_local_branch_from_origin_if_missing(
+        repo: &Path,
+        branch: &str,
+    ) -> AppResult<String> {
+        let trimmed = branch.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::Validation(
+                "Selected branch name cannot be empty".to_string(),
+            ));
+        }
+
+        let local_branch = trimmed
+            .strip_prefix("refs/remotes/origin/")
+            .or_else(|| trimmed.strip_prefix("origin/"))
+            .unwrap_or(trimmed);
+
+        if Self::branch_exists(repo, local_branch).await? {
+            return Ok(local_branch.to_string());
+        }
+
+        let remote_ref = format!("origin/{local_branch}");
+        if !Self::ref_exists(repo, &remote_ref).await? {
+            Self::fetch_origin(repo).await?;
+        }
+
+        if !Self::ref_exists(repo, &remote_ref).await? {
+            return Err(AppError::Validation(format!(
+                "Selected branch '{}' does not exist locally or on origin",
+                local_branch
+            )));
+        }
+
+        match Self::create_branch(repo, local_branch, &remote_ref).await {
+            Ok(()) => Ok(local_branch.to_string()),
+            Err(error) => {
+                if Self::branch_exists(repo, local_branch).await? {
+                    Ok(local_branch.to_string())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
     /// Detect a repository's default branch.
     ///
     /// Fallback chain matches the project settings UI:

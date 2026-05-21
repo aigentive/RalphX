@@ -1519,6 +1519,23 @@ impl<R: Runtime> AppChatService<R> {
             .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))
     }
 
+    async fn agent_workspace_prompt_context_for_send(
+        &self,
+        context_type: ChatContextType,
+        conversation: &ChatConversation,
+    ) -> Result<Option<String>, ChatServiceError> {
+        let Some(workspace) = self
+            .load_agent_conversation_workspace(context_type, &conversation.id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(chat_service_context::format_agent_workspace_source_pull_request_prompt_context(
+            &workspace,
+        ))
+    }
+
     async fn resolve_agent_workspace_working_directory(
         &self,
         workspace: &AgentConversationWorkspace,
@@ -1842,6 +1859,9 @@ impl<R: Runtime> AppChatService<R> {
             "chat_service.send_message spawn bootstrap resolved"
         );
 
+        let agent_workspace_prompt_context = self
+            .agent_workspace_prompt_context_for_send(context_type, conversation)
+            .await?;
         let build_plan_started = Instant::now();
         let launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
@@ -1866,6 +1886,7 @@ impl<R: Runtime> AppChatService<R> {
             is_external_mcp,
             stored_session_id.clone(),
             resolved_spawn_settings,
+            agent_workspace_prompt_context.as_deref(),
             attachment_context_override,
         )
         .await

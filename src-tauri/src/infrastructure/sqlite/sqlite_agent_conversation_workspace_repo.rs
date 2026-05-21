@@ -10,8 +10,9 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrDescription, AgentWorkspaceSourcePullRequest, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -37,6 +38,21 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
     let status: String = row.get("status")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
+    let source_pr_number: Option<i64> = row.get("source_pr_number")?;
+    let source_pr_head_ref: Option<String> = row.get("source_pr_head_ref")?;
+    let source_pull_request = source_pr_number
+        .zip(source_pr_head_ref)
+        .map(|(number, head_ref_name)| -> rusqlite::Result<_> {
+            Ok(AgentWorkspaceSourcePullRequest {
+                number,
+                url: row.get("source_pr_url")?,
+                title: row.get("source_pr_title")?,
+                head_ref_name,
+                base_ref_name: row.get("source_pr_base_ref")?,
+                head_ref_oid: row.get("source_pr_head_sha")?,
+            })
+        })
+        .transpose()?;
 
     Ok(AgentConversationWorkspace {
         conversation_id: ChatConversationId::from_string(row.get::<_, String>("conversation_id")?),
@@ -56,6 +72,7 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         linked_plan_branch_id: row
             .get::<_, Option<String>>("linked_plan_branch_id")?
             .map(PlanBranchId::from_string),
+        source_pull_request,
         publication_pr_number: row.get("publication_pr_number")?,
         publication_pr_url: row.get("publication_pr_url")?,
         publication_pr_status: row.get("publication_pr_status")?,
@@ -165,6 +182,30 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .linked_plan_branch_id
             .as_ref()
             .map(|id| id.as_str().to_string());
+        let source_pr_number = workspace
+            .source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.number);
+        let source_pr_url = workspace
+            .source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.url.clone());
+        let source_pr_title = workspace
+            .source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.title.clone());
+        let source_pr_head_ref = workspace
+            .source_pull_request
+            .as_ref()
+            .map(|pull_request| pull_request.head_ref_name.clone());
+        let source_pr_base_ref = workspace
+            .source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.base_ref_name.clone());
+        let source_pr_head_sha = workspace
+            .source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.head_ref_oid.clone());
         let publication_pr_number = workspace.publication_pr_number;
         let publication_pr_url = workspace.publication_pr_url.clone();
         let publication_pr_status = workspace.publication_pr_status.clone();
@@ -190,12 +231,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         conversation_id, project_id, mode, base_ref_kind, base_ref,
                         base_display_name, base_commit, branch_name, worktree_path,
                         linked_ideation_session_id, linked_plan_branch_id,
+                        source_pr_number, source_pr_url, source_pr_title,
+                        source_pr_head_ref, source_pr_base_ref, source_pr_head_sha,
                         publication_pr_number, publication_pr_url, publication_pr_status,
                         publication_push_status, pr_autofix_enabled, pr_auto_merge_desired,
                         pr_auto_merge_method, pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status, created_at,
                         updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
@@ -207,6 +250,12 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         worktree_path=excluded.worktree_path,
                         linked_ideation_session_id=excluded.linked_ideation_session_id,
                         linked_plan_branch_id=excluded.linked_plan_branch_id,
+                        source_pr_number=excluded.source_pr_number,
+                        source_pr_url=excluded.source_pr_url,
+                        source_pr_title=excluded.source_pr_title,
+                        source_pr_head_ref=excluded.source_pr_head_ref,
+                        source_pr_base_ref=excluded.source_pr_base_ref,
+                        source_pr_head_sha=excluded.source_pr_head_sha,
                         publication_pr_number=excluded.publication_pr_number,
                         publication_pr_url=excluded.publication_pr_url,
                         publication_pr_status=excluded.publication_pr_status,
@@ -232,6 +281,12 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         worktree_path,
                         linked_ideation_session_id,
                         linked_plan_branch_id,
+                        source_pr_number,
+                        source_pr_url,
+                        source_pr_title,
+                        source_pr_head_ref,
+                        source_pr_base_ref,
+                        source_pr_head_sha,
                         publication_pr_number,
                         publication_pr_url,
                         publication_pr_status,

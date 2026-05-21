@@ -1523,6 +1523,16 @@ export interface AgentConversationBaseSelection {
   kind: AgentConversationBaseRefKind;
   ref: string;
   displayName: string;
+  sourcePullRequest?: AgentConversationSourcePullRequest | null;
+}
+
+export interface AgentConversationSourcePullRequest {
+  number: number;
+  url?: string | null;
+  title?: string | null;
+  headRefName: string;
+  baseRefName?: string | null;
+  headRefOid?: string | null;
 }
 
 export interface AgentConversationWorkspace {
@@ -1537,6 +1547,7 @@ export interface AgentConversationWorkspace {
   worktreePath: string;
   linkedIdeationSessionId: string | null;
   linkedPlanBranchId: string | null;
+  sourcePullRequest?: AgentConversationSourcePullRequest | null;
   modeSwitchLocked?: boolean;
   modeSwitchLockReason?: string | null;
   publicationPrNumber: number | null;
@@ -1666,6 +1677,15 @@ const SendAgentMessageResponseSchema = z.object({
 
 type RawSendAgentMessageResponse = z.infer<typeof SendAgentMessageResponseSchema>;
 
+const AgentConversationWorkspaceSourcePullRequestResponseSchema = z.object({
+  number: z.number(),
+  url: z.string().nullable().optional().default(null),
+  title: z.string().nullable().optional().default(null),
+  head_ref_name: z.string(),
+  base_ref_name: z.string().nullable().optional().default(null),
+  head_ref_oid: z.string().nullable().optional().default(null),
+});
+
 const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
@@ -1678,6 +1698,10 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   worktree_path: z.string(),
   linked_ideation_session_id: z.string().nullable(),
   linked_plan_branch_id: z.string().nullable(),
+  source_pull_request: AgentConversationWorkspaceSourcePullRequestResponseSchema
+    .nullable()
+    .optional()
+    .default(null),
   mode_switch_locked: z.boolean().optional().default(false),
   mode_switch_lock_reason: z.string().nullable().optional().default(null),
   publication_pr_number: z.number().nullable(),
@@ -1849,6 +1873,16 @@ function transformAgentConversationWorkspace(
     worktreePath: raw.worktree_path,
     linkedIdeationSessionId: raw.linked_ideation_session_id,
     linkedPlanBranchId: raw.linked_plan_branch_id,
+    sourcePullRequest: raw.source_pull_request
+      ? {
+          number: raw.source_pull_request.number,
+          url: raw.source_pull_request.url,
+          title: raw.source_pull_request.title,
+          headRefName: raw.source_pull_request.head_ref_name,
+          baseRefName: raw.source_pull_request.base_ref_name,
+          headRefOid: raw.source_pull_request.head_ref_oid,
+        }
+      : null,
     modeSwitchLocked: raw.mode_switch_locked,
     modeSwitchLockReason: raw.mode_switch_lock_reason,
     publicationPrNumber: raw.publication_pr_number,
@@ -2183,6 +2217,18 @@ export async function startAgentConversation(
               baseRefKind: input.base.kind,
               baseRef: input.base.ref,
               baseDisplayName: input.base.displayName,
+              ...(input.base.sourcePullRequest
+                ? {
+                    baseSourcePullRequest: {
+                      number: input.base.sourcePullRequest.number,
+                      url: input.base.sourcePullRequest.url ?? null,
+                      title: input.base.sourcePullRequest.title ?? null,
+                      headRefName: input.base.sourcePullRequest.headRefName,
+                      baseRefName: input.base.sourcePullRequest.baseRefName ?? null,
+                      headRefOid: input.base.sourcePullRequest.headRefOid ?? null,
+                    },
+                  }
+                : {}),
             }
           : {}),
       },

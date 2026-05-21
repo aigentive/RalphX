@@ -354,9 +354,12 @@ mod v20260518230038_agent_workspace_pr_comment_evidence_tests;
 mod v20260519180000_agent_tasks;
 #[cfg(test)]
 mod v20260519180000_agent_tasks_tests;
+mod v20260521150003_agent_workspace_source_pull_request;
+#[cfg(test)]
+mod v20260521150003_agent_workspace_source_pull_request_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260519180000;
+pub const SCHEMA_VERSION: i64 = 20260521150003;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1005,6 +1008,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260519180000,
         name: "agent_tasks",
         migrate: v20260519180000_agent_tasks::migrate,
+    },
+    Migration {
+        version: 20260521150003,
+        name: "agent_workspace_source_pull_request",
+        migrate: v20260521150003_agent_workspace_source_pull_request::migrate,
     },
 ];
 
