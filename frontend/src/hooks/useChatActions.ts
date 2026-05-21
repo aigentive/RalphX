@@ -21,6 +21,7 @@ import {
   removeOptimisticMessageFromConversationCache,
 } from "@/hooks/useChat";
 import { ideationApi } from "@/api/ideation";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import { extractErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import type { ContextType } from "@/types/chat-conversation";
@@ -134,11 +135,22 @@ export function useChatActions({
           setSending(storeContextKey, true);
           try {
             if (activeConversationId && !target) {
-              const message = addOptimisticUserMessageToConversationCache(
-                queryClient,
-                activeConversationId,
-                content
-              );
+              const referenceMetadata = serializeComposerReferencesMetadata({
+                projectReferences: composerOptions?.projectReferences,
+                integrationReferences: composerOptions?.integrationReferences,
+              });
+              const message = referenceMetadata
+                ? addOptimisticUserMessageToConversationCache(
+                    queryClient,
+                    activeConversationId,
+                    content,
+                    { metadata: referenceMetadata },
+                  )
+                : addOptimisticUserMessageToConversationCache(
+                    queryClient,
+                    activeConversationId,
+                    content,
+                  );
               optimisticMessage = {
                 conversationId: activeConversationId,
                 messageId: message.id,

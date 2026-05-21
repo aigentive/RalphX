@@ -17,9 +17,11 @@ import {
   AlertCircle,
   ArrowUp,
   Bot,
+  BookOpen,
   Check,
   ChevronDown,
   Cpu,
+  FileText,
   FolderOpen,
   Gauge,
   Loader2,
@@ -28,6 +30,8 @@ import {
   Search,
   Settings,
   Square,
+  Ticket,
+  X,
 } from "lucide-react";
 
 import { useChatAttachmentDrop } from "@/hooks/useChatAttachmentDrop";
@@ -254,6 +258,8 @@ export function AgentComposerSurface({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const restoreTextareaFocusOnActionMenuCloseRef = useRef(false);
+  const restoreTextareaFocusCursorRef = useRef<number | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
@@ -396,20 +402,36 @@ export function AgentComposerSurface({
     questionMode?.onMatchedOptions([]);
   }, [isControlled, onChangeProp, questionMode]);
 
+  const markComposerFocused = useCallback(() => {
+    setIsFocused(true);
+    onFocusChange?.(true);
+  }, [onFocusChange]);
+
+  const focusTextareaAtComposerCursor = useCallback((fallbackCursor: number) => {
+    const focusTextarea = () => {
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        return;
+      }
+      const nextCursor = restoreTextareaFocusCursorRef.current ?? fallbackCursor;
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+      markComposerFocused();
+    };
+    window.requestAnimationFrame(() => {
+      focusTextarea();
+      window.setTimeout(focusTextarea, 0);
+    });
+  }, [markComposerFocused]);
+
   const applyComposerText = useCallback(
     (nextValue: string, nextCursor: number) => {
       setValue(nextValue);
       setCursorPosition(nextCursor);
-      window.requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) {
-          return;
-        }
-        textarea.focus();
-        textarea.setSelectionRange(nextCursor, nextCursor);
-      });
+      restoreTextareaFocusCursorRef.current = nextCursor;
+      focusTextareaAtComposerCursor(nextCursor);
     },
-    [setValue]
+    [focusTextareaAtComposerCursor, setValue]
   );
 
   const skills = useMemo(
@@ -438,6 +460,20 @@ export function AgentComposerSurface({
     }
     return map;
   }, [integrationResourcesQuery.data]);
+  const selectedProjectReferenceList = useMemo(
+    () => normalizeComposerProjectReferences([...selectedProjectReferences.values()]),
+    [selectedProjectReferences],
+  );
+  const selectedIntegrationReferenceList = useMemo(
+    () =>
+      normalizeComposerIntegrationReferences([
+        ...selectedIntegrationReferences.values(),
+      ]),
+    [selectedIntegrationReferences],
+  );
+  const hasSelectedReferences =
+    selectedProjectReferenceList.length > 0 ||
+    selectedIntegrationReferenceList.length > 0;
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
@@ -595,7 +631,7 @@ export function AgentComposerSurface({
           });
           return nextSet;
         });
-        const next = replaceAgentComposerTrigger(value, activeTrigger, `@${path} `);
+        const next = replaceAgentComposerTrigger(value, activeTrigger, "");
         applyComposerText(next.text, next.cursor);
         return;
       }
@@ -630,11 +666,7 @@ export function AgentComposerSurface({
           nextSet.set(`${reference.kind}:${reference.id}`, reference);
           return nextSet;
         });
-        const token =
-          reference.kind === "jira"
-            ? `@jira:${reference.key ?? reference.id}`
-            : `@confluence:${reference.id}`;
-        const next = replaceAgentComposerTrigger(value, activeTrigger, `${token} `);
+        const next = replaceAgentComposerTrigger(value, activeTrigger, "");
         applyComposerText(next.text, next.cursor);
         return;
       }
@@ -686,10 +718,8 @@ export function AgentComposerSurface({
         ...internalNames,
       ]);
       const references = new Map<string, AgentComposerProjectReference>();
-      for (const reference of selectedProjectReferences.values()) {
-        if (message.includes(`@${reference.path}`)) {
-          references.set(reference.path, reference);
-        }
+      for (const reference of selectedProjectReferenceList) {
+        references.set(reference.path, reference);
       }
       for (const reference of extractComposerPathTokens(message)) {
         if (!references.has(reference.path)) {
@@ -700,10 +730,8 @@ export function AgentComposerSurface({
         ...references.values(),
       ]);
       const integrationReferences = new Map<string, AgentComposerIntegrationReference>();
-      for (const reference of selectedIntegrationReferences.values()) {
-        if (messageContainsIntegrationToken(message, reference)) {
-          integrationReferences.set(`${reference.kind}:${reference.id}`, reference);
-        }
+      for (const reference of selectedIntegrationReferenceList) {
+        integrationReferences.set(`${reference.kind}:${reference.id}`, reference);
       }
       for (const reference of extractComposerIntegrationTokens(message)) {
         const key = `${reference.kind}:${reference.id}`;
@@ -730,11 +758,35 @@ export function AgentComposerSurface({
     },
     [
       questionMode,
-      selectedIntegrationReferences,
+      selectedIntegrationReferenceList,
       selectedInternalSkillNames,
-      selectedProjectReferences,
+      selectedProjectReferenceList,
       skills,
     ]
+  );
+
+  const removeSelectedProjectReference = useCallback(
+    (path: string) => {
+      setSelectedProjectReferences((current) => {
+        const nextSet = new Map(current);
+        nextSet.delete(path);
+        return nextSet;
+      });
+      focusTextareaAtComposerCursor(cursorPosition);
+    },
+    [cursorPosition, focusTextareaAtComposerCursor],
+  );
+
+  const removeSelectedIntegrationReference = useCallback(
+    (reference: AgentComposerIntegrationReference) => {
+      setSelectedIntegrationReferences((current) => {
+        const nextSet = new Map(current);
+        nextSet.delete(`${reference.kind}:${reference.id}`);
+        return nextSet;
+      });
+      focusTextareaAtComposerCursor(cursorPosition);
+    },
+    [cursorPosition, focusTextareaAtComposerCursor],
   );
 
   const handleAttachmentSelect = useCallback(
@@ -986,7 +1038,7 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 || attachmentsUploading || helperText) && (
+        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading || helperText) && (
           <div className="px-5 pb-3">
             {attachments.length > 0 && (
               <div className="pb-3">
@@ -995,6 +1047,16 @@ export function AgentComposerSurface({
                   {...(onRemoveAttachment ? { onRemove: onRemoveAttachment } : {})}
                   uploading={attachmentsUploading}
                   compact
+                />
+              </div>
+            )}
+            {hasSelectedReferences && (
+              <div className="pb-3">
+                <ComposerReferencePills
+                  projectReferences={selectedProjectReferenceList}
+                  integrationReferences={selectedIntegrationReferenceList}
+                  onRemoveProjectReference={removeSelectedProjectReference}
+                  onRemoveIntegrationReference={removeSelectedIntegrationReference}
                 />
               </div>
             )}
@@ -1032,6 +1094,8 @@ export function AgentComposerSurface({
               open={actionMenuOpen}
               onOpenChange={setActionMenuOpen}
               onInsertIntegrationTrigger={(kind) => {
+                restoreTextareaFocusOnActionMenuCloseRef.current = true;
+                markComposerFocused();
                 insertIntegrationTrigger(
                   kind,
                   value,
@@ -1040,6 +1104,14 @@ export function AgentComposerSurface({
                   textareaRef.current,
                 );
                 setActionMenuOpen(false);
+              }}
+              onCloseAutoFocus={(event) => {
+                if (!restoreTextareaFocusOnActionMenuCloseRef.current) {
+                  return;
+                }
+                restoreTextareaFocusOnActionMenuCloseRef.current = false;
+                event.preventDefault();
+                focusTextareaAtComposerCursor(cursorPosition);
               }}
               {...(mode ? { mode } : {})}
             />
@@ -1135,6 +1207,7 @@ function ComposerActionMenu({
   open,
   onOpenChange,
   onInsertIntegrationTrigger,
+  onCloseAutoFocus,
 }: {
   project: ProjectFieldConfig;
   mode?: ModeFieldConfig;
@@ -1144,6 +1217,7 @@ function ComposerActionMenu({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
@@ -1190,6 +1264,7 @@ function ComposerActionMenu({
           borderColor: "var(--border-subtle)",
           color: "var(--text-primary)",
         }}
+        onCloseAutoFocus={onCloseAutoFocus}
         onInteractOutside={(event) => {
           const target = event.target as HTMLElement | null;
           if (target?.closest("[data-composer-mode-chip='true']")) {
@@ -1262,15 +1337,113 @@ function ComposerActionMenu({
   );
 }
 
-function messageContainsIntegrationToken(
-  message: string,
-  reference: AgentComposerIntegrationReference,
-): boolean {
-  const token =
-    reference.kind === "jira"
-      ? `@jira:${reference.key ?? reference.id}`
-      : `@confluence:${reference.id}`;
-  return message.toLowerCase().includes(token.toLowerCase());
+function ComposerReferencePills({
+  projectReferences,
+  integrationReferences,
+  onRemoveProjectReference,
+  onRemoveIntegrationReference,
+}: {
+  projectReferences: AgentComposerProjectReference[];
+  integrationReferences: AgentComposerIntegrationReference[];
+  onRemoveProjectReference: (path: string) => void;
+  onRemoveIntegrationReference: (reference: AgentComposerIntegrationReference) => void;
+}) {
+  if (projectReferences.length === 0 && integrationReferences.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      data-testid="agent-composer-reference-pills"
+      className="flex flex-wrap gap-2"
+    >
+      {projectReferences.map((reference) => {
+        const isFolder = reference.kind === "directory";
+        return (
+          <ComposerReferencePill
+            key={`project:${reference.path}`}
+            testId={`agent-composer-reference-pill-project:${reference.path}`}
+            icon={isFolder ? FolderOpen : FileText}
+            typeLabel={isFolder ? "Folder" : "File"}
+            label={reference.path}
+            removeLabel={`Remove ${isFolder ? "folder" : "file"} reference ${reference.path}`}
+            onRemove={() => onRemoveProjectReference(reference.path)}
+          />
+        );
+      })}
+      {integrationReferences.map((reference) => {
+        const isJira = reference.kind === "jira";
+        const label = isJira ? reference.key ?? reference.id : reference.title ?? reference.id;
+        const description = isJira ? reference.title : reference.id;
+        return (
+          <ComposerReferencePill
+            key={`integration:${reference.kind}:${reference.id}`}
+            testId={`agent-composer-reference-pill-integration:${reference.kind}:${reference.id}`}
+            icon={isJira ? Ticket : BookOpen}
+            typeLabel={isJira ? "Jira" : "Confluence"}
+            label={label}
+            removeLabel={`Remove ${isJira ? "Jira" : "Confluence"} reference ${label}`}
+            onRemove={() => onRemoveIntegrationReference(reference)}
+            {...(description ? { description } : {})}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function ComposerReferencePill({
+  testId,
+  icon: Icon,
+  typeLabel,
+  label,
+  description,
+  removeLabel,
+  onRemove,
+}: {
+  testId: string;
+  icon: ComponentType<{ className?: string }>;
+  typeLabel: string;
+  label: string;
+  description?: string;
+  removeLabel: string;
+  onRemove: () => void;
+}) {
+  return (
+    <span
+      data-testid={testId}
+      className="inline-flex h-9 max-w-full items-center gap-2 rounded-lg border px-2 text-[0.75rem]"
+      style={{
+        background: "var(--bg-surface)",
+        borderColor: "var(--bg-hover)",
+        color: "var(--text-primary)",
+      }}
+    >
+      <Icon className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]" />
+      <span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[0.625rem] font-medium uppercase text-[var(--text-muted)]">
+        {typeLabel}
+      </span>
+      <span className="min-w-0 max-w-[16rem] truncate font-medium" title={label}>
+        {label}
+      </span>
+      {description && description !== label ? (
+        <span
+          className="hidden min-w-0 max-w-[18rem] truncate text-[var(--text-muted)] sm:inline"
+          title={description}
+        >
+          {description}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="ml-0.5 shrink-0 rounded p-0.5 text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+        aria-label={removeLabel}
+        onClick={onRemove}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </span>
+  );
 }
 
 function insertIntegrationTrigger(

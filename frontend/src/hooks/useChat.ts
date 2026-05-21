@@ -31,6 +31,7 @@ import {
   removeMessageFromConversationHistory,
   type ConversationHistoryCacheData,
 } from "./chat-cache";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import type { ChatContext } from "@/types/chat";
 import type { ChatConversation, AgentRun, ContextType } from "@/types/chat-conversation";
 import { useChatStore } from "@/stores/chatStore";
@@ -311,9 +312,14 @@ export function invalidateConversationDataQueries(
 export function addOptimisticUserMessageToConversationCache(
   queryClient: QueryClient,
   conversationId: string,
-  content: string
+  content: string,
+  options?: { metadata: string | null }
 ) {
-  const message = createOptimisticUserMessage({ conversationId, content });
+  const message = createOptimisticUserMessage({
+    conversationId,
+    content,
+    ...(options && "metadata" in options ? { metadata: options.metadata } : {}),
+  });
   queryClient.setQueryData<ConversationQueryData>(
     chatKeys.conversation(conversationId),
     (oldData) => {
@@ -761,7 +767,13 @@ export function useChat(
       const optimisticMessage = addOptimisticUserMessageToConversationCache(
         queryClient,
         activeConversationId,
-        variables.content
+        variables.content,
+        {
+          metadata: serializeComposerReferencesMetadata({
+            projectReferences: variables.composerProjectReferences,
+            integrationReferences: variables.composerIntegrationReferences,
+          }),
+        }
       );
       return {
         optimisticConversationId: activeConversationId,

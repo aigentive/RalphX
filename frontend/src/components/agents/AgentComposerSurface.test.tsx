@@ -253,7 +253,13 @@ describe("AgentComposerSurface", () => {
     fireEvent.mouseDown(item);
     fireEvent.click(item);
 
-    expect(textarea.value).toBe("Open @src/main.ts ");
+    expect(textarea.value).toBe("Open ");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-project:src/main.ts"),
+    ).toHaveTextContent("File");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-project:src/main.ts"),
+    ).toHaveTextContent("src/main.ts");
   });
 
   it("sends selected @ paths as structured project references", async () => {
@@ -280,14 +286,52 @@ describe("AgentComposerSurface", () => {
     );
     fireEvent.mouseDown(item);
     fireEvent.click(item);
+    expect(textarea).toHaveValue("Read ");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-project:src/main.ts"),
+    ).toHaveTextContent("File");
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
     expect(onSend).toHaveBeenCalledWith(
-      "Read @src/main.ts",
+      "Read",
       {
         projectReferences: [{ path: "src/main.ts", kind: "file" }],
       },
     );
+  });
+
+  it("removes selected project reference pills before sending", async () => {
+    const onSend = vi.fn();
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "search_agent_composer_entries") {
+        return Promise.resolve({
+          entries: [{ path: "src", kind: "directory", parentPath: null }],
+          truncated: false,
+        });
+      }
+      return Promise.resolve({ skills: [] });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Read @" } });
+    textarea.setSelectionRange("Read @".length, "Read @".length);
+    fireEvent.keyUp(textarea);
+
+    const item = await screen.findByTestId("agent-composer-menu-item-path:src");
+    fireEvent.mouseDown(item);
+    fireEvent.click(item);
+
+    expect(screen.getByTestId("agent-composer-reference-pill-project:src")).toHaveTextContent(
+      "Folder",
+    );
+    fireEvent.click(screen.getByLabelText("Remove folder reference src"));
+    expect(screen.queryByTestId("agent-composer-reference-pill-project:src")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith("Read");
   });
 
   it("sends selected Jira items as structured integration references", async () => {
@@ -325,9 +369,16 @@ describe("AgentComposerSurface", () => {
     );
     fireEvent.mouseDown(item);
     fireEvent.click(item);
+    expect(textarea).toHaveValue("Work on ");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-integration:jira:RX-42"),
+    ).toHaveTextContent("Jira");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-integration:jira:RX-42"),
+    ).toHaveTextContent("RX-42");
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
 
-    expect(onSend).toHaveBeenCalledWith("Work on @jira:RX-42", {
+    expect(onSend).toHaveBeenCalledWith("Work on", {
       integrationReferences: [
         {
           provider: "atlassian",
@@ -341,13 +392,24 @@ describe("AgentComposerSurface", () => {
     });
   });
 
-  it("inserts integration triggers from the plus menu", () => {
+  it.each([
+    ["Jira", "@jira:", "jira"],
+    ["Confluence", "@confluence:", "confluence"],
+  ])("inserts %s triggers from the plus menu and opens search", async (label, expectedValue, kind) => {
     renderComposer();
 
     fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    fireEvent.click(screen.getByText("Jira"));
+    fireEvent.click(screen.getByText(label));
 
-    expect(screen.getByLabelText("Message input")).toHaveValue("@jira:");
+    const textarea = screen.getByLabelText("Message input");
+    expect(textarea).toHaveValue(expectedValue);
+    await waitFor(() => expect(textarea).toHaveFocus());
+    expect(await screen.findByTestId("agent-composer-command-menu")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("search_atlassian_resources", {
+        input: { kind, query: "", limit: 12 },
+      }),
+    );
   });
 
   it("appends internal skill directives for selected $ skills", async () => {

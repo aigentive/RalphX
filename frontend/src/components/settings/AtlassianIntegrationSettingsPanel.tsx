@@ -268,18 +268,18 @@ export function AtlassianIntegrationSettingsPanel() {
           ) : null}
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant={form.authMethod === "api_token" ? "default" : "outline"}
-            disabled={busy}
-            onClick={() =>
-              setForm((current) => ({ ...current, authMethod: "api_token" }))
-            }
-          >
-            API token
-          </Button>
-          {oauthEnabled ? (
+        {oauthEnabled ? (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant={form.authMethod === "api_token" ? "default" : "outline"}
+              disabled={busy}
+              onClick={() =>
+                setForm((current) => ({ ...current, authMethod: "api_token" }))
+              }
+            >
+              API token
+            </Button>
             <Button
               type="button"
               variant={form.authMethod === "oauth" ? "default" : "outline"}
@@ -290,8 +290,8 @@ export function AtlassianIntegrationSettingsPanel() {
             >
               OAuth 2.0
             </Button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1.5">
@@ -337,9 +337,18 @@ export function AtlassianIntegrationSettingsPanel() {
               disabled={busy}
             />
             <p className="text-xs leading-relaxed text-[var(--text-muted)]">
-              Create an Atlassian API token from Atlassian Account, Security, API tokens,
-              then use it with your Atlassian site URL and account email.
+              Create an Atlassian API token from your Atlassian account, then use it
+              with your site URL and account email.
             </p>
+            <a
+              href="https://id.atlassian.com/manage-profile/security/api-tokens"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent-primary)] hover:underline"
+            >
+              Open Atlassian API tokens
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </a>
           </div>
         ) : (
           <div className="space-y-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-3">

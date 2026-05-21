@@ -14,6 +14,7 @@ import {
   type ConversationTimelinePageResponse,
 } from "@/api/chat";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import {
   chatKeys,
   createOptimisticConversationId,
@@ -193,6 +194,10 @@ export function useStartAgentConversation({
       };
 
       const now = new Date().toISOString();
+      const optimisticReferenceMetadata = serializeComposerReferencesMetadata({
+        projectReferences: composerProjectReferences,
+        integrationReferences: composerIntegrationReferences,
+      });
       const initialConversation: ChatConversation = {
         id: createOptimisticConversationId(),
         contextType: "project",
@@ -215,6 +220,9 @@ export function useStartAgentConversation({
         conversation: initialConversation,
         content,
         runtime: normalizedRuntime,
+        ...(optimisticReferenceMetadata
+          ? { metadata: optimisticReferenceMetadata }
+          : {}),
         ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
       });
       const optimisticStoreKey = seedConversationState(initialConversation, null, [
@@ -248,6 +256,9 @@ export function useStartAgentConversation({
           conversation: seededConversation,
           content,
           runtime: normalizedRuntime,
+          ...(optimisticReferenceMetadata
+            ? { metadata: optimisticReferenceMetadata }
+            : {}),
           ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
         });
         seedConversationState(seededConversation, null, [seededOptimisticUserMessage]);
@@ -297,6 +308,9 @@ export function useStartAgentConversation({
                 conversation: resolvedConversation,
                 content,
                 runtime: normalizedRuntime,
+                ...(optimisticReferenceMetadata
+                  ? { metadata: optimisticReferenceMetadata }
+                  : {}),
                 ...(optimisticAttachments ? { attachments: optimisticAttachments } : {}),
               });
         seedConversationState(
@@ -374,11 +388,13 @@ function buildOptimisticUserMessage({
   conversation,
   content,
   runtime,
+  metadata,
   attachments,
 }: {
   conversation: ChatConversation;
   content: string;
   runtime: AgentRuntimeSelection;
+  metadata?: string | null;
   attachments?: MessageAttachment[];
 }): ChatMessageResponse {
   return {
@@ -388,7 +404,7 @@ function buildOptimisticUserMessage({
     taskId: null,
     role: "user",
     content,
-    metadata: null,
+    metadata: metadata ?? null,
     parentMessageId: null,
     conversationId: conversation.id,
     toolCalls: null,
