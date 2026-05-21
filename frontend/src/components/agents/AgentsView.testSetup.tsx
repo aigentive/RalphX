@@ -241,6 +241,39 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
   useHarnessProviders: () => useHarnessProvidersMock(),
 }));
 
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: () => ({
+    isReady: true,
+    registry: {
+      claude: [
+        {
+          id: "sonnet",
+          label: "sonnet",
+          menuLabel: "sonnet",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high", "max"],
+        },
+        {
+          id: "opus",
+          label: "opus",
+          menuLabel: "opus",
+          defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+      codex: [
+        {
+          id: "gpt-5.5",
+          label: "gpt-5.5",
+          menuLabel: "gpt-5.5",
+          defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh"],
+        },
+      ],
+    },
+  }),
+}));
+
 vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({
     subscribe: (event: string, handler: (payload: unknown) => void) => {
