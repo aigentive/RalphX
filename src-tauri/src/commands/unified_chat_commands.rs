@@ -86,8 +86,9 @@ use crate::domain::entities::{
     ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
-    AgentWorkspacePrPublisher, ComposerProjectReference, QueuedMessage, RunningAgentKey,
-    RunningAgentRegistry,
+    AgentWorkspacePrPublisher, ComposerIntegrationReference, ComposerProjectReference,
+    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata, QueuedMessage,
+    RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -123,6 +124,9 @@ pub struct SendAgentMessageInput {
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Structured external integration references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
     /// Attachment IDs selected by the composer for this message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
@@ -216,6 +220,9 @@ pub struct StartAgentConversationInput {
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
+    /// Structured external integration references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_integration_references: Vec<ComposerIntegrationReference>,
 }
 
 /// Response for an agent conversation workspace.
@@ -2664,6 +2671,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
                 conversation_id_override: Some(conversation.id),
                 working_directory_override,
                 composer_project_references: input.composer_project_references.clone(),
+                composer_integration_references: input.composer_integration_references.clone(),
                 ..Default::default()
             },
         )
@@ -3002,6 +3010,7 @@ pub async fn send_agent_message(
                 logical_effort_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
+                composer_integration_references: input.composer_integration_references,
                 attachment_ids,
                 ..Default::default()
             },
@@ -6453,15 +6462,20 @@ pub async fn update_agent_conversation_title(
     input: UpdateAgentConversationTitleInput,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationResponse, String> {
-    let title = input.title.trim();
+    let mut title = input.title.trim().to_string();
     if title.is_empty() {
         return Err("Conversation title cannot be empty".to_string());
     }
 
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
+    if let Some(jira_key) =
+        primary_jira_key_for_conversation(state.inner(), &conversation_id).await
+    {
+        title = normalize_title_with_jira_key(&title, &jira_key);
+    }
     state
         .chat_conversation_repo
-        .update_title(&conversation_id, title)
+        .update_title(&conversation_id, &title)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -6472,6 +6486,19 @@ pub async fn update_agent_conversation_title(
         .map_err(|e| e.to_string())?
         .map(AgentConversationResponse::from)
         .ok_or_else(|| "Conversation not found".to_string())
+}
+
+async fn primary_jira_key_for_conversation(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Option<String> {
+    state
+        .chat_message_repo
+        .get_recent_by_conversation_paginated(conversation_id, 50, 0)
+        .await
+        .ok()?
+        .into_iter()
+        .find_map(|message| primary_jira_key_from_composer_metadata(message.metadata.as_deref()))
 }
 
 #[cfg(test)]

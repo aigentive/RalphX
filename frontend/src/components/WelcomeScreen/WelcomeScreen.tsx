@@ -9,12 +9,13 @@
  */
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Settings, Sparkles, X } from "lucide-react";
+import { CheckCircle2, Plug, Settings, Sparkles, X } from "lucide-react";
 import AgentConstellation from "./AgentConstellation";
 
 interface WelcomeScreenProps {
   onCreateProject: () => void;
   onSetupProviders?: () => void;
+  onSetupIntegrations?: () => void;
   providerSetupRequired?: boolean;
   hasProjects?: boolean;
   /** Optional callback when closing manually-opened welcome screen (via ⌘⇧W or Escape) */
@@ -24,6 +25,7 @@ interface WelcomeScreenProps {
 export default function WelcomeScreen({
   onCreateProject,
   onSetupProviders,
+  onSetupIntegrations,
   providerSetupRequired = false,
   hasProjects = false,
   onClose,
@@ -169,7 +171,7 @@ export default function WelcomeScreen({
 
         <div
           data-testid="welcome-setup-steps"
-          className="mb-8 flex w-full max-w-md items-center justify-center gap-2"
+          className="mb-8 flex w-full max-w-2xl items-center justify-center gap-2"
           style={{ animation: "fadeSlideIn 0.6s ease-out 0.1s forwards" }}
         >
           <div
@@ -243,6 +245,29 @@ export default function WelcomeScreen({
               </span>
             </span>
           </div>
+          <button
+            type="button"
+            data-testid="welcome-integrations-step"
+            data-status="optional"
+            className="flex min-w-0 flex-1 items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-[var(--bg-hover)]"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+              color: "var(--text-secondary)",
+            }}
+            onClick={onSetupIntegrations}
+          >
+            <Plug className="mt-0.5 h-4 w-4 shrink-0" />
+            <span className="min-w-0">
+              <span className="block truncate font-medium">Atlassian</span>
+              <span
+                className="block truncate text-[0.6875rem]"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Optional Jira and Confluence context.
+              </span>
+            </span>
+          </button>
         </div>
 
         {/* CTA section */}

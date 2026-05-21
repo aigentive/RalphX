@@ -16,8 +16,9 @@ import {
 import { useEffect, useCallback, useMemo, useRef } from "react";
 import {
   chatApi,
-  type ComposerProjectReference,
   type ChatMessageResponse,
+  type ComposerIntegrationReference,
+  type ComposerProjectReference,
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
   type SendAgentMessageOptions,
@@ -30,6 +31,7 @@ import {
   removeMessageFromConversationHistory,
   type ConversationHistoryCacheData,
 } from "./chat-cache";
+import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import type { ChatContext } from "@/types/chat";
 import type { ChatConversation, AgentRun, ContextType } from "@/types/chat-conversation";
 import { useChatStore } from "@/stores/chatStore";
@@ -75,6 +77,7 @@ type SendMessageVariables = {
   attachmentIds?: string[];
   target?: string;
   composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
 };
 
 type SendMessageMutationContext = {
@@ -309,9 +312,14 @@ export function invalidateConversationDataQueries(
 export function addOptimisticUserMessageToConversationCache(
   queryClient: QueryClient,
   conversationId: string,
-  content: string
+  content: string,
+  options?: { metadata: string | null }
 ) {
-  const message = createOptimisticUserMessage({ conversationId, content });
+  const message = createOptimisticUserMessage({
+    conversationId,
+    content,
+    ...(options && "metadata" in options ? { metadata: options.metadata } : {}),
+  });
   queryClient.setQueryData<ConversationQueryData>(
     chatKeys.conversation(conversationId),
     (oldData) => {
@@ -712,12 +720,23 @@ export function useChat(
     SendMessageVariables,
     SendMessageMutationContext
   >({
-    mutationFn: async ({ content, attachmentIds, target, composerProjectReferences }) => {
+    mutationFn: async ({
+      content,
+      attachmentIds,
+      target,
+      composerProjectReferences,
+      composerIntegrationReferences,
+    }) => {
       const sendOptions =
-        composerProjectReferences?.length
+        composerProjectReferences?.length || composerIntegrationReferences?.length
           ? {
               ...options?.sendOptions,
-              composerProjectReferences,
+              ...(composerProjectReferences?.length
+                ? { composerProjectReferences }
+                : {}),
+              ...(composerIntegrationReferences?.length
+                ? { composerIntegrationReferences }
+                : {}),
             }
           : options?.sendOptions;
       if (options?.sendOptions) {
@@ -748,7 +767,13 @@ export function useChat(
       const optimisticMessage = addOptimisticUserMessageToConversationCache(
         queryClient,
         activeConversationId,
-        variables.content
+        variables.content,
+        {
+          metadata: serializeComposerReferencesMetadata({
+            projectReferences: variables.composerProjectReferences,
+            integrationReferences: variables.composerIntegrationReferences,
+          }),
+        }
       );
       return {
         optimisticConversationId: activeConversationId,

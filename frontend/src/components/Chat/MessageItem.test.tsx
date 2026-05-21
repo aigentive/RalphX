@@ -55,6 +55,58 @@ describe("MessageItem - Attachment Integration", () => {
     expect(screen.getByText("image.png")).toBeInTheDocument();
   });
 
+  it("renders structured composer references for user messages", () => {
+    renderMessageItem(
+      <MessageItem
+        {...baseProps}
+        role="user"
+        composerReferences={{
+          projectReferences: [{ path: "src/main.ts", kind: "file" }],
+          integrationReferences: [
+            {
+              provider: "atlassian",
+              kind: "jira",
+              id: "RX-42",
+              key: "RX-42",
+              title: "Fix composer references",
+              url: "https://example.atlassian.net/browse/RX-42",
+            },
+            {
+              provider: "atlassian",
+              kind: "confluence",
+              id: "123",
+              title: "Release Notes",
+            },
+          ],
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("message-reference-project:src/main.ts")).toHaveTextContent(
+      "File",
+    );
+    expect(screen.getByTestId("message-reference-integration:jira:RX-42")).toHaveTextContent(
+      "Jira",
+    );
+    const jiraReference = screen.getByTestId(
+      "message-reference-integration:jira:RX-42",
+    );
+    expect(jiraReference).toHaveTextContent("RX-42");
+    expect(jiraReference).toHaveAttribute(
+      "href",
+      "https://example.atlassian.net/browse/RX-42",
+    );
+    expect(jiraReference).toHaveClass("no-underline", "flex-wrap");
+    expect(jiraReference).toHaveStyle({ textDecoration: "none" });
+    expect(screen.getByText("Fix composer references")).toHaveClass("break-words");
+    expect(
+      screen.getByTestId("message-reference-integration:confluence:123"),
+    ).toHaveTextContent("Confluence");
+    expect(
+      screen.getByTestId("message-reference-integration:confluence:123"),
+    ).toHaveTextContent("Release Notes");
+  });
+
   it("does NOT render MessageAttachments for user messages without attachments", () => {
     renderMessageItem(<MessageItem {...baseProps} role="user" />);
 

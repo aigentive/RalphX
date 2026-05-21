@@ -9,10 +9,12 @@ export type ConversationHistoryCacheData = InfiniteData<ConversationMessagesPage
 export function createOptimisticUserMessage({
   conversationId,
   content,
+  metadata = null,
   createdAt = new Date().toISOString(),
 }: {
   conversationId: string;
   content: string;
+  metadata?: string | null;
   createdAt?: string;
 }): ChatMessageResponse {
   return {
@@ -23,7 +25,7 @@ export function createOptimisticUserMessage({
     taskId: null,
     role: "user",
     content,
-    metadata: null,
+    metadata,
     parentMessageId: null,
     createdAt,
     toolCalls: null,
@@ -58,6 +60,9 @@ export function replaceMatchingOptimisticMessage(
     ...message,
     ...(!message.attachments && optimisticMessage?.attachments
       ? { attachments: optimisticMessage.attachments }
+      : {}),
+    ...(!message.metadata && optimisticMessage?.metadata
+      ? { metadata: optimisticMessage.metadata }
       : {}),
   };
   return nextMessages;

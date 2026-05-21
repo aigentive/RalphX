@@ -656,6 +656,63 @@ describe("useConversationTimelineWindow", () => {
     ]);
     expect(trimmed?.pages[0]?.newestLoadedSequence).toBe(4);
   });
+
+  it("stores composer reference metadata on optimistic user messages", () => {
+    const { queryClient } = createWrapperWithClient();
+    const metadata =
+      '{"composer_integration_references":[{"provider":"atlassian","kind":"jira","id":"RX-42","key":"RX-42"}]}';
+    queryClient.setQueryData(chatKeys.conversation("conv-1"), {
+      conversation: mockConversation1,
+      messages: [],
+    });
+    queryClient.setQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+      chatKeys.conversationHistory("conv-1"),
+      {
+        pages: [
+          {
+            conversation: mockConversation1,
+            messages: [],
+            limit: 40,
+            offset: 0,
+            totalMessageCount: 0,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+      chatKeys.conversationTimeline("conv-1"),
+      {
+        pages: [timelinePage([], { limit: 40, totalItemCount: 0 })],
+        pageParams: [null],
+      },
+    );
+
+    const optimistic = addOptimisticUserMessageToConversationCache(
+      queryClient,
+      "conv-1",
+      "hello from user",
+      { metadata },
+    );
+
+    expect(optimistic.metadata).toBe(metadata);
+    expect(
+      queryClient.getQueryData<{ messages: ChatMessageResponse[] }>(
+        chatKeys.conversation("conv-1"),
+      )?.messages[0]?.metadata,
+    ).toBe(metadata);
+    expect(
+      queryClient.getQueryData<InfiniteData<ConversationMessagesPageResponse>>(
+        chatKeys.conversationHistory("conv-1"),
+      )?.pages[0]?.messages[0]?.metadata,
+    ).toBe(metadata);
+    expect(
+      queryClient.getQueryData<InfiniteData<ConversationTimelinePageResponse>>(
+        chatKeys.conversationTimeline("conv-1"),
+      )?.pages[0]?.messages[0]?.metadata,
+    ).toBe(metadata);
+  });
 });
 
 describe("useAgentRunStatus", () => {

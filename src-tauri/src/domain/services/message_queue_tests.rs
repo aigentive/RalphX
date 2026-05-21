@@ -394,6 +394,7 @@ fn test_remove_stale_drops_old_messages() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
         q.push(QueuedMessage {
@@ -405,6 +406,7 @@ fn test_remove_stale_drops_old_messages() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
     }
@@ -513,11 +515,41 @@ fn test_queue_with_overrides_preserves_composer_project_references() {
         None,
         references.clone(),
         Vec::new(),
+        Vec::new(),
     );
 
     assert_eq!(queued.composer_project_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_project_references, references);
+}
+
+#[test]
+fn test_queue_with_overrides_preserves_composer_integration_references() {
+    let queue = MessageQueue::new();
+    let references = vec![ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: "jira".to_string(),
+        id: "RX-42".to_string(),
+        key: Some("RX-42".to_string()),
+        title: Some("Fix composer search".to_string()),
+        url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+    }];
+
+    let queued = queue.queue_with_overrides_and_project_references(
+        ChatContextType::Project,
+        "project-1",
+        "Read @jira:RX-42".to_string(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        references.clone(),
+        Vec::new(),
+    );
+
+    assert_eq!(queued.composer_integration_references, references);
+    let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
+    assert_eq!(popped.composer_integration_references, references);
 }
 
 #[test]
@@ -534,6 +566,7 @@ fn test_queue_with_overrides_preserves_attachment_ids() {
         None,
         None,
         None,
+        Vec::new(),
         Vec::new(),
         attachment_ids.clone(),
     );
@@ -555,6 +588,8 @@ fn test_queue_standard_has_no_overrides() {
     assert_eq!(queued.created_at_override, None);
     assert_eq!(queued.harness_override, None);
     assert!(queued.composer_project_references.is_empty());
+    assert!(queued.composer_integration_references.is_empty());
+    assert!(queued.attachment_ids.is_empty());
 }
 
 #[test]
@@ -574,6 +609,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             created_at_override: None,
             harness_override: None,
             composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
             attachment_ids: Vec::new(),
         });
     }

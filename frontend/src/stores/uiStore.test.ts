@@ -3,7 +3,7 @@ import { useUiStore } from "./uiStore";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { FeatureFlags } from "@/types/feature-flags";
 
-const ALL_ENABLED: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true };
+const ALL_ENABLED: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, atlassianOauth: false };
 
 // ============================================================================
 // Mocks for per-project route persistence (cross-store reads)

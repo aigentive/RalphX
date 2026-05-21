@@ -23,6 +23,8 @@ pub struct UiFeatureFlagsConfig {
     pub battle_mode: bool,
     /// Enable or disable team mode UI. Default: false.
     pub team_mode: bool,
+    /// Enable or disable Atlassian OAuth setup UI. Default: false.
+    pub atlassian_oauth: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -32,6 +34,7 @@ impl Default for UiFeatureFlagsConfig {
             extensibility_page: true,
             battle_mode: true,
             team_mode: false,
+            atlassian_oauth: false,
         }
     }
 }

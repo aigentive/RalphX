@@ -83,7 +83,7 @@ describe("useAppKeyboardShortcuts", () => {
 
   it("⌘⇧B is a no-op when featureFlags.battleMode is false", () => {
     const onBattleModeToggle = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: false, teamMode: false };
+    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: false, teamMode: false, atlassianOauth: false };
 
     renderHook(() =>
       useAppKeyboardShortcuts(makeProps({ currentView: "graph", onBattleModeToggle, featureFlags: flags }))
@@ -95,7 +95,7 @@ describe("useAppKeyboardShortcuts", () => {
 
   it("⌘⇧B calls onBattleModeToggle when flag is enabled and currentView is graph", () => {
     const onBattleModeToggle = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false };
+    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
 
     renderHook(() =>
       useAppKeyboardShortcuts(makeProps({ currentView: "graph", onBattleModeToggle, featureFlags: flags }))
@@ -107,7 +107,7 @@ describe("useAppKeyboardShortcuts", () => {
 
   it("⌘⇧B is a no-op when flag is enabled but currentView is not graph", () => {
     const onBattleModeToggle = vi.fn();
-    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false };
+    const flags: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
 
     renderHook(() =>
       useAppKeyboardShortcuts(makeProps({ currentView: "kanban", onBattleModeToggle, featureFlags: flags }))

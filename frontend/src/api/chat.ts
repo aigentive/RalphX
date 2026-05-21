@@ -1505,12 +1505,22 @@ export interface ComposerProjectReference {
   kind?: "file" | "directory";
 }
 
+export interface ComposerIntegrationReference {
+  provider: "atlassian";
+  kind: "jira" | "confluence";
+  id: string;
+  key?: string;
+  title?: string;
+  url?: string;
+}
+
 export interface SendAgentMessageOptions {
   conversationId?: string | null;
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
   composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
 export type AgentConversationWorkspaceMode = AgentConversationMode;
@@ -1573,6 +1583,7 @@ export interface StartAgentConversationInput {
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
   composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
 export interface StartAgentConversationResult {
@@ -2178,6 +2189,9 @@ export async function startAgentConversation(
         ...(input.composerProjectReferences?.length
           ? { composerProjectReferences: input.composerProjectReferences }
           : {}),
+        ...(input.composerIntegrationReferences?.length
+          ? { composerIntegrationReferences: input.composerIntegrationReferences }
+          : {}),
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
@@ -2248,6 +2262,9 @@ export async function sendAgentMessage(
         ...(options?.logicalEffort ? { logicalEffort: options.logicalEffort } : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
+          : {}),
+        ...(options?.composerIntegrationReferences?.length
+          ? { composerIntegrationReferences: options.composerIntegrationReferences }
           : {}),
       },
     },

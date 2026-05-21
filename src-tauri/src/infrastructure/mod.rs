@@ -2,10 +2,12 @@
 // SQLite, file system, and harness-specific external integrations
 
 pub mod agents;
+pub mod atlassian_client;
 pub(crate) mod git_auth;
 pub mod login_shell_env;
 pub mod memory;
 pub mod services;
+pub mod secret_store;
 pub mod sqlite;
 pub mod supervisor;
 pub mod tool_paths;
@@ -17,6 +19,7 @@ pub mod webhook_publisher;
 pub use agents::{
     AgenticClientSpawner, ClaudeCodeClient, MockAgenticClient, MockCall, MockCallType,
 };
+pub use atlassian_client::HyperAtlassianApiClient;
 pub use services::GhCliGithubService;
 pub use sqlite::{get_default_db_path, open_connection, open_memory_connection, run_migrations};
 pub use supervisor::{EventBus, EventSubscriber};

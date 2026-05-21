@@ -2,6 +2,7 @@
 // This layer has NO infrastructure dependencies
 
 pub mod repositories;
+pub mod integrations;
 pub mod services;
 pub mod state_machine;
 pub mod supervisor;

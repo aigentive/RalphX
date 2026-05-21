@@ -75,6 +75,7 @@ describe("chat-cache helpers", () => {
     const optimistic = createOptimisticUserMessage({
       conversationId: "conv-1",
       content: "queued locally",
+      metadata: '{"composer_project_references":[{"path":"src/main.ts"}]}',
       createdAt: "2026-02-03T04:05:06Z",
     });
 
@@ -82,6 +83,7 @@ describe("chat-cache helpers", () => {
       conversationId: "conv-1",
       role: "user",
       content: "queued locally",
+      metadata: '{"composer_project_references":[{"path":"src/main.ts"}]}',
       createdAt: "2026-02-03T04:05:06Z",
       sessionId: null,
       toolCalls: null,
@@ -129,6 +131,27 @@ describe("chat-cache helpers", () => {
       {
         ...backend,
         attachments: optimistic.attachments,
+      },
+    ]);
+  });
+
+  it("preserves optimistic reference metadata when the replacement message lacks it", () => {
+    const optimistic = message({
+      id: "optimistic:conv-1:pending",
+      content: "same text",
+      metadata: '{"composer_integration_references":[{"provider":"atlassian","kind":"jira","id":"RX-42","key":"RX-42"}]}',
+    });
+    const backend = message({
+      id: "message-backend",
+      content: "same text",
+      metadata: null,
+      createdAt: "2026-01-01T00:00:05Z",
+    });
+
+    expect(replaceMatchingOptimisticMessage([optimistic], backend)).toEqual([
+      {
+        ...backend,
+        metadata: optimistic.metadata,
       },
     ]);
   });

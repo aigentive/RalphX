@@ -11,6 +11,7 @@
 import React, { forwardRef, useCallback, useEffect, useMemo, useRef, useState, useImperativeHandle } from "react";
 import { Virtuoso, type ListRange, type VirtuosoHandle } from "react-virtuoso";
 import { MessageItem, MessageMeta } from "./MessageItem";
+import { parseComposerReferencesFromMetadata } from "./MessageReferences.parse";
 import { HookEventMessage } from "./HookEventMessage";
 import { AutoVerificationCard } from "./AutoVerificationCard";
 import { VerificationResultCard } from "./VerificationResultCard";
@@ -1597,8 +1598,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       const msg = item.data;
 
+      const messageMetadata = parseMessageMetadata(msg.metadata);
       const systemCard = renderSystemCard(
-        parseMessageMetadata(msg.metadata),
+        messageMetadata,
         msg.content,
         msg.createdAt,
       );
@@ -1614,6 +1616,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       const { teammateName, teammateColor } = isProviderRole(msg.role)
         ? getTeammateInfo(msg.sender)
         : { teammateName: null, teammateColor: null };
+      const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
 
       return (
         <div className="px-3 w-full" style={contentContainerStyle}>
@@ -1626,6 +1629,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               toolCalls={msg.toolCalls ?? null}
               contentBlocks={msg.contentBlocks ?? null}
               {...(msg.attachments && { attachments: msg.attachments })}
+              {...(composerReferences ? { composerReferences } : {})}
               teammateName={teammateName}
               teammateColor={teammateColor}
               providerHarness={msg.providerHarness ?? providerHarness}
@@ -1723,8 +1727,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             }
             const msg = item.data;
 
+            const messageMetadata = parseMessageMetadata(msg.metadata);
             const systemCard = renderSystemCard(
-              parseMessageMetadata(msg.metadata),
+              messageMetadata,
               msg.content,
               msg.createdAt,
             );
@@ -1739,6 +1744,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
             const { teammateName, teammateColor } = isProviderRole(msg.role)
               ? getTeammateInfo(msg.sender)
               : { teammateName: null, teammateColor: null };
+            const composerReferences = parseComposerReferencesFromMetadata(messageMetadata);
 
             return (
               <div key={`message-${msg.id}`} className="px-3 w-full" style={contentContainerStyle}>
@@ -1751,6 +1757,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     toolCalls={msg.toolCalls ?? null}
                     contentBlocks={msg.contentBlocks ?? null}
                     {...(msg.attachments && { attachments: msg.attachments })}
+                    {...(composerReferences ? { composerReferences } : {})}
                     teammateName={teammateName}
                     teammateColor={teammateColor}
                     providerHarness={msg.providerHarness ?? providerHarness}

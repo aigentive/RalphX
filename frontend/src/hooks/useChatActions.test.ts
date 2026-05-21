@@ -259,6 +259,53 @@ describe("useChatActions", () => {
       );
     });
 
+    it("review mode includes selected references in optimistic message metadata", async () => {
+      const { result } = setup({
+        contextType: "review",
+        contextId: "task-42",
+        storeContextKey: "review:task-42",
+        selectedTaskId: "task-42",
+        activeConversationId: "conv-review",
+      });
+
+      await act(async () => {
+        await result.current.handleSend("review this", undefined, undefined, {
+          projectReferences: [{ path: "src/main.ts", kind: "file" }],
+          integrationReferences: [
+            {
+              provider: "atlassian",
+              kind: "jira",
+              id: "RX-42",
+              key: "RX-42",
+              title: "Fix composer references",
+            },
+          ],
+        });
+      });
+
+      expect(mockAddOptimisticUserMessageToConversationCache).toHaveBeenCalledWith(
+        expect.anything(),
+        "conv-review",
+        "review this",
+        {
+          metadata: JSON.stringify({
+            composer_project_references: [
+              { path: "src/main.ts", kind: "file" },
+            ],
+            composer_integration_references: [
+              {
+                provider: "atlassian",
+                kind: "jira",
+                id: "RX-42",
+                key: "RX-42",
+                title: "Fix composer references",
+              },
+            ],
+          }),
+        },
+      );
+    });
+
     it("review mode rolls back the optimistic user message when send fails", async () => {
       mockSendAgentMessage.mockRejectedValue(new Error("review send failed"));
       const { result } = setup({

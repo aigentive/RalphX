@@ -769,6 +769,109 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("stores selected references on the first optimistic message before a conversation exists", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: Infinity },
+        mutations: { retry: false },
+      },
+    });
+    const seededConversation = conversation({
+      id: "conversation-seeded-references",
+      contextId: "project-1",
+      title: null,
+    });
+    let resolveCreate:
+      | ((value: Awaited<ReturnType<typeof createConversationMock>>) => void)
+      | null = null;
+    createConversationMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      })
+    );
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-seeded-references",
+      }),
+      sendResult: {
+        conversationId: "conversation-seeded-references",
+        agentRunId: "run-seeded-references",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const setOptimisticSelectedConversationId = vi.fn();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId,
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+        }),
+      { wrapper }
+    );
+
+    const startPromise = result.current({
+      projectId: "project-1",
+      content: "start with references",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    await waitFor(() =>
+      expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
+    );
+    const optimisticConversationId =
+      setOptimisticSelectedConversationId.mock.calls[0]?.[0];
+    const optimisticMessage = queryClient.getQueryData<{
+      messages: Array<{ metadata: string | null }>;
+    }>(["chat", "conversations", optimisticConversationId])?.messages[0];
+    expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
+      composer_project_references: [{ path: "src/main.ts", kind: "file" }],
+      composer_integration_references: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    resolveCreate?.(seededConversation);
+    await startPromise;
+  });
+
   it("clears optimistic running state when the seeded agent start fails", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {

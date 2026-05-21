@@ -12,6 +12,7 @@ const ALL_ENABLED_FLAGS: FeatureFlags = {
   extensibilityPage: true,
   battleMode: true,
   teamMode: false,
+  atlassianOauth: false,
 };
 
 interface UseAppKeyboardShortcutsProps {

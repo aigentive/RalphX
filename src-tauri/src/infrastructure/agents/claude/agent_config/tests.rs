@@ -3122,6 +3122,7 @@ fn test_ui_feature_flags_default_all_enabled() {
     );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
+    assert!(!flags.atlassian_oauth, "atlassian_oauth should default to false");
 }
 
 #[test]
@@ -3179,6 +3180,10 @@ agents: []
         !cfg.runtime.ui_feature_flags.team_mode,
         "team_mode should default to false when ui section absent"
     );
+    assert!(
+        !cfg.runtime.ui_feature_flags.atlassian_oauth,
+        "atlassian_oauth should default to false when ui section absent"
+    );
 }
 
 #[test]
@@ -3227,6 +3232,7 @@ fn test_env_override_true_value_enables_flag() {
             extensibility_page: false,
             battle_mode: false,
             team_mode: false,
+            atlassian_oauth: false,
         },
     };
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
@@ -3243,6 +3249,7 @@ fn test_env_override_true_value_enables_flag() {
         "env '1' should enable extensibility_page"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
+    assert!(!cfg.ui_feature_flags.atlassian_oauth, "atlassian_oauth untouched");
 }
 
 #[test]
@@ -3277,6 +3284,7 @@ fn test_env_override_battle_mode() {
         "extensibility_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
+    assert!(!cfg.ui_feature_flags.atlassian_oauth, "atlassian_oauth untouched");
 
     // Override battle_mode to true via "1"
     cfg.ui_feature_flags.battle_mode = false;
@@ -3319,6 +3327,34 @@ fn test_env_override_team_mode() {
 }
 
 #[test]
+fn test_env_override_atlassian_oauth() {
+    let mut cfg = runtime_config::AllRuntimeConfig {
+        stream: runtime_config::StreamTimeoutsConfig::default(),
+        reconciliation: runtime_config::ReconciliationConfig::default(),
+        git: runtime_config::GitRuntimeConfig::default(),
+        scheduler: runtime_config::SchedulerConfig::default(),
+        supervisor: runtime_config::SupervisorRuntimeConfig::default(),
+        limits: runtime_config::LimitsConfig::default(),
+        verification: runtime_config::VerificationConfig::default(),
+        external_mcp: runtime_config::ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+
+    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
+        "RALPHX_UI_ATLASSIAN_OAUTH" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(cfg.ui_feature_flags.atlassian_oauth, "env 'true' should enable atlassian_oauth");
+
+    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
+        "RALPHX_UI_ATLASSIAN_OAUTH" => Some("false".to_string()),
+        _ => None,
+    });
+    assert!(!cfg.ui_feature_flags.atlassian_oauth, "env 'false' should disable atlassian_oauth");
+}
+
+#[test]
 fn test_ui_feature_flags_config_accessor_returns_defaults() {
     // The accessor is backed by OnceLock — just verify it returns a valid struct
     let flags = ui_feature_flags_config();
@@ -3327,4 +3363,5 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     let _ = flags.extensibility_page;
     let _ = flags.battle_mode;
     let _ = flags.team_mode;
+    let _ = flags.atlassian_oauth;
 }

@@ -51,6 +51,11 @@ const LazyApiKeysSection = lazy(() =>
     default: module.ApiKeysSection,
   })),
 );
+const LazyAtlassianIntegrationSettingsPanel = lazy(() =>
+  import("./AtlassianIntegrationSettingsPanel").then((module) => ({
+    default: module.AtlassianIntegrationSettingsPanel,
+  })),
+);
 const LazyExternalMcpSettingsPanel = lazy(() =>
   import("./ExternalMcpSettingsPanel").then((module) => ({
     default: module.ExternalMcpSettingsPanel,
@@ -119,6 +124,7 @@ export function SettingsSectionContent({
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
       {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}
       {section === "ideation-harnesses" && <LazyIdeationHarnessSection />}
+      {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "accessibility" && <LazyAccessibilitySection />}
