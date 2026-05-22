@@ -70,6 +70,13 @@ fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
     plugin_dir
 }
 
+fn codex_mcp_args_override(overrides: &[String]) -> &str {
+    overrides
+        .iter()
+        .find_map(|entry| entry.strip_prefix("mcp_servers.ralphx.args="))
+        .expect("Codex MCP args override")
+}
+
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -847,6 +854,40 @@ harnesses:
             .iter()
             .any(|entry| entry == "features.shell_tool=false"),
         "runtime feature flags should still be preserved: {overrides:?}"
+    );
+}
+
+#[test]
+fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let plugin_dir = create_plugin_dir(temp_dir.path());
+
+    let overrides =
+        build_codex_mcp_overrides(&plugin_dir, "ralphx-chat-plan", false, None).expect("overrides");
+    let args = codex_mcp_args_override(&overrides);
+
+    assert!(
+        args.contains("--allowed-tools=") && args.contains("ask_user_question"),
+        "Codex Plan chat must keep ask_user_question for interactive Agent conversations: {overrides:?}"
+    );
+}
+
+#[test]
+fn build_codex_mcp_overrides_filters_plan_question_tool_for_external_runs() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let plugin_dir = create_plugin_dir(temp_dir.path());
+
+    let overrides =
+        build_codex_mcp_overrides(&plugin_dir, "ralphx-chat-plan", true, None).expect("overrides");
+    let args = codex_mcp_args_override(&overrides);
+
+    assert!(
+        !args.contains("ask_user_question"),
+        "External Codex Plan chat spawns must filter ask_user_question: {overrides:?}"
+    );
+    assert!(
+        args.contains("get_session_plan"),
+        "Filtering interactive tools must preserve non-interactive Plan tools: {overrides:?}"
     );
 }
 

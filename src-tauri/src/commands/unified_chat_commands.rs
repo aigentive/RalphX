@@ -60,6 +60,7 @@ use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
     GitService,
 };
+use crate::application::ideation_workspace::prepare_ideation_analysis_state_from_agent_workspace;
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits, count_unpublished_publish_commits,
     ensure_plan_publish_branch_fresh, ensure_publish_branch_fresh,
@@ -82,8 +83,9 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
     AgentRunStatus, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
     ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
-    ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     AgentWorkspacePrPublisher, ComposerIntegrationReference, ComposerProjectReference,
@@ -209,7 +211,7 @@ pub struct StartAgentConversationInput {
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
     /// Agent mode: "chat" routes to a read-only explorer in the project root;
-    /// edit/ideation modes create a selected-base workspace for runtime CWD.
+    /// edit/plan/ideation modes create a selected-base workspace for runtime CWD.
     pub mode: Option<String>,
     /// Optional base ref kind using ideation naming: project_default, current_branch, local_branch.
     pub base_ref_kind: Option<String>,
@@ -391,6 +393,10 @@ async fn resolve_agent_conversation_workspace_mode_lock(
             return Ok(AgentConversationWorkspaceModeLock::unlocked());
         };
 
+        if session.session_flow == IdeationSessionFlow::Planning {
+            return Ok(AgentConversationWorkspaceModeLock::unlocked());
+        }
+
         if session.is_active() && session.archived_at.is_none() && session.converted_at.is_none() {
             return Ok(AgentConversationWorkspaceModeLock::locked(
                 "Ideation session is still active",
@@ -399,6 +405,62 @@ async fn resolve_agent_conversation_workspace_mode_lock(
     }
 
     Ok(AgentConversationWorkspaceModeLock::unlocked())
+}
+
+async fn linked_ideation_session_is_planning(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<bool, String> {
+    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return Ok(false);
+    };
+
+    let Some(session) = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(false);
+    };
+
+    Ok(session.session_flow == IdeationSessionFlow::Planning)
+}
+
+async fn ensure_plan_workspace_planning_session_link(
+    state: &AppState,
+    project: &Project,
+    workspace: &mut AgentConversationWorkspace,
+) -> Result<bool, String> {
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return Ok(false);
+    }
+
+    if linked_ideation_session_is_planning(state, workspace).await? {
+        return Ok(false);
+    }
+
+    let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let session = IdeationSession::builder()
+        .project_id(workspace.project_id.clone())
+        .session_flow(IdeationSessionFlow::Planning)
+        .source_context_type("agent_conversation")
+        .source_context_id(workspace.conversation_id.as_str())
+        .spawn_reason("agent_plan_mode")
+        .analysis(analysis)
+        .build();
+    let session = state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    workspace.linked_ideation_session_id = Some(session.id);
+    workspace.linked_plan_branch_id = None;
+    workspace.updated_at = chrono::Utc::now();
+    Ok(true)
 }
 
 fn plan_branch_base_ref(plan_branch: &PlanBranch, project: &Project) -> String {
@@ -2124,7 +2186,9 @@ fn parse_agent_workspace_base_kind(
 fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     matches!(
         mode,
-        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
+        AgentConversationWorkspaceMode::Edit
+            | AgentConversationWorkspaceMode::Plan
+            | AgentConversationWorkspaceMode::Ideation
     )
 }
 
@@ -2156,61 +2220,44 @@ mod agent_mode_workspace_tests {
             AgentConversationWorkspaceMode::Edit
         ));
         assert!(agent_mode_requires_workspace(
+            AgentConversationWorkspaceMode::Plan
+        ));
+        assert!(agent_mode_requires_workspace(
             AgentConversationWorkspaceMode::Ideation
         ));
     }
 
     #[test]
+    fn plan_agent_conversation_mode_round_trips_through_api_string() {
+        let mode = "plan"
+            .parse::<AgentConversationWorkspaceMode>()
+            .expect("plan mode should parse");
+
+        assert_eq!(mode, AgentConversationWorkspaceMode::Plan);
+        assert_eq!(mode.to_string(), "plan");
+    }
+
+    #[test]
     fn active_agent_conversations_support_expected_valid_mode_transition_matrix() {
-        let valid_transitions = [
-            (
-                AgentConversationWorkspaceMode::Chat,
-                AgentConversationWorkspaceMode::Chat,
-            ),
-            (
-                AgentConversationWorkspaceMode::Chat,
-                AgentConversationWorkspaceMode::Edit,
-            ),
-            (
-                AgentConversationWorkspaceMode::Chat,
-                AgentConversationWorkspaceMode::Ideation,
-            ),
-            (
-                AgentConversationWorkspaceMode::Edit,
-                AgentConversationWorkspaceMode::Chat,
-            ),
-            (
-                AgentConversationWorkspaceMode::Edit,
-                AgentConversationWorkspaceMode::Edit,
-            ),
-            (
-                AgentConversationWorkspaceMode::Edit,
-                AgentConversationWorkspaceMode::Ideation,
-            ),
-            (
-                AgentConversationWorkspaceMode::Ideation,
-                AgentConversationWorkspaceMode::Ideation,
-            ),
-            (
-                AgentConversationWorkspaceMode::Ideation,
-                AgentConversationWorkspaceMode::Chat,
-            ),
-            (
-                AgentConversationWorkspaceMode::Ideation,
-                AgentConversationWorkspaceMode::Edit,
-            ),
+        let modes = [
+            AgentConversationWorkspaceMode::Chat,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
+            AgentConversationWorkspaceMode::Ideation,
         ];
 
-        for (current_mode, target_mode) in valid_transitions {
-            assert!(
-                validate_agent_conversation_mode_transition(
-                    current_mode,
-                    target_mode,
-                    &AgentConversationWorkspaceModeLock::unlocked()
+        for current_mode in modes {
+            for target_mode in modes {
+                assert!(
+                    validate_agent_conversation_mode_transition(
+                        current_mode,
+                        target_mode,
+                        &AgentConversationWorkspaceModeLock::unlocked()
+                    )
+                    .is_ok(),
+                    "{current_mode} -> {target_mode} should be allowed"
                 )
-                .is_ok(),
-                "{current_mode} -> {target_mode} should be allowed"
-            );
+            }
         }
     }
 
@@ -2219,6 +2266,7 @@ mod agent_mode_workspace_tests {
         for target_mode in [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
         ] {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Ideation,
@@ -2236,6 +2284,7 @@ mod agent_mode_workspace_tests {
         for target_mode in [
             AgentConversationWorkspaceMode::Chat,
             AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceMode::Plan,
         ] {
             let error = validate_agent_conversation_mode_transition(
                 AgentConversationWorkspaceMode::Chat,
@@ -2493,27 +2542,27 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
         );
     }
     let workspace = if agent_mode_requires_workspace(mode) {
-        Some(
-            prepare_agent_conversation_workspace_with_setup_mode(
-                &project,
-                &conversation.id,
-                mode,
-                AgentConversationWorkspaceBaseSelection {
-                    kind: base_ref_kind,
-                    base_ref: input
-                        .base_ref
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty()),
-                    display_name: input
-                        .base_display_name
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty()),
-                },
-                AgentConversationWorkspaceSetupMode::Deferred,
-            )
-            .await
-            .map_err(|error| error.to_string())?,
+        let mut workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation.id,
+            mode,
+            AgentConversationWorkspaceBaseSelection {
+                kind: base_ref_kind,
+                base_ref: input
+                    .base_ref
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                display_name: input
+                    .base_display_name
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
         )
+        .await
+        .map_err(|error| error.to_string())?;
+        ensure_plan_workspace_planning_session_link(&state, &project, &mut workspace).await?;
+        Some(workspace)
     } else {
         None
     };
@@ -2766,17 +2815,41 @@ pub async fn switch_agent_conversation_mode_for_state(
 
     let workspace = match existing_workspace {
         Some(mut workspace) => {
+            let preserve_planning_session_link = if target_mode
+                != AgentConversationWorkspaceMode::Ideation
+                && workspace.linked_plan_branch_id.is_none()
+            {
+                linked_ideation_session_is_planning(state, &workspace).await?
+            } else {
+                false
+            };
             let should_detach_inactive_owner = target_mode
                 != AgentConversationWorkspaceMode::Ideation
                 && !workspace_mode_lock.locked
                 && (workspace.linked_ideation_session_id.is_some()
-                    || workspace.linked_plan_branch_id.is_some());
-            if workspace.mode != target_mode || should_detach_inactive_owner {
+                    || workspace.linked_plan_branch_id.is_some())
+                && !preserve_planning_session_link;
+            let mut changed = workspace.mode != target_mode || should_detach_inactive_owner;
+            if workspace.mode != target_mode {
                 workspace.mode = target_mode;
-                if should_detach_inactive_owner {
-                    workspace.linked_ideation_session_id = None;
-                    workspace.linked_plan_branch_id = None;
-                }
+            }
+            if should_detach_inactive_owner {
+                workspace.linked_ideation_session_id = None;
+                workspace.linked_plan_branch_id = None;
+            }
+            if target_mode == AgentConversationWorkspaceMode::Plan {
+                let project_id = ProjectId::from_string(conversation.context_id.clone());
+                let project = state
+                    .project_repo
+                    .get_by_id(&project_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
+                changed |=
+                    ensure_plan_workspace_planning_session_link(state, &project, &mut workspace)
+                        .await?;
+            }
+            if changed {
                 workspace.updated_at = chrono::Utc::now();
                 Some(
                     state
@@ -2816,6 +2889,9 @@ pub async fn switch_agent_conversation_mode_for_state(
                 )
                 .await
                 .map_err(|error| error.to_string())?;
+                let mut workspace = workspace;
+                ensure_plan_workspace_planning_session_link(state, &project, &mut workspace)
+                    .await?;
                 Some(
                     state
                         .agent_conversation_workspace_repo
@@ -4656,10 +4732,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         })?;
 
     if workspace.mode != AgentConversationWorkspaceMode::Edit {
-        return Err(
-            "Ideation-mode agent conversations are published through the execution pipeline"
-                .to_string(),
-        );
+        return Err("Only Edit-mode agent conversations can be directly published".to_string());
     }
     if workspace.is_execution_owned() {
         return Err(
@@ -6565,9 +6638,9 @@ mod tests {
         AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ArtifactId,
         ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
         ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
-        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
-        MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
-        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+        IdeationSessionId, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+        ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::github_service::PrHealth;
@@ -9614,6 +9687,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_response_keeps_active_planning_session_unlocked() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-planning-mode-unlocked".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("77777777-7777-4777-8777-777777777778");
+        let session = state
+            .ideation_session_repo
+            .create(
+                IdeationSession::builder()
+                    .project_id(project_id.clone())
+                    .session_flow(IdeationSessionFlow::Planning)
+                    .build(),
+            )
+            .await
+            .expect("planning session persisted");
+        let mut workspace = mode_lock_test_workspace(conversation_id, project_id);
+        workspace.mode = AgentConversationWorkspaceMode::Plan;
+        workspace.linked_ideation_session_id = Some(session.id);
+
+        let response = agent_workspace_response_for_state(&state, workspace)
+            .await
+            .expect("workspace response resolves mode lock");
+
+        assert!(!response.mode_switch_locked);
+        assert!(response.mode_switch_lock_reason.is_none());
+    }
+
+    #[tokio::test]
     async fn workspace_response_projects_superseded_execution_plan_as_unlocked() {
         let state = AppState::new_test();
         let project_id = ProjectId::from_string("project-superseded-mode-lock".to_string());
@@ -9770,6 +9871,106 @@ mod tests {
                 .map(|workspace| workspace.mode.as_str()),
             Some("edit")
         );
+    }
+
+    #[tokio::test]
+    async fn switching_to_plan_creates_linked_planning_session_and_edit_preserves_it() {
+        let state = AppState::new_test();
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_publish_repo(&repo_path);
+        let project_id = ProjectId::from_string("project-plan-new-workspace".to_string());
+        let conversation_id =
+            ChatConversationId::from_string("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+        let mut project = Project::new(
+            "Mode Switch Plan Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project persisted");
+        let mut conversation = ChatConversation::new_project(project_id);
+        conversation.id = conversation_id.clone();
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation persisted");
+
+        let plan_response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "plan".to_string(),
+                base_ref_kind: Some("project_default".to_string()),
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await
+        .expect("plan mode switch creates workspace");
+
+        let plan_workspace = plan_response
+            .workspace
+            .as_ref()
+            .expect("plan workspace should be returned");
+        assert_eq!(plan_workspace.mode, "plan");
+        let session_id = IdeationSessionId::from_string(
+            plan_workspace
+                .linked_ideation_session_id
+                .as_ref()
+                .expect("plan workspace should link a planning session")
+                .clone(),
+        );
+        let session = state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .expect("planning session lookup succeeds")
+            .expect("planning session should exist");
+        let conversation_id_string = conversation_id.as_str();
+        assert_eq!(session.session_flow, IdeationSessionFlow::Planning);
+        assert_eq!(session.source_context_type.as_deref(), Some("agent_conversation"));
+        assert_eq!(
+            session.source_context_id.as_deref(),
+            Some(conversation_id_string.as_str())
+        );
+        assert_eq!(
+            session.analysis.workspace_path.as_deref(),
+            Some(plan_workspace.worktree_path.as_str())
+        );
+        assert!(plan_workspace.linked_plan_branch_id.is_none());
+
+        let edit_response = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            &state,
+        )
+        .await
+        .expect("edit mode switch preserves planning link");
+
+        let edit_workspace = edit_response
+            .workspace
+            .as_ref()
+            .expect("edit workspace should be returned");
+        assert_eq!(edit_workspace.mode, "edit");
+        assert_eq!(
+            edit_workspace.linked_ideation_session_id.as_deref(),
+            plan_workspace.linked_ideation_session_id.as_deref()
+        );
+        assert!(edit_workspace.linked_plan_branch_id.is_none());
     }
 
     #[tokio::test]

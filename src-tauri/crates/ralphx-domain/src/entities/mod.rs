@@ -86,11 +86,13 @@ pub use delegated_session::{DelegatedSession, DelegatedSessionId};
 pub use execution_plan::{ExecutionPlan, ExecutionPlanStatus, ParseExecutionPlanStatusError};
 pub use ideation::{
     build_child_session, matching_blocker_followup_session, AcceptanceStatus, BusinessValueFactor,
-    ChatMessage, ChatMessageAttribution, ChatMessageUsage, ChildSessionDraftInput, Complexity, ComplexityFactor, CriticalPathFactor,
+    ChatMessage, ChatMessageAttribution, ChatMessageUsage, ChildSessionDraftInput, Complexity,
+    ComplexityFactor, CriticalPathFactor,
     DependencyFactor, DependencyGraph, DependencyGraphEdge, DependencyGraphNode,
     IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
-    IdeationSession, IdeationSessionBuilder, IdeationSessionStatus, MessageRole, ParseComplexityError,
-    ParseIdeationSessionStatusError, ParseMessageRoleError, ParsePriorityError,
+    IdeationSession, IdeationSessionBuilder, IdeationSessionFlow, IdeationSessionStatus,
+    MessageRole, ParseComplexityError, ParseIdeationSessionStatusError, ParseMessageRoleError,
+    ParsePriorityError,
     ParseProposalCategoryError, ParseProposalStatusError, ParseVerificationStatusError, Priority,
     PriorityAssessment, PriorityAssessmentFactors, PriorityFactors, ProposalCategory,
     ProposalStatus, SessionLink, SessionOrigin, SessionPurpose, SessionRelationship, TaskProposal,

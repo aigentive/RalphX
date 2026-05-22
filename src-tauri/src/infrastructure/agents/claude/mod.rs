@@ -282,6 +282,7 @@ pub fn canonical_short_agent_name(name: &str) -> &str {
         "plan-critic-implementation-feasibility" => "ralphx-plan-critic-implementation-feasibility",
         "chat-task" => "ralphx-chat-task",
         "chat-project" => "ralphx-chat-project",
+        "chat-plan" => "ralphx-chat-plan",
         "ralphx-worker-team" => "ralphx-execution-team-lead",
         "ralphx-worker" => "ralphx-execution-worker",
         "ralphx-coder" => "ralphx-execution-coder",

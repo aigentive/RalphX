@@ -1599,7 +1599,7 @@ describe("chat api", () => {
     });
   });
 
-  it("switches an existing agent conversation mode", async () => {
+  it("switches an existing agent conversation into plan mode", async () => {
     mockInvoke.mockResolvedValue({
       conversation: {
         id: "conversation-chat",
@@ -1608,7 +1608,7 @@ describe("chat api", () => {
         claude_session_id: null,
         provider_session_id: null,
         provider_harness: null,
-        agent_mode: "edit",
+        agent_mode: "plan",
         title: "Chat",
         message_count: 1,
         last_message_at: null,
@@ -1619,7 +1619,7 @@ describe("chat api", () => {
       workspace: {
         conversation_id: "conversation-chat",
         project_id: "project-1",
-        mode: "edit",
+        mode: "plan",
         base_ref_kind: "project_default",
         base_ref: "main",
         base_display_name: "Project default (main)",
@@ -1640,17 +1640,17 @@ describe("chat api", () => {
 
     const result = await switchAgentConversationMode({
       conversationId: "conversation-chat",
-      mode: "edit",
+      mode: "plan",
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("switch_agent_conversation_mode", {
       input: {
         conversationId: "conversation-chat",
-        mode: "edit",
+        mode: "plan",
       },
     });
-    expect(result.conversation.agentMode).toBe("edit");
-    expect(result.workspace?.mode).toBe("edit");
+    expect(result.conversation.agentMode).toBe("plan");
+    expect(result.workspace?.mode).toBe("plan");
   });
 
   it("uses the web-mode chat mock for child session status when available", async () => {

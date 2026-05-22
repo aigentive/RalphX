@@ -9,8 +9,17 @@ import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
-  IntegratedChatPanel: ({ renderComposer }: { renderComposer: (props: Record<string, unknown>) => ReactNode }) => (
-    <div data-testid="integrated-chat-panel">
+  IntegratedChatPanel: ({
+    additionalQuestionSessionIds,
+    renderComposer,
+  }: {
+    additionalQuestionSessionIds?: string[];
+    renderComposer: (props: Record<string, unknown>) => ReactNode;
+  }) => (
+    <div
+      data-testid="integrated-chat-panel"
+      data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
+    >
       {renderComposer({
         onSend: vi.fn(),
         onStop: vi.fn(),
@@ -262,5 +271,64 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "max",
     ]);
+  });
+
+  it("bridges attached Plan-mode planning session questions into the workspace chat", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentsActiveConversationPanel
+          activeConversation={{ ...projectConversation(), agentMode: "plan" }}
+          activeConversationMode="plan"
+          activeConversationModeLocked={false}
+          activeProjectId="project-1"
+          activeProjectOptions={[{ id: "project-1", label: "RalphX" }]}
+          activeWorkspace={{
+            ...workspace(),
+            mode: "plan",
+            linkedIdeationSessionId: "planning-session-1",
+          }}
+          activeWorkspaceFreshness={undefined}
+          attachedIdeationSessionId="planning-session-1"
+          availableArtifactTabs={[]}
+          chatFocus={{ type: "workspace" }}
+          chatFocusOptions={[]}
+          hasAutoOpenArtifacts={false}
+          normalizedActiveRuntime={{
+            provider: "claude",
+            modelId: "opus",
+            effort: "xhigh",
+          }}
+          onActiveConversationModeChange={vi.fn()}
+          onActiveConversationModeMenuOpen={vi.fn()}
+          onActiveEffortChange={vi.fn()}
+          onActiveModelChange={vi.fn()}
+          onAgentUserMessageSent={vi.fn()}
+          onFocusIdeationSession={vi.fn()}
+          onOpenPublishPane={vi.fn()}
+          onOpenPublishFile={vi.fn()}
+          onPreloadArtifacts={vi.fn()}
+          onPublishWorkspace={vi.fn()}
+          onRenameConversation={vi.fn()}
+          onSelectArtifact={vi.fn()}
+          onToggleArtifacts={vi.fn()}
+          onSelectChatFocus={vi.fn()}
+          publishShortcutLabel="P"
+          publishingConversationId={null}
+          selectedConversationId="conversation-1"
+          setTerminalChatDockElement={vi.fn()}
+          switchingConversationModeId={null}
+          terminalUnavailableReason={null}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-question-session-ids",
+      "planning-session-1",
+    );
   });
 });

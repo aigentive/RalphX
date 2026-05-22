@@ -352,6 +352,7 @@ function toSnakeIdeationSession(session: IdeationSessionResponse) {
     blocker_fingerprint: session.blockerFingerprint ?? null,
     inherited_plan_artifact_id: session.inheritedPlanArtifactId ?? null,
     session_purpose: session.sessionPurpose,
+    session_flow: session.sessionFlow ?? "ideation",
     acceptance_status: session.acceptanceStatus,
     analysis_base_ref_kind: session.analysisBaseRefKind ?? null,
     analysis_base_ref: session.analysisBaseRef ?? null,

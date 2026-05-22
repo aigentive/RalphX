@@ -38,6 +38,7 @@ export const IdeationSessionResponseSchema = z.object({
   blocker_fingerprint: z.string().nullable().optional(),
   inherited_plan_artifact_id: z.string().nullable().optional(),
   session_purpose: z.enum(["general", "verification"]).optional(),
+  session_flow: z.enum(["ideation", "planning"]).optional(),
   acceptance_status: z.enum(["pending", "accepted", "rejected"]).nullable().optional(),
   analysis_base_ref_kind: z.enum(["project_default", "current_branch", "local_branch", "pull_request"]).nullable().optional(),
   analysis_base_ref: z.string().nullable().optional(),

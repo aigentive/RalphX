@@ -149,6 +149,7 @@ const CROSS_HARNESS_WORKFLOW_AGENTS: &[(&str, &str, &str)] = &[
 const CROSS_HARNESS_CHAT_AGENTS: &[(&str, &str, &str)] = &[
     ("ralphx-chat-task", "task_chat", "ralphx-chat-task"),
     ("ralphx-chat-project", "project_chat", "ralphx-chat-project"),
+    ("ralphx-chat-plan", "plan_chat", "ralphx-chat-plan"),
 ];
 
 const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
@@ -231,6 +232,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-pr-describer",
     "ralphx-chat-task",
     "ralphx-chat-project",
+    "ralphx-chat-plan",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
@@ -254,6 +256,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
+    "ralphx-chat-plan",
     "ralphx-utility-pr-describer",
     "ralphx-plan-verifier",
     "ralphx-plan-critic-completeness",
@@ -275,6 +278,10 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
     (
         "ralphx-general-explorer",
         &["Write", "Edit", "NotebookEdit", "Bash"],
+    ),
+    (
+        "ralphx-chat-plan",
+        &["Write", "Edit", "NotebookEdit", "Bash", "Task"],
     ),
     (
         "ralphx-ideation",
@@ -353,6 +360,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-chat-task",
     "ralphx-chat-project",
+    "ralphx-chat-plan",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
@@ -402,6 +410,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-chat-task", "sonnet"),
     ("ralphx-chat-project", "sonnet"),
+    ("ralphx-chat-plan", "opus"),
     ("ralphx-review-chat", "sonnet"),
     ("ralphx-review-history", "sonnet"),
     ("ralphx-execution-orchestrator", "opus"),
@@ -459,6 +468,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
+    ("ralphx-chat-plan", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
     ("ralphx-review-history", "base_tools", &["Task"], false),
     (
@@ -784,6 +794,82 @@ fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
         prompt.contains("v1_append_task_to_plan") && prompt.contains("waiting-on-PR"),
         "project chat Claude prompt must describe append behavior for open accepted ideation plans"
     );
+}
+
+#[test]
+fn plan_chat_surface_uses_plan_tools_without_proposal_or_external_ideation_tools() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-chat-plan")
+        .expect("missing definition for ralphx-chat-plan");
+    let runtime_config =
+        get_agent_config("ralphx-chat-plan").expect("missing runtime config for ralphx-chat-plan");
+    let claude_prompt =
+        load_harness_agent_prompt(&root, "ralphx-chat-plan", AgentPromptHarness::Claude)
+            .expect("missing claude prompt for ralphx-chat-plan");
+    let codex_prompt =
+        load_harness_agent_prompt(&root, "ralphx-chat-plan", AgentPromptHarness::Codex)
+            .expect("missing codex prompt for ralphx-chat-plan");
+
+    assert_eq!(
+        definition.capabilities.mcp_tools, runtime_config.allowed_mcp_tools,
+        "Plan chat runtime MCP grants should be sourced from canonical capabilities"
+    );
+
+    for required_tool in [
+        "ask_user_question",
+        "create_plan_artifact",
+        "update_plan_artifact",
+        "edit_plan_artifact",
+        "get_session_plan",
+        "create_child_session",
+        "get_plan_verification",
+    ] {
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "Plan chat canonical surface should include {required_tool}"
+        );
+        assert!(
+            runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "Plan chat runtime surface should include {required_tool}"
+        );
+    }
+
+    for forbidden_tool in [
+        "create_task_proposal",
+        "finalize_proposals",
+        "migrate_proposals",
+        "v1_start_ideation",
+    ] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == forbidden_tool),
+            "Plan chat canonical surface must not expose {forbidden_tool}"
+        );
+        assert!(
+            !runtime_config
+                .allowed_mcp_tools
+                .iter()
+                .any(|tool| tool == forbidden_tool),
+            "Plan chat runtime surface must not expose {forbidden_tool}"
+        );
+    }
+
+    for prompt in [claude_prompt, codex_prompt] {
+        assert!(prompt.contains("<planning_session_id>"));
+        assert!(prompt.contains("ask_user_question"));
+        assert!(prompt.contains("Do not create task proposals"));
+        assert!(prompt.contains("switch to Edit mode"));
+    }
 }
 
 #[test]

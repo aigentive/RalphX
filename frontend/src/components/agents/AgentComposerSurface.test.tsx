@@ -184,6 +184,7 @@ describe("AgentComposerSurface", () => {
         options: [
           { id: "edit", label: "Agent" },
           { id: "chat", label: "Chat" },
+          { id: "plan", label: "Plan" },
         ],
       },
     });
@@ -198,6 +199,83 @@ describe("AgentComposerSurface", () => {
 
     expect(onValueChange).toHaveBeenCalledWith("chat");
     expect(textarea.value).toBe("");
+  });
+
+  it("runs the plan slash mode command from the composer menu", async () => {
+    const onValueChange = vi.fn();
+    renderComposer({
+      mode: {
+        value: "edit",
+        onValueChange,
+        options: [
+          { id: "edit", label: "Agent" },
+          { id: "plan", label: "Plan" },
+          { id: "chat", label: "Chat" },
+        ],
+      },
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/pl" } });
+    textarea.setSelectionRange(3, 3);
+    fireEvent.keyUp(textarea);
+    await screen.findByTestId("agent-composer-menu-item-command:mode:plan");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(onValueChange).toHaveBeenCalledWith("plan");
+    expect(textarea.value).toBe("");
+  });
+
+  it("runs the refine slash command from Plan mode", async () => {
+    const onSend = vi.fn();
+    renderComposer({
+      mode: {
+        value: "plan",
+        onValueChange: vi.fn(),
+        options: [
+          { id: "plan", label: "Plan" },
+          { id: "edit", label: "Agent" },
+        ],
+      },
+      onSend,
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/ref" } });
+    textarea.setSelectionRange(4, 4);
+    fireEvent.keyUp(textarea);
+    await screen.findByTestId("agent-composer-menu-item-command:plan:refine");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith("Please verify and refine the current plan.");
+    });
+    expect(textarea.value).toBe("");
+  });
+
+  it("submits question-mode answers while the agent is generating", () => {
+    const onSend = vi.fn();
+    const onMatchedOptions = vi.fn();
+    renderComposer({
+      agentStatus: "generating",
+      isSubmitting: true,
+      onSend,
+      questionMode: {
+        optionCount: 2,
+        multiSelect: false,
+        onMatchedOptions,
+      },
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "1" } });
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onMatchedOptions).toHaveBeenLastCalledWith([0]);
+    expect(onSend).toHaveBeenCalledWith("1");
   });
 
   it("bounds slash command suggestions to five visible rows", async () => {

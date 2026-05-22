@@ -58,6 +58,7 @@ export type ConversationProviderMetadata = {
 export const AGENT_CONVERSATION_MODE_VALUES = [
   "chat",
   "edit",
+  "plan",
   "ideation",
 ] as const;
 export const AgentConversationModeSchema = z.enum(

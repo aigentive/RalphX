@@ -101,6 +101,7 @@ export const IdeationSessionSchema = z.object({
   spawnReason: z.string().nullable().optional(),
   blockerFingerprint: z.string().nullable().optional(),
   sessionPurpose: z.enum(["general", "verification"]).default("general"),
+  sessionFlow: z.enum(["ideation", "planning"]).default("ideation"),
   acceptanceStatus: z.enum(["pending", "accepted", "rejected"]).nullable().optional(),
   analysisBaseRefKind: z.enum(["project_default", "current_branch", "local_branch", "pull_request"]).nullable().optional(),
   analysisBaseRef: z.string().nullable().optional(),

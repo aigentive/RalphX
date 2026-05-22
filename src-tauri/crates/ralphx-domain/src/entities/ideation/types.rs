@@ -187,6 +187,43 @@ impl FromStr for SessionPurpose {
     }
 }
 
+/// User-facing flow for an ideation-family session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdeationSessionFlow {
+    /// Existing full ideation flow: plan, proposals, and task acceptance.
+    Ideation,
+    /// Plan-mode flow: plan refinement first, with optional later promotion.
+    Planning,
+}
+
+impl Default for IdeationSessionFlow {
+    fn default() -> Self {
+        Self::Ideation
+    }
+}
+
+impl std::fmt::Display for IdeationSessionFlow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdeationSessionFlow::Ideation => write!(f, "ideation"),
+            IdeationSessionFlow::Planning => write!(f, "planning"),
+        }
+    }
+}
+
+impl FromStr for IdeationSessionFlow {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ideation" => Ok(Self::Ideation),
+            "planning" => Ok(Self::Planning),
+            _ => Err(format!("unknown ideation session flow: '{s}'")),
+        }
+    }
+}
+
 /// Status of an ideation session
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

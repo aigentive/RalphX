@@ -89,6 +89,8 @@ interface ComposerOption {
   disabledReason?: string;
 }
 
+const PLAN_REFINE_COMMAND_MESSAGE = "Please verify and refine the current plan.";
+
 interface ProjectFieldConfig {
   value: string;
   onValueChange: (value: string) => void;
@@ -480,6 +482,7 @@ export function AgentComposerSurface({
       const modeCommands: Record<string, string> = {
         edit: "agent",
         chat: "chat",
+        plan: "plan",
         ideation: "ideation",
       };
       for (const option of mode.options) {
@@ -493,6 +496,15 @@ export function AgentComposerSurface({
           ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
         });
       }
+    }
+    if (mode?.value === "plan" && !mode.disabled) {
+      items.push({
+        id: "command:plan:refine",
+        kind: "slash-command",
+        label: "/refine",
+        description: "Verify and refine the current plan",
+        detail: "plan:refine",
+      });
     }
     items.push({
       id: "command:clear",
@@ -674,6 +686,15 @@ export function AgentComposerSurface({
         clearValue();
         return;
       }
+      if (item.detail === "plan:refine") {
+        if ((isSubmitting && !canQueue) || isReadOnly || sendDisabledReason) {
+          return;
+        }
+        addHistoryEntry(PLAN_REFINE_COMMAND_MESSAGE);
+        clearValue();
+        void Promise.resolve(onSend(PLAN_REFINE_COMMAND_MESSAGE)).catch(() => {});
+        return;
+      }
       if (item.detail?.startsWith("skill:")) {
         const skill = skillByMenuId.get(item.detail);
         const replacement = skill?.invocationValue || item.label;
@@ -693,10 +714,16 @@ export function AgentComposerSurface({
     },
     [
       activeTrigger,
+      addHistoryEntry,
       applyComposerText,
+      canQueue,
       clearValue,
       integrationByMenuId,
+      isReadOnly,
+      isSubmitting,
       mode,
+      onSend,
+      sendDisabledReason,
       skillByMenuId,
       value,
     ]

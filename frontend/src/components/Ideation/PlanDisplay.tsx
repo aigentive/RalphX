@@ -63,8 +63,9 @@ export interface PlanDisplayProps {
   requestedVersion?: number;
   /** Called after requestedVersion has been applied, to clear the parent's state */
   onVersionViewed?: () => void;
-  /** Called when user clicks "Create Proposals" — triggers orchestrator to decompose plan into tasks */
+  /** Called when user clicks the proposal action — triggers orchestrator to decompose plan into tasks */
   onCreateProposals?: () => void;
+  createProposalsLabel?: string;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
   /**
@@ -335,6 +336,7 @@ export function PlanDisplay({
   requestedVersion,
   onVersionViewed,
   onCreateProposals,
+  createProposalsLabel = "Create Proposals",
   showOverflowActions = true,
   chromeless = false,
 }: PlanDisplayProps) {
@@ -540,7 +542,7 @@ export function PlanDisplay({
               }}
             >
               <ListPlus className="w-3 h-3" />
-              Create Proposals
+              {createProposalsLabel}
             </Button>
           )}
 
@@ -892,7 +894,7 @@ export function PlanDisplay({
                   }}
                 >
                   <ListPlus className="w-3 h-3" />
-                  Create Proposals
+                  {createProposalsLabel}
                 </Button>
               )}
 

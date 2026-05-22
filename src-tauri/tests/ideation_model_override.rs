@@ -307,6 +307,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         0,
         None,
         None,
+        None,
     )
     .await;
 
@@ -364,6 +365,7 @@ async fn test_verifier_subagent_unaffected_by_ideation_subagent() {
         0,
         None,
         None, // model_override: agent selection comes from session_purpose, not this field
+        None, // attachment_context_override
     )
     .await;
 

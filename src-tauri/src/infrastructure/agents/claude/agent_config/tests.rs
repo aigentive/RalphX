@@ -146,6 +146,7 @@ fn test_agents_screen_claude_modes_include_web_search_tools() {
     let mode_agents = [
         ("agent", SHORT_GENERAL_WORKER),
         ("chat", SHORT_GENERAL_EXPLORER),
+        ("plan", SHORT_GENERAL_EXPLORER),
         ("ideation", SHORT_CHAT_PROJECT),
     ];
 

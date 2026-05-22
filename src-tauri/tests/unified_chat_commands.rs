@@ -17,10 +17,9 @@ use ralphx_lib::application::{AppState, MockChatService, PrPollerRegistry, SendR
 use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
-    send_agent_workspace_publish_repair_message, AgentRunStatusResponse,
-    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse,
-    SendAgentMessageResponse, SwitchAgentConversationModeInput,
-    switch_agent_conversation_mode_for_state,
+    send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
+    AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
+    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
@@ -29,8 +28,8 @@ use ralphx_lib::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentRun, ArtifactId, ChatContextType,
     ChatConversation, ChatConversationId, ExecutionPlan, ExecutionPlanStatus,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, PlanBranch,
-    PlanBranchStatus, Project, ProjectId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId, PlanBranch, PlanBranchStatus,
+    Project, ProjectId,
 };
 use ralphx_lib::domain::services::github_service::{
     GithubServiceTrait, PrStatus as GithubPrStatus,
@@ -171,7 +170,10 @@ async fn seed_mode_switch_workspace(
     project_id: ProjectId,
     mode: AgentConversationWorkspaceMode,
 ) {
-    let mut project = Project::new("Mode Switch Project".to_string(), "/tmp/project".to_string());
+    let mut project = Project::new(
+        "Mode Switch Project".to_string(),
+        "/tmp/project".to_string(),
+    );
     project.id = project_id.clone();
     state
         .project_repo
@@ -210,8 +212,7 @@ async fn seed_mode_switch_workspace(
 async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace_mode() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-unlinked-mode-switch".to_string());
-    let conversation_id =
-        ChatConversationId::from_string("22222222-2222-4222-8222-222222222222");
+    let conversation_id = ChatConversationId::from_string("22222222-2222-4222-8222-222222222222");
     seed_mode_switch_workspace(
         &state,
         conversation_id,
@@ -253,8 +254,7 @@ async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace
 async fn active_linked_ideation_session_blocks_mode_switch() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-active-ideation-link".to_string());
-    let conversation_id =
-        ChatConversationId::from_string("33333333-3333-4333-8333-333333333333");
+    let conversation_id = ChatConversationId::from_string("33333333-3333-4333-8333-333333333333");
     seed_mode_switch_workspace(
         &state,
         conversation_id,
@@ -293,8 +293,7 @@ async fn active_linked_ideation_session_blocks_mode_switch() {
 async fn abandoned_pipeline_link_can_switch_to_edit_and_detaches_links() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-abandoned-pipeline-link".to_string());
-    let conversation_id =
-        ChatConversationId::from_string("44444444-4444-4444-8444-444444444444");
+    let conversation_id = ChatConversationId::from_string("44444444-4444-4444-8444-444444444444");
     seed_mode_switch_workspace(
         &state,
         conversation_id,
@@ -360,8 +359,7 @@ async fn abandoned_pipeline_link_can_switch_to_edit_and_detaches_links() {
 async fn superseded_execution_plan_link_can_switch_to_edit_and_detaches_links() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-superseded-pipeline-link".to_string());
-    let conversation_id =
-        ChatConversationId::from_string("66666666-6666-4666-8666-666666666666");
+    let conversation_id = ChatConversationId::from_string("66666666-6666-4666-8666-666666666666");
     seed_mode_switch_workspace(
         &state,
         conversation_id,
@@ -424,8 +422,7 @@ async fn superseded_execution_plan_link_can_switch_to_edit_and_detaches_links() 
 async fn active_pipeline_link_blocks_mode_switch() {
     let state = AppState::new_test();
     let project_id = ProjectId::from_string("project-active-pipeline-link".to_string());
-    let conversation_id =
-        ChatConversationId::from_string("55555555-5555-4555-8555-555555555555");
+    let conversation_id = ChatConversationId::from_string("55555555-5555-4555-8555-555555555555");
     seed_mode_switch_workspace(
         &state,
         conversation_id,
@@ -1286,9 +1283,9 @@ mod ipc_contract {
         get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
         publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
-        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
-        StartAgentConversationInput, SwitchAgentConversationModeInput,
-        UpdateAgentConversationTitleInput,
+        switch_agent_conversation_mode_for_state, CreateAgentConversationInput,
+        QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
+        SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
     };
     use ralphx_lib::commands::ExecutionState;
     use ralphx_lib::domain::agents::{
@@ -1300,8 +1297,8 @@ mod ipc_contract {
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentConversationWorkspaceStatus, AgentRun, ArtifactId, ChatConversation,
-        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionId,
-        MessageRole, PlanBranch, Project, ProjectId,
+        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionFlow,
+        IdeationSessionId, MessageRole, PlanBranch, Project, ProjectId,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
@@ -2210,7 +2207,157 @@ mod ipc_contract {
             .await
             .expect("workspace lookup should succeed")
             .expect("workspace should persist");
-        assert_eq!(persisted_workspace.mode, AgentConversationWorkspaceMode::Edit);
+        assert_eq!(
+            persisted_workspace.mode,
+            AgentConversationWorkspaceMode::Edit
+        );
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_plan_mode_links_planning_session() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-start-agent-plan-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Plan".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Plan a small refactor".to_string(),
+                conversation_id: None,
+                provider_harness: None,
+                model_override: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("plan".to_string()),
+                base_ref_kind: Some("project_default".to_string()),
+                base_ref: None,
+                base_display_name: None,
+                composer_project_references: Vec::new(),
+                composer_integration_references: Vec::new(),
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("plan-mode start should succeed");
+
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode, "plan");
+        assert!(response.send_result.was_queued);
+        let session_id = IdeationSessionId::from_string(
+            workspace
+                .linked_ideation_session_id
+                .as_ref()
+                .expect("plan workspace should link a planning session")
+                .clone(),
+        );
+
+        let persisted_workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(
+                response.conversation.id.clone(),
+            ))
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should persist");
+        assert_eq!(
+            persisted_workspace.mode,
+            AgentConversationWorkspaceMode::Plan
+        );
+        assert_eq!(
+            persisted_workspace
+                .linked_ideation_session_id
+                .as_ref()
+                .map(IdeationSessionId::as_str),
+            Some(session_id.as_str())
+        );
+
+        let session = app
+            .state::<AppState>()
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await
+            .expect("planning session lookup should succeed")
+            .expect("planning session should persist");
+        assert_eq!(session.session_flow, IdeationSessionFlow::Planning);
+        assert_eq!(session.project_id.as_str(), project_id.as_str());
+        assert_eq!(session.analysis.base_ref.as_deref(), Some("main"));
+        assert_eq!(
+            session.analysis.workspace_path.as_deref(),
+            Some(workspace.worktree_path.as_str())
+        );
+        assert!(session.plan_artifact_id.is_none());
+
+        let switched = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: response.conversation.id.clone(),
+                mode: "ideation".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+            },
+            app.state::<AppState>().inner(),
+        )
+        .await
+        .expect("plan workspace should promote to ideation");
+        let switched_workspace = switched
+            .workspace
+            .expect("workspace should still be returned after promotion");
+        assert_eq!(switched_workspace.mode, "ideation");
+        assert_eq!(
+            switched_workspace.linked_ideation_session_id.as_deref(),
+            Some(session_id.as_str())
+        );
+
+        let promoted_workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&ChatConversationId::from_string(response.conversation.id))
+            .await
+            .expect("workspace lookup after promotion should succeed")
+            .expect("workspace should persist after promotion");
+        assert_eq!(
+            promoted_workspace.mode,
+            AgentConversationWorkspaceMode::Ideation
+        );
+        assert_eq!(
+            promoted_workspace
+                .linked_ideation_session_id
+                .as_ref()
+                .map(IdeationSessionId::as_str),
+            Some(session_id.as_str())
+        );
     }
 
     struct FakeCliOnPath {

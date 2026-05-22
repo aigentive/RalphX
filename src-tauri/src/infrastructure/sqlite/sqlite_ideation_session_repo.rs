@@ -34,7 +34,7 @@ const SESSION_COLUMNS: &str = "id, project_id, title, title_source, status, plan
     verification_status, verification_in_progress, verification_generation, \
     verification_current_round, verification_max_rounds, \
     verification_gap_count, verification_gap_score, verification_convergence_reason, \
-    source_project_id, source_session_id, session_purpose, \
+    source_project_id, source_session_id, session_purpose, session_flow, \
     cross_project_checked, plan_version_last_read, origin, \
     expected_proposal_count, auto_accept_status, auto_accept_started_at, \
     api_key_id, idempotency_key, external_activity_phase, external_last_read_message_id, \
@@ -140,13 +140,13 @@ impl SqliteIdeationSessionRepository {
               verification_status, verification_in_progress, verification_generation, \
               verification_current_round, verification_max_rounds, verification_gap_count, \
               verification_gap_score, verification_convergence_reason, \
-              source_project_id, source_session_id, session_purpose, \
+              source_project_id, source_session_id, session_purpose, session_flow, \
               cross_project_checked, origin, api_key_id, idempotency_key, \
               external_activity_phase, external_last_read_message_id, dependencies_acknowledged, \
               pending_initial_prompt, source_task_id, source_context_type, source_context_id, spawn_reason, blocker_fingerprint, \
               analysis_base_ref_kind, analysis_base_ref, analysis_base_display_name, analysis_workspace_kind, \
               analysis_workspace_path, analysis_base_commit, analysis_base_locked_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47)",
             rusqlite::params![
                 session.id.as_str(),
                 session.project_id.as_str(),
@@ -174,6 +174,7 @@ impl SqliteIdeationSessionRepository {
                 session.source_project_id,
                 session.source_session_id,
                 session.session_purpose.to_string(),
+                session.session_flow.to_string(),
                 session.cross_project_checked as i32,
                 session.origin.to_string(),
                 session.api_key_id.as_deref(),
@@ -1692,7 +1693,7 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                          s.verification_status, s.verification_in_progress, s.verification_generation, \
                          s.verification_current_round, s.verification_max_rounds, s.verification_gap_count, \
                          s.verification_gap_score, s.verification_convergence_reason, \
-                         s.source_project_id, s.source_session_id, s.session_purpose, s.cross_project_checked, s.plan_version_last_read, s.origin, \
+                         s.source_project_id, s.source_session_id, s.session_purpose, s.session_flow, s.cross_project_checked, s.plan_version_last_read, s.origin, \
                          s.expected_proposal_count, s.auto_accept_status, s.auto_accept_started_at, \
                          s.api_key_id, s.idempotency_key, s.external_activity_phase, s.external_last_read_message_id, \
                          s.dependencies_acknowledged, s.pending_initial_prompt, s.source_task_id, s.source_context_type, \
@@ -1722,7 +1723,7 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                          s.verification_status, s.verification_in_progress, s.verification_generation, \
                          s.verification_current_round, s.verification_max_rounds, s.verification_gap_count, \
                          s.verification_gap_score, s.verification_convergence_reason, \
-                         s.source_project_id, s.source_session_id, s.session_purpose, s.cross_project_checked, s.plan_version_last_read, s.origin, \
+                         s.source_project_id, s.source_session_id, s.session_purpose, s.session_flow, s.cross_project_checked, s.plan_version_last_read, s.origin, \
                          s.expected_proposal_count, s.auto_accept_status, s.auto_accept_started_at, \
                          s.api_key_id, s.idempotency_key, s.external_activity_phase, s.external_last_read_message_id, \
                          s.dependencies_acknowledged, s.pending_initial_prompt, s.source_task_id, s.source_context_type, \

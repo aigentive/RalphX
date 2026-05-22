@@ -103,6 +103,7 @@ const AGENT_MODE_OPTIONS: Array<{
   description: string;
 }> = [
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
+  { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
 ];

@@ -15,9 +15,9 @@ use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     Artifact, ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, IdeationSession,
-    IdeationSessionBuilder, IdeationSessionId, IdeationSessionStatus, Project, ProjectId,
-    SessionOrigin, SessionPurpose, VerificationConfirmationStatus, VerificationRunSnapshot,
-    VerificationStatus,
+    IdeationSessionBuilder, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus, Project,
+    ProjectId, SessionOrigin, SessionPurpose, VerificationConfirmationStatus,
+    VerificationRunSnapshot, VerificationStatus,
 };
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
@@ -26,8 +26,8 @@ use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::HttpServerState;
 use ralphx_lib::infrastructure::agents::claude::verification_config;
-use ralphx_lib::infrastructure::sqlite::SqliteIdeationSessionRepository as SessionRepo;
 use ralphx_lib::infrastructure::memory::MemoryIdeationSessionRepository;
+use ralphx_lib::infrastructure::sqlite::SqliteIdeationSessionRepository as SessionRepo;
 use std::sync::Arc;
 
 // ============================================================
@@ -48,10 +48,7 @@ async fn setup_test_state() -> HttpServerState {
     }
 }
 
-async fn quiesce_auto_verification(
-    state: &HttpServerState,
-    session_id: &IdeationSessionId,
-) {
+async fn quiesce_auto_verification(state: &HttpServerState, session_id: &IdeationSessionId) {
     let sid = session_id.as_str().to_string();
     state
         .app_state
@@ -138,6 +135,7 @@ fn make_active_session() -> IdeationSession {
         spawn_reason: None,
         blocker_fingerprint: None,
         session_purpose: Default::default(),
+        session_flow: Default::default(),
         cross_project_checked: true,
         plan_version_last_read: None,
         origin: Default::default(),
@@ -313,7 +311,10 @@ async fn test_child_can_update_own_plan() {
 
     let updated = update_result.unwrap().0;
     assert_eq!(updated.version, 2, "Version should be incremented to 2");
-    assert_eq!(updated.content, "v2 content", "Updated content should be reflected");
+    assert_eq!(
+        updated.content, "v2 content",
+        "Updated content should be reflected"
+    );
 
     // Child's plan_artifact_id now points to the updated artifact
     let child = state
@@ -437,14 +438,11 @@ async fn test_get_session_plan_returns_own_plan_as_not_inherited() {
     let child_artifact_id = create_result.0.id.clone();
 
     // Act: get_session_plan for child
-    let plan = get_session_plan(
-        State(state.clone()),
-        Path(child_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_session_plan should succeed")
-    .0
-    .expect("Child should have a plan visible");
+    let plan = get_session_plan(State(state.clone()), Path(child_id.as_str().to_string()))
+        .await
+        .expect("get_session_plan should succeed")
+        .0
+        .expect("Child should have a plan visible");
 
     // Assert: returns child's own plan with is_inherited = false
     assert_eq!(
@@ -472,14 +470,11 @@ async fn test_get_session_plan_returns_inherited_plan_when_no_own_plan() {
     let child_id = create_child_inheriting(&state, &parent_id, &parent_artifact_id).await;
 
     // Act: get_session_plan for child (no own plan created yet)
-    let plan = get_session_plan(
-        State(state.clone()),
-        Path(child_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_session_plan should succeed")
-    .0
-    .expect("Child should see the inherited plan");
+    let plan = get_session_plan(State(state.clone()), Path(child_id.as_str().to_string()))
+        .await
+        .expect("get_session_plan should succeed")
+        .0
+        .expect("Child should see the inherited plan");
 
     // Assert: returns parent's plan with is_inherited = true
     assert_eq!(
@@ -552,14 +547,11 @@ async fn test_parent_plan_unaffected_by_child_plan_operations() {
     );
 
     // Assert: get_session_plan for parent still returns the original plan as not inherited
-    let parent_plan = get_session_plan(
-        State(state.clone()),
-        Path(parent_id.as_str().to_string()),
-    )
-    .await
-    .unwrap()
-    .0
-    .unwrap();
+    let parent_plan = get_session_plan(State(state.clone()), Path(parent_id.as_str().to_string()))
+        .await
+        .unwrap()
+        .0
+        .unwrap();
     assert_eq!(
         parent_plan.id, parent_artifact_id,
         "Parent's get_session_plan should return the original plan"
@@ -591,12 +583,9 @@ async fn test_get_session_plan_returns_none_when_no_plan() {
         .await
         .unwrap();
 
-    let result = get_session_plan(
-        State(state.clone()),
-        Path(session_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_session_plan should not error for a session with no plan");
+    let result = get_session_plan(State(state.clone()), Path(session_id.as_str().to_string()))
+        .await
+        .expect("get_session_plan should not error for a session with no plan");
 
     assert!(
         result.0.is_none(),
@@ -649,14 +638,11 @@ async fn test_get_session_plan_includes_project_working_directory() {
     .expect("create_plan_artifact should succeed");
 
     // Act: get_session_plan
-    let result = get_session_plan(
-        State(state.clone()),
-        Path(session_id.as_str().to_string()),
-    )
-    .await
-    .expect("get_session_plan should succeed")
-    .0
-    .expect("Session with plan should return Some");
+    let result = get_session_plan(State(state.clone()), Path(session_id.as_str().to_string()))
+        .await
+        .expect("get_session_plan should succeed")
+        .0
+        .expect("Session with plan should return Some");
 
     // Assert: project_working_directory is populated
     assert_eq!(
@@ -982,7 +968,10 @@ async fn test_link_proposals_to_plan_batch_25() {
         }),
     )
     .await;
-    assert!(result.is_ok(), "link_proposals_to_plan should succeed for 25 proposals");
+    assert!(
+        result.is_ok(),
+        "link_proposals_to_plan should succeed for 25 proposals"
+    );
 
     // Verify all 25 now have plan_artifact_id set
     let linked = state
@@ -1135,8 +1124,14 @@ async fn test_trigger_auto_verify_sync_atomicity_and_skip() {
         .await
         .unwrap()
         .unwrap();
-    assert!(after_trigger.verification_in_progress, "in_progress must be true after trigger");
-    assert_eq!(after_trigger.verification_generation, 1, "generation must be 1");
+    assert!(
+        after_trigger.verification_in_progress,
+        "in_progress must be true after trigger"
+    );
+    assert_eq!(
+        after_trigger.verification_generation, 1,
+        "generation must be 1"
+    );
     assert_eq!(
         after_trigger.verification_status,
         VerificationStatus::Reviewing,
@@ -1179,8 +1174,14 @@ async fn test_trigger_auto_verify_sync_atomicity_and_skip() {
         verification_config().max_rounds,
         "fresh snapshot must carry the configured round budget"
     );
-    assert!(snapshot.current_gaps.is_empty(), "fresh snapshot must start gap-free");
-    assert!(snapshot.rounds.is_empty(), "fresh snapshot must start with no round history");
+    assert!(
+        snapshot.current_gaps.is_empty(),
+        "fresh snapshot must start gap-free"
+    );
+    assert!(
+        snapshot.rounds.is_empty(),
+        "fresh snapshot must start with no round history"
+    );
 
     // Second trigger on same session: in_progress=1, so must be skipped
     let sid2 = session_id.as_str().to_string();
@@ -1190,7 +1191,10 @@ async fn test_trigger_auto_verify_sync_atomicity_and_skip() {
         .run(move |conn| SessionRepo::trigger_auto_verify_sync(conn, &sid2))
         .await
         .unwrap();
-    assert_eq!(gen2, None, "Second trigger must return None (already in_progress)");
+    assert_eq!(
+        gen2, None,
+        "Second trigger must return None (already in_progress)"
+    );
 
     // Generation must NOT have been incremented again
     let after_skip = state
@@ -1200,7 +1204,10 @@ async fn test_trigger_auto_verify_sync_atomicity_and_skip() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(after_skip.verification_generation, 1, "generation must remain 1 after skip");
+    assert_eq!(
+        after_skip.verification_generation, 1,
+        "generation must remain 1 after skip"
+    );
 }
 
 /// reset_auto_verify_sync unconditionally resets in_progress=0 and status=unverified.
@@ -1255,7 +1262,10 @@ async fn test_reset_auto_verify_sync_clears_in_progress() {
         .await
         .unwrap()
         .unwrap();
-    assert!(!after_reset.verification_in_progress, "in_progress must be false after reset");
+    assert!(
+        !after_reset.verification_in_progress,
+        "in_progress must be false after reset"
+    );
     assert_eq!(
         after_reset.verification_status,
         VerificationStatus::Unverified,
@@ -1390,7 +1400,10 @@ async fn test_update_plan_artifact_does_not_trigger_auto_verify() {
         .unwrap()
         .unwrap();
     let gen_before_update = before_update.verification_generation;
-    assert!(before_update.verification_in_progress, "in_progress must be true before update");
+    assert!(
+        before_update.verification_in_progress,
+        "in_progress must be true before update"
+    );
 
     // update_plan_artifact must NOT re-trigger (no trigger logic in update handler)
     // reset_verification_sync has in_progress=0 guard — no-op while running
@@ -1625,10 +1638,7 @@ fn test_insertion_via_expansion() {
         new_text: "## Heading\n\nNew paragraph".to_string(),
     }];
     let result = apply_edits(content, &edits).unwrap();
-    assert_eq!(
-        result,
-        "## Heading\n\nNew paragraph\n\nContent"
-    );
+    assert_eq!(result, "## Heading\n\nNew paragraph\n\nContent");
 }
 
 #[test]
@@ -1794,7 +1804,10 @@ async fn test_edit_plan_artifact_resolves_stale_id() {
     )
     .await;
 
-    assert!(result.is_ok(), "edit_plan_artifact with stale ID should auto-resolve and succeed");
+    assert!(
+        result.is_ok(),
+        "edit_plan_artifact with stale ID should auto-resolve and succeed"
+    );
     let response = result.unwrap().0;
     assert_eq!(response.version, 3, "Should be at version 3 (v1 → v2 → v3)");
     assert_eq!(
@@ -1823,7 +1836,12 @@ async fn test_edit_plan_artifact_rejects_inherited_plan() {
     let mut child = make_active_session();
     child.plan_artifact_id = None;
     child.inherited_plan_artifact_id = Some(ArtifactId::from_string(orphan_id.clone()));
-    state.app_state.ideation_session_repo.create(child).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(child)
+        .await
+        .unwrap();
 
     let result = edit_plan_artifact(
         State(state.clone()),
@@ -1839,7 +1857,10 @@ async fn test_edit_plan_artifact_rejects_inherited_plan() {
     )
     .await;
 
-    assert!(result.is_err(), "edit_plan_artifact on inherited-only artifact should fail");
+    assert!(
+        result.is_err(),
+        "edit_plan_artifact on inherited-only artifact should fail"
+    );
     let err = result.unwrap_err();
     assert_eq!(
         err.status,
@@ -1871,13 +1892,23 @@ async fn test_edit_plan_artifact_rejects_archived_session() {
         "orchestrator",
     );
     let artifact_id = artifact.id.as_str().to_string();
-    state.app_state.artifact_repo.create(artifact).await.unwrap();
+    state
+        .app_state
+        .artifact_repo
+        .create(artifact)
+        .await
+        .unwrap();
 
     // Session owns the artifact but is Archived
     let mut session = make_active_session();
     session.status = IdeationSessionStatus::Archived;
     session.plan_artifact_id = Some(ArtifactId::from_string(artifact_id.clone()));
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let result = edit_plan_artifact(
         State(state.clone()),
@@ -1893,7 +1924,10 @@ async fn test_edit_plan_artifact_rejects_archived_session() {
     )
     .await;
 
-    assert!(result.is_err(), "edit_plan_artifact on archived session should fail");
+    assert!(
+        result.is_err(),
+        "edit_plan_artifact on archived session should fail"
+    );
     let err = result.unwrap_err();
     assert_eq!(
         err.status,
@@ -1913,19 +1947,31 @@ async fn test_edit_plan_artifact_rejects_file_backed_artifact() {
         id: ArtifactId::new(),
         artifact_type: ArtifactType::Specification,
         name: "File-backed Plan".to_string(),
-        content: ArtifactContent::File { path: "/tmp/plan.md".to_string() },
+        content: ArtifactContent::File {
+            path: "/tmp/plan.md".to_string(),
+        },
         metadata: ArtifactMetadata::new("orchestrator").with_version(1),
         derived_from: vec![],
         bucket_id: None,
         archived_at: None,
     };
     let artifact_id = artifact.id.as_str().to_string();
-    state.app_state.artifact_repo.create(artifact).await.unwrap();
+    state
+        .app_state
+        .artifact_repo
+        .create(artifact)
+        .await
+        .unwrap();
 
     // Active session owns the file-backed artifact
     let mut session = make_active_session();
     session.plan_artifact_id = Some(ArtifactId::from_string(artifact_id.clone()));
-    state.app_state.ideation_session_repo.create(session).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
 
     let result = edit_plan_artifact(
         State(state.clone()),
@@ -1941,7 +1987,10 @@ async fn test_edit_plan_artifact_rejects_file_backed_artifact() {
     )
     .await;
 
-    assert!(result.is_err(), "edit_plan_artifact on file-backed artifact should fail");
+    assert!(
+        result.is_err(),
+        "edit_plan_artifact on file-backed artifact should fail"
+    );
     let err = result.unwrap_err();
     assert_eq!(
         err.status,
@@ -2014,7 +2063,10 @@ async fn test_edit_plan_artifact_resets_verification() {
         VerificationStatus::Unverified,
         "Verification should be reset to Unverified after editing plan"
     );
-    assert!(!after.verification_in_progress, "in_progress should remain false");
+    assert!(
+        !after.verification_in_progress,
+        "in_progress should remain false"
+    );
     assert_eq!(
         after.verification_generation,
         gen_before + 1,
@@ -2075,7 +2127,10 @@ async fn test_edit_plan_artifact_preserves_verification_during_loop() {
         "generation must not change while in_progress=true (before={gen_before}, after={})",
         after.verification_generation
     );
-    assert!(after.verification_in_progress, "in_progress must remain true");
+    assert!(
+        after.verification_in_progress,
+        "in_progress must remain true"
+    );
     assert_eq!(
         after.verification_status,
         VerificationStatus::Reviewing,
@@ -2095,7 +2150,7 @@ async fn test_edit_plan_artifact_rejects_empty_edits() {
         Json(EditPlanArtifactRequest {
             artifact_id,
             edits: vec![],
-        
+
             caller_session_id: None,
         }),
     )
@@ -2183,7 +2238,12 @@ async fn test_edit_plan_artifact_rejects_oversized_output() {
 
     let parent = make_active_session();
     let parent_id = parent.id.clone();
-    state.app_state.ideation_session_repo.create(parent).await.unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(parent)
+        .await
+        .unwrap();
 
     // 499KB of filler + unique anchor — total still under 500KB
     let large_content = format!("{}{}", "A".repeat(499_000), "UNIQUE_ANCHOR_FOR_SIZE_TEST");
@@ -2211,7 +2271,10 @@ async fn test_edit_plan_artifact_rejects_oversized_output() {
     let err = result.unwrap_err();
     assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
     let msg = err.message.expect("422 should include message body");
-    assert!(msg.contains("500KB"), "Error should mention 500KB limit: got '{msg}'");
+    assert!(
+        msg.contains("500KB"),
+        "Error should mention 500KB limit: got '{msg}'"
+    );
 
     // Verify no spurious new version was created (atomic rollback)
     let session_after = state
@@ -2221,7 +2284,9 @@ async fn test_edit_plan_artifact_rejects_oversized_output() {
         .await
         .unwrap()
         .unwrap();
-    let plan_id = session_after.plan_artifact_id.expect("Plan must still exist");
+    let plan_id = session_after
+        .plan_artifact_id
+        .expect("Plan must still exist");
     let artifact = state
         .app_state
         .artifact_repo
@@ -2264,9 +2329,15 @@ async fn test_edit_plan_artifact_response_has_correct_event_fields() {
         "previous_artifact_id must be the pre-edit artifact ID"
     );
     // New artifact ID must differ from old
-    assert_ne!(response.id, artifact_id, "New artifact ID must differ from old");
+    assert_ne!(
+        response.id, artifact_id,
+        "New artifact ID must differ from old"
+    );
     // session_id must be populated (used in plan_artifact:updated event payload)
-    assert!(response.session_id.is_some(), "session_id must be populated in response");
+    assert!(
+        response.session_id.is_some(),
+        "session_id must be populated in response"
+    );
 }
 
 /// Test 13: Proposals batch-updated — linked proposals point to new artifact version after edit.
@@ -2311,7 +2382,12 @@ async fn test_edit_plan_artifact_batch_updates_linked_proposals() {
             migrated_from_proposal_id: None,
             affected_paths: None,
         };
-        let saved = state.app_state.task_proposal_repo.create(proposal).await.unwrap();
+        let saved = state
+            .app_state
+            .task_proposal_repo
+            .create(proposal)
+            .await
+            .unwrap();
         proposal_ids.push(saved.id.as_str().to_string());
     }
 
@@ -2350,7 +2426,11 @@ async fn test_edit_plan_artifact_batch_updates_linked_proposals() {
         .get_by_plan_artifact_id(&ArtifactId::from_string(artifact_id.clone()))
         .await
         .unwrap();
-    assert_eq!(old_linked.len(), 0, "Old artifact should have no proposals after edit");
+    assert_eq!(
+        old_linked.len(),
+        0,
+        "Old artifact should have no proposals after edit"
+    );
 
     // New artifact should have all 3 proposals
     let new_linked = state
@@ -2359,7 +2439,11 @@ async fn test_edit_plan_artifact_batch_updates_linked_proposals() {
         .get_by_plan_artifact_id(&ArtifactId::from_string(new_artifact_id.clone()))
         .await
         .unwrap();
-    assert_eq!(new_linked.len(), 3, "All 3 proposals should be re-linked to the new artifact");
+    assert_eq!(
+        new_linked.len(),
+        3,
+        "All 3 proposals should be re-linked to the new artifact"
+    );
 }
 
 // ============================================================
@@ -2407,7 +2491,10 @@ async fn test_6a_freeze_blocks_external_writes_and_bypasses_for_caller() {
         session_repo.as_ref(),
     )
     .await;
-    assert!(result.is_ok(), "Should be Ok when verification child is not running");
+    assert!(
+        result.is_ok(),
+        "Should be Ok when verification child is not running"
+    );
 
     // Mark parent as having verification in progress in the repo — freeze truth is now
     // authoritative and no longer comes from the caller-provided session struct.
@@ -2415,11 +2502,7 @@ async fn test_6a_freeze_blocks_external_writes_and_bypasses_for_caller() {
         .update_verification_state(&parent_id, VerificationStatus::Reviewing, true)
         .await
         .unwrap();
-    let parent_verifying = session_repo
-        .get_by_id(&parent_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let parent_verifying = session_repo.get_by_id(&parent_id).await.unwrap().unwrap();
 
     // Register child as generating
     running_registry
@@ -2455,7 +2538,10 @@ async fn test_6a_freeze_blocks_external_writes_and_bypasses_for_caller() {
     // Unregister (agent exited) → Ok for all callers
     running_registry
         .as_ref()
-        .unregister(&RunningAgentKey::new("ideation", child_id.as_str()), "test-agent-run")
+        .unregister(
+            &RunningAgentKey::new("ideation", child_id.as_str()),
+            "test-agent-run",
+        )
         .await;
     let result = check_verification_freeze(
         std::slice::from_ref(&parent_verifying),
@@ -2464,7 +2550,10 @@ async fn test_6a_freeze_blocks_external_writes_and_bypasses_for_caller() {
         session_repo.as_ref(),
     )
     .await;
-    assert!(result.is_ok(), "Should be Ok after verification child exits");
+    assert!(
+        result.is_ok(),
+        "Should be Ok after verification child exits"
+    );
 }
 
 /// 6A': freeze is released when verification_in_progress transitions to false,
@@ -2493,11 +2582,7 @@ async fn test_6a_prime_freeze_released_when_verification_complete() {
         .await;
 
     // Fetch the updated parent so check_verification_freeze sees in_progress=true
-    let parent_verifying = session_repo
-        .get_by_id(&parent_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let parent_verifying = session_repo.get_by_id(&parent_id).await.unwrap().unwrap();
 
     // Phase 1: freeze active → Conflict
     let result = check_verification_freeze(
@@ -2519,11 +2604,7 @@ async fn test_6a_prime_freeze_released_when_verification_complete() {
         .unwrap();
 
     // Fetch updated parent (in_progress=false now)
-    let parent_completed = session_repo
-        .get_by_id(&parent_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let parent_completed = session_repo.get_by_id(&parent_id).await.unwrap().unwrap();
 
     // Phase 2: freeze released — Ok even though child is still in running registry
     let result = check_verification_freeze(
@@ -3114,5 +3195,61 @@ async fn test_external_origin_session_auto_verifies_without_config() {
         updated.verification_status,
         updated.verification_in_progress,
         updated.verification_confirmation_status
+    );
+}
+
+#[tokio::test]
+async fn test_planning_flow_session_does_not_auto_verify_or_prompt_on_plan_create() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let result = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Agent Plan".to_string(),
+            content: "Plan-mode content".to_string(),
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "create_plan_artifact should succeed for planning-flow session: {:?}",
+        result.err()
+    );
+
+    let updated = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id)
+        .await
+        .unwrap()
+        .expect("session must still exist");
+    assert_eq!(updated.verification_generation, 0);
+    assert_eq!(updated.verification_status, VerificationStatus::Unverified);
+    assert!(!updated.verification_in_progress);
+    assert_eq!(updated.verification_confirmation_status, None);
+
+    let children = state
+        .app_state
+        .ideation_session_repo
+        .get_verification_children(&session_id)
+        .await
+        .unwrap();
+    assert!(
+        children.is_empty(),
+        "planning-flow sessions should not spawn verification children on plan creation"
     );
 }

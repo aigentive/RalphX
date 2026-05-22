@@ -982,6 +982,7 @@ export function mockSessionWithData(
     gapScore: null,
     inheritedPlanArtifactId: null,
     sessionPurpose: "general" as const,
+    sessionFlow: "ideation" as const,
     acceptanceStatus: null,
     ...overrides,
   };

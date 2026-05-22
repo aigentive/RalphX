@@ -26,6 +26,8 @@ const {
   setWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
   closeWorkspacePrMock,
+  sendAgentMessageMock,
+  switchAgentConversationModeMock,
   loadBranchBaseOptionsMock,
   getArtifactMock,
   getIdeationSessionMock,
@@ -56,6 +58,8 @@ const {
   setWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
   closeWorkspacePrMock: vi.fn(),
+  sendAgentMessageMock: vi.fn(),
+  switchAgentConversationModeMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   getArtifactMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
@@ -92,6 +96,10 @@ vi.mock("@/api/chat", async (importOriginal) => {
         precomputePrDescriptionMock(...args),
       closeAgentWorkspacePr: (...args: unknown[]) =>
         closeWorkspacePrMock(...args),
+      sendAgentMessage: (...args: unknown[]) =>
+        sendAgentMessageMock(...args),
+      switchAgentConversationMode: (...args: unknown[]) =>
+        switchAgentConversationModeMock(...args),
     },
   };
 });
@@ -471,6 +479,21 @@ describe("AgentsArtifactPane", () => {
         publicationPushStatus: "pushed",
       }),
     );
+    sendAgentMessageMock.mockResolvedValue({
+      conversationId: "ideation-conversation-1",
+      agentRunId: "agent-run-1",
+      isNewConversation: true,
+      wasQueued: false,
+      queuedMessageId: null,
+      queuedAsPending: false,
+    });
+    switchAgentConversationModeMock.mockResolvedValue({
+      conversation: conversation(),
+      workspace: workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+      }),
+    });
     getArtifactMock.mockResolvedValue(null);
     getIdeationSessionMock.mockResolvedValue(null);
     getIdeationChildrenMock.mockResolvedValue([]);
@@ -919,6 +942,84 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
     expect(useDependencyGraphMock).toHaveBeenCalledWith("");
     expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
+  });
+
+  it("promotes a Plan workspace to Ideation before requesting proposals", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getArtifactMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Proceed to Proposals/i }),
+    );
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        mode: "ideation",
+      })
+    );
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledWith(
+        "ideation",
+        "session-1",
+        expect.stringContaining("Proceed to proposals"),
+      )
+    );
+    expect(
+      sendAgentMessageMock.mock.invocationCallOrder[0]!,
+    ).toBeGreaterThan(switchAgentConversationModeMock.mock.invocationCallOrder[0]!);
   });
 
   it("uses the focused ideation session as the artifact data source", async () => {

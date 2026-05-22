@@ -19,6 +19,7 @@ pub const SHORT_SESSION_NAMER: &str = "ralphx-utility-session-namer";
 pub const SHORT_PR_DESCRIBER: &str = "ralphx-utility-pr-describer";
 pub const SHORT_CHAT_TASK: &str = "ralphx-chat-task";
 pub const SHORT_CHAT_PROJECT: &str = "ralphx-chat-project";
+pub const SHORT_CHAT_PLAN: &str = "ralphx-chat-plan";
 pub const SHORT_REVIEW_CHAT: &str = "ralphx-review-chat";
 pub const SHORT_REVIEW_HISTORY: &str = "ralphx-review-history";
 pub const SHORT_WORKER: &str = "ralphx-execution-worker";
@@ -85,6 +86,9 @@ pub const AGENT_CHAT_TASK: &str = "ralphx:ralphx-chat-task";
 
 /// Project-scoped chat (ChatContextType::Project)
 pub const AGENT_CHAT_PROJECT: &str = "ralphx:ralphx-chat-project";
+
+/// Plan-mode project chat for agent conversation workspaces
+pub const AGENT_CHAT_PLAN: &str = "ralphx:ralphx-chat-plan";
 
 /// General read-only project explorer for project-scoped agent conversations
 pub const AGENT_GENERAL_EXPLORER: &str = "ralphx:ralphx-general-explorer";

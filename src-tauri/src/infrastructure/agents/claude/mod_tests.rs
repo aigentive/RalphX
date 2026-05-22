@@ -9,9 +9,8 @@
 /// - create_mcp_config(): no --allowed-tools arg when agent has no mcp_tools config
 use super::*;
 use crate::infrastructure::agents::harness_agent_catalog::{
-    internal_mcp_server_name,
-    load_canonical_agent_definition, load_canonical_claude_metadata, load_harness_agent_prompt,
-    AgentPromptHarness,
+    internal_mcp_server_name, load_canonical_agent_definition, load_canonical_claude_metadata,
+    load_harness_agent_prompt, AgentPromptHarness,
 };
 use crate::infrastructure::agents::mcp_runtime_context::McpRuntimeContext;
 use serde_yaml::Value;
@@ -50,6 +49,22 @@ fn make_temp_project_plugin_dir() -> (tempfile::TempDir, std::path::PathBuf, std
     )
     .unwrap();
     (dir, root, plugin_dir)
+}
+
+fn allowed_tools_arg_from_mcp_config(config_path: &Path) -> Option<String> {
+    // codeql[rust/path-injection]
+    let content = std::fs::read_to_string(config_path).expect("should read config");
+    let json: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+    json["mcpServers"]
+        .as_object()
+        .and_then(|servers| servers.values().next())
+        .and_then(|server| server["args"].as_array())
+        .and_then(|args| {
+            args.iter()
+                .filter_map(|arg| arg.as_str())
+                .find(|arg| arg.starts_with("--allowed-tools="))
+                .map(str::to_string)
+        })
 }
 
 fn seed_runnable_mcp_runtime(plugin_dir: &Path, runtime_marker: &str) {
@@ -625,6 +640,40 @@ fn test_create_mcp_config_non_external_mcp_keeps_ask_user_question() {
 }
 
 #[test]
+fn test_plan_chat_mcp_config_non_external_keeps_ask_user_question() {
+    let (dir, plugin_dir) = make_temp_plugin_dir();
+    let config_path =
+        create_mcp_config(&plugin_dir, "ralphx-chat-plan", false).expect("should succeed");
+    let allowed_tools_arg =
+        allowed_tools_arg_from_mcp_config(&config_path).expect("allowed tools arg");
+
+    assert!(
+        allowed_tools_arg.contains("ask_user_question"),
+        "Plan chat must keep ask_user_question for interactive Agent conversations, got: {allowed_tools_arg}"
+    );
+    drop(dir);
+}
+
+#[test]
+fn test_plan_chat_mcp_config_external_filters_ask_user_question() {
+    let (dir, plugin_dir) = make_temp_plugin_dir();
+    let config_path =
+        create_mcp_config(&plugin_dir, "ralphx-chat-plan", true).expect("should succeed");
+    let allowed_tools_arg =
+        allowed_tools_arg_from_mcp_config(&config_path).expect("allowed tools arg");
+
+    assert!(
+        !allowed_tools_arg.contains("ask_user_question"),
+        "External Plan chat spawns must filter ask_user_question to avoid unattended deadlocks, got: {allowed_tools_arg}"
+    );
+    assert!(
+        allowed_tools_arg.contains("get_session_plan"),
+        "Filtering interactive tools must preserve non-interactive Plan tools, got: {allowed_tools_arg}"
+    );
+    drop(dir);
+}
+
+#[test]
 fn test_create_mcp_config_uses_claude_external_mcp_transport() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     std::fs::create_dir_all(root.join("agents/ralphx-chat-project"))
@@ -698,13 +747,9 @@ harnesses:
     )
     .expect("write agent definition");
 
-    let json = build_mcp_config_with_runtime_context(
-        &plugin_dir,
-        "ralphx-chat-project",
-        false,
-        None,
-    )
-    .expect("should create mixed MCP config");
+    let json =
+        build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-chat-project", false, None)
+            .expect("should create mixed MCP config");
     let external_server = &json["mcpServers"]["ralphx"];
     let internal_server = &json["mcpServers"]["ralphx_internal"];
 

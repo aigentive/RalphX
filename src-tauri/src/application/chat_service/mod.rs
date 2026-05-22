@@ -49,9 +49,10 @@ use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNE
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentRunId, AgentRunStatus, ChatAttachment, ChatAttachmentId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId,
-    IdeationSessionId, InternalStatus, MessageRole, ProjectId, TaskId,
+    AgentRun, AgentRunId, AgentRunStatus, Artifact, ArtifactContent, ChatAttachment,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus, MessageRole,
+    ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
@@ -68,8 +69,9 @@ use crate::domain::services::{
     MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_CHAT_PLAN, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
 };
+use crate::utils::truncate_str;
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -85,6 +87,7 @@ use tokio_util::sync::CancellationToken;
 /// must use this constant to stay in sync.
 pub const AGENT_ERROR_PREFIX: &str = "[Agent error:";
 const REGISTRY_PID_ZERO_GRACE_SECONDS: i64 = 30;
+const PLAN_EXECUTION_HANDOFF_CONTENT_LIMIT_BYTES: usize = 60_000;
 
 // Re-exports from extracted modules
 #[doc(hidden)]
@@ -371,6 +374,7 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
     match mode {
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
+        AgentConversationWorkspaceMode::Plan => AGENT_CHAT_PLAN,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
     }
 }
@@ -391,6 +395,105 @@ fn resolve_agent_name_for_send<'a>(
                 team_mode,
             )
         })
+}
+
+fn plan_mode_runtime_message(
+    message: String,
+    workspace: Option<&AgentConversationWorkspace>,
+) -> String {
+    let Some(workspace) = workspace else {
+        return message;
+    };
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return message;
+    }
+
+    let Some(planning_session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return message;
+    };
+
+    format!(
+        "<plan_mode_context>\n\
+         <agent_conversation_id>{}</agent_conversation_id>\n\
+         <planning_session_id>{}</planning_session_id>\n\
+         <workspace_mode>plan</workspace_mode>\n\
+         <contract>Use this planning session for ask_user_question and plan artifact tools. Do not create proposals or start task execution from Plan mode.</contract>\n\
+         </plan_mode_context>\n\
+         <user_request>{}</user_request>",
+        workspace.conversation_id.as_str(),
+        planning_session_id.as_str(),
+        message
+    )
+}
+
+fn plan_artifact_content_for_prompt(artifact: &Artifact) -> (String, bool) {
+    let raw_content = match &artifact.content {
+        ArtifactContent::Inline { text } => text.clone(),
+        ArtifactContent::File { path } => format!("[File artifact at: {}]", path),
+    };
+    let truncated = raw_content.len() > PLAN_EXECUTION_HANDOFF_CONTENT_LIMIT_BYTES;
+    let mut content =
+        truncate_str(&raw_content, PLAN_EXECUTION_HANDOFF_CONTENT_LIMIT_BYTES).to_string();
+    if truncated {
+        content.push_str("\n[truncated by RalphX]");
+    }
+    (content, truncated)
+}
+
+fn edit_mode_plan_handoff_runtime_message(
+    message: String,
+    workspace: Option<&AgentConversationWorkspace>,
+    plan_artifact: Option<&Artifact>,
+) -> String {
+    let Some(workspace) = workspace else {
+        return message;
+    };
+    if workspace.mode != AgentConversationWorkspaceMode::Edit {
+        return message;
+    }
+
+    let Some(planning_session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return message;
+    };
+
+    let plan_artifact_block = plan_artifact
+        .map(|artifact| {
+            let (content, truncated) = plan_artifact_content_for_prompt(artifact);
+            format!(
+                "<plan_artifact>\n\
+                 <plan_artifact_id>{}</plan_artifact_id>\n\
+                 <plan_artifact_name>{}</plan_artifact_name>\n\
+                 <plan_artifact_version>{}</plan_artifact_version>\n\
+                 <plan_artifact_content_truncated>{}</plan_artifact_content_truncated>\n\
+                 <plan_artifact_content>\n\
+                 ```markdown\n{}\n```\n\
+                 </plan_artifact_content>\n\
+                </plan_artifact>",
+                artifact.id.as_str(),
+                artifact.name.as_str(),
+                artifact.metadata.version,
+                truncated,
+                content
+            )
+        })
+        .unwrap_or_else(|| {
+            "<plan_artifact_missing>true</plan_artifact_missing>".to_string()
+        });
+
+    format!(
+        "<plan_execution_context>\n\
+         <agent_conversation_id>{}</agent_conversation_id>\n\
+         <planning_session_id>{}</planning_session_id>\n\
+         <workspace_mode>edit</workspace_mode>\n\
+         <contract>The user switched from Plan mode to Edit mode. Treat the linked plan as implementation guidance for this turn and edit the workspace branch directly. Do not create task proposals or enter the ideation pipeline unless the user explicitly asks.</contract>\n\
+         {}\n\
+         </plan_execution_context>\n\
+         <user_request>{}</user_request>",
+        workspace.conversation_id.as_str(),
+        planning_session_id.as_str(),
+        plan_artifact_block,
+        message
+    )
 }
 
 fn continuation_metadata_requests_lineage(task_metadata: Option<&str>) -> bool {
@@ -1985,29 +2088,33 @@ impl<R: Runtime> AppChatService<R> {
         conversation_id_override: Option<&ChatConversationId>,
         working_directory_override: Option<&PathBuf>,
     ) -> String {
+        let agent_workspace = if let Some(conversation_id) = conversation_id_override {
+            self.load_agent_conversation_workspace(context_type, conversation_id)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let edit_plan_handoff_artifact = self
+            .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
+            .await;
         let with_project_references = if let Some(working_directory) = working_directory_override {
             chat_service_composer_references::expand_project_references_for_prompt(
                 message,
                 project_references,
                 working_directory,
             )
-        } else if let Some(conversation_id) = conversation_id_override {
-            if let Ok(Some(workspace)) = self
-                .load_agent_conversation_workspace(context_type, conversation_id)
+        } else if let Some(workspace) = agent_workspace.as_ref() {
+            if let Ok(working_directory) = self
+                .resolve_agent_workspace_working_directory(workspace)
                 .await
             {
-                if let Ok(working_directory) = self
-                    .resolve_agent_workspace_working_directory(&workspace)
-                    .await
-                {
-                    chat_service_composer_references::expand_project_references_for_prompt(
-                        message,
-                        project_references,
-                        &working_directory,
-                    )
-                } else {
-                    message.to_string()
-                }
+                chat_service_composer_references::expand_project_references_for_prompt(
+                    message,
+                    project_references,
+                    &working_directory,
+                )
             } else {
                 message.to_string()
             }
@@ -2026,17 +2133,56 @@ impl<R: Runtime> AppChatService<R> {
                 Err(_) => message.to_string(),
             }
         };
-        if integration_references.is_empty() {
-            return with_project_references;
-        }
-        match self.atlassian_integration_service.as_ref() {
-            Some(service) => {
-                service
-                    .expand_references_for_prompt(&with_project_references, integration_references)
-                    .await
+        let with_integration_references = if integration_references.is_empty() {
+            with_project_references
+        } else {
+            match self.atlassian_integration_service.as_ref() {
+                Some(service) => {
+                    service
+                        .expand_references_for_prompt(
+                            &with_project_references,
+                            integration_references,
+                        )
+                        .await
+                }
+                None => with_project_references,
             }
-            None => with_project_references,
+        };
+
+        let with_plan_mode =
+            plan_mode_runtime_message(with_integration_references, agent_workspace.as_ref());
+        edit_mode_plan_handoff_runtime_message(
+            with_plan_mode,
+            agent_workspace.as_ref(),
+            edit_plan_handoff_artifact.as_ref(),
+        )
+    }
+
+    async fn load_edit_mode_plan_handoff_artifact(
+        &self,
+        workspace: Option<&AgentConversationWorkspace>,
+    ) -> Option<Artifact> {
+        let workspace = workspace?;
+        if workspace.mode != AgentConversationWorkspaceMode::Edit {
+            return None;
         }
+        let session_id = workspace.linked_ideation_session_id.as_ref()?;
+        let session = self
+            .ideation_session_repo
+            .get_by_id(session_id)
+            .await
+            .ok()
+            .flatten()?;
+        let plan_artifact_id = session
+            .plan_artifact_id
+            .or(session.inherited_plan_artifact_id)?;
+        let latest_id = self
+            .artifact_repo
+            .resolve_latest_artifact_id(&plan_artifact_id)
+            .await
+            .unwrap_or(plan_artifact_id);
+
+        self.artifact_repo.get_by_id(&latest_id).await.ok().flatten()
     }
 
     /// Fetch entity status for context types that support it
@@ -2401,7 +2547,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     message,
                     &options.composer_project_references,
                     &options.composer_integration_references,
-                    options.conversation_id_override.as_ref(),
+                    Some(&conversation.id),
                     options.working_directory_override.as_ref(),
                 )
                 .await;
@@ -2591,7 +2737,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         );
         if matches!(
             agent_conversation_mode,
-            Some(AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation)
+            Some(
+                AgentConversationWorkspaceMode::Edit
+                    | AgentConversationWorkspaceMode::Plan
+                    | AgentConversationWorkspaceMode::Ideation,
+            )
         ) && agent_workspace.is_none()
         {
             return Err(ChatServiceError::SpawnFailed(format!(

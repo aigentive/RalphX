@@ -70,6 +70,7 @@ export function transformSession(raw: z.infer<typeof IdeationSessionResponseSche
     spawnReason: raw.spawn_reason ?? null,
     blockerFingerprint: raw.blocker_fingerprint ?? null,
     sessionPurpose: raw.session_purpose ?? "general",
+    sessionFlow: raw.session_flow ?? "ideation",
     acceptanceStatus: raw.acceptance_status ?? null,
     analysisBaseRefKind: raw.analysis_base_ref_kind ?? null,
     analysisBaseRef: raw.analysis_base_ref ?? null,

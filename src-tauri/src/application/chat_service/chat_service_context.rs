@@ -4252,6 +4252,10 @@ exit 0
                 agent_names::AGENT_GENERAL_WORKER,
             ),
             (
+                AgentConversationWorkspaceMode::Plan,
+                agent_names::AGENT_CHAT_PLAN,
+            ),
+            (
                 AgentConversationWorkspaceMode::Ideation,
                 agent_names::AGENT_CHAT_PROJECT,
             ),
@@ -4301,6 +4305,10 @@ exit 0
             (
                 AgentConversationWorkspaceMode::Edit,
                 agent_names::AGENT_GENERAL_WORKER,
+            ),
+            (
+                AgentConversationWorkspaceMode::Plan,
+                agent_names::AGENT_CHAT_PLAN,
             ),
             (
                 AgentConversationWorkspaceMode::Ideation,

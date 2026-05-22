@@ -52,8 +52,14 @@ import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import {
+  agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
+} from "./agentWorkspaceQueries";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
+const PLAN_TO_PROPOSALS_REQUEST =
+  "Proceed to proposals for the approved plan. Read the current plan, run cross_project_guide if needed, create implementation task proposals, and finalize proposals only after all proposal and dependency updates are complete.";
 
 function noop() {}
 
@@ -680,6 +686,7 @@ function ArtifactContent({
   if (activeTab === "plan") {
     return (
       <AgentPlanPanel
+        workspace={workspace}
         session={session}
         sessionTitle={sessionTitle}
         planArtifact={planArtifact}
@@ -761,6 +768,7 @@ function ArtifactContent({
 }
 
 function AgentPlanPanel({
+  workspace,
   session,
   sessionTitle,
   planArtifact,
@@ -768,6 +776,7 @@ function AgentPlanPanel({
   proposals,
   onPlanUpdated,
 }: {
+  workspace: AgentConversationWorkspace | null;
   session: IdeationSession | null;
   sessionTitle: string | null;
   planArtifact: Artifact | null;
@@ -778,6 +787,7 @@ function AgentPlanPanel({
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setIsEditing(false);
@@ -799,12 +809,32 @@ function AgentPlanPanel({
   const handleCreateProposals = useCallback(async () => {
     if (!session) return;
     try {
-      await chatApi.sendAgentMessage("ideation", session.id, "create task proposals from the approved plan");
+      const shouldPromoteWorkspace =
+        session.sessionFlow === "planning" &&
+        workspace?.mode !== "ideation" &&
+        workspace?.linkedIdeationSessionId === session.id &&
+        Boolean(workspace.conversationId);
+
+      if (shouldPromoteWorkspace && workspace?.conversationId) {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId: workspace.conversationId,
+          mode: "ideation",
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(workspace.conversationId),
+            result.workspace,
+          );
+        }
+        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
+      }
+
+      await chatApi.sendAgentMessage("ideation", session.id, PLAN_TO_PROPOSALS_REQUEST);
     } catch (err) {
       console.error("Failed to create proposals:", err);
       toast.error("Failed to request proposal creation");
     }
-  }, [session]);
+  }, [queryClient, session, workspace]);
 
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
@@ -836,6 +866,9 @@ function AgentPlanPanel({
               chromeless
               {...(teamMetadata !== undefined && { teamMetadata })}
               {...(session !== null && { onCreateProposals: handleCreateProposals })}
+              {...(session?.sessionFlow === "planning" && {
+                createProposalsLabel: "Proceed to Proposals",
+              })}
             />
           </Suspense>
         )

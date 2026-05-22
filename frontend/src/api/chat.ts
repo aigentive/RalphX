@@ -534,7 +534,7 @@ const ChatConversationResponseSchema = z.object({
   provider_harness: z.string().min(1).nullable().optional(),
   upstream_provider: z.string().nullable().optional(),
   provider_profile: z.string().nullable().optional(),
-  agent_mode: z.enum(["chat", "edit", "ideation"]).nullable().optional(),
+  agent_mode: z.enum(["chat", "edit", "plan", "ideation"]).nullable().optional(),
   title: z.string().nullable(),
   message_count: z.number(),
   last_message_at: z.string().nullable(),

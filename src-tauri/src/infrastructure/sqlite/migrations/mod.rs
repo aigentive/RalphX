@@ -360,9 +360,15 @@ mod v20260520125526_atlassian_integrations_tests;
 mod v20260520150000_atlassian_oauth;
 #[cfg(test)]
 mod v20260520150000_atlassian_oauth_tests;
+mod v20260521222911_agent_plan_mode;
+#[cfg(test)]
+mod v20260521222911_agent_plan_mode_tests;
+mod v20260522093000_ideation_session_flow;
+#[cfg(test)]
+mod v20260522093000_ideation_session_flow_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260520150000;
+pub const SCHEMA_VERSION: i64 = 20260522093000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1021,6 +1027,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260520150000,
         name: "atlassian_oauth",
         migrate: v20260520150000_atlassian_oauth::migrate,
+    },
+    Migration {
+        version: 20260521222911,
+        name: "agent_plan_mode",
+        migrate: v20260521222911_agent_plan_mode::migrate,
+    },
+    Migration {
+        version: 20260522093000,
+        name: "ideation_session_flow",
+        migrate: v20260522093000_ideation_session_flow::migrate,
     },
 ];
 
