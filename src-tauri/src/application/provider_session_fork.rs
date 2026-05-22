@@ -904,4 +904,98 @@ mod tests {
 
         assert!(matches!(error, AppError::Conflict(_)));
     }
+
+    #[test]
+    fn rewrite_jsonl_rewrites_valid_lines_and_preserves_invalid_lines() {
+        let input = concat!(
+            "{\"sessionId\":\"parent-session\"}\n",
+            "not-json\n",
+            "{\"provider_session_id\":\"parent-session\"}\n"
+        );
+
+        let output = rewrite_jsonl(input, &mut |value| {
+            rewrite_session_id_fields(value, "parent-session", "child-session")
+        });
+
+        assert!(output.contains("\"sessionId\":\"child-session\""));
+        assert!(output.contains("not-json"));
+        assert!(output.contains("\"provider_session_id\":\"child-session\""));
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn safe_destination_rejects_source_outside_provider_root() {
+        let home = temp_home();
+        let root = home.path().join(".codex/sessions");
+        let outside = home.path().join("outside");
+        fs::create_dir_all(&root).expect("create provider root");
+        fs::create_dir_all(&outside).expect("create outside dir");
+        let source_path = outside.join("parent-session.jsonl");
+        fs::write(&source_path, "{}\n").expect("write outside source");
+
+        let error = safe_destination_in_source_dir(&root, &source_path, "child-session.jsonl")
+            .expect_err("source outside root should fail");
+
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn safe_destination_rejects_unsafe_destination_filename() {
+        let home = temp_home();
+        let root = home.path().join(".codex/sessions");
+        fs::create_dir_all(&root).expect("create provider root");
+        let source_path = root.join("parent-session.jsonl");
+        fs::write(&source_path, "{}\n").expect("write source");
+
+        let error = safe_destination_in_source_dir(&root, &source_path, "../child-session.jsonl")
+            .expect_err("unsafe destination filename should fail");
+
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn rewrite_session_id_fields_rewrites_nested_provider_fields() {
+        let mut value = serde_json::json!({
+            "sessionId": "parent-session",
+            "session_id": "other-session",
+            "nested": [
+                { "providerSessionId": "parent-session" },
+                { "provider_session_id": "parent-session" },
+                { "text": "keep parent-session in prose" }
+            ]
+        });
+
+        rewrite_session_id_fields(&mut value, "parent-session", "child-session");
+
+        assert_eq!(value["sessionId"], "child-session");
+        assert_eq!(value["session_id"], "other-session");
+        assert_eq!(value["nested"][0]["providerSessionId"], "child-session");
+        assert_eq!(value["nested"][1]["provider_session_id"], "child-session");
+        assert_eq!(value["nested"][2]["text"], "keep parent-session in prose");
+    }
+
+    #[test]
+    fn rewrite_claude_workspace_fields_preserves_branch_when_target_branch_absent() {
+        let home = temp_home();
+        let child_worktree = home.path().join("child-worktree");
+        let target = ProviderSessionForkTarget {
+            working_directory: child_worktree.clone(),
+            git_branch: None,
+        };
+        let mut value = serde_json::json!({
+            "cwd": "/tmp/parent-worktree",
+            "gitBranch": "parent-branch",
+            "nested": {
+                "cwd": "/tmp/parent-worktree",
+                "gitBranch": "parent-branch"
+            }
+        });
+
+        rewrite_claude_workspace_fields(&mut value, &target);
+
+        assert_eq!(value["cwd"], child_worktree.display().to_string());
+        assert_eq!(value["gitBranch"], "parent-branch");
+        assert_eq!(value["nested"]["cwd"], child_worktree.display().to_string());
+        assert_eq!(value["nested"]["gitBranch"], "parent-branch");
+    }
 }

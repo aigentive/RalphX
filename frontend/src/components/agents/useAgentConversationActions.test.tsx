@@ -1,0 +1,262 @@
+import { act, renderHook } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import type { SetStateAction } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+  type ForkAgentConversationResult,
+} from "@/api/chat";
+import { chatKeys } from "@/hooks/useChat";
+import type { Project } from "@/types/project";
+import type { ChatConversation } from "@/types/chat-conversation";
+
+import {
+  getAgentConversationStoreKey,
+  type AgentConversation,
+} from "./agentConversations";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import { useAgentConversationActions } from "./useAgentConversationActions";
+
+vi.mock("@/api/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/chat")>();
+  return {
+    ...actual,
+    chatApi: {
+      ...actual.chatApi,
+      forkAgentConversation: vi.fn(),
+    },
+  };
+});
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: vi.fn(),
+  },
+}));
+
+const NOW = "2026-05-22T00:00:00.000Z";
+
+function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  });
+}
+
+function createConversation(
+  overrides: Partial<ChatConversation> = {}
+): ChatConversation {
+  return {
+    id: "parent-conversation",
+    contextType: "project",
+    contextId: "project-1",
+    claudeSessionId: null,
+    providerSessionId: null,
+    providerHarness: null,
+    upstreamProvider: null,
+    providerProfile: null,
+    logicalModel: null,
+    effectiveModelId: null,
+    logicalEffort: null,
+    effectiveEffort: null,
+    agentMode: "edit",
+    parentConversationId: null,
+    title: "Parent conversation",
+    messageCount: 1,
+    lastMessageAt: NOW,
+    createdAt: NOW,
+    updatedAt: NOW,
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
+function createWorkspace(
+  overrides: Partial<AgentConversationWorkspace> = {}
+): AgentConversationWorkspace {
+  return {
+    conversationId: "child-conversation",
+    projectId: "project-1",
+    mode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    baseCommit: "base-sha",
+    branchName: "ralphx/test/child",
+    worktreePath: "/tmp/ralphx/test/child",
+    linkedIdeationSessionId: null,
+    linkedPlanBranchId: null,
+    sourcePullRequest: null,
+    modeSwitchLocked: false,
+    modeSwitchLockReason: null,
+    publicationPrNumber: null,
+    publicationPrUrl: null,
+    publicationPrStatus: null,
+    publicationPushStatus: null,
+    prAutofixEnabled: false,
+    prAutoMergeDesired: false,
+    prAutoMergeMethod: "squash",
+    prAutoMergeCurrent: null,
+    prSupervisionStatus: null,
+    prSupervisionSummary: null,
+    prSupervisionUpdatedAt: null,
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+function trackedSetter<T>(initialValue: T) {
+  let value = initialValue;
+  const setter = vi.fn((next: SetStateAction<T>) => {
+    value =
+      typeof next === "function"
+        ? (next as (current: T) => T)(value)
+        : next;
+  });
+  return {
+    get value() {
+      return value;
+    },
+    setter,
+  };
+}
+
+function renderActions(queryClient = createQueryClient()) {
+  const conversations = trackedSetter<Record<string, AgentConversation>>({});
+  const workspaces = trackedSetter<Record<string, AgentConversationWorkspace>>({});
+  const selectedConversationId = trackedSetter<string | null>(null);
+  const args = {
+    activeProjectId: "project-1",
+    clearAgentConversationSelection: vi.fn(),
+    clearAutoManagedTitle: vi.fn(),
+    closeSidebarOverlay: vi.fn(),
+    findConversationById: vi.fn(() => null),
+    focusedProjectId: "project-1",
+    invalidateProjectConversations: vi.fn(() => Promise.resolve()),
+    isSidebarOverlayOpen: false,
+    projectId: "project-1",
+    projects: [] as Project[],
+    queryClient,
+    selectConversation: vi.fn(),
+    selectedConversationId: null,
+    selectedProjectId: "project-1",
+    setActiveConversation: vi.fn(),
+    setOptimisticConversationsById: conversations.setter,
+    setOptimisticWorkspacesByConversationId: workspaces.setter,
+    setFocusedProject: vi.fn(),
+    setOptimisticSelectedConversationId: selectedConversationId.setter,
+    setRuntimeForConversation: vi.fn(),
+  };
+  const hook = renderHook(() => useAgentConversationActions(args));
+  return {
+    ...hook,
+    args,
+    conversations,
+    queryClient,
+    selectedConversationId,
+    workspaces,
+  };
+}
+
+describe("useAgentConversationActions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("hydrates local state, workspace cache, selection, and runtime after forking", async () => {
+    const parentConversation = createConversation();
+    const childConversation = createConversation({
+      id: "child-conversation",
+      providerSessionId: "child-thread",
+      providerHarness: "codex",
+      logicalModel: "gpt-5.5",
+      effectiveModelId: "gpt-5.5",
+      logicalEffort: "high",
+      effectiveEffort: "high",
+      parentConversationId: "parent-conversation",
+      title: "[Fork] Parent conversation",
+    });
+    const workspace = createWorkspace();
+    const forkResult: ForkAgentConversationResult = {
+      parentConversation,
+      conversation: childConversation,
+      workspace,
+      providerSessionForked: true,
+      copiedMessageCount: 2,
+      copiedTimelineItemCount: 3,
+    };
+    vi.mocked(chatApi.forkAgentConversation).mockResolvedValueOnce(forkResult);
+    const {
+      args,
+      conversations,
+      queryClient,
+      result,
+      selectedConversationId,
+      workspaces,
+    } = renderActions();
+
+    let returned: ForkAgentConversationResult | undefined;
+    await act(async () => {
+      returned = await result.current.handleForkConversation("parent-conversation");
+    });
+
+    expect(returned).toBe(forkResult);
+    expect(chatApi.forkAgentConversation).toHaveBeenCalledWith("parent-conversation");
+    expect(
+      queryClient.getQueryData(chatKeys.conversationSummary("child-conversation"))
+    ).toBe(childConversation);
+    expect(
+      queryClient.getQueryData(agentWorkspaceKeys.workspace("child-conversation"))
+    ).toBe(workspace);
+    expect(conversations.value["child-conversation"].id).toBe("child-conversation");
+    expect(workspaces.value["child-conversation"]).toBe(workspace);
+    expect(selectedConversationId.value).toBe("child-conversation");
+    expect(args.setFocusedProject).toHaveBeenCalledWith("project-1");
+    expect(args.setRuntimeForConversation).toHaveBeenCalledWith(
+      "child-conversation",
+      "project-1",
+      {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      }
+    );
+    expect(args.selectConversation).toHaveBeenCalledWith(
+      "project-1",
+      "child-conversation"
+    );
+    expect(args.setActiveConversation).toHaveBeenCalledWith(
+      getAgentConversationStoreKey({
+        ...childConversation,
+        projectId: "project-1",
+        ideationSessionId: null,
+      }),
+      "child-conversation"
+    );
+    expect(args.invalidateProjectConversations).toHaveBeenCalledWith("project-1");
+  });
+
+  it("shows a toast and rethrows when forking fails", async () => {
+    vi.mocked(chatApi.forkAgentConversation).mockRejectedValueOnce(
+      new Error("fork failed")
+    );
+    const { result } = renderActions();
+
+    await expect(
+      result.current.handleForkConversation("parent-conversation")
+    ).rejects.toThrow("fork failed");
+
+    expect(toast.error).toHaveBeenCalledWith("Failed to fork conversation", {
+      description: "fork failed",
+      duration: 10000,
+    });
+  });
+});

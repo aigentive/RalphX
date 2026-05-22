@@ -6843,6 +6843,10 @@ mod tests {
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
         invalidate_agent_workspace_freshness_cache, agent_conversation_response_for_state,
+        agent_conversation_responses_for_state, archive_agent_conversation,
+        create_agent_conversation, emit_agent_conversation_fork_events, fork_agent_conversation,
+        fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
+        get_agent_conversation_summary_for_app_state, list_agent_conversations_page,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
@@ -6852,6 +6856,7 @@ mod tests {
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
         publish_agent_conversation_workspace_for_app_state,
         retarget_existing_workspace_pr_base_if_needed,
+        restore_agent_conversation,
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
         schedule_pr_supervision_recovery_for_conversation_id,
@@ -6865,6 +6870,7 @@ mod tests {
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
         AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
         AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
+        CreateAgentConversationInput, ForkAgentConversationInput, ForkAgentConversationResponse,
         AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
         AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
         AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
@@ -10053,6 +10059,466 @@ mod tests {
         assert_eq!(response.effective_model_id.as_deref(), Some("opus"));
         assert_eq!(response.logical_effort.as_deref(), Some("medium"));
         assert_eq!(response.effective_effort.as_deref(), Some("medium"));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_responses_for_state_hydrates_each_conversation() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-response-list".to_string());
+        let first = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("first conversation should be created");
+        let second = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("second conversation should be created");
+        let first_id = first.id.as_str();
+        let second_id = second.id.as_str();
+
+        let mut first_run = AgentRun::new(first.id);
+        first_run.logical_model = Some("gpt-5.5".to_string());
+        first_run.effective_model_id = Some("gpt-5.5".to_string());
+        first_run.logical_effort = Some(LogicalEffort::High);
+        first_run.effective_effort = Some("high".to_string());
+        state
+            .agent_run_repo
+            .create(first_run)
+            .await
+            .expect("first run should be created");
+
+        let mut second_message = ChatMessage::user_in_project(project_id, "copied attribution");
+        second_message.role = MessageRole::Orchestrator;
+        second_message.conversation_id = Some(second.id);
+        second_message.logical_model = Some("claude-sonnet".to_string());
+        second_message.effective_model_id = Some("claude-sonnet-4".to_string());
+        second_message.logical_effort = Some(LogicalEffort::Medium);
+        second_message.effective_effort = Some("medium".to_string());
+        state
+            .chat_message_repo
+            .create(second_message)
+            .await
+            .expect("second message should be created");
+
+        let responses = agent_conversation_responses_for_state(&state, vec![first, second])
+            .await
+            .expect("responses should hydrate runtime attribution");
+
+        let first_response = responses
+            .iter()
+            .find(|response| response.id == first_id)
+            .expect("first response should be present");
+        assert_eq!(first_response.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(
+            first_response.effective_model_id.as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(first_response.logical_effort.as_deref(), Some("high"));
+        assert_eq!(first_response.effective_effort.as_deref(), Some("high"));
+
+        let second_response = responses
+            .iter()
+            .find(|response| response.id == second_id)
+            .expect("second response should be present");
+        assert_eq!(
+            second_response.logical_model.as_deref(),
+            Some("claude-sonnet")
+        );
+        assert_eq!(
+            second_response.effective_model_id.as_deref(),
+            Some("claude-sonnet-4")
+        );
+        assert_eq!(second_response.logical_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            second_response.effective_effort.as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_response_for_state_includes_workspace_counts_parent_and_runtime() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-fork-response".to_string());
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("[Fork] Source conversation");
+        let parent_id = parent.id.as_str();
+        let mut child = ChatConversation::new_project(project_id.clone());
+        child.parent_conversation_id = Some(parent_id.clone());
+        child.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: "child-thread".to_string(),
+        });
+        let child_id = child.id.as_str();
+
+        let mut run = AgentRun::new(child.id);
+        run.logical_model = Some("gpt-5.5".to_string());
+        run.effective_model_id = Some("gpt-5.5".to_string());
+        run.logical_effort = Some(LogicalEffort::High);
+        run.effective_effort = Some("high".to_string());
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("child run should be created");
+
+        let workspace = AgentConversationWorkspace::new(
+            child.id,
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/fork-response".to_string(),
+            "/tmp/fork-response".to_string(),
+        );
+        let result = crate::application::agent_conversation_fork::AgentConversationForkResult {
+            parent_conversation: parent,
+            conversation: child,
+            workspace: Some(workspace),
+            provider_session: Some(
+                crate::application::provider_session_fork::ProviderSessionForkResult {
+                    session_ref: ProviderSessionRef {
+                        harness: AgentHarnessKind::Codex,
+                        provider_session_id: "child-thread".to_string(),
+                    },
+                    source_path: PathBuf::from("/tmp/source.jsonl"),
+                    destination_path: PathBuf::from("/tmp/dest.jsonl"),
+                },
+            ),
+            copied_message_count: 2,
+            copied_timeline_item_count: 3,
+        };
+
+        let response = fork_agent_conversation_response_for_state(&state, result)
+            .await
+            .expect("fork response should be built");
+
+        assert_eq!(response.parent_conversation.id, parent_id);
+        assert_eq!(response.conversation.id, child_id);
+        assert_eq!(
+            response.conversation.parent_conversation_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(response.conversation.provider_harness.as_deref(), Some("codex"));
+        assert_eq!(
+            response.conversation.provider_session_id.as_deref(),
+            Some("child-thread")
+        );
+        assert_eq!(response.conversation.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(response.conversation.logical_effort.as_deref(), Some("high"));
+        assert!(response.provider_session_forked);
+        assert_eq!(response.copied_message_count, 2);
+        assert_eq!(response.copied_timeline_item_count, 3);
+        assert_eq!(
+            response.workspace.as_ref().map(|workspace| workspace.mode.as_str()),
+            Some("edit")
+        );
+    }
+
+    #[test]
+    fn emit_agent_conversation_fork_events_accepts_response_payload() {
+        let project_id = ProjectId::from_string("project-fork-events".to_string());
+        let parent = AgentConversationResponse::from(ChatConversation::new_project(
+            project_id.clone(),
+        ));
+        let mut child_conversation = ChatConversation::new_project(project_id);
+        child_conversation.parent_conversation_id = Some(parent.id.clone());
+        let child = AgentConversationResponse::from(child_conversation);
+        let response = ForkAgentConversationResponse {
+            parent_conversation: parent,
+            conversation: child,
+            workspace: None,
+            provider_session_forked: false,
+            copied_message_count: 0,
+            copied_timeline_item_count: 0,
+        };
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        emit_agent_conversation_fork_events(app.handle(), &response);
+    }
+
+    #[tokio::test]
+    async fn fork_terminal_agent_conversation_for_send_skips_without_terminal_workspace() {
+        let state = AppState::new_test();
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        assert!(
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), None)
+                .await
+                .expect("missing conversation id should be ignored")
+                .is_none()
+        );
+
+        let project_id = ProjectId::from_string("project-terminal-fork-skip".to_string());
+        let mut project = Project::new(
+            "Terminal Fork Skip".to_string(),
+            "/tmp/terminal-fork-skip".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should be created");
+        assert!(
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&conversation.id))
+                .await
+                .expect("missing workspace should be ignored")
+                .is_none()
+        );
+
+        let workspace = AgentConversationWorkspace::new(
+            conversation.id,
+            project_id,
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/non-terminal".to_string(),
+            "/tmp/non-terminal".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        assert!(
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&conversation.id))
+                .await
+                .expect("non-terminal workspace should be ignored")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_terminal_agent_conversation_for_send_forks_terminal_workspace() {
+        let state = AppState::new_test();
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let project_id = ProjectId::from_string("project-terminal-fork".to_string());
+        let mut project = Project::new(
+            "Terminal Fork".to_string(),
+            "/tmp/terminal-fork".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let parent = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("parent conversation should be created");
+        let parent_id = parent.id.as_str();
+        let mut workspace = AgentConversationWorkspace::new(
+            parent.id,
+            project_id,
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/terminal".to_string(),
+            "/tmp/terminal".to_string(),
+        );
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        let child_id = fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&parent.id),
+        )
+        .await
+        .expect("terminal workspace should fork")
+        .expect("forked conversation id should be returned");
+        let child = state
+            .chat_conversation_repo
+            .get_by_id(&child_id)
+            .await
+            .expect("child lookup should succeed")
+            .expect("child conversation should exist");
+
+        assert_eq!(
+            child.parent_conversation_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(child.agent_mode, Some(AgentConversationWorkspaceMode::Chat));
+        assert!(
+            state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&child_id)
+                .await
+                .expect("workspace lookup should succeed")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_agent_conversation_command_returns_hydrated_child_response() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-fork-command".to_string());
+        let mut project = Project::new(
+            "Fork Command Project".to_string(),
+            "/tmp/fork-command-project".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("Source conversation");
+        parent.set_agent_mode(Some(AgentConversationWorkspaceMode::Chat));
+        let parent = state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("parent conversation should be created");
+        let mut message = ChatMessage::user_in_project(project_id, "copied runtime");
+        message.conversation_id = Some(parent.id);
+        message.logical_model = Some("gpt-5.4".to_string());
+        message.effective_model_id = Some("gpt-5.4".to_string());
+        message.logical_effort = Some(LogicalEffort::Medium);
+        message.effective_effort = Some("medium".to_string());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should be created");
+        let parent_id = parent.id.as_str();
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = fork_agent_conversation(
+            ForkAgentConversationInput {
+                conversation_id: parent.id.as_str(),
+            },
+            app.state(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("fork command should succeed");
+
+        assert_eq!(response.parent_conversation.id, parent_id);
+        assert_eq!(
+            response.conversation.parent_conversation_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(
+            response.conversation.title.as_deref(),
+            Some("[Fork] Source conversation")
+        );
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+        assert_eq!(response.copied_message_count, 1);
+        assert!(response.workspace.is_none());
+        assert_eq!(response.conversation.logical_model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(response.conversation.logical_effort.as_deref(), Some("medium"));
+    }
+
+    #[tokio::test]
+    async fn list_page_create_archive_restore_and_summary_hydrate_runtime_attribution() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-command-runtime".to_string());
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_title("Runtime conversation");
+        let conversation = state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("conversation should be created");
+        let conversation_id = conversation.id.as_str();
+        let mut run = AgentRun::new(conversation.id);
+        run.logical_model = Some("gpt-5.5".to_string());
+        run.effective_model_id = Some("gpt-5.5".to_string());
+        run.logical_effort = Some(LogicalEffort::High);
+        run.effective_effort = Some("high".to_string());
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("run should be created");
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let page = list_agent_conversations_page(
+            ChatContextType::Project.to_string(),
+            project_id.as_str().to_string(),
+            Some(true),
+            Some(false),
+            Some(0),
+            Some(10),
+            None,
+            app.state(),
+        )
+        .await
+        .expect("conversation page should load");
+        let page_conversation = page
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == conversation_id)
+            .expect("seeded conversation should be listed");
+        assert_eq!(page_conversation.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(page_conversation.logical_effort.as_deref(), Some("high"));
+
+        let summary = get_agent_conversation_summary_for_app_state(
+            app.state::<AppState>().inner(),
+            conversation_id.clone(),
+        )
+        .await
+        .expect("summary should load")
+        .expect("summary should exist");
+        assert_eq!(summary.effective_model_id.as_deref(), Some("gpt-5.5"));
+        assert_eq!(summary.effective_effort.as_deref(), Some("high"));
+
+        let created = create_agent_conversation(
+            CreateAgentConversationInput {
+                context_type: ChatContextType::Project.to_string(),
+                context_id: project_id.as_str().to_string(),
+                title: Some("Created from command".to_string()),
+            },
+            app.state(),
+        )
+        .await
+        .expect("conversation should be created");
+        assert_eq!(created.title.as_deref(), Some("Created from command"));
+
+        let archived = archive_agent_conversation(conversation_id.clone(), app.state())
+            .await
+            .expect("conversation should be archived");
+        assert!(archived.archived_at.is_some());
+        assert_eq!(archived.logical_model.as_deref(), Some("gpt-5.5"));
+
+        let restored = restore_agent_conversation(conversation_id, app.state())
+            .await
+            .expect("conversation should be restored");
+        assert!(restored.archived_at.is_none());
+        assert_eq!(restored.logical_effort.as_deref(), Some("high"));
     }
 
     fn mode_lock_test_workspace(
