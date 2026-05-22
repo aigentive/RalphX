@@ -42,10 +42,7 @@ async fn test_ensure_base_branch_auto_creation_for_enable_feature_branch() {
         .await
         .expect("ensure_base_branch_exists should succeed");
 
-    assert!(
-        was_created,
-        "Expected branch to be created (was_created = true)"
-    );
+    assert!(was_created, "Expected branch to be created (was_created = true)");
 
     // Verify the branch actually exists in git
     let output = Command::new("git")
@@ -70,8 +67,5 @@ async fn test_ensure_base_branch_existing_branch_no_op() {
         .await
         .expect("ensure_base_branch_exists should succeed for existing branch");
 
-    assert!(
-        !was_created,
-        "Expected was_created = false for existing branch"
-    );
+    assert!(!was_created, "Expected was_created = false for existing branch");
 }

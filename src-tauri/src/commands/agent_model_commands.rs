@@ -186,7 +186,11 @@ mod tests {
             label: "  ".to_string(),
             menu_label: Some("  ".to_string()),
             description: Some(" future model ".to_string()),
-            supported_efforts: vec!["high".to_string(), "low".to_string(), "high".to_string()],
+            supported_efforts: vec![
+                "high".to_string(),
+                "low".to_string(),
+                "high".to_string(),
+            ],
             default_effort: "low".to_string(),
             enabled: true,
         })
@@ -283,11 +287,7 @@ mod tests {
             "Claude Opus 5",
             "Claude Opus 5",
             Some("Deep reasoning model".to_string()),
-            vec![
-                LogicalEffort::High,
-                LogicalEffort::XHigh,
-                LogicalEffort::Max,
-            ],
+            vec![LogicalEffort::High, LogicalEffort::XHigh, LogicalEffort::Max],
             LogicalEffort::Max,
             false,
         );

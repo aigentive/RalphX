@@ -12,14 +12,14 @@ use tauri::AppHandle;
 
 use crate::application::chat_service::AgentRunCompletedPayload;
 use crate::application::git_service::GitService;
-use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
-};
 use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
 use crate::domain::entities::{
     IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{ProjectRepository, TaskRepository};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessRegistry,
+};
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::error::AppResult;
 
@@ -132,10 +132,7 @@ impl TaskCleanupService {
     }
 
     /// Set the interactive process registry for IPR cleanup on stop (builder pattern).
-    pub fn with_interactive_process_registry(
-        mut self,
-        ipr: Arc<InteractiveProcessRegistry>,
-    ) -> Self {
+    pub fn with_interactive_process_registry(mut self, ipr: Arc<InteractiveProcessRegistry>) -> Self {
         self.interactive_process_registry = Some(ipr);
         self
     }

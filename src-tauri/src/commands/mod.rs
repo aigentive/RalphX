@@ -2,19 +2,19 @@
 // Commands should be minimal - delegate to domain/infrastructure
 
 pub mod activity_commands;
-pub mod agent_composer_commands;
 pub mod agent_model_commands;
-pub mod agent_profile_commands;
+pub mod agent_composer_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
-pub(crate) mod agent_workspace_auto_publish;
-pub mod api_key_commands;
-pub mod artifact_commands;
-pub mod atlassian_commands;
 pub mod branch_helpers;
+pub mod api_key_commands;
+pub mod agent_profile_commands;
+pub(crate) mod agent_workspace_auto_publish;
+pub mod atlassian_commands;
+pub mod artifact_commands;
 pub mod chat_attachment_commands;
-pub mod chat_responses;
 pub mod conversation_stats_commands;
+pub mod chat_responses;
 pub mod diagnostic_commands;
 pub mod diff_commands;
 pub mod execution_commands;
@@ -24,20 +24,20 @@ pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
 pub mod merge_pipeline_commands;
-pub mod methodology_commands;
 pub mod metrics_commands;
 pub(crate) mod metrics_queries;
 pub(crate) mod metrics_trends;
 pub mod metrics_types;
+pub mod methodology_commands;
 pub mod permission_commands;
 pub mod plan_branch_commands;
 pub mod plan_commands;
 pub mod project_commands;
 pub mod qa_commands;
 pub mod question_commands;
-pub mod registry;
-pub mod release_notes_commands;
 pub mod research_commands;
+pub mod release_notes_commands;
+pub mod registry;
 pub mod review_commands;
 pub mod review_commands_types;
 pub mod review_helpers;
@@ -47,10 +47,10 @@ pub mod task_step_commands;
 pub mod task_step_commands_types;
 pub mod team_commands;
 pub mod test_data_commands;
-pub mod ui_commands;
 pub mod unified_chat_commands;
-pub mod workflow_commands;
+pub mod ui_commands;
 pub mod workspace_open_commands;
+pub mod workflow_commands;
 
 // Re-export commands for registration
 pub use activity_commands::{
@@ -58,14 +58,14 @@ pub use activity_commands::{
     list_task_activity_events, ActivityEventFilterInput, ActivityEventPageResponse,
     ActivityEventResponse,
 };
+pub use agent_model_commands::{
+    delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
+    UpsertCustomAgentModelInput,
+};
 pub use agent_composer_commands::{
     list_agent_composer_skills, search_agent_composer_entries, AgentComposerEntryResponse,
     AgentComposerSkillResponse, ListAgentComposerSkillsInput, ListAgentComposerSkillsResponse,
     SearchAgentComposerEntriesInput, SearchAgentComposerEntriesResponse,
-};
-pub use agent_model_commands::{
-    delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
-    UpsertCustomAgentModelInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
@@ -86,29 +86,29 @@ pub use artifact_commands::{
 };
 pub use atlassian_commands::{
     build_atlassian_oauth_authorization_url, complete_atlassian_oauth_local_callback,
-    exchange_atlassian_oauth_code, get_atlassian_integration_settings,
-    save_atlassian_integration_settings, search_atlassian_resources,
-    start_atlassian_oauth_local_callback, validate_atlassian_integration,
-    AtlassianIntegrationSettingsResponse, CompleteAtlassianOAuthLocalCallbackInput,
-    ExchangeAtlassianOAuthCodeInput, SaveAtlassianIntegrationSettingsInput,
-    SearchAtlassianResourcesInput, SearchAtlassianResourcesResponse,
+    exchange_atlassian_oauth_code,
+    get_atlassian_integration_settings, save_atlassian_integration_settings,
+    search_atlassian_resources, start_atlassian_oauth_local_callback,
+    validate_atlassian_integration, AtlassianIntegrationSettingsResponse,
+    CompleteAtlassianOAuthLocalCallbackInput, ExchangeAtlassianOAuthCodeInput,
+    SaveAtlassianIntegrationSettingsInput, SearchAtlassianResourcesInput,
+    SearchAtlassianResourcesResponse,
 };
 pub use chat_attachment_commands::{
     delete_chat_attachment, link_attachments_to_message, list_conversation_attachments,
     list_message_attachments, upload_chat_attachment, ChatAttachmentResponse, LinkAttachmentsInput,
     UploadChatAttachmentInput,
 };
-pub use chat_responses::ChatMessageResponse;
 pub use conversation_stats_commands::{
     build_conversation_stats_response, build_scope_stats_response, get_agent_conversation_stats,
-    get_project_chat_usage_stats, get_task_chat_usage_stats,
-    ConversationAttributionCoverageResponse, ConversationStatsResponse,
-    ConversationUsageCoverageResponse, ScopeStatsResponse, UsageBucketResponse,
-    UsageTotalsResponse,
+    get_project_chat_usage_stats, get_task_chat_usage_stats, ConversationAttributionCoverageResponse,
+    ConversationStatsResponse, ConversationUsageCoverageResponse, ScopeStatsResponse,
+    UsageBucketResponse, UsageTotalsResponse,
 };
+pub use chat_responses::ChatMessageResponse;
 pub use diagnostic_commands::{
-    get_agent_health, get_codex_cli_diagnostics, AgentHealthReport, CodexCliDiagnosticsResponse,
-    IprEntryResponse, RunningAgentResponse,
+    get_agent_health, get_codex_cli_diagnostics, AgentHealthReport,
+    CodexCliDiagnosticsResponse, IprEntryResponse, RunningAgentResponse,
 };
 pub use diff_commands::{
     detect_merge_conflicts, get_conflict_file_diff, get_file_diff, get_task_file_changes,
@@ -122,39 +122,42 @@ pub use execution_commands::{
     resume_execution, set_active_project, stop_execution, update_global_execution_settings,
     ActiveProjectState, ExecutionState, RestartResult, ResumeCategory, RunningProcessesResponse,
 };
-pub use harness_provider_commands::{
-    get_agent_provider_settings, update_agent_provider_settings, AgentProviderSettingsResponse,
-    AgentProvidersSettingsResponse,
-};
 pub use health::health_check;
+pub use harness_provider_commands::{
+    get_agent_provider_settings, update_agent_provider_settings,
+    AgentProviderSettingsResponse, AgentProvidersSettingsResponse,
+};
 pub use ideation_commands::{
-    analyze_dependencies, apply_proposals_to_kanban, archive_ideation_session,
-    assess_all_priorities, assess_proposal_priority, count_session_messages,
-    create_ideation_session, create_task_proposal, delete_chat_message, delete_ideation_session,
-    delete_session_messages, delete_task_proposal, get_agent_harness_availability,
-    get_agent_lane_settings, get_blocked_tasks, get_ideation_harness_availability,
-    get_ideation_session, get_ideation_session_with_data, get_project_messages,
+    analyze_dependencies, apply_proposals_to_kanban,
+    archive_ideation_session, assess_all_priorities, assess_proposal_priority,
+    count_session_messages, create_ideation_session, create_task_proposal, delete_chat_message,
+    delete_ideation_session, delete_session_messages, delete_task_proposal, get_blocked_tasks,
+    get_agent_harness_availability, get_agent_lane_settings,
+    get_ideation_harness_availability, get_ideation_session, get_ideation_session_with_data,
+    get_project_messages,
     get_proposal_dependencies, get_proposal_dependents, get_recent_session_messages,
     get_session_messages, get_task_blockers, get_task_messages, get_task_proposal,
     is_orchestrator_available, list_ideation_sessions, list_session_proposals,
     remove_proposal_dependency, reorder_proposals, send_chat_message, send_orchestrator_message,
-    set_proposal_selection, toggle_proposal_selection, update_agent_lane_settings,
-    update_task_proposal, AgentLaneHarnessAvailabilityResponse, ApplyProposalsResultResponse,
-    DependencyGraphResponse, IdeationLaneHarnessAvailabilityResponse, IdeationSessionResponse,
-    LaneHarnessAvailabilityResponse, OrchestratorMessageResponse, PriorityAssessmentResponse,
-    SessionWithDataResponse, TaskProposalResponse, ToolCallResultResponse,
+    set_proposal_selection, toggle_proposal_selection, update_task_proposal,
+    update_agent_lane_settings, AgentLaneHarnessAvailabilityResponse,
+    ApplyProposalsResultResponse, DependencyGraphResponse,
+    IdeationLaneHarnessAvailabilityResponse, LaneHarnessAvailabilityResponse,
+    IdeationSessionResponse, OrchestratorMessageResponse,
+    PriorityAssessmentResponse, SessionWithDataResponse, TaskProposalResponse,
+    ToolCallResultResponse,
 };
 pub use merge_pipeline_commands::{
     get_merge_phase_list, get_merge_pipeline, get_merge_progress, MergePipelineResponse,
+};
+pub use metrics_commands::{
+    compute_project_stats, get_column_metrics, get_metrics_config, get_project_stats,
+    get_project_trends, get_task_metrics, save_metrics_config, MetricsConfig,
 };
 pub use methodology_commands::{
     activate_methodology, deactivate_methodology, get_active_methodology, get_methodologies,
     MethodologyActivationResponse, MethodologyPhaseResponse, MethodologyResponse,
     MethodologyTemplateResponse, WorkflowSchemaResponse,
-};
-pub use metrics_commands::{
-    compute_project_stats, get_column_metrics, get_metrics_config, get_project_stats,
-    get_project_trends, get_task_metrics, save_metrics_config, MetricsConfig,
 };
 pub use permission_commands::{
     get_pending_permissions, resolve_permission_request, ResolvePermissionArgs,
@@ -212,43 +215,48 @@ pub use agent_sidebar_commands::{
     get_bulk_workspace_publication_states, BulkPublicationStateResponse,
 };
 pub use unified_chat_commands::{
-    archive_agent_conversation, create_agent_conversation, delete_queued_agent_message,
-    fork_agent_conversation, get_agent_conversation, get_agent_conversation_messages_page,
+    archive_agent_conversation, create_agent_conversation,
+    delete_queued_agent_message, fork_agent_conversation, get_agent_conversation,
+    get_agent_conversation_messages_page,
     get_agent_conversation_summary, get_agent_conversation_timeline_page,
     get_agent_conversation_workspace, get_agent_conversation_workspace_freshness,
     get_agent_message_tool_call_detail, get_agent_run_status_unified, get_agent_running_states,
     get_agent_timeline_item_tool_call_detail, get_queued_agent_messages, is_agent_running,
-    is_chat_service_available, list_agent_conversation_workspace_publication_events,
-    list_agent_conversation_workspaces_by_project, list_agent_conversations,
-    list_agent_conversations_page, precompute_agent_conversation_workspace_pr_description,
-    publish_agent_conversation_workspace, queue_agent_message,
-    reconcile_agent_conversation_workspace_publication, restore_agent_conversation,
-    send_agent_message, set_agent_conversation_workspace_pr_supervision, start_agent_conversation,
-    stop_agent, switch_agent_conversation_mode, update_agent_conversation_title,
-    update_agent_conversation_workspace_from_base, AgentConversationListPageResponse,
-    AgentConversationMessagesPageResponse, AgentConversationResponse,
-    AgentConversationTimelinePageResponse, AgentConversationWithMessagesResponse,
-    AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
+    is_chat_service_available, list_agent_conversations,
+    list_agent_conversation_workspace_publication_events,
+    list_agent_conversation_workspaces_by_project, list_agent_conversations_page,
+    precompute_agent_conversation_workspace_pr_description,
+    reconcile_agent_conversation_workspace_publication,
+    publish_agent_conversation_workspace, queue_agent_message, restore_agent_conversation,
+    send_agent_message, set_agent_conversation_workspace_pr_supervision,
+    start_agent_conversation, stop_agent, switch_agent_conversation_mode,
+    update_agent_conversation_title, update_agent_conversation_workspace_from_base,
+    AgentConversationWorkspaceFreshnessResponse,
+    AgentConversationWorkspacePrSupervisionInput,
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
-    AgentMessageResponse, AgentRunStatusResponse, AgentTimelineItemResponse,
-    AgentToolCallDetailResponse, CreateAgentConversationInput, ForkAgentConversationInput,
-    ForkAgentConversationResponse, PrecomputeAgentConversationWorkspacePrDescriptionResponse,
-    PublishAgentConversationWorkspaceResponse, QueueAgentMessageInput,
+    PrecomputeAgentConversationWorkspacePrDescriptionResponse,
+    PublishAgentConversationWorkspaceResponse, UpdateAgentConversationWorkspaceFromBaseResponse,
+    AgentConversationListPageResponse, AgentConversationMessagesPageResponse,
+    AgentConversationResponse, AgentConversationTimelinePageResponse,
+    AgentConversationWithMessagesResponse, AgentMessageResponse, AgentRunStatusResponse,
+    AgentTimelineItemResponse, AgentToolCallDetailResponse, CreateAgentConversationInput,
+    ForkAgentConversationInput, ForkAgentConversationResponse, QueueAgentMessageInput,
     QueuedMessageResponse as UnifiedQueuedMessageResponse, SendAgentMessageInput,
     SendAgentMessageResponse, StartAgentConversationInput, StartAgentConversationResponse,
     SwitchAgentConversationModeInput, SwitchAgentConversationModeResponse,
-    UpdateAgentConversationTitleInput, UpdateAgentConversationWorkspaceFromBaseResponse,
+    UpdateAgentConversationTitleInput,
 };
 // Plan branch commands (Phase 85 - Feature branch for plan groups)
 pub use plan_branch_commands::{
-    enable_feature_branch, get_plan_branch, get_plan_branch_by_task_id, get_project_plan_branches,
-    EnableFeatureBranchInput, PlanBranchResponse,
+    enable_feature_branch, get_plan_branch, get_plan_branch_by_task_id,
+    get_project_plan_branches, EnableFeatureBranchInput,
+    PlanBranchResponse,
 };
 // UI feature flag commands
 pub use ui_commands::{get_ui_feature_flags, UiFeatureFlagsResponse};
 pub use workspace_open_commands::{
-    list_workspace_open_targets, open_agent_conversation_workspace, WorkspaceOpenTargetKind,
-    WorkspaceOpenTargetResponse,
+    list_workspace_open_targets, open_agent_conversation_workspace,
+    WorkspaceOpenTargetKind, WorkspaceOpenTargetResponse,
 };
 // Plan commands (Active plan management)
 pub use plan_commands::{

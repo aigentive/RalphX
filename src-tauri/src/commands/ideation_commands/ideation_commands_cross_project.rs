@@ -49,7 +49,8 @@ pub(crate) async fn create_cross_project_session_impl<R: tauri::Runtime>(
     );
 
     // 1. Validate the target path (canonicalize, blocklist, home dir check)
-    let canonical = validate_project_path(&input.target_project_path).map_err(|e| e.to_string())?;
+    let canonical = validate_project_path(&input.target_project_path)
+        .map_err(|e| e.to_string())?;
     let canonical_str = canonical.to_string_lossy().to_string();
 
     // 2. Resolve target project — query by working_directory, auto-create if not found
@@ -336,10 +337,7 @@ pub async fn migrate_proposals_impl(
 
     for proposal in &selected_proposals {
         let new_id = TaskProposalId::new();
-        id_map.insert(
-            proposal.id.as_str().to_string(),
-            new_id.as_str().to_string(),
-        );
+        id_map.insert(proposal.id.as_str().to_string(), new_id.as_str().to_string());
 
         let mut cloned = proposal.clone();
         cloned.id = new_id;
@@ -382,12 +380,8 @@ pub async fn migrate_proposals_impl(
         match (from_in_set, to_in_set) {
             (true, true) => {
                 // Both ends migrated — remap to new IDs
-                let new_from = id_map
-                    .get(&from_str)
-                    .expect("id_map must contain migrated proposal");
-                let new_to = id_map
-                    .get(&to_str)
-                    .expect("id_map must contain migrated proposal");
+                let new_from = id_map.get(&from_str).expect("id_map must contain migrated proposal");
+                let new_to = id_map.get(&to_str).expect("id_map must contain migrated proposal");
 
                 let new_from_id = TaskProposalId::from_string(new_from.clone());
                 let new_to_id = TaskProposalId::from_string(new_to.clone());
@@ -436,10 +430,7 @@ pub async fn migrate_proposals_impl(
         .map(|p| {
             let source_id = p.id.as_str().to_string();
             let target_id = id_map[&source_id].clone();
-            MigratedProposalEntry {
-                source_id,
-                target_id,
-            }
+            MigratedProposalEntry { source_id, target_id }
         })
         .collect();
 

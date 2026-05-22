@@ -545,10 +545,7 @@ async fn get_agent_workspace_context(
                 return Ok(context);
             }
             if let Some(context) = resolve_agent_workspace_github_patch_context(
-                app_state,
-                &project,
-                &workspace,
-                &base_commit,
+                app_state, &project, &workspace, &base_commit,
             )
             .await?
             {
@@ -1831,7 +1828,8 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
     if ctx.patch_diff.is_some() {
         return Err(AppError::Validation(
-            "File content range is unavailable for patch-backed agent workspace diffs".to_string(),
+            "File content range is unavailable for patch-backed agent workspace diffs"
+                .to_string(),
         ));
     }
     let workspace_path = ctx.working_path.to_string_lossy().to_string();
@@ -2491,12 +2489,11 @@ mod tests {
         let remote = temp_dir.path().join("origin.git");
         std::fs::create_dir_all(&remote).expect("remote dir should be created");
         run_git(&remote, &["init", "--bare"]);
-        let remote_arg = remote.to_str().expect("test remote path should be utf-8");
+        let remote_arg = remote
+            .to_str()
+            .expect("test remote path should be utf-8");
         run_git(&repo, &["remote", "add", "origin", remote_arg]);
-        run_git(
-            &worktree_path,
-            &["push", "origin", "HEAD:refs/pull/123/head"],
-        );
+        run_git(&worktree_path, &["push", "origin", "HEAD:refs/pull/123/head"]);
 
         let mut workspace = state
             .agent_conversation_workspace_repo
@@ -2570,7 +2567,8 @@ new file mode 100644
             .expect("workspace should exist");
         let branch_name = workspace.branch_name.clone();
         workspace.publication_pr_number = Some(123);
-        workspace.publication_pr_url = Some("https://github.com/mock/project/pull/123".to_string());
+        workspace.publication_pr_url =
+            Some("https://github.com/mock/project/pull/123".to_string());
         workspace.publication_pr_status = Some("merged".to_string());
         state
             .agent_conversation_workspace_repo

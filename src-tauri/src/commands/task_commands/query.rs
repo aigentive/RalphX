@@ -338,16 +338,7 @@ pub async fn get_tasks_awaiting_review(
     // Use a high limit to get all tasks (no pagination needed for this view)
     let tasks = state
         .task_repo
-        .list_paginated(
-            &project_id,
-            Some(review_statuses),
-            0,
-            1000,
-            false,
-            None,
-            None,
-            None,
-        )
+        .list_paginated(&project_id, Some(review_statuses), 0, 1000, false, None, None, None)
         .await
         .map_err(|e| e.to_string())?;
 

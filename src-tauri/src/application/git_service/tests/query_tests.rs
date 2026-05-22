@@ -474,9 +474,10 @@ async fn test_find_commit_by_message_grep_loose_task_id_matches_unrelated_commit
 
     // ----- FIX: precise grep (source_branch) returns the CORRECT commit -----
     // The rollback commit does not contain the full branch path, so no false match.
-    let precise_result = GitService::find_commit_by_message_grep(repo, source_branch, &branch)
-        .await
-        .unwrap();
+    let precise_result =
+        GitService::find_commit_by_message_grep(repo, source_branch, &branch)
+            .await
+            .unwrap();
     assert_eq!(
         precise_result,
         Some(real_task_sha),

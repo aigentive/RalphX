@@ -136,8 +136,8 @@ pub async fn maybe_inject_verification_result_message(
     };
 
     // Build and persist the user-facing system message
-    let mut message =
-        ChatMessage::system_in_session(parent_id.clone(), content).with_metadata(metadata);
+    let mut message = ChatMessage::system_in_session(parent_id.clone(), content)
+        .with_metadata(metadata);
     message.conversation_id = conversation_id;
 
     if let Err(e) = chat_message_repo.create(message).await {
@@ -431,7 +431,9 @@ pub(crate) fn derive_recommended_action(convergence_reason: Option<&str>) -> &'s
         | Some("critic_parse_failure")
         | Some("user_stopped")
         | Some("user_skipped")
-        | Some("user_reverted") => "rerun_verification",
+        | Some("user_reverted") => {
+            "rerun_verification"
+        }
         _ => "rerun_verification",
     }
 }

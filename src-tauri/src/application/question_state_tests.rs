@@ -372,11 +372,11 @@ mod with_repo {
     #[tokio::test]
     async fn test_expire_persists_to_repo() {
         let _db = SqliteTestDb::new("question-state");
-        let repo = Arc::new(
-            crate::infrastructure::sqlite::SqliteQuestionRepository::new(_db.new_connection()),
-        );
+        let repo = Arc::new(crate::infrastructure::sqlite::SqliteQuestionRepository::new(
+            _db.new_connection(),
+        ));
         let state = QuestionState::with_repo(
-            repo.clone() as Arc<dyn crate::domain::repositories::QuestionRepository>
+            repo.clone() as Arc<dyn crate::domain::repositories::QuestionRepository>,
         );
 
         state
@@ -543,7 +543,10 @@ mod with_repo {
             async fn expire_by_request_id(&self, request_id: &str) -> crate::error::AppResult<()> {
                 self.0.expire_by_request_id(request_id).await
             }
-            async fn remove(&self, request_id: &str) -> crate::error::AppResult<bool> {
+            async fn remove(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<bool> {
                 self.0.remove(request_id).await
             }
             async fn get_resolved_answer(

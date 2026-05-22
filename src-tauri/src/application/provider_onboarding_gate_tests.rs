@@ -27,9 +27,13 @@ async fn provider_gate_rejects_disabled_requested_provider() {
     repo.upsert(&codex).await.unwrap();
 
     let repo: Arc<dyn AgentProviderSettingsRepository> = repo;
-    let error = ensure_provider_spawn_enabled(&repo, AgentHarnessKind::Claude, "PR describer")
-        .await
-        .expect_err("disabled requested provider should block spawns");
+    let error = ensure_provider_spawn_enabled(
+        &repo,
+        AgentHarnessKind::Claude,
+        "PR describer",
+    )
+    .await
+    .expect_err("disabled requested provider should block spawns");
 
     assert!(error.contains("claude is not enabled"));
 }

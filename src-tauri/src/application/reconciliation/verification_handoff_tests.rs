@@ -3,20 +3,16 @@
 use std::sync::Arc;
 
 use crate::application::reconciliation::verification_handoff::{
-    derive_recommended_action, format_verification_result_xml,
-    inject_verification_handoff_if_missing, is_actionable_for_parent_agent,
-    maybe_inject_verification_result_message, summarize_gaps, top_3_blockers,
-    ReconcileChildCompleteResult, ESCALATED_TO_PARENT, VERIFICATION_RESULT_METADATA_KEY,
+    derive_recommended_action, format_verification_result_xml, inject_verification_handoff_if_missing,
+    is_actionable_for_parent_agent, maybe_inject_verification_result_message, summarize_gaps,
+    top_3_blockers, ReconcileChildCompleteResult, ESCALATED_TO_PARENT,
+    VERIFICATION_RESULT_METADATA_KEY,
 };
-use crate::domain::entities::{
-    ChatContextType, ChatConversationId, ChatMessage, IdeationSessionId, VerificationGap,
-    VerificationRunSnapshot, VerificationStatus,
-};
+use crate::domain::entities::{ChatContextType, ChatConversationId, ChatMessage, IdeationSessionId,
+    VerificationGap, VerificationRunSnapshot, VerificationStatus};
 use crate::domain::repositories::{ChatConversationRepository, ChatMessageRepository};
 use crate::domain::services::MessageQueue;
-use crate::infrastructure::memory::{
-    MemoryChatConversationRepository, MemoryChatMessageRepository,
-};
+use crate::infrastructure::memory::{MemoryChatConversationRepository, MemoryChatMessageRepository};
 
 fn make_gap(severity: &str, description: &str) -> VerificationGap {
     VerificationGap {
@@ -64,8 +60,7 @@ async fn needs_revision_max_rounds_synthesizes_message() {
         parsed_snapshot: Some(snapshot),
     };
 
-    let conv_repo: Arc<dyn ChatConversationRepository> =
-        Arc::new(MemoryChatConversationRepository::new());
+    let conv_repo: Arc<dyn ChatConversationRepository> = Arc::new(MemoryChatConversationRepository::new());
     let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
@@ -82,22 +77,14 @@ async fn needs_revision_max_rounds_synthesizes_message() {
     let content = &messages[0].content;
     assert!(content.contains("Verification found plan blockers."));
     assert!(content.contains("Recommended next action: revise_plan"));
-    assert!(
-        content.contains("critical"),
-        "should include blocker severity"
-    );
-    let metadata = messages[0]
-        .metadata
-        .as_deref()
-        .expect("metadata should be present");
+    assert!(content.contains("critical"), "should include blocker severity");
+    let metadata = messages[0].metadata.as_deref().expect("metadata should be present");
     assert!(metadata.contains(VERIFICATION_RESULT_METADATA_KEY));
     let queued = queue
         .pop(ChatContextType::Ideation, parent_id.as_str())
         .expect("actionable result should queue parent handoff");
     assert!(queued.content.contains("<verification-result>"));
-    assert!(queued
-        .content
-        .contains("<recommended_next_action>revise_plan</recommended_next_action>"));
+    assert!(queued.content.contains("<recommended_next_action>revise_plan</recommended_next_action>"));
 }
 
 // ---------------------------------------------------------------------------
@@ -116,8 +103,7 @@ async fn needs_revision_escalated_to_parent_skips_synthesis() {
         parsed_snapshot: Some(snapshot),
     };
 
-    let conv_repo: Arc<dyn ChatConversationRepository> =
-        Arc::new(MemoryChatConversationRepository::new());
+    let conv_repo: Arc<dyn ChatConversationRepository> = Arc::new(MemoryChatConversationRepository::new());
     let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
@@ -129,10 +115,7 @@ async fn needs_revision_escalated_to_parent_skips_synthesis() {
         .get_by_session(&parent_id)
         .await
         .expect("repo should not error");
-    assert!(
-        messages.is_empty(),
-        "dedup guard should prevent synthesis when escalated_to_parent"
-    );
+    assert!(messages.is_empty(), "dedup guard should prevent synthesis when escalated_to_parent");
 }
 
 // ---------------------------------------------------------------------------
@@ -149,8 +132,7 @@ async fn needs_revision_agent_crashed_empty_gaps_fallback() {
         parsed_snapshot: Some(snapshot),
     };
 
-    let conv_repo: Arc<dyn ChatConversationRepository> =
-        Arc::new(MemoryChatConversationRepository::new());
+    let conv_repo: Arc<dyn ChatConversationRepository> = Arc::new(MemoryChatConversationRepository::new());
     let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
@@ -171,9 +153,7 @@ async fn needs_revision_agent_crashed_empty_gaps_fallback() {
     );
     assert!(content.contains("Recommended next action: rerun_verification"));
     assert!(
-        queue
-            .pop(ChatContextType::Ideation, parent_id.as_str())
-            .is_none(),
+        queue.pop(ChatContextType::Ideation, parent_id.as_str()).is_none(),
         "infra/runtime results should not nudge the parent ideation agent"
     );
 }
@@ -191,8 +171,7 @@ async fn verified_completion_no_synthesis() {
         parsed_snapshot: Some(snapshot),
     };
 
-    let conv_repo: Arc<dyn ChatConversationRepository> =
-        Arc::new(MemoryChatConversationRepository::new());
+    let conv_repo: Arc<dyn ChatConversationRepository> = Arc::new(MemoryChatConversationRepository::new());
     let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
@@ -203,10 +182,7 @@ async fn verified_completion_no_synthesis() {
         .get_by_session(&parent_id)
         .await
         .expect("repo should not error");
-    assert!(
-        messages.is_empty(),
-        "Verified status should not synthesize any message"
-    );
+    assert!(messages.is_empty(), "Verified status should not synthesize any message");
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +197,7 @@ async fn unverified_completion_no_synthesis() {
         parsed_snapshot: None,
     };
 
-    let conv_repo: Arc<dyn ChatConversationRepository> =
-        Arc::new(MemoryChatConversationRepository::new());
+    let conv_repo: Arc<dyn ChatConversationRepository> = Arc::new(MemoryChatConversationRepository::new());
     let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
@@ -233,10 +208,7 @@ async fn unverified_completion_no_synthesis() {
         .get_by_session(&parent_id)
         .await
         .expect("repo should not error");
-    assert!(
-        messages.is_empty(),
-        "Unverified status should not synthesize any message"
-    );
+    assert!(messages.is_empty(), "Unverified status should not synthesize any message");
 }
 
 // ---------------------------------------------------------------------------
@@ -291,44 +263,20 @@ fn top_3_blockers_caps_description_at_200_chars() {
         blockers[0].1.chars().count() <= 201,
         "description should be capped at 200 chars + ellipsis"
     );
-    assert!(
-        blockers[0].1.ends_with('…'),
-        "truncated description should end with ellipsis"
-    );
+    assert!(blockers[0].1.ends_with('…'), "truncated description should end with ellipsis");
 }
 
 #[test]
 fn derive_recommended_action_maps_correctly() {
     assert_eq!(derive_recommended_action(Some("max_rounds")), "revise_plan");
-    assert_eq!(
-        derive_recommended_action(Some("jaccard_converged")),
-        "revise_plan"
-    );
-    assert_eq!(
-        derive_recommended_action(Some("gap_score_plateau")),
-        "explore_code_paths"
-    );
-    assert_eq!(
-        derive_recommended_action(Some("agent_crashed_mid_round")),
-        "rerun_verification"
-    );
-    assert_eq!(
-        derive_recommended_action(Some("agent_completed_without_update")),
-        "rerun_verification"
-    );
-    assert_eq!(
-        derive_recommended_action(Some("agent_error")),
-        "rerun_verification"
-    );
-    assert_eq!(
-        derive_recommended_action(Some("critic_parse_failure")),
-        "rerun_verification"
-    );
+    assert_eq!(derive_recommended_action(Some("jaccard_converged")), "revise_plan");
+    assert_eq!(derive_recommended_action(Some("gap_score_plateau")), "explore_code_paths");
+    assert_eq!(derive_recommended_action(Some("agent_crashed_mid_round")), "rerun_verification");
+    assert_eq!(derive_recommended_action(Some("agent_completed_without_update")), "rerun_verification");
+    assert_eq!(derive_recommended_action(Some("agent_error")), "rerun_verification");
+    assert_eq!(derive_recommended_action(Some("critic_parse_failure")), "rerun_verification");
     assert_eq!(derive_recommended_action(None), "rerun_verification");
-    assert_eq!(
-        derive_recommended_action(Some("unknown_future_reason")),
-        "rerun_verification"
-    );
+    assert_eq!(derive_recommended_action(Some("unknown_future_reason")), "rerun_verification");
 }
 
 #[test]
@@ -337,12 +285,8 @@ fn actionable_classification_maps_correctly() {
     assert!(is_actionable_for_parent_agent(Some("jaccard_converged")));
     assert!(is_actionable_for_parent_agent(Some("gap_score_plateau")));
     assert!(!is_actionable_for_parent_agent(Some("agent_error")));
-    assert!(!is_actionable_for_parent_agent(Some(
-        "agent_crashed_mid_round"
-    )));
-    assert!(!is_actionable_for_parent_agent(Some(
-        "critic_parse_failure"
-    )));
+    assert!(!is_actionable_for_parent_agent(Some("agent_crashed_mid_round")));
+    assert!(!is_actionable_for_parent_agent(Some("critic_parse_failure")));
     assert!(!is_actionable_for_parent_agent(None));
 }
 
@@ -352,16 +296,16 @@ fn format_verification_result_xml_structure() {
         make_gap("critical", "Auth bypass"),
         make_gap("high", "SQL injection risk"),
     ];
-    let xml = format_verification_result_xml("child-session-123", Some("max_rounds"), 3, 5, &gaps);
+    let xml = format_verification_result_xml(
+        "child-session-123",
+        Some("max_rounds"),
+        3,
+        5,
+        &gaps,
+    );
 
-    assert!(
-        xml.starts_with("<verification-result>"),
-        "should open with root tag"
-    );
-    assert!(
-        xml.ends_with("</verification-result>"),
-        "should close with root tag"
-    );
+    assert!(xml.starts_with("<verification-result>"), "should open with root tag");
+    assert!(xml.ends_with("</verification-result>"), "should close with root tag");
     assert!(xml.contains("<child_session_id>child-session-123</child_session_id>"));
     assert!(xml.contains("<status>needs_revision</status>"));
     assert!(xml.contains("<convergence_reason>max_rounds</convergence_reason>"));
@@ -375,14 +319,8 @@ fn format_verification_result_xml_structure() {
 #[test]
 fn format_verification_result_xml_no_blockers_section_when_empty() {
     let xml = format_verification_result_xml("id", None, 1, 3, &[]);
-    assert!(
-        !xml.contains("<top_blockers>"),
-        "should omit top_blockers when no gaps"
-    );
-    assert!(
-        xml.contains("<recommended_next_action>"),
-        "should still have action"
-    );
+    assert!(!xml.contains("<top_blockers>"), "should omit top_blockers when no gaps");
+    assert!(xml.contains("<recommended_next_action>"), "should still have action");
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +342,8 @@ async fn test_handoff_injected_on_timeout_when_parent_needs_revision() {
 
     let conv_repo: Arc<dyn ChatConversationRepository> =
         Arc::new(MemoryChatConversationRepository::new());
-    let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
+    let msg_repo: Arc<dyn ChatMessageRepository> =
+        Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
     // Pre-condition: no <verification-result> message exists in the conversation.
@@ -412,10 +351,7 @@ async fn test_handoff_injected_on_timeout_when_parent_needs_revision() {
         .exists_verification_result_in_conversation(&conv_id)
         .await
         .expect("exists check should not error");
-    assert!(
-        !already_present,
-        "pre-condition: no handoff message should exist yet"
-    );
+    assert!(!already_present, "pre-condition: no handoff message should exist yet");
 
     // Trigger Gate C injection path.
     inject_verification_handoff_if_missing(
@@ -467,13 +403,16 @@ async fn test_no_duplicate_handoff_on_timeout_after_success_injection() {
 
     let conv_repo: Arc<dyn ChatConversationRepository> =
         Arc::new(MemoryChatConversationRepository::new());
-    let msg_repo: Arc<dyn ChatMessageRepository> = Arc::new(MemoryChatMessageRepository::new());
+    let msg_repo: Arc<dyn ChatMessageRepository> =
+        Arc::new(MemoryChatMessageRepository::new());
     let queue = Arc::new(MessageQueue::new());
 
     // Pre-seed a <verification-result> message (as the success path would have injected).
-    let mut existing_msg =
-        ChatMessage::system_in_session(parent_id.clone(), "Verification found plan blockers.")
-            .with_metadata(r#"{"verification_result":true}"#);
+    let mut existing_msg = ChatMessage::system_in_session(
+        parent_id.clone(),
+        "Verification found plan blockers.",
+    )
+    .with_metadata(r#"{"verification_result":true}"#);
     existing_msg.conversation_id = Some(conv_id);
     msg_repo
         .create(existing_msg)
@@ -485,10 +424,7 @@ async fn test_no_duplicate_handoff_on_timeout_after_success_injection() {
         .exists_verification_result_in_conversation(&conv_id)
         .await
         .expect("exists check should not error");
-    assert!(
-        already_present,
-        "dedup check must find the pre-seeded message"
-    );
+    assert!(already_present, "dedup check must find the pre-seeded message");
 
     // Trigger Gate C injection path — should be a no-op due to dedup guard.
     inject_verification_handoff_if_missing(

@@ -70,16 +70,8 @@ async fn test_reopen_accepted_session() {
     assert_eq!(reopened.status, IdeationSessionStatus::Active);
 
     // Verify task is archived (cleanup now archives instead of deleting)
-    let task = state
-        .task_repo
-        .get_by_id(&created_task.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        task.archived_at.is_some(),
-        "Task should be archived after session reopen cleanup"
-    );
+    let task = state.task_repo.get_by_id(&created_task.id).await.unwrap().unwrap();
+    assert!(task.archived_at.is_some(), "Task should be archived after session reopen cleanup");
 
     // Verify proposal created_task_id is cleared
     let updated_proposal = state
@@ -213,10 +205,7 @@ async fn test_reopen_deletes_plan_branch_record_to_allow_re_accept() {
         .get_by_session_id(&created.id)
         .await
         .unwrap();
-    assert!(
-        after_reopen.is_none(),
-        "plan branch record must be deleted to allow re-accept"
-    );
+    assert!(after_reopen.is_none(), "plan branch record must be deleted to allow re-accept");
 }
 
 #[tokio::test]
@@ -464,7 +453,10 @@ impl FailingResetSessionRepo {
 
 #[async_trait::async_trait]
 impl crate::domain::repositories::IdeationSessionRepository for FailingResetSessionRepo {
-    async fn create(&self, session: IdeationSession) -> crate::error::AppResult<IdeationSession> {
+    async fn create(
+        &self,
+        session: IdeationSession,
+    ) -> crate::error::AppResult<IdeationSession> {
         self.inner.create(session).await
     }
 
@@ -504,9 +496,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         id: &crate::domain::entities::IdeationSessionId,
         plan_artifact_id: Option<String>,
     ) -> crate::error::AppResult<()> {
-        self.inner
-            .update_plan_artifact_id(id, plan_artifact_id)
-            .await
+        self.inner.update_plan_artifact_id(id, plan_artifact_id).await
     }
 
     async fn delete(
@@ -542,9 +532,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         &self,
         artifact_id: &str,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .get_by_inherited_plan_artifact_id(artifact_id)
-            .await
+        self.inner.get_by_inherited_plan_artifact_id(artifact_id).await
     }
 
     async fn get_children(
@@ -599,9 +587,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         id: &crate::domain::entities::IdeationSessionId,
         snapshot: &crate::domain::entities::VerificationRunSnapshot,
     ) -> crate::error::AppResult<()> {
-        self.inner
-            .save_verification_run_snapshot(id, snapshot)
-            .await
+        self.inner.save_verification_run_snapshot(id, snapshot).await
     }
 
     async fn get_verification_run_snapshot(
@@ -609,9 +595,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         id: &crate::domain::entities::IdeationSessionId,
         generation: i32,
     ) -> crate::error::AppResult<Option<crate::domain::entities::VerificationRunSnapshot>> {
-        self.inner
-            .get_verification_run_snapshot(id, generation)
-            .await
+        self.inner.get_verification_run_snapshot(id, generation).await
     }
 
     async fn revert_plan_and_skip_verification(
@@ -654,9 +638,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         &self,
         session_id: &crate::domain::entities::IdeationSessionId,
     ) -> crate::error::AppResult<()> {
-        self.inner
-            .increment_verification_generation(session_id)
-            .await
+        self.inner.increment_verification_generation(session_id).await
     }
 
     async fn reset_and_begin_reverify(
@@ -670,9 +652,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         &self,
         stale_before: chrono::DateTime<chrono::Utc>,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .get_stale_in_progress_sessions(stale_before)
-            .await
+        self.inner.get_stale_in_progress_sessions(stale_before).await
     }
 
     async fn get_all_in_progress_sessions(&self) -> crate::error::AppResult<Vec<IdeationSession>> {
@@ -683,9 +663,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         &self,
         parent_session_id: &crate::domain::entities::IdeationSessionId,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .get_verification_children(parent_session_id)
-            .await
+        self.inner.get_verification_children(parent_session_id).await
     }
 
     async fn get_by_project_and_status(
@@ -694,9 +672,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         status: &str,
         limit: u32,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .get_by_project_and_status(project_id, status, limit)
-            .await
+        self.inner.get_by_project_and_status(project_id, status, limit).await
     }
 
     async fn get_group_counts(
@@ -720,9 +696,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         Vec<crate::domain::repositories::ideation_session_repository::IdeationSessionWithProgress>,
         u32,
     )> {
-        self.inner
-            .list_by_group(project_id, group, offset, limit, search)
-            .await
+        self.inner.list_by_group(project_id, group, offset, limit, search).await
     }
 
     fn set_expected_proposal_count_sync(
@@ -766,9 +740,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         api_key_id: &str,
         idempotency_key: &str,
     ) -> crate::error::AppResult<Option<IdeationSession>> {
-        self.inner
-            .get_by_idempotency_key(api_key_id, idempotency_key)
-            .await
+        self.inner.get_by_idempotency_key(api_key_id, idempotency_key).await
     }
 
     async fn update_external_activity_phase(
@@ -784,9 +756,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         id: &crate::domain::entities::IdeationSessionId,
         message_id: &str,
     ) -> crate::error::AppResult<()> {
-        self.inner
-            .update_external_last_read_message_id(id, message_id)
-            .await
+        self.inner.update_external_last_read_message_id(id, message_id).await
     }
 
     async fn list_active_external_by_project(
@@ -800,21 +770,20 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         &self,
         stale_before: Option<chrono::DateTime<chrono::Utc>>,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .list_active_external_sessions_for_archival(stale_before)
-            .await
+        self.inner.list_active_external_sessions_for_archival(stale_before).await
     }
 
     async fn list_stalled_external_sessions(
         &self,
         stalled_before: chrono::DateTime<chrono::Utc>,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .list_stalled_external_sessions(stalled_before)
-            .await
+        self.inner.list_stalled_external_sessions(stalled_before).await
     }
 
-    async fn set_dependencies_acknowledged(&self, session_id: &str) -> crate::error::AppResult<()> {
+    async fn set_dependencies_acknowledged(
+        &self,
+        session_id: &str,
+    ) -> crate::error::AppResult<()> {
         self.inner.set_dependencies_acknowledged(session_id).await
     }
 
@@ -851,9 +820,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         session_id: &str,
         prompt: Option<String>,
     ) -> crate::error::AppResult<()> {
-        self.inner
-            .set_pending_initial_prompt(session_id, prompt)
-            .await
+        self.inner.set_pending_initial_prompt(session_id, prompt).await
     }
 
     async fn set_pending_initial_prompt_if_unset(
@@ -861,18 +828,14 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         session_id: &str,
         prompt: String,
     ) -> crate::error::AppResult<bool> {
-        self.inner
-            .set_pending_initial_prompt_if_unset(session_id, prompt)
-            .await
+        self.inner.set_pending_initial_prompt_if_unset(session_id, prompt).await
     }
 
     async fn claim_pending_session_for_project(
         &self,
         project_id: &str,
     ) -> crate::error::AppResult<Option<(String, String)>> {
-        self.inner
-            .claim_pending_session_for_project(project_id)
-            .await
+        self.inner.claim_pending_session_for_project(project_id).await
     }
 
     async fn list_projects_with_pending_sessions(&self) -> crate::error::AppResult<Vec<String>> {
@@ -883,9 +846,7 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         &self,
         project_id: &ProjectId,
     ) -> crate::error::AppResult<u32> {
-        self.inner
-            .count_pending_sessions_for_project(project_id)
-            .await
+        self.inner.count_pending_sessions_for_project(project_id).await
     }
 
     async fn update_acceptance_status(
@@ -894,18 +855,14 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         expected_current: Option<crate::domain::entities::AcceptanceStatus>,
         new_status: Option<crate::domain::entities::AcceptanceStatus>,
     ) -> crate::error::AppResult<bool> {
-        self.inner
-            .update_acceptance_status(session_id, expected_current, new_status)
-            .await
+        self.inner.update_acceptance_status(session_id, expected_current, new_status).await
     }
 
     async fn get_sessions_with_pending_acceptance(
         &self,
         project_id: &ProjectId,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .get_sessions_with_pending_acceptance(project_id)
-            .await
+        self.inner.get_sessions_with_pending_acceptance(project_id).await
     }
 
     async fn set_verification_confirmation_status(
@@ -913,18 +870,14 @@ impl crate::domain::repositories::IdeationSessionRepository for FailingResetSess
         session_id: &crate::domain::entities::IdeationSessionId,
         status: Option<crate::domain::entities::VerificationConfirmationStatus>,
     ) -> crate::error::AppResult<()> {
-        self.inner
-            .set_verification_confirmation_status(session_id, status)
-            .await
+        self.inner.set_verification_confirmation_status(session_id, status).await
     }
 
     async fn get_pending_verification_confirmations(
         &self,
         project_id: &ProjectId,
     ) -> crate::error::AppResult<Vec<IdeationSession>> {
-        self.inner
-            .get_pending_verification_confirmations(project_id)
-            .await
+        self.inner.get_pending_verification_confirmations(project_id).await
     }
 
     async fn count_active_proposals(
@@ -983,10 +936,7 @@ async fn test_reopen_field_reset_error_propagates() {
 
     // Reopen should fail because reset_acceptance_cycle_fields returns an error
     let result = service.reopen(&created.id, &state).await;
-    assert!(
-        result.is_err(),
-        "reopen must propagate reset_acceptance_cycle_fields error"
-    );
+    assert!(result.is_err(), "reopen must propagate reset_acceptance_cycle_fields error");
 
     // Session status must NOT be Active — step 7 (reset) failed before step 8 (update_status)
     let session_after = shared_inner.get_by_id(&created.id).await.unwrap().unwrap();
@@ -1060,11 +1010,7 @@ async fn test_full_reopen_reaccept_cycle() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(
-        reopened.status,
-        IdeationSessionStatus::Active,
-        "status must be Active after reopen"
-    );
+    assert_eq!(reopened.status, IdeationSessionStatus::Active, "status must be Active after reopen");
     assert!(
         reopened.expected_proposal_count.is_none(),
         "expected_proposal_count must be reset to NULL"
@@ -1328,10 +1274,7 @@ async fn test_reopen_frees_capacity_by_archiving_child_sessions() {
         .await
         .unwrap();
     // Only the 2 children are Active — parent is Accepted (different status)
-    assert_eq!(
-        active_before, 2,
-        "before reopen: 2 children must be Active (parent is Accepted)"
-    );
+    assert_eq!(active_before, 2, "before reopen: 2 children must be Active (parent is Accepted)");
 
     // Reopen — must archive all children, freeing their capacity slots
     let service = build_service(&state);

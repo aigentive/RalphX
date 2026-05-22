@@ -4360,8 +4360,8 @@ mod agent_workspace_send_tests {
     use crate::application::AppState;
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AgentRunStatus, ChatAttachment, ChatAttachmentId,
-        ChatContextType, ChatConversation, MessageRole, Project, ProjectId, TaskId,
+        AgentConversationWorkspaceMode, AgentRunStatus, ChatContextType, ChatConversation,
+        ChatAttachment, ChatAttachmentId, MessageRole, Project, ProjectId, TaskId,
     };
     use crate::domain::services::{
         ComposerProjectReference, ComposerProjectReferenceKind, RunningAgentKey,
@@ -4689,13 +4689,10 @@ mod agent_workspace_send_tests {
             .await
             .expect("pending attachment should persist");
 
-        let all_pending = super::load_turn_attachments_from_repo(
-            &state.chat_attachment_repo,
-            &conversation_id,
-            &[],
-        )
-        .await
-        .expect("empty selection should load all pending attachments");
+        let all_pending =
+            super::load_turn_attachments_from_repo(&state.chat_attachment_repo, &conversation_id, &[])
+                .await
+                .expect("empty selection should load all pending attachments");
         assert_eq!(all_pending.len(), 2);
 
         let selected = super::load_turn_attachments_from_repo(

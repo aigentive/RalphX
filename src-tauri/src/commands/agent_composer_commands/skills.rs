@@ -9,7 +9,8 @@ use tauri::State;
 
 use super::root::resolve_composer_root;
 use super::types::{
-    AgentComposerSkillResponse, ListAgentComposerSkillsInput, ListAgentComposerSkillsResponse,
+    AgentComposerSkillResponse, ListAgentComposerSkillsInput,
+    ListAgentComposerSkillsResponse,
 };
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
 use crate::application::AppState;
@@ -160,9 +161,7 @@ fn claude_skill_roots(project_root: &Path) -> Vec<ClaudeSkillRoot> {
         push_claude_root(
             &mut roots,
             &mut seen,
-            ancestor
-                .join(CLAUDE_DIR_NAME)
-                .join(CLAUDE_COMMANDS_DIR_NAME),
+            ancestor.join(CLAUDE_DIR_NAME).join(CLAUDE_COMMANDS_DIR_NAME),
             "project-command",
         );
     }
@@ -261,12 +260,8 @@ fn read_claude_skill_file(
         return Ok(None);
     };
     // codeql[rust/path-injection]
-    let raw = std::fs::read_to_string(&canonical).map_err(|error| {
-        format!(
-            "Failed to read Claude skill {}: {error}",
-            canonical.display()
-        )
-    })?;
+    let raw = std::fs::read_to_string(&canonical)
+        .map_err(|error| format!("Failed to read Claude skill {}: {error}", canonical.display()))?;
     let (frontmatter, _body) = split_frontmatter(&raw).unwrap_or(("", raw.as_str()));
     let metadata = serde_yaml::from_str::<SkillFrontmatter>(frontmatter).unwrap_or_default();
     let name = metadata
@@ -316,9 +311,7 @@ fn read_claude_command_file(
         id: format!("claude:{scope}:{stem}"),
         name: stem.to_string(),
         display_name: metadata.display_name,
-        description: metadata
-            .description
-            .or_else(|| first_line.map(str::to_string)),
+        description: metadata.description.or_else(|| first_line.map(str::to_string)),
         source: "harness-native".to_string(),
         provider_harness: Some("claude".to_string()),
         scope: Some(scope.to_string()),
@@ -397,7 +390,9 @@ fn codex_skill_roots(project_root: &Path) -> Vec<CodexSkillRoot> {
         push_codex_root(
             &mut roots,
             &mut seen,
-            codex_home.join(CODEX_SKILLS_DIR_NAME).join(".system"),
+            codex_home
+                .join(CODEX_SKILLS_DIR_NAME)
+                .join(".system"),
             "system",
             None,
         );
@@ -485,7 +480,13 @@ fn push_codex_plugin_roots(
                 else {
                     continue;
                 };
-                push_codex_root(roots, seen, skills_dir, "plugin", Some(plugin_display_name));
+                push_codex_root(
+                    roots,
+                    seen,
+                    skills_dir,
+                    "plugin",
+                    Some(plugin_display_name),
+                );
             }
         }
     }
@@ -571,14 +572,11 @@ fn read_codex_skill_file(
         return Ok(None);
     };
     // codeql[rust/path-injection]
-    let raw = std::fs::read_to_string(&canonical).map_err(|error| {
-        format!(
-            "Failed to read Codex skill {}: {error}",
-            canonical.display()
-        )
-    })?;
+    let raw = std::fs::read_to_string(&canonical)
+        .map_err(|error| format!("Failed to read Codex skill {}: {error}", canonical.display()))?;
     let (frontmatter, body) = split_frontmatter(&raw).unwrap_or(("", raw.as_str()));
-    let metadata = serde_yaml::from_str::<SkillFrontmatter>(frontmatter).unwrap_or_default();
+    let metadata =
+        serde_yaml::from_str::<SkillFrontmatter>(frontmatter).unwrap_or_default();
     let base_name = metadata
         .name
         .as_deref()
@@ -593,9 +591,7 @@ fn read_codex_skill_file(
         id: format!("codex:{scope}:{name}"),
         name: name.clone(),
         display_name: metadata.display_name,
-        description: metadata
-            .description
-            .or_else(|| first_line.map(str::to_string)),
+        description: metadata.description.or_else(|| first_line.map(str::to_string)),
         source: "harness-native".to_string(),
         provider_harness: Some("codex".to_string()),
         scope: Some(scope.to_string()),
@@ -611,7 +607,8 @@ fn codex_disabled_skill_paths() -> BTreeSet<PathBuf> {
         return BTreeSet::new();
     };
     let config_path = codex_home.join(CODEX_CONFIG_FILE_NAME);
-    let Ok(safe_config_path) = validate_absolute_non_root_path(&config_path, "Codex config") else {
+    let Ok(safe_config_path) = validate_absolute_non_root_path(&config_path, "Codex config")
+    else {
         return BTreeSet::new();
     };
     // codeql[rust/path-injection]
@@ -630,12 +627,20 @@ fn parse_disabled_codex_skill_paths(raw: &str) -> BTreeSet<PathBuf> {
     for line in raw.lines() {
         let trimmed = line.split('#').next().unwrap_or("").trim();
         if trimmed == "[[skills.config]]" {
-            flush_codex_skill_config(&mut disabled_paths, &mut current_path, &mut current_enabled);
+            flush_codex_skill_config(
+                &mut disabled_paths,
+                &mut current_path,
+                &mut current_enabled,
+            );
             in_skill_config = true;
             continue;
         }
         if trimmed.starts_with('[') {
-            flush_codex_skill_config(&mut disabled_paths, &mut current_path, &mut current_enabled);
+            flush_codex_skill_config(
+                &mut disabled_paths,
+                &mut current_path,
+                &mut current_enabled,
+            );
             in_skill_config = false;
             continue;
         }
@@ -654,7 +659,11 @@ fn parse_disabled_codex_skill_paths(raw: &str) -> BTreeSet<PathBuf> {
             };
         }
     }
-    flush_codex_skill_config(&mut disabled_paths, &mut current_path, &mut current_enabled);
+    flush_codex_skill_config(
+        &mut disabled_paths,
+        &mut current_path,
+        &mut current_enabled,
+    );
     disabled_paths
 }
 
@@ -840,7 +849,8 @@ description: Publish through GitHub
         )
         .expect("plugin skill");
         let (plugin_name, plugin_skills_dir) =
-            read_codex_plugin_skill_root(&temp.path().join("plugins/github")).expect("plugin root");
+            read_codex_plugin_skill_root(&temp.path().join("plugins/github"))
+                .expect("plugin root");
         let plugin_skills = read_codex_skill_dir(
             &plugin_skills_dir,
             "plugin",
@@ -880,9 +890,13 @@ enabled = false
             skill_file.display()
         );
         let disabled_paths = parse_disabled_codex_skill_paths(&config);
-        let skills =
-            read_codex_skill_dir(&temp.path().join("skills"), "user", None, &disabled_paths)
-                .expect("skills");
+        let skills = read_codex_skill_dir(
+            &temp.path().join("skills"),
+            "user",
+            None,
+            &disabled_paths,
+        )
+        .expect("skills");
 
         assert_eq!(skills.len(), 1);
         assert!(!skills[0].enabled);
@@ -978,17 +992,15 @@ Skill body.
 
         let commands_root = temp.path().join(".claude/commands");
         fs::create_dir_all(&commands_root).expect("commands dir");
-        fs::write(
-            commands_root.join("review.md"),
-            "\nReview the current branch.\n",
-        )
-        .expect("command file");
+        fs::write(commands_root.join("review.md"), "\nReview the current branch.\n")
+            .expect("command file");
         fs::write(commands_root.join("bad.name.md"), "Should be ignored.")
             .expect("unsafe command file");
         fs::write(commands_root.join("notes.txt"), "Should also be ignored.")
             .expect("non-command file");
 
-        let commands = read_claude_skill_dir(&commands_root, "project-command").expect("commands");
+        let commands =
+            read_claude_skill_dir(&commands_root, "project-command").expect("commands");
 
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].id, "claude:project-command:review");
@@ -1042,8 +1054,9 @@ More body.
         .expect("skill file");
         let disabled_paths = BTreeSet::from([skill_file.canonicalize().expect("canonical")]);
 
-        let skills = read_codex_skill_dir(&skills_root, "plugin", Some("github"), &disabled_paths)
-            .expect("skills");
+        let skills =
+            read_codex_skill_dir(&skills_root, "plugin", Some("github"), &disabled_paths)
+                .expect("skills");
 
         assert_eq!(skills.len(), 1);
         let skill = &skills[0];
@@ -1115,11 +1128,8 @@ enabled = false
             r#"{"name":"github","skills":"./skills"}"#,
         )
         .expect("plugin manifest");
-        fs::write(
-            plugin_root.join("skills/yeet/SKILL.md"),
-            "---\nname: yeet\n---\nBody",
-        )
-        .expect("plugin skill file");
+        fs::write(plugin_root.join("skills/yeet/SKILL.md"), "---\nname: yeet\n---\nBody")
+            .expect("plugin skill file");
 
         let mut roots = Vec::new();
         let mut seen = BTreeSet::new();
@@ -1128,9 +1138,7 @@ enabled = false
         assert!(roots.iter().any(|root| {
             root.scope == "plugin"
                 && root.name_prefix.as_deref() == Some("github")
-                && root
-                    .path
-                    .ends_with("plugins/cache/openai-curated/github/version-1/skills")
+                && root.path.ends_with("plugins/cache/openai-curated/github/version-1/skills")
         }));
     }
 
@@ -1139,14 +1147,8 @@ enabled = false
         assert!(split_frontmatter("No frontmatter").is_none());
         assert!(is_safe_skill_token("safe-name_1"));
         assert!(!is_safe_skill_token("bad/name"));
-        assert_eq!(
-            parse_toml_key_value("enabled = false", "enabled"),
-            Some("false")
-        );
-        assert_eq!(
-            parse_toml_string("\"hello\" # ignored"),
-            Some("hello".to_string())
-        );
+        assert_eq!(parse_toml_key_value("enabled = false", "enabled"), Some("false"));
+        assert_eq!(parse_toml_string("\"hello\" # ignored"), Some("hello".to_string()));
         assert_eq!(parse_toml_string("unquoted"), None);
     }
 }

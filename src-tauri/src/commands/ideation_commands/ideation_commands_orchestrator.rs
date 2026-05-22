@@ -60,12 +60,7 @@ pub async fn send_orchestrator_message(
 
     // Send message via unified service (returns immediately, response via events)
     let _result = chat_service
-        .send_message(
-            ChatContextType::Ideation,
-            &input.session_id,
-            &input.content,
-            Default::default(),
-        )
+        .send_message(ChatContextType::Ideation, &input.session_id, &input.content, Default::default())
         .await
         .map_err(|e| e.to_string())?;
 

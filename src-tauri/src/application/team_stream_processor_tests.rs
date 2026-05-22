@@ -32,7 +32,11 @@ async fn test_exit_signal_channel_resolves_on_send() {
     exit_tx.send(()).unwrap();
 
     // Using tokio::time::timeout to ensure the future resolves
-    let result = tokio::time::timeout(std::time::Duration::from_millis(100), exit_rx).await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        exit_rx,
+    )
+    .await;
 
     assert!(result.is_ok(), "exit_rx should resolve when exit_tx sends");
     assert!(result.unwrap().is_ok(), "exit_rx value should be Ok(())");
@@ -48,17 +52,15 @@ async fn test_kill_tx_dropped_fires_kill_rx() {
     // which the select! pattern `_ = kill_rx` also matches — triggering cleanup.
     drop(kill_tx);
 
-    let result = tokio::time::timeout(std::time::Duration::from_millis(100), kill_rx).await;
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        kill_rx,
+    )
+    .await;
 
-    assert!(
-        result.is_ok(),
-        "kill_rx should resolve when kill_tx is dropped"
-    );
+    assert!(result.is_ok(), "kill_rx should resolve when kill_tx is dropped");
     // Err(RecvError) is expected — sender dropped without sending
-    assert!(
-        result.unwrap().is_err(),
-        "kill_rx should get RecvError when kill_tx dropped"
-    );
+    assert!(result.unwrap().is_err(), "kill_rx should get RecvError when kill_tx dropped");
 }
 
 #[test]
@@ -186,10 +188,7 @@ fn test_extract_assistant_usage_partial_increase() {
 
     let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
 
-    assert!(
-        updated,
-        "Should return true when at least one total increases"
-    );
+    assert!(updated, "Should return true when at least one total increases");
     assert_eq!(total_input, 2000, "Input should update to higher value");
     assert_eq!(total_output, 500, "Output should stay at higher value");
 }
@@ -245,10 +244,7 @@ fn test_extract_assistant_usage_zero_initial_values() {
 
     let updated = extract_assistant_usage(&raw, &mut total_input, &mut total_output);
 
-    assert!(
-        !updated,
-        "Should return false when values are equal (both zero)"
-    );
+    assert!(!updated, "Should return false when values are equal (both zero)");
 }
 
 // ============================================================================
@@ -287,11 +283,7 @@ fn test_truncate_str_multibyte_at_boundary() {
     let mut s = "a".repeat(199);
     s.push('→');
     let result = truncate_str(&s, 200);
-    assert_eq!(
-        result.len(),
-        199,
-        "must not split multi-byte char at boundary"
-    );
+    assert_eq!(result.len(), 199, "must not split multi-byte char at boundary");
     assert_eq!(result, "a".repeat(199).as_str());
 }
 
@@ -301,11 +293,7 @@ fn test_truncate_str_only_multibyte_chars() {
     // truncate at 10 bytes: 3 chars fit (9 bytes), 4th would overflow
     let s = "→".repeat(5);
     let result = truncate_str(&s, 10);
-    assert_eq!(
-        result.len(),
-        9,
-        "3 × 3-byte chars = 9 bytes fit in 10-byte limit"
-    );
+    assert_eq!(result.len(), 9, "3 × 3-byte chars = 9 bytes fit in 10-byte limit");
     assert_eq!(result, "→".repeat(3).as_str());
 }
 

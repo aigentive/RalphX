@@ -18,7 +18,7 @@ use crate::domain::services::{
     clear_verification_snapshot, load_current_verification_snapshot_or_default,
 };
 use crate::error::AppResult;
-use crate::http_server::handlers::ideation::{stop_and_archive_children, ChildFilter};
+use crate::http_server::handlers::ideation::{ChildFilter, stop_and_archive_children};
 
 pub struct SessionReopenService {
     task_repo: Arc<dyn TaskRepository>,
@@ -64,22 +64,13 @@ impl SessionReopenService {
     /// 7. Reset acceptance-cycle fields (expected_proposal_count, dependencies_acknowledged, etc.)
     /// 8. Set session status to Active
     /// 9. Reset verification state
-    pub async fn reopen(
-        &self,
-        session_id: &IdeationSessionId,
-        app_state: &AppState,
-    ) -> AppResult<()> {
+    pub async fn reopen(&self, session_id: &IdeationSessionId, app_state: &AppState) -> AppResult<()> {
         // 0. Stop and archive ALL active child sessions before resetting parent.
         //    Must happen first to avoid race with a running verification agent modifying the plan.
         //    Best-effort: errors are logged but do not block the reopen.
-        stop_and_archive_children(
-            session_id.as_str(),
-            app_state,
-            ChildFilter::AllChildren,
-            true,
-        )
-        .await
-        .ok();
+        stop_and_archive_children(session_id.as_str(), app_state, ChildFilter::AllChildren, true)
+            .await
+            .ok();
 
         // 1. Validate session is Accepted or Archived
         let session = self
@@ -175,10 +166,7 @@ impl SessionReopenService {
             .update_external_activity_phase(session_id, None)
             .await?;
 
-        tracing::info!(
-            session_id = session_id.as_str(),
-            "Session reopened; verification state reset"
-        );
+        tracing::info!(session_id = session_id.as_str(), "Session reopened; verification state reset");
 
         Ok(())
     }

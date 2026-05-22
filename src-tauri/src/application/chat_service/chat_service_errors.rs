@@ -428,7 +428,9 @@ impl StreamError {
     ///
     /// Used by `handle_stream_error()` to populate `ExecutionRecoveryMetadata` alongside
     /// the existing flat metadata writes.
-    pub fn to_execution_failure_source(&self) -> crate::domain::entities::ExecutionFailureSource {
+    pub fn to_execution_failure_source(
+        &self,
+    ) -> crate::domain::entities::ExecutionFailureSource {
         use crate::domain::entities::ExecutionFailureSource;
         match self {
             Self::Timeout { .. } => ExecutionFailureSource::TransientTimeout,
@@ -670,7 +672,8 @@ fn parse_claude_reset_banner(error_text: &str) -> Option<String> {
 
     let now = Utc::now().with_timezone(&timezone);
     let today = now.date_naive();
-    let candidate_today = resolve_tz_local_datetime(timezone, today, hour_24, minute)?;
+    let candidate_today =
+        resolve_tz_local_datetime(timezone, today, hour_24, minute)?;
     let candidate = if candidate_today <= now {
         let tomorrow = today.checked_add_signed(Duration::days(1))?;
         resolve_tz_local_datetime(timezone, tomorrow, hour_24, minute)?
@@ -828,10 +831,12 @@ mod tests {
 
     #[test]
     fn assistant_content_rate_limit_literal_is_not_provider_error() {
-        assert!(classify_provider_error_from_assistant_content(
-            "The local metadata file contains the literal rate_limit string."
-        )
-        .is_none());
+        assert!(
+            classify_provider_error_from_assistant_content(
+                "The local metadata file contains the literal rate_limit string."
+            )
+            .is_none()
+        );
     }
 
     #[test]

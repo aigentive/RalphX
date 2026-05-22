@@ -780,4 +780,128 @@ mod tests {
 
         assert!(matches!(error, AppError::Validation(_)));
     }
+
+    #[test]
+    fn rejects_matching_parent_and_child_session_ids() {
+        let home = temp_home();
+        let error = fork_provider_session_under(
+            AgentHarnessKind::Claude,
+            "same-session",
+            "same-session",
+            home.path(),
+        )
+        .expect_err("matching ids should fail");
+
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn creates_minimal_codex_index_entry_when_parent_index_is_missing() {
+        let home = temp_home();
+        let source_dir = home.path().join(".codex/sessions");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("rollout-parent-session.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent-session\"}}\n",
+        )
+        .expect("write source");
+
+        fork_provider_session_under(
+            AgentHarnessKind::Codex,
+            "parent-session",
+            "child-session",
+            home.path(),
+        )
+        .expect("fork codex session");
+
+        let index =
+            fs::read_to_string(home.path().join(".codex/session_index.jsonl")).expect("read index");
+        assert!(index.contains("\"id\":\"child-session\""));
+        assert!(index.contains("\"updated_at\""));
+    }
+
+    #[test]
+    fn rolls_back_codex_session_copy_when_index_already_has_child() {
+        let home = temp_home();
+        let source_dir = home.path().join(".codex/sessions");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("rollout-parent-session.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent-session\"}}\n",
+        )
+        .expect("write source");
+        fs::write(
+            home.path().join(".codex/session_index.jsonl"),
+            concat!(
+                "{\"id\":\"parent-session\",\"updated_at\":\"2026-01-01T00:00:00Z\"}\n",
+                "{\"id\":\"child-session\",\"updated_at\":\"2026-01-02T00:00:00Z\"}\n"
+            ),
+        )
+        .expect("write index");
+
+        let error = fork_provider_session_under(
+            AgentHarnessKind::Codex,
+            "parent-session",
+            "child-session",
+            home.path(),
+        )
+        .expect_err("existing child index entry should fail");
+
+        assert!(matches!(error, AppError::Conflict(_)));
+        assert!(!source_dir.join("rollout-child-session.jsonl").exists());
+    }
+
+    #[test]
+    fn rejects_empty_claude_target_working_directory() {
+        let home = temp_home();
+        let source_dir = home.path().join(".claude/projects/project-a");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(source_dir.join("parent-session.jsonl"), "{}\n").expect("write source");
+        let target = ProviderSessionForkTarget {
+            working_directory: PathBuf::from(""),
+            git_branch: Some("main".to_string()),
+        };
+
+        let error = fork_provider_session_under_for_target(
+            AgentHarnessKind::Claude,
+            "parent-session",
+            "child-session",
+            home.path(),
+            Some(&target),
+        )
+        .expect_err("empty target cwd should fail");
+
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn rejects_existing_claude_target_destination() {
+        let home = temp_home();
+        let source_dir = home.path().join(".claude/projects/project-a");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(source_dir.join("parent-session.jsonl"), "{}\n").expect("write source");
+        let child_worktree = home.path().join("worktrees/child-worktree");
+        let target_dir = home
+            .path()
+            .join(".claude/projects")
+            .join(claude_project_dir_name_for_cwd(&child_worktree).expect("encoded cwd"));
+        fs::create_dir_all(&target_dir).expect("create target dir");
+        fs::write(target_dir.join("child-session.jsonl"), "existing\n")
+            .expect("write existing child");
+        let target = ProviderSessionForkTarget {
+            working_directory: child_worktree,
+            git_branch: None,
+        };
+
+        let error = fork_provider_session_under_for_target(
+            AgentHarnessKind::Claude,
+            "parent-session",
+            "child-session",
+            home.path(),
+            Some(&target),
+        )
+        .expect_err("existing child artifact should fail");
+
+        assert!(matches!(error, AppError::Conflict(_)));
+    }
 }

@@ -21,8 +21,8 @@ use crate::domain::entities::{
 
 use super::ideation_commands_types::{
     ChatMessageResponse, CreateSessionInput, IdeationSessionResponse,
-    IdeationSessionWithProgressResponse, LatestChildSessionIdResponse, SessionGroupCountsResponse,
-    SessionListResponse, SessionWithDataResponse, TaskProposalResponse,
+    IdeationSessionWithProgressResponse, LatestChildSessionIdResponse,
+    SessionGroupCountsResponse, SessionListResponse, SessionWithDataResponse, TaskProposalResponse,
 };
 
 // ============================================================================
@@ -571,9 +571,12 @@ pub async fn spawn_session_namer(
     first_message: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let target =
-        SessionNamerTarget::from_initial_request(session_id, conversation_id, first_message)
-            .map_err(str::to_string)?;
+    let target = SessionNamerTarget::from_initial_request(
+        session_id,
+        conversation_id,
+        first_message,
+    )
+    .map_err(str::to_string)?;
     spawn_session_namer_agent(&state, target)
         .await
         .map_err(|error| error.to_string())
@@ -627,7 +630,11 @@ pub async fn get_latest_child_session_id(
         .transpose()?;
     let latest_child_session_id = state
         .ideation_session_repo
-        .get_latest_child_session_id(&parent_id, parsed_purpose, include_archived.unwrap_or(true))
+        .get_latest_child_session_id(
+            &parent_id,
+            parsed_purpose,
+            include_archived.unwrap_or(true),
+        )
         .await
         .map_err(|e| e.to_string())?
         .map(|id| id.as_str().to_string());

@@ -1693,8 +1693,8 @@ mod tests {
 
         attempt_merge_auto_complete(&merge_ctx).await;
 
-        let updated =
-            wait_for_status(&app_state.task_repo, &task_id, InternalStatus::ReExecuting).await;
+        let updated = wait_for_status(&app_state.task_repo, &task_id, InternalStatus::ReExecuting)
+            .await;
         let metadata: serde_json::Value =
             serde_json::from_str(updated.metadata.as_deref().unwrap_or("{}"))
                 .expect("task metadata is JSON");

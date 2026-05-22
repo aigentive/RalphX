@@ -50,10 +50,7 @@ async fn test_branch_not_exists_creates_and_returns_true() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("release/v2"),
-        "Expected branch to exist after creation"
-    );
+    assert!(stdout.contains("release/v2"), "Expected branch to exist after creation");
 }
 
 /// creation fails (invalid source branch) → error propagated as String

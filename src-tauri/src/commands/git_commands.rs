@@ -8,7 +8,8 @@ use tauri::{Manager, State};
 
 use crate::application::git_service::{CommitInfo, DiffStats, GitService};
 use crate::application::runtime_factory::{
-    build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
+    RuntimeFactoryDeps, build_task_scheduler_with_fallback,
+    build_transition_service_with_fallback,
 };
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
@@ -303,9 +304,10 @@ pub async fn resolve_merge_conflict(
 
     // Commit the resolved merge
     let commit_message = format!("Merge resolution for task: {}", task.title);
-    let commit_sha = GitService::commit_all_including_deletions(&working_path, &commit_message)
-        .await
-        .map_err(|e| format!("Failed to commit resolved merge: {}", e))?;
+    let commit_sha =
+        GitService::commit_all_including_deletions(&working_path, &commit_message)
+            .await
+            .map_err(|e| format!("Failed to commit resolved merge: {}", e))?;
 
     // Update task with merge commit SHA if commit was made
     if let Some(sha) = &commit_sha {
@@ -491,10 +493,7 @@ async fn retry_merge_inner(
             recovery_obj.insert("events".to_string(), serde_json::json!([]));
             recovery_obj.insert("last_state".to_string(), serde_json::json!("retrying"));
             // Clear circuit breaker on manual retry
-            recovery_obj.insert(
-                "circuit_breaker_active".to_string(),
-                serde_json::json!(false),
-            );
+            recovery_obj.insert("circuit_breaker_active".to_string(), serde_json::json!(false));
             recovery_obj.remove("circuit_breaker_reason");
         }
     }
@@ -815,8 +814,8 @@ mod transition_guard_tests {
 
     #[test]
     fn retry_merge_rejects_terminal_states() {
-        let error = ensure_retry_merge_status(InternalStatus::Merged)
-            .expect_err("merged task must reject retry");
+        let error =
+            ensure_retry_merge_status(InternalStatus::Merged).expect_err("merged task must reject retry");
         assert!(error.contains("allows merge retry"));
         assert!(error.contains("Merged"));
     }
@@ -845,14 +844,9 @@ mod transition_guard_tests {
         let task_id = task.id.clone();
         app_state.task_repo.create(task).await.unwrap();
 
-        retry_merge_inner(
-            task_id.clone(),
-            None,
-            &app_state,
-            Arc::clone(&execution_state),
-        )
-        .await
-        .expect("retry_merge should reroute hook failures");
+        retry_merge_inner(task_id.clone(), None, &app_state, Arc::clone(&execution_state))
+            .await
+            .expect("retry_merge should reroute hook failures");
 
         let updated = app_state
             .task_repo
@@ -987,11 +981,12 @@ fn create_transition_service(
     execution_state: &Arc<ExecutionState>,
 ) -> TaskTransitionService<tauri::Wry> {
     // Create scheduler for post-merge scheduling (unblocked plan_merge tasks)
-    let scheduler_concrete =
-        Arc::new(state.build_task_scheduler_for_runtime(
+    let scheduler_concrete = Arc::new(
+        state.build_task_scheduler_for_runtime(
             Arc::clone(execution_state),
             state.app_handle.clone(),
-        ));
+        ),
+    );
     scheduler_concrete.set_self_ref(Arc::clone(&scheduler_concrete) as Arc<dyn TaskScheduler>);
     let task_scheduler: Arc<dyn TaskScheduler> = scheduler_concrete;
 

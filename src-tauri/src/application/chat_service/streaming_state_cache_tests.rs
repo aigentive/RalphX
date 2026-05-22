@@ -280,9 +280,7 @@ async fn test_complete_task_with_stats() {
         total_tool_uses: Some(5),
         duration_ms: Some(30000),
     };
-    cache
-        .complete_task("conv-123", "toolu_002", Some(stats))
-        .await;
+    cache.complete_task("conv-123", "toolu_002", Some(stats)).await;
 
     let state = cache.get("conv-123").await.unwrap();
     assert_eq!(state.streaming_tasks[0].status, "completed");

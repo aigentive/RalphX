@@ -126,36 +126,37 @@ pub(crate) async fn resolve_agent_spawn_settings(
         None
     };
 
-    let (configured_subagent_model_cap, subagent_model_cap) =
-        if let Some(subagent_lane) = subagent_lane {
-            let (subagent_project_row, subagent_global_row) =
-                load_lane_rows(agent_lane_settings_repo, project_id, Some(subagent_lane)).await;
-            let subagent_harness =
-                lane_harness(subagent_project_row.as_ref(), subagent_global_row.as_ref());
-            let configured_subagent_model_cap = subagent_harness
-                .map(|configured| configured == effective_harness)
-                .unwrap_or(true)
-                .then(|| {
-                    lane_settings_value(subagent_project_row.as_ref(), subagent_global_row.as_ref())
-                        .and_then(|settings| settings.model)
-                })
-                .flatten();
-
-            let subagent_model_cap = if let Some(model) = configured_subagent_model_cap.clone() {
-                model
-            } else if let Some(model) =
-                nondefault_harness_lane_settings(subagent_lane, effective_harness)
+    let (configured_subagent_model_cap, subagent_model_cap) = if let Some(subagent_lane) =
+        subagent_lane
+    {
+        let (subagent_project_row, subagent_global_row) =
+            load_lane_rows(agent_lane_settings_repo, project_id, Some(subagent_lane)).await;
+        let subagent_harness =
+            lane_harness(subagent_project_row.as_ref(), subagent_global_row.as_ref());
+        let configured_subagent_model_cap = subagent_harness
+            .map(|configured| configured == effective_harness)
+            .unwrap_or(true)
+            .then(|| {
+                lane_settings_value(subagent_project_row.as_ref(), subagent_global_row.as_ref())
                     .and_then(|settings| settings.model)
-            {
-                model
-            } else {
-                "haiku".to_string()
-            };
+            })
+            .flatten();
 
-            (configured_subagent_model_cap, Some(subagent_model_cap))
+        let subagent_model_cap = if let Some(model) = configured_subagent_model_cap.clone() {
+            model
+        } else if let Some(model) =
+            nondefault_harness_lane_settings(subagent_lane, effective_harness)
+                .and_then(|settings| settings.model)
+        {
+            model
         } else {
-            (None, None)
+            "haiku".to_string()
         };
+
+        (configured_subagent_model_cap, Some(subagent_model_cap))
+    } else {
+        (None, None)
+    };
 
     ResolvedAgentSpawnSettings {
         configured_harness,

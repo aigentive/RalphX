@@ -19,14 +19,14 @@ use tauri::State;
 
 use crate::application::AppState;
 
-pub use crate::commands::metrics_queries::{
-    compute_column_metrics, compute_project_stats, compute_task_metrics,
-};
-pub use crate::commands::metrics_trends::compute_project_trends;
 pub use crate::commands::metrics_types::{
     ColumnDwellTime, ColumnMetric, CycleTimePhase, EmeEstimate, ProjectStats, ProjectTrends,
     TaskMetrics, WeeklyDataPoint,
 };
+pub use crate::commands::metrics_queries::{
+    compute_column_metrics, compute_project_stats, compute_task_metrics,
+};
+pub use crate::commands::metrics_trends::compute_project_trends;
 
 // ─── Caches ──────────────────────────────────────────────────────────────────
 

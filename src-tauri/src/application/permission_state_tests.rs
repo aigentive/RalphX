@@ -89,15 +89,9 @@ async fn test_pending_permission_info_with_identity() {
     assert!(json.contains("\"context_id\":\"task-abc\""));
 
     let deserialized: PendingPermissionInfo = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        deserialized.agent_type,
-        Some("ralphx-execution-worker".to_string())
-    );
+    assert_eq!(deserialized.agent_type, Some("ralphx-execution-worker".to_string()));
     assert_eq!(deserialized.task_id, Some("task-abc".to_string()));
-    assert_eq!(
-        deserialized.context_type,
-        Some("task_execution".to_string())
-    );
+    assert_eq!(deserialized.context_type, Some("task_execution".to_string()));
     assert_eq!(deserialized.context_id, Some("task-abc".to_string()));
 }
 
@@ -116,10 +110,7 @@ async fn test_pending_permission_info_partial_identity() {
     };
     let json = serde_json::to_string(&info).unwrap();
     let deserialized: PendingPermissionInfo = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        deserialized.agent_type,
-        Some("ralphx-execution-reviewer".to_string())
-    );
+    assert_eq!(deserialized.agent_type, Some("ralphx-execution-reviewer".to_string()));
     assert!(deserialized.task_id.is_none());
     assert!(deserialized.context_type.is_none());
     assert!(deserialized.context_id.is_none());
@@ -194,15 +185,9 @@ async fn test_register_with_identity() {
     let pending = state.pending.lock().await;
     assert!(pending.contains_key(&request_id));
     let request = pending.get(&request_id).unwrap();
-    assert_eq!(
-        request.info.agent_type,
-        Some("ralphx-execution-worker".to_string())
-    );
+    assert_eq!(request.info.agent_type, Some("ralphx-execution-worker".to_string()));
     assert_eq!(request.info.task_id, Some("task-xyz".to_string()));
-    assert_eq!(
-        request.info.context_type,
-        Some("task_execution".to_string())
-    );
+    assert_eq!(request.info.context_type, Some("task_execution".to_string()));
     assert_eq!(request.info.context_id, Some("task-xyz".to_string()));
 }
 
@@ -242,9 +227,7 @@ async fn test_multiple_pending_permissions() {
 
     // Register multiple pending permissions
     for i in 0..5 {
-        state
-            .register(make_info(&format!("request-{}", i), "TestTool"))
-            .await;
+        state.register(make_info(&format!("request-{}", i), "TestTool")).await;
     }
 
     // Verify all are registered

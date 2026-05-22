@@ -606,11 +606,11 @@ pub async fn re_review_task_from_escalated(
     Ok(())
 }
 
-fn ensure_human_review_followup_status(status: InternalStatus, action: &str) -> Result<(), String> {
-    if matches!(
-        status,
-        InternalStatus::ReviewPassed | InternalStatus::Escalated
-    ) {
+fn ensure_human_review_followup_status(
+    status: InternalStatus,
+    action: &str,
+) -> Result<(), String> {
+    if matches!(status, InternalStatus::ReviewPassed | InternalStatus::Escalated) {
         return Ok(());
     }
 
@@ -814,9 +814,7 @@ mod transition_guard_tests {
 
     #[test]
     fn human_review_followup_accepts_review_passed_and_escalated() {
-        assert!(
-            ensure_human_review_followup_status(InternalStatus::ReviewPassed, "approve").is_ok()
-        );
+        assert!(ensure_human_review_followup_status(InternalStatus::ReviewPassed, "approve").is_ok());
         assert!(
             ensure_human_review_followup_status(InternalStatus::Escalated, "request changes")
                 .is_ok()

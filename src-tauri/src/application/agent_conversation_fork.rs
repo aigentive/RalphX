@@ -374,7 +374,62 @@ fn rewrite_provider_session_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::{ChatMessage, MessageRole};
+    use crate::domain::agents::AgentHarnessKind;
+    use crate::domain::entities::{
+        ChatTimelineItemKind, ChatTimelineItemStatus, IdeationAnalysisBaseRefKind, MessageRole,
+        Project,
+    };
+
+    fn run_git(repo: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_repo(repo_path: &std::path::Path) {
+        std::fs::create_dir_all(repo_path).expect("create repo dir");
+        run_git(repo_path, &["init"]);
+        run_git(repo_path, &["config", "user.email", "test@example.com"]);
+        run_git(repo_path, &["config", "user.name", "Test User"]);
+        run_git(repo_path, &["checkout", "-b", "main"]);
+        std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+        run_git(repo_path, &["add", "."]);
+        run_git(repo_path, &["commit", "-m", "initial"]);
+    }
+
+    async fn create_project(state: &AppState, working_directory: &str) -> Project {
+        let mut project = Project::new("Project".to_string(), working_directory.to_string());
+        project.base_branch = Some("main".to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("create project")
+    }
+
+    async fn create_parent_conversation(
+        state: &AppState,
+        project: &Project,
+        mode: AgentConversationWorkspaceMode,
+    ) -> ChatConversation {
+        let mut parent = ChatConversation::new_project(project.id.clone());
+        parent.set_title("Build fork flow");
+        parent.set_agent_mode(Some(mode));
+        state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("create parent conversation")
+    }
 
     #[test]
     fn forked_conversation_title_prefixes_parent_title() {
@@ -444,5 +499,208 @@ mod tests {
         assert_eq!(cloned.conversation_id, Some(child_conversation.id.clone()));
         assert_eq!(cloned.parent_message_id, Some(new_parent_id));
         assert_eq!(cloned.provider_session_id.as_deref(), Some("child-session"));
+    }
+
+    #[tokio::test]
+    async fn forks_chat_conversation_and_copies_message_timeline_attribution() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "/tmp/project").await;
+        let parent =
+            create_parent_conversation(&state, &project, AgentConversationWorkspaceMode::Chat)
+                .await;
+        let provider_ref = ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: "parent-session".to_string(),
+        };
+
+        let mut user = ChatMessage::user_in_project(project.id.clone(), "hello");
+        user.conversation_id = Some(parent.id.clone());
+        user.update_provider_session_ref(&provider_ref);
+        let user = state
+            .chat_message_repo
+            .create(user)
+            .await
+            .expect("create user message");
+
+        let mut assistant = ChatMessage::user_in_project(project.id.clone(), "answer");
+        assistant.role = MessageRole::Orchestrator;
+        assistant.conversation_id = Some(parent.id.clone());
+        assistant.parent_message_id = Some(user.id.clone());
+        assistant.update_provider_session_ref(&provider_ref);
+        let assistant = state
+            .chat_message_repo
+            .create(assistant)
+            .await
+            .expect("create assistant message");
+
+        let mut timeline = ChatTimelineItem::for_message_block(
+            assistant.id.clone(),
+            parent.id.clone(),
+            0,
+            MessageRole::Orchestrator,
+            ChatTimelineItemKind::Text,
+        );
+        timeline.status = ChatTimelineItemStatus::Finalized;
+        timeline.provider_harness = Some(provider_ref.harness);
+        timeline.provider_session_id = Some(provider_ref.provider_session_id.clone());
+        state
+            .chat_timeline_repo
+            .upsert_item(timeline)
+            .await
+            .expect("create timeline item");
+
+        let result = fork_agent_conversation(&state, &parent.id)
+            .await
+            .expect("fork conversation");
+
+        assert_eq!(result.copied_message_count, 2);
+        assert_eq!(result.copied_timeline_item_count, 1);
+        assert!(result.workspace.is_none());
+        assert!(result.provider_session.is_none());
+        assert_eq!(
+            result.conversation.parent_conversation_id,
+            Some(parent.id.as_str())
+        );
+        assert_eq!(result.conversation.title.as_deref(), Some("[Fork] Build fork flow"));
+        assert_eq!(
+            result.conversation.agent_mode,
+            Some(AgentConversationWorkspaceMode::Chat)
+        );
+
+        let child_messages = state
+            .chat_message_repo
+            .get_by_conversation(&result.conversation.id)
+            .await
+            .expect("load child messages");
+        assert_eq!(child_messages.len(), 2);
+        assert!(child_messages.iter().all(|message| {
+            message.session_id.is_none()
+                && message.task_id.is_none()
+                && message.project_id.as_ref() == Some(&project.id)
+                && message.conversation_id.as_ref() == Some(&result.conversation.id)
+        }));
+        let child_user = child_messages
+            .iter()
+            .find(|message| message.role == MessageRole::User)
+            .expect("child user message");
+        let child_assistant = child_messages
+            .iter()
+            .find(|message| message.role == MessageRole::Orchestrator)
+            .expect("child assistant message");
+        assert_eq!(
+            child_assistant.parent_message_id.as_ref(),
+            Some(&child_user.id)
+        );
+        assert_eq!(
+            child_assistant.provider_session_id.as_deref(),
+            Some("parent-session")
+        );
+
+        let child_timeline = state
+            .chat_timeline_repo
+            .get_by_conversation(&result.conversation.id)
+            .await
+            .expect("load child timeline");
+        assert_eq!(child_timeline.len(), 1);
+        assert_eq!(
+            child_timeline[0].message_id.as_ref(),
+            Some(&child_assistant.id)
+        );
+        assert_eq!(child_timeline[0].run_id, None);
+        assert_eq!(
+            child_timeline[0].id,
+            ChatTimelineItem::stable_message_block_id(&child_assistant.id, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn forks_edit_conversation_with_deferred_workspace() {
+        let state = AppState::new_test();
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let repo_path = temp_dir.path().join("repo");
+        init_repo(&repo_path);
+        let mut project =
+            create_project(&state, repo_path.to_string_lossy().as_ref()).await;
+        project.worktree_parent_directory = Some(
+            temp_dir
+                .path()
+                .join("worktrees")
+                .to_string_lossy()
+                .to_string(),
+        );
+        state
+            .project_repo
+            .update(&project)
+            .await
+            .expect("update project");
+        let parent =
+            create_parent_conversation(&state, &project, AgentConversationWorkspaceMode::Edit)
+                .await;
+
+        let result = fork_agent_conversation(&state, &parent.id)
+            .await
+            .expect("fork edit conversation");
+        let workspace = result.workspace.expect("child workspace");
+
+        assert_eq!(workspace.conversation_id, result.conversation.id);
+        assert_eq!(workspace.project_id, project.id);
+        assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Edit);
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(workspace.base_ref, "main");
+        assert!(std::path::Path::new(&workspace.worktree_path).exists());
+        assert!(state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&result.conversation.id)
+            .await
+            .expect("load workspace")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn rejects_non_project_parent_conversation() {
+        let state = AppState::new_test();
+        let parent = ChatConversation::new_ideation(
+            crate::domain::entities::IdeationSessionId::from_string("session-1"),
+        );
+        let parent = state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("create parent conversation");
+
+        let error = fork_agent_conversation(&state, &parent.id)
+            .await
+            .expect_err("ideation conversation should not fork");
+
+        assert!(matches!(error, AppError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_running_parent_conversation() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "/tmp/project").await;
+        let parent =
+            create_parent_conversation(&state, &project, AgentConversationWorkspaceMode::Chat)
+                .await;
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", parent.id.as_str()),
+                0,
+                parent.id.as_str(),
+                "run-1".to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let error = fork_agent_conversation(&state, &parent.id)
+            .await
+            .expect_err("running conversation should not fork");
+
+        assert!(matches!(error, AppError::Conflict(_)));
     }
 }
