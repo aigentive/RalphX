@@ -39,10 +39,10 @@ import {
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
+  getAgentChatFocusSwitchOptions,
   getFocusedArtifactIdeationSessionId,
   latestVerificationChildSessionIdQueryKey,
   type AgentsChatFocus,
-  type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
@@ -264,37 +264,32 @@ export function useAgentsViewController({
     lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
       ? lastVerificationFocus
       : null;
+  const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
-    const options: AgentsChatFocusSwitchOption[] = [
-      {
-        type: "workspace" as const,
-        label: "Workspace",
-        description: "Show the workspace agent chat",
-      },
-    ];
-
-    if (focusSwitcherIdeationSessionId) {
-      options.push({
-        type: "ideation" as const,
-        label: "Ideation",
-        description: "Show the attached ideation chat",
-        tone: "accent" as const,
-      });
+    return getAgentChatFocusSwitchOptions({
+      mode: activeConversationMode,
+      focusSwitcherIdeationSessionId,
+      verificationFocusTarget,
+      hasPlanArtifact: hasAttachedPlanArtifact,
+    });
+  }, [
+    activeConversationMode,
+    focusSwitcherIdeationSessionId,
+    hasAttachedPlanArtifact,
+    verificationFocusTarget,
+  ]);
+  useEffect(() => {
+    if (chatFocusOptions.some((option) => option.type === chatFocus.type)) {
+      return;
     }
-
-    if (verificationFocusTarget) {
-      options.push({
-        type: "verification" as const,
-        label: "Verification",
-        description: "Show the verification agent chat",
-        tone: "warning" as const,
-      });
-    }
-
-    return options;
-  }, [focusSwitcherIdeationSessionId, verificationFocusTarget]);
+    setChatFocus({ type: "workspace" });
+  }, [chatFocus.type, chatFocusOptions]);
   const handleSelectChatFocus = useCallback(
     (type: AgentsChatFocusType) => {
+      if (!chatFocusOptions.some((option) => option.type === type)) {
+        return;
+      }
+
       if (type === "workspace") {
         handleReturnToWorkspaceChat();
         return;
@@ -312,6 +307,7 @@ export function useAgentsViewController({
       }
     },
     [
+      chatFocusOptions,
       focusSwitcherIdeationSessionId,
       handleFocusIdeationSession,
       handleReturnToWorkspaceChat,
