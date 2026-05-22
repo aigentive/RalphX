@@ -132,7 +132,11 @@ export function GitAuthRepairPanel({
   const hasVisibleIssue = hasGitTransportIssue || hasGhPrIssue;
   const showPrAccessMode = hasGhPrIssue && !hasGitTransportIssue;
 
-  if (!showWhenHealthy && !isChecking && !hasVisibleIssue && !hasRepairAction) {
+  const shouldHide = surface === "publish"
+    ? !isChecking && !hasVisibleIssue
+    : !showWhenHealthy && !isChecking && !hasVisibleIssue && !hasRepairAction;
+
+  if (shouldHide) {
     return null;
   }
 

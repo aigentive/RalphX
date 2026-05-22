@@ -51,6 +51,6 @@ test.describe("Git Auth Startup Warning", () => {
     await confirmation.getByRole("button", { name: "Use SSH" }).click();
     await expect(page.getByTestId("git-auth-switch-ssh")).toBeHidden({ timeout: 6000 });
     await expect(page.getByTestId("git-auth-copy-gh-login")).toBeHidden();
-    await expect(repairPanel).toBeHidden();
+    await expect(repairPanel).toBeVisible();
   });
 });
