@@ -631,6 +631,33 @@ fn append_codex_session_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    static PROVIDER_STATE_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvOverrideGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvOverrideGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvOverrideGuard {
+        fn drop(&mut self) {
+            match self.previous.as_ref() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn temp_home() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp home")
@@ -664,6 +691,89 @@ mod tests {
         assert!(copied.contains("\"sessionId\":\"child-session\""));
         assert!(copied.contains("keep parent-session in text"));
         assert!(copied.contains("not-json"));
+    }
+
+    #[test]
+    fn forks_codex_session_from_provider_state_home_override() {
+        let _lock = PROVIDER_STATE_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home();
+        let _guard = EnvOverrideGuard::set("RALPHX_PROVIDER_STATE_HOME_OVERRIDE", home.path());
+        let source_dir = home.path().join(".codex/sessions/2026/05/22");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("rollout-parent-session.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent-session\"}}\n",
+        )
+        .expect("write source");
+
+        let result = fork_provider_session_from_state_home(&ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: "parent-session".to_string(),
+        })
+        .expect("fork codex session from override home");
+
+        assert_eq!(result.session_ref.harness, AgentHarnessKind::Codex);
+        assert_ne!(result.session_ref.provider_session_id, "parent-session");
+        assert!(result.destination_path.exists());
+        assert!(
+            result
+                .destination_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.contains(&result.session_ref.provider_session_id))
+        );
+        let copied = fs::read_to_string(&result.destination_path).expect("read copied session");
+        assert!(copied.contains(&result.session_ref.provider_session_id));
+    }
+
+    #[test]
+    fn forks_claude_session_from_state_home_override_into_target_project_dir() {
+        let _lock = PROVIDER_STATE_HOME_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = temp_home();
+        let override_value = format!("  {}  ", home.path().display());
+        let _guard = EnvOverrideGuard::set("RALPHX_PROVIDER_STATE_HOME_OVERRIDE", override_value);
+        let source_dir = home.path().join(".claude/projects/source-project");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("parent-session.jsonl"),
+            serde_json::json!({
+                "sessionId": "parent-session",
+                "cwd": "/tmp/parent-worktree",
+                "gitBranch": "parent-branch"
+            })
+            .to_string(),
+        )
+        .expect("write source");
+        let child_worktree = home.path().join("child-worktree");
+        let target = ProviderSessionForkTarget {
+            working_directory: child_worktree.clone(),
+            git_branch: Some("child-branch".to_string()),
+        };
+
+        let result = fork_provider_session_from_state_home_for_target(
+            &ProviderSessionRef {
+                harness: AgentHarnessKind::Claude,
+                provider_session_id: "parent-session".to_string(),
+            },
+            Some(&target),
+        )
+        .expect("fork claude session into target project dir");
+
+        let target_dir = home
+            .path()
+            .join(".claude/projects")
+            .canonicalize()
+            .expect("canonical claude projects root")
+            .join(claude_project_dir_name_for_cwd(&child_worktree).expect("encoded child cwd"));
+        assert_eq!(result.destination_path.parent(), Some(target_dir.as_path()));
+        let copied = fs::read_to_string(&result.destination_path).expect("read copied session");
+        assert!(copied.contains(&result.session_ref.provider_session_id));
+        assert!(copied.contains(&child_worktree.display().to_string()));
+        assert!(copied.contains("child-branch"));
     }
 
     #[test]
@@ -768,6 +878,41 @@ mod tests {
     }
 
     #[test]
+    fn copies_codex_json_session_and_keeps_json_extension() {
+        let home = temp_home();
+        let source_dir = home.path().join(".codex/sessions");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("rollout-parent-session.json"),
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent-session\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"session_id\":\"parent-session\"}}\n"
+            ),
+        )
+        .expect("write source");
+
+        let result = fork_provider_session_under(
+            AgentHarnessKind::Codex,
+            "parent-session",
+            "child-session",
+            home.path(),
+        )
+        .expect("fork codex json session");
+
+        assert_eq!(
+            result.destination_path,
+            source_dir
+                .canonicalize()
+                .expect("canonical codex session dir")
+                .join("rollout-child-session.json")
+        );
+        let copied =
+            fs::read_to_string(source_dir.join("rollout-child-session.json")).expect("read copy");
+        assert!(copied.contains("\"id\":\"child-session\""));
+        assert!(copied.contains("\"session_id\":\"child-session\""));
+    }
+
+    #[test]
     fn rejects_unsafe_session_ids_before_filesystem_writes() {
         let home = temp_home();
         let error = fork_provider_session_under(
@@ -818,6 +963,39 @@ mod tests {
             fs::read_to_string(home.path().join(".codex/session_index.jsonl")).expect("read index");
         assert!(index.contains("\"id\":\"child-session\""));
         assert!(index.contains("\"updated_at\""));
+    }
+
+    #[test]
+    fn appends_codex_index_child_after_parent_without_trailing_newline() {
+        let home = temp_home();
+        let source_dir = home.path().join(".codex/sessions");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("rollout-parent-session.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent-session\"}}\n",
+        )
+        .expect("write source");
+        fs::write(
+            home.path().join(".codex/session_index.jsonl"),
+            "{\"id\":\"parent-session\",\"updated_at\":\"2026-01-01T00:00:00Z\"}",
+        )
+        .expect("write index");
+
+        fork_provider_session_under(
+            AgentHarnessKind::Codex,
+            "parent-session",
+            "child-session",
+            home.path(),
+        )
+        .expect("fork codex session");
+
+        let index =
+            fs::read_to_string(home.path().join(".codex/session_index.jsonl")).expect("read index");
+        let lines = index.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("\"id\":\"parent-session\""));
+        assert!(lines[1].contains("\"id\":\"child-session\""));
+        assert!(index.ends_with('\n'));
     }
 
     #[test]
@@ -921,6 +1099,35 @@ mod tests {
         assert!(output.contains("not-json"));
         assert!(output.contains("\"provider_session_id\":\"child-session\""));
         assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn compare_session_candidate_prefers_modified_time_then_path() {
+        let older = SessionFileCandidate {
+            path: PathBuf::from("z.jsonl"),
+            modified: Some(UNIX_EPOCH),
+        };
+        let newer = SessionFileCandidate {
+            path: PathBuf::from("a.jsonl"),
+            modified: Some(UNIX_EPOCH + Duration::from_secs(1)),
+        };
+        assert_eq!(
+            compare_session_candidate(&newer, &older),
+            std::cmp::Ordering::Greater
+        );
+
+        let left = SessionFileCandidate {
+            path: PathBuf::from("b.jsonl"),
+            modified: Some(UNIX_EPOCH),
+        };
+        let right = SessionFileCandidate {
+            path: PathBuf::from("a.jsonl"),
+            modified: Some(UNIX_EPOCH),
+        };
+        assert_eq!(
+            compare_session_candidate(&left, &right),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
