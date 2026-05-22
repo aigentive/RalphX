@@ -2268,6 +2268,7 @@ mod ipc_contract {
                 base_ref_kind: Some("project_default".to_string()),
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
             },

@@ -6,7 +6,8 @@ use tauri::State;
 
 use crate::application::AppState;
 use crate::commands::unified_chat_commands::{
-    agent_workspace_response_for_state, AgentConversationResponse,
+    agent_conversation_response_for_state, agent_workspace_response_for_state,
+    AgentConversationResponse,
     AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
@@ -161,7 +162,7 @@ struct SidebarConversationRow {
     project_id: String,
     sort_at: DateTime<Utc>,
     is_pinned: bool,
-    conversation: ChatConversation,
+    conversation: AgentConversationResponse,
     workspace: Option<AgentConversationWorkspaceResponse>,
     ref_kind: &'static str,
     ref_label: String,
@@ -257,6 +258,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 conversation_ref_display(workspace.as_ref(), default_ref_label.as_str());
             let sort_at = conversation.created_at;
             let is_pinned = pinned_conversation_ids.contains(&conversation.id.as_str());
+            let conversation = agent_conversation_response_for_state(state, conversation).await?;
             rows.push(SidebarConversationRow {
                 project_id: project_id_string.clone(),
                 sort_at,
@@ -280,9 +282,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     let offsets = input.offsets.unwrap_or_default();
     let groups = match group_by {
         SidebarGroupBy::Publication => publication_groups(rows, selected_states, limit, &offsets),
-        SidebarGroupBy::Project => {
-            project_groups(rows, project_labels, row_sort, limit, &offsets)
-        }
+        SidebarGroupBy::Project => project_groups(rows, project_labels, row_sort, limit, &offsets),
     };
 
     Ok(AgentSidebarConversationGroupsResponse { groups })
@@ -545,7 +545,7 @@ impl From<SidebarConversationRow> for AgentSidebarConversationRowResponse {
         let publication_label =
             publication_label_for_workspace_response(row.workspace.as_ref(), row.publication_state);
         Self {
-            conversation: AgentConversationResponse::from(row.conversation),
+            conversation: row.conversation,
             workspace: row.workspace,
             ref_kind: row.ref_kind.to_string(),
             ref_label: row.ref_label,
@@ -1140,9 +1140,13 @@ mod tests {
         )
         .await;
         create_workspace(&state, &pinned, &alpha.id, Some(42), Some("open"), None).await;
-        let beta_conversation =
-            create_conversation(&state, &beta.id, "Beta work", now - chrono::Duration::seconds(1))
-                .await;
+        let beta_conversation = create_conversation(
+            &state,
+            &beta.id,
+            "Beta work",
+            now - chrono::Duration::seconds(1),
+        )
+        .await;
         create_workspace(
             &state,
             &beta_conversation,

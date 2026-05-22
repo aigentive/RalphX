@@ -5,7 +5,9 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspaceMode,
+  ForkAgentConversationResult,
 } from "@/api/chat";
+import { chatApi } from "@/api/chat";
 import {
   IntegratedChatPanel,
   type IntegratedChatComposerRenderProps,
@@ -13,6 +15,7 @@ import {
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -29,14 +32,13 @@ import {
 import {
   AgentComposerProjectLine,
   AgentComposerSurface,
+  type AgentComposerSendOptions,
   type ChatFocusFieldConfig,
 } from "./AgentComposerSurface";
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
-import {
-  AGENT_CONVERSATION_MODE_OPTIONS,
-} from "./agentConversationMode";
+import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
@@ -65,6 +67,17 @@ import {
 } from "./agentChatFocus";
 
 const AGENTS_CHAT_CONTENT_WIDTH_CLASS = "max-w-[980px]";
+
+function parseForkCommand(message: string): string | null {
+  const trimmed = message.trim();
+  if (trimmed === "/fork") {
+    return "";
+  }
+  if (/^\/fork\s/.test(trimmed)) {
+    return trimmed.slice("/fork".length).trimStart();
+  }
+  return null;
+}
 
 interface AgentComposerOption {
   id: string;
@@ -103,6 +116,9 @@ interface AgentsActiveConversationPanelProps {
     result: { conversationId: string };
   }) => void;
   onFocusIdeationSession: (sessionId: string) => void;
+  onForkConversation: (
+    conversationId: string
+  ) => Promise<ForkAgentConversationResult>;
   onOpenPublishPane: () => void;
   onOpenPublishFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadArtifacts: () => void;
@@ -139,6 +155,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onActiveModelChange,
   onAgentUserMessageSent,
   onFocusIdeationSession,
+  onForkConversation,
   onOpenPublishPane,
   onOpenPublishFile,
   onPreloadArtifacts,
@@ -156,6 +173,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 }: AgentsActiveConversationPanelProps) {
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
   const {
     providers: configuredProviders,
@@ -174,6 +192,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
   const [composerActivityTick, setComposerActivityTick] = useState(0);
   const [isComposerHydrationPaused, setIsComposerHydrationPaused] = useState(false);
+  const [isForkingConversation, setIsForkingConversation] = useState(false);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
     setComposerActivityTick((tick) => tick + 1);
@@ -377,214 +396,302 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           {...{
             inputContainerClassName:
               "shrink-0 bg-transparent px-4 pb-4 pt-3",
-            renderComposer: (composerProps: IntegratedChatComposerRenderProps) => (
-              <>
-                <AgentsComposerWorkspaceChangesCard
-                  conversationId={selectedConversationId}
-                  projectId={activeProjectId}
-                  workspace={activeWorkspace}
-                  isFocusedChildChat={isFocusedChildChat}
-                  isAgentGenerating={composerProps.agentStatus === "generating"}
-                  pauseHydration={isComposerHydrationPaused}
-                  onOpenFile={onOpenPublishFile}
-                  onPreloadPublishPane={onPreloadArtifacts}
-                />
-                <AgentComposerSurface
-                  dataTestId="agents-conversation-composer"
-                  actionTestId="agents-conversation-submit"
-                  onSend={composerProps.onSend}
-                  onStop={composerProps.onStop}
-                  agentStatus={composerProps.agentStatus}
-                  isSubmitting={composerProps.isSending}
-                  isReadOnly={composerProps.isReadOnly}
-                  autoFocus={composerProps.autoFocus}
-                  conversationId={selectedConversationId}
-                  placeholder={
-                    isFocusedChildChat
-                      ? "Send a message..."
-                      : "Ask the agent to plan, build, debug, or review something"
+            renderComposer: (composerProps: IntegratedChatComposerRenderProps) => {
+              const runForkCommand = async (
+                followup: string,
+                options?: AgentComposerSendOptions,
+              ) => {
+                const confirmed = await confirm({
+                  title: "Fork session?",
+                  description:
+                    "Create a new agent conversation copied from this one. The original conversation will stay unchanged.",
+                  confirmText: "Fork session",
+                });
+                if (!confirmed) {
+                  return;
+                }
+                setIsForkingConversation(true);
+                try {
+                  const forkResult = await onForkConversation(selectedConversationId);
+                  const trimmedFollowup = followup.trim();
+                  if (trimmedFollowup) {
+                    const sendResult = await chatApi.sendAgentMessage(
+                      "project",
+                      activeProjectId,
+                      trimmedFollowup,
+                      undefined,
+                      undefined,
+                      {
+                        conversationId: forkResult.conversation.id,
+                        providerHarness: normalizedActiveRuntime.provider,
+                        modelId: normalizedActiveRuntime.modelId,
+                        logicalEffort: normalizedActiveRuntime.effort,
+                        ...(options?.projectReferences?.length
+                          ? { composerProjectReferences: options.projectReferences }
+                          : {}),
+                        ...(options?.integrationReferences?.length
+                          ? {
+                              composerIntegrationReferences:
+                                options.integrationReferences,
+                            }
+                          : {}),
+                      },
+                    );
+                    onAgentUserMessageSent({
+                      content: trimmedFollowup,
+                      result: sendResult,
+                    });
                   }
-                  onFocusChange={(focused) => {
-                    if (focused) {
-                      markComposerActivity();
+                } finally {
+                  setIsForkingConversation(false);
+                }
+              };
+              const handleComposerSend = async (
+                message: string,
+                options?: AgentComposerSendOptions,
+              ) => {
+                const forkFollowup = !isFocusedChildChat
+                  ? parseForkCommand(message)
+                  : null;
+                if (forkFollowup == null) {
+                  await composerProps.onSend(message, options);
+                  return;
+                }
+
+                await runForkCommand(forkFollowup, options);
+              };
+
+              return (
+                <>
+                  <AgentsComposerWorkspaceChangesCard
+                    conversationId={selectedConversationId}
+                    projectId={activeProjectId}
+                    workspace={activeWorkspace}
+                    isFocusedChildChat={isFocusedChildChat}
+                    isAgentGenerating={composerProps.agentStatus === "generating"}
+                    pauseHydration={isComposerHydrationPaused}
+                    onOpenFile={onOpenPublishFile}
+                    onPreloadPublishPane={onPreloadArtifacts}
+                  />
+                  <AgentComposerSurface
+                    dataTestId="agents-conversation-composer"
+                    actionTestId="agents-conversation-submit"
+                    onSend={handleComposerSend}
+                    onStop={composerProps.onStop}
+                    agentStatus={composerProps.agentStatus}
+                    isSubmitting={composerProps.isSending || isForkingConversation}
+                    isReadOnly={composerProps.isReadOnly || isForkingConversation}
+                    autoFocus={composerProps.autoFocus}
+                    conversationId={selectedConversationId}
+                    {...(!isFocusedChildChat
+                      ? {
+                          onForkSession: () => runForkCommand(""),
+                          forkSessionDisabled: isForkingConversation,
+                        }
+                      : {})}
+                    placeholder={
+                      isFocusedChildChat
+                        ? "Send a message..."
+                        : "Ask the agent to plan, build, debug, or review something"
                     }
-                  }}
-                  sendDisabledReason={
-                    !isFocusedChildChat ? workspaceProviderStatusMessage : null
-                  }
-                  hasQueuedMessages={composerProps.hasQueuedMessages}
-                  onEditLastQueued={composerProps.onEditLastQueued}
-                  attachments={composerProps.attachments}
-                  enableAttachments={composerProps.enableAttachments}
-                  onFilesSelected={composerProps.onFilesSelected}
-                  onRemoveAttachment={composerProps.onRemoveAttachment}
-                  attachmentsUploading={composerProps.attachmentsUploading}
-                  {...(composerProps.value !== undefined
-                    ? {
-                        value: composerProps.value,
-                        onChange: (value: string) => {
-                          markComposerActivity();
-                          composerProps.onChange?.(value);
-                        },
+                    onFocusChange={(focused) => {
+                      if (focused) {
+                        markComposerActivity();
                       }
-                    : {})}
-                  {...(composerProps.questionMode !== undefined
-                    ? { questionMode: composerProps.questionMode }
-                    : {})}
-                  submitLabel="Send"
-                  {...(activeConversationMode
-                    ? {
-                        mode: {
-                          value: activeConversationMode,
-                          onOpen: onActiveConversationModeMenuOpen,
-                          onValueChange: (value: string) =>
-                            onActiveConversationModeChange(
-                              value as AgentConversationWorkspaceMode,
+                    }}
+                    sendDisabledReason={
+                      !isFocusedChildChat ? workspaceProviderStatusMessage : null
+                    }
+                    hasQueuedMessages={composerProps.hasQueuedMessages}
+                    onEditLastQueued={composerProps.onEditLastQueued}
+                    attachments={composerProps.attachments}
+                    enableAttachments={composerProps.enableAttachments}
+                    onFilesSelected={composerProps.onFilesSelected}
+                    onRemoveAttachment={composerProps.onRemoveAttachment}
+                    attachmentsUploading={composerProps.attachmentsUploading}
+                    {...(composerProps.value !== undefined
+                      ? {
+                          value: composerProps.value,
+                          onChange: (value: string) => {
+                            markComposerActivity();
+                            composerProps.onChange?.(value);
+                          },
+                        }
+                      : {})}
+                    {...(composerProps.questionMode !== undefined
+                      ? { questionMode: composerProps.questionMode }
+                      : {})}
+                    submitLabel="Send"
+                    {...(activeConversationMode
+                      ? {
+                          mode: {
+                            value: activeConversationMode,
+                            onOpen: onActiveConversationModeMenuOpen,
+                            onValueChange: (value: string) =>
+                              onActiveConversationModeChange(
+                                value as AgentConversationWorkspaceMode,
+                              ),
+                            options: modeOptions,
+                            // Workspace conversation owns mode; child chats
+                            // inherit and display it read-only.
+                            disabled:
+                              isFocusedChildChat ||
+                              composerProps.agentStatus !== "idle" ||
+                              switchingConversationModeId ===
+                                selectedConversationId,
+                          },
+                        }
+                      : {})}
+                    {...(composerChatFocus ? { chatFocus: composerChatFocus } : {})}
+                    slashCommands={
+                      !isFocusedChildChat
+                        ? [
+                            {
+                              id: "fork",
+                              label: "/fork",
+                              description: "Fork this agent conversation",
+                              disabled: isForkingConversation,
+                              onSelect: () => runForkCommand(""),
+                            },
+                          ]
+                        : []
+                    }
+                    project={{
+                      value: activeProjectId,
+                      onValueChange: () => undefined,
+                      options: activeProjectOptions,
+                      placeholder: "Current project",
+                      disabled: true,
+                    }}
+                    {...(() => {
+                      if (!isFocusedChildChat) {
+                        return {
+                          provider: {
+                            value: normalizedActiveRuntime.provider,
+                            onValueChange: () => undefined,
+                            options:
+                              providerOptions.length > 0
+                                ? providerOptions
+                                : AGENT_PROVIDER_OPTIONS,
+                            disabled: true,
+                            footerAction: (
+                              <AgentProviderSettingsButton
+                                onClick={openProviderSettings}
+                                testId="agents-conversation-provider-settings"
+                              />
                             ),
-                          options: modeOptions,
-                          // Workspace conversation owns mode; child chats
-                          // inherit and display it read-only.
-                          disabled:
-                            isFocusedChildChat ||
-                            composerProps.agentStatus !== "idle" ||
-                            switchingConversationModeId === selectedConversationId,
-                        },
+                            compactFooterAction: (
+                              <AgentProviderSettingsButton
+                                onClick={openProviderSettings}
+                                testId="agents-conversation-provider-settings-compact"
+                                compact
+                              />
+                            ),
+                          },
+                          model: {
+                            value: selectableWorkspaceRuntime.modelId,
+                            onValueChange: (modelId) =>
+                              onActiveModelChange(
+                                modelId,
+                                workspaceProviderSupportedEfforts,
+                              ),
+                            options: workspaceModelOptions,
+                            disabled: Boolean(workspaceProviderStatusMessage),
+                            onOpenModelSettings: () =>
+                              openModal("settings", { section: "models" }),
+                          },
+                          effort: {
+                            value: selectableWorkspaceRuntime.effort,
+                            onValueChange: (effort) =>
+                              onActiveEffortChange(
+                                effort,
+                                workspaceProviderSupportedEfforts,
+                              ),
+                            options: workspaceEffortOptions,
+                            disabled: Boolean(workspaceProviderStatusMessage),
+                            testId: "agents-conversation-effort",
+                          },
+                        };
                       }
-                    : {})}
-                  {...(composerChatFocus ? { chatFocus: composerChatFocus } : {})}
-                  project={{
-                    value: activeProjectId,
-                    onValueChange: () => undefined,
-                    options: activeProjectOptions,
-                    placeholder: "Current project",
-                    disabled: true,
-                  }}
-                  {...(() => {
-                    if (!isFocusedChildChat) {
+                      // Child chat: use the focused session's actual runtime
+                      // straight from the chat panel. We never fall back to the
+                      // workspace runtime here because that produced misleading
+                      // mismatched displays.
+                      const childProvider =
+                        (composerProps.providerHarness as
+                          | AgentProvider
+                          | undefined) ?? undefined;
+                      const childModelId = composerProps.effectiveModel?.id;
+                      // Fallback provider value satisfies the typed union when
+                      // harness is missing; the pill self-hides when labels are empty.
+                      const fallbackProvider: AgentProvider = "codex";
                       return {
                         provider: {
-                          value: normalizedActiveRuntime.provider,
+                          value: childProvider ?? fallbackProvider,
                           onValueChange: () => undefined,
-                          options: providerOptions.length > 0 ? providerOptions : AGENT_PROVIDER_OPTIONS,
+                          options: childProvider ? AGENT_PROVIDER_OPTIONS : [],
                           disabled: true,
-                          footerAction: (
-                            <AgentProviderSettingsButton
-                              onClick={openProviderSettings}
-                              testId="agents-conversation-provider-settings"
-                            />
-                          ),
-                          compactFooterAction: (
-                            <AgentProviderSettingsButton
-                              onClick={openProviderSettings}
-                              testId="agents-conversation-provider-settings-compact"
-                              compact
-                            />
-                          ),
                         },
                         model: {
-                          value: selectableWorkspaceRuntime.modelId,
-                          onValueChange: (modelId) =>
-                            onActiveModelChange(
-                              modelId,
-                              workspaceProviderSupportedEfforts
-                            ),
-                          options: workspaceModelOptions,
-                          disabled: Boolean(workspaceProviderStatusMessage),
-                          onOpenModelSettings: () => openModal("settings", { section: "models" }),
+                          value: childModelId ?? "",
+                          onValueChange: () => undefined,
+                          options: childProvider
+                            ? agentModelOptions(childProvider, modelRegistry)
+                            : [],
+                          disabled: true,
                         },
                         effort: {
-                          value: selectableWorkspaceRuntime.effort,
-                          onValueChange: (effort) =>
-                            onActiveEffortChange(
-                              effort,
-                              workspaceProviderSupportedEfforts
-                            ),
-                          options: workspaceEffortOptions,
-                          disabled: Boolean(workspaceProviderStatusMessage),
-                          testId: "agents-conversation-effort",
+                          value: "",
+                          onValueChange: () => undefined,
+                          options: [],
+                          disabled: true,
                         },
                       };
-                    }
-                    // Child chat: use the focused session's actual runtime
-                    // straight from the chat panel. We never fall back to the
-                    // workspace runtime here — that produced misleading
-                    // mismatched displays (e.g., "claude · gpt-5.4").
-                    const childProvider =
-                      (composerProps.providerHarness as AgentProvider | undefined) ??
-                      undefined;
-                    const childModelId = composerProps.effectiveModel?.id;
-                    // Fallback provider value satisfies the typed union
-                    // when harness is missing; the pill self-hides when
-                    // both labels resolve empty (see ComposerRuntimePill).
-                    const fallbackProvider: AgentProvider = "codex";
-                    return {
-                      provider: {
-                        value: childProvider ?? fallbackProvider,
-                        onValueChange: () => undefined,
-                        options: childProvider
-                          ? AGENT_PROVIDER_OPTIONS
-                          : [],
-                        disabled: true,
-                      },
-                      model: {
-                        value: childModelId ?? "",
-                        onValueChange: () => undefined,
-                        options: childProvider
-                          ? agentModelOptions(childProvider, modelRegistry)
-                          : [],
-                        disabled: true,
-                      },
-                      effort: {
-                        value: "",
-                        onValueChange: () => undefined,
-                        options: [],
-                        disabled: true,
-                      },
-                    };
-                  })()}
-                />
-                {!isFocusedChildChat && workspaceProviderStatusMessage && (
-                  <div
-                    className="mx-2 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-[0.8125rem]"
-                    style={{
-                      color: "var(--text-secondary)",
-                      background: "var(--bg-surface)",
-                      borderColor: "var(--border-subtle)",
-                    }}
-                    data-testid="agents-conversation-provider-status"
-                  >
-                    <span>{workspaceProviderStatusMessage}</span>
-                    <button
-                      type="button"
-                      className="rounded-md px-2 py-1 text-[0.75rem] font-medium"
+                    })()}
+                  />
+                  {!isFocusedChildChat && workspaceProviderStatusMessage && (
+                    <div
+                      className="mx-2 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-[0.8125rem]"
                       style={{
-                        color: "var(--accent-primary)",
-                        background: "var(--accent-muted)",
+                        color: "var(--text-secondary)",
+                        background: "var(--bg-surface)",
+                        borderColor: "var(--border-subtle)",
                       }}
-                      onClick={openProviderSettings}
-                      data-testid="agents-conversation-provider-status-settings"
+                      data-testid="agents-conversation-provider-status"
                     >
-                      Open Settings
-                    </button>
+                      <span>{workspaceProviderStatusMessage}</span>
+                      <button
+                        type="button"
+                        className="rounded-md px-2 py-1 text-[0.75rem] font-medium"
+                        style={{
+                          color: "var(--accent-primary)",
+                          background: "var(--accent-muted)",
+                        }}
+                        onClick={openProviderSettings}
+                        data-testid="agents-conversation-provider-status-settings"
+                      >
+                        Open Settings
+                      </button>
+                    </div>
+                  )}
+                  <div className="mt-2 flex w-full flex-wrap items-center justify-between gap-2 px-2">
+                    <AgentComposerProjectLine
+                      value={activeProjectId}
+                      onValueChange={() => undefined}
+                      options={activeProjectOptions}
+                      placeholder="Current project"
+                      disabled
+                    />
+                    <AgentConversationBaseLine
+                      workspace={activeWorkspace}
+                      {...(activeWorkspaceFreshness
+                        ? { freshness: activeWorkspaceFreshness }
+                        : {})}
+                    />
                   </div>
-                )}
-                <div className="mt-2 flex w-full flex-wrap items-center justify-between gap-2 px-2">
-                  <AgentComposerProjectLine
-                    value={activeProjectId}
-                    onValueChange={() => undefined}
-                    options={activeProjectOptions}
-                    placeholder="Current project"
-                    disabled
-                  />
-                  <AgentConversationBaseLine
-                    workspace={activeWorkspace}
-                    {...(activeWorkspaceFreshness
-                      ? { freshness: activeWorkspaceFreshness }
-                      : {})}
-                  />
-                </div>
-              </>
-            ),
+                </>
+              );
+            },
           }}
           {...(!isFocusedChildChat && activeConversation.contextType === "project" && attachedIdeationSessionId
             ? { additionalQuestionSessionIds: [attachedIdeationSessionId] }
@@ -623,6 +730,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         setDockElement={setTerminalChatDockElement}
       />
+      <ConfirmationDialog {...confirmationDialogProps} />
     </div>
   );
 });

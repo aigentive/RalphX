@@ -114,6 +114,22 @@ impl ChatTimelineRepository for MemoryChatTimelineRepository {
             .count() as u32)
     }
 
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>> {
+        let mut items: Vec<_> = self
+            .items
+            .read()
+            .unwrap()
+            .values()
+            .filter(|item| &item.conversation_id == conversation_id)
+            .cloned()
+            .collect();
+        items.sort_by_key(|item| item.sequence);
+        Ok(items)
+    }
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()> {
         let mut items = self.items.write().unwrap();
         let now = Utc::now();

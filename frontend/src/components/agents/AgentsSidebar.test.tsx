@@ -417,6 +417,7 @@ function renderSidebar(
         onRenameConversation={vi.fn()}
         onArchiveConversation={vi.fn()}
         onRestoreConversation={vi.fn()}
+        onForkConversation={vi.fn()}
         showArchived={false}
         onShowArchivedChange={vi.fn()}
         {...props}
@@ -731,6 +732,7 @@ describe("AgentsSidebar", () => {
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
             showArchived={false}
             onShowArchivedChange={vi.fn()}
           />
@@ -1460,6 +1462,54 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByText("Rename session")).not.toBeInTheDocument();
   });
 
+  it("forks a session from row actions", async () => {
+    const user = userEvent.setup();
+    const onForkConversation = vi.fn().mockResolvedValue(undefined);
+    const activeConversation = conversation({ id: "conversation-fork", title: "Forkable run" });
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onForkConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Fork session"));
+
+    expect(screen.getByText("Fork session?")).toBeInTheDocument();
+    expect(onForkConversation).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Fork session" }));
+
+    await waitFor(() => expect(onForkConversation).toHaveBeenCalledWith(activeConversation));
+  });
+
+  it("cancels a session fork from row actions", async () => {
+    const user = userEvent.setup();
+    const onForkConversation = vi.fn().mockResolvedValue(undefined);
+    const activeConversation = conversation({ id: "conversation-fork-cancel", title: "Forkable run" });
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], { onForkConversation });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Fork session"));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onForkConversation).not.toHaveBeenCalled();
+  });
+
   it("hides the session status dot when the row action menu is visible", async () => {
     const user = userEvent.setup();
     const conv = conversation({ id: "conversation-menu-overlap", title: "Menu overlap" });
@@ -2119,6 +2169,7 @@ describe("AgentsSidebar", () => {
           onRenameConversation={vi.fn()}
           onArchiveConversation={vi.fn()}
           onRestoreConversation={vi.fn()}
+          onForkConversation={vi.fn()}
           showArchived={false}
           onShowArchivedChange={vi.fn()}
         />

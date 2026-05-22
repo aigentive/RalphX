@@ -18,7 +18,7 @@ use crate::domain::entities::{ChatContextType, IdeationSessionId, ProjectId, Tas
 use crate::domain::repositories::{
     ExecutionSettingsRepository, IdeationSessionRepository, TaskRepository,
 };
-use crate::domain::services::{RunningAgentRegistry};
+use crate::domain::services::RunningAgentRegistry;
 
 /// Drains deferred pending ideation sessions for a project when capacity frees up.
 ///
@@ -103,8 +103,7 @@ impl PendingSessionDrainService {
             };
 
             let running_global_ideation = self.count_global_ideation_slots().await;
-            let running_project_ideation =
-                self.count_project_ideation_slots(project_id).await;
+            let running_project_ideation = self.count_project_ideation_slots(project_id).await;
             let running_project_total = self.count_project_total_slots(project_id).await;
 
             // execution_waiting: conservative approximation — we don't track the message
@@ -267,4 +266,3 @@ impl PendingSessionDrainService {
         count
     }
 }
-

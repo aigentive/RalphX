@@ -27,6 +27,7 @@ import {
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspacePrSupervision,
   startAgentConversation,
+  forkAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
   getQueuedAgentMessages,
@@ -239,6 +240,10 @@ describe("chat api", () => {
         claude_session_id: null,
         provider_session_id: "thread-1",
         provider_harness: "codex",
+        logical_model: "gpt-5.4",
+        effective_model_id: "gpt-5.4-2026-04-01",
+        logical_effort: "high",
+        effective_effort: "high",
         title: "Title",
         message_count: 2,
         last_message_at: null,
@@ -261,6 +266,10 @@ describe("chat api", () => {
       providerHarness: "codex",
       upstreamProvider: null,
       providerProfile: null,
+      logicalModel: "gpt-5.4",
+      effectiveModelId: "gpt-5.4-2026-04-01",
+      logicalEffort: "high",
+      effectiveEffort: "high",
       claudeSessionId: null,
     });
   });
@@ -1683,6 +1692,86 @@ describe("chat api", () => {
     expect(result.workspace?.mode).toBe("plan");
   });
 
+  it("forks an agent conversation and transforms child workspace metadata", async () => {
+    const conversation = {
+      id: "conversation-child",
+      context_type: "project",
+      context_id: "project-1",
+      claude_session_id: null,
+      provider_session_id: "thread-child",
+      provider_harness: "codex",
+      logical_model: "gpt-5.5",
+      effective_model_id: "gpt-5.5",
+      logical_effort: "high",
+      effective_effort: "high",
+      agent_mode: "edit",
+      parent_conversation_id: "conversation-parent",
+      title: "[Fork] Parent chat",
+      message_count: 2,
+      last_message_at: null,
+      created_at: "2026-01-24T10:00:00Z",
+      updated_at: "2026-01-24T10:02:00Z",
+      archived_at: null,
+    };
+    mockInvoke.mockResolvedValue({
+      parent_conversation: {
+        ...conversation,
+        id: "conversation-parent",
+        provider_session_id: "thread-parent",
+        parent_conversation_id: null,
+        title: "Parent chat",
+      },
+      conversation,
+      workspace: {
+        conversation_id: "conversation-child",
+        project_id: "project-1",
+        mode: "edit",
+        base_ref_kind: "project_default",
+        base_ref: "main",
+        base_display_name: "Project default (main)",
+        base_commit: "base-sha",
+        branch_name: "ralphx/demo/conversation-child",
+        worktree_path: "/tmp/ralphx/conversation-child",
+        linked_ideation_session_id: null,
+        linked_plan_branch_id: null,
+        publication_pr_number: null,
+        publication_pr_url: null,
+        publication_pr_status: null,
+        publication_push_status: null,
+        status: "active",
+        created_at: "2026-01-24T10:00:00Z",
+        updated_at: "2026-01-24T10:02:00Z",
+      },
+      provider_session_forked: true,
+      copied_message_count: 2,
+      copied_timeline_item_count: 3,
+    });
+
+    const result = await forkAgentConversation("conversation-parent");
+
+    expect(mockInvoke).toHaveBeenCalledWith("fork_agent_conversation", {
+      input: {
+        conversationId: "conversation-parent",
+      },
+    });
+    expect(result.parentConversation.id).toBe("conversation-parent");
+    expect(result.conversation).toMatchObject({
+      id: "conversation-child",
+      providerHarness: "codex",
+      providerSessionId: "thread-child",
+      logicalModel: "gpt-5.5",
+      logicalEffort: "high",
+      parentConversationId: "conversation-parent",
+    });
+    expect(result.workspace).toMatchObject({
+      conversationId: "conversation-child",
+      baseCommit: "base-sha",
+      branchName: "ralphx/demo/conversation-child",
+    });
+    expect(result.providerSessionForked).toBe(true);
+    expect(result.copiedTimelineItemCount).toBe(3);
+  });
+
   it("uses the web-mode chat mock for child session status when available", async () => {
     window.__mockChatApi = {
       reset: vi.fn(),
@@ -1853,6 +1942,7 @@ describe("chat api", () => {
       setAgentConversationWorkspacePrSupervision
     );
     expect(chatApi.switchAgentConversationMode).toBe(switchAgentConversationMode);
+    expect(chatApi.forkAgentConversation).toBe(forkAgentConversation);
     expect(chatApi.archiveConversation).toBe(archiveConversation);
     expect(chatApi.restoreConversation).toBe(restoreConversation);
     expect(chatApi.getConversationActiveState).toBe(getConversationActiveState);
