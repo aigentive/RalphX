@@ -354,7 +354,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     const lastActive = [...tasks].reverse().find((t) => t.state === "active");
     if (lastActive) {
       const node = taskRowRefs.current.get(lastActive.taskId);
-      if (node) {
+      if (typeof node?.scrollIntoView === "function") {
         node.scrollIntoView({ block: "nearest", behavior: "smooth" });
         return;
       }

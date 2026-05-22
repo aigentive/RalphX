@@ -287,7 +287,7 @@ describe("AgentsView publish", () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(taskToggle).toHaveTextContent("Tasks");
-    expect(taskToggle).toHaveTextContent("2");
+    expect(taskToggle).toHaveTextContent("0/2");
     expect(changesToggle).toHaveTextContent("Workspace changes");
 
     fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
