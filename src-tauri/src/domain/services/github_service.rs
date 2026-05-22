@@ -117,6 +117,21 @@ impl PrBranchMatch {
     }
 }
 
+/// Pull request search result used by branch/base picker UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrSearchResult {
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub head_ref_name: String,
+    pub head_ref_oid: Option<String>,
+    pub base_ref_name: String,
+    pub is_draft: bool,
+    pub updated_at: Option<String>,
+    pub author_login: Option<String>,
+    pub is_cross_repository: bool,
+}
+
 /// Inline review comment attached to a GitHub pull request review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrReviewCommentFeedback {
@@ -296,6 +311,16 @@ pub trait GithubServiceTrait: Send + Sync {
         working_dir: &Path,
         head: &str,
     ) -> AppResult<Option<(i64, String)>>;
+
+    /// Search open pull requests for base-picker selection.
+    async fn search_pull_requests(
+        &self,
+        _working_dir: &Path,
+        _query: Option<&str>,
+        _limit: usize,
+    ) -> AppResult<Vec<PrSearchResult>> {
+        Ok(Vec::new())
+    }
 
     /// Find the latest PR for a head branch across all GitHub states.
     async fn find_latest_pr_by_head_branch(

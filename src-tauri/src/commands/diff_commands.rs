@@ -2014,6 +2014,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -2746,6 +2747,7 @@ new file mode 100644
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await

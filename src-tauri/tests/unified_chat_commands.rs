@@ -538,6 +538,7 @@ async fn setup_ipc_workspace_state(
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await
@@ -631,6 +632,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await
@@ -750,6 +752,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await
@@ -775,6 +778,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await
@@ -844,6 +848,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await
@@ -933,6 +938,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
             base_ref: Some("main".to_string()),
             display_name: None,
+            source_pull_request: None,
         },
     )
     .await
@@ -2107,6 +2113,7 @@ mod ipc_contract {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
             },
@@ -2185,6 +2192,7 @@ mod ipc_contract {
                 base_ref_kind: Some("project_default".to_string()),
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
                 composer_project_references: Vec::new(),
                 composer_integration_references: Vec::new(),
             },

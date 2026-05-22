@@ -88,6 +88,46 @@ pub struct ProjectResponse {
     pub updated_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchGithubPullRequestsInput {
+    pub project_id: String,
+    pub query: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubPullRequestSearchResult {
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub head_ref_name: String,
+    pub head_ref_oid: Option<String>,
+    pub base_ref_name: String,
+    pub is_draft: bool,
+    pub updated_at: Option<String>,
+    pub author_login: Option<String>,
+    pub is_cross_repository: bool,
+}
+
+impl From<crate::domain::services::PrSearchResult> for GithubPullRequestSearchResult {
+    fn from(result: crate::domain::services::PrSearchResult) -> Self {
+        Self {
+            number: result.number,
+            title: result.title,
+            url: result.url,
+            head_ref_name: result.head_ref_name,
+            head_ref_oid: result.head_ref_oid,
+            base_ref_name: result.base_ref_name,
+            is_draft: result.is_draft,
+            updated_at: result.updated_at,
+            author_login: result.author_login,
+            is_cross_repository: result.is_cross_repository,
+        }
+    }
+}
+
 impl From<Project> for ProjectResponse {
     fn from(project: Project) -> Self {
         Self {
@@ -486,6 +526,35 @@ pub async fn get_git_branches(working_directory: String) -> Result<Vec<String>, 
 
     GitService::list_branches(repo_path)
         .await
+        .map_err(|e| e.to_string())
+}
+
+/// Search open GitHub pull requests for the project repository.
+#[tauri::command]
+pub async fn search_github_pull_requests(
+    input: SearchGithubPullRequestsInput,
+    state: State<'_, AppState>,
+) -> Result<Vec<GithubPullRequestSearchResult>, String> {
+    let working_dir = get_project_working_directory(&input.project_id, &state).await?;
+    let Some(github_service) = state.github_service.as_ref() else {
+        return Err("GitHub pull request search is unavailable".to_string());
+    };
+    let query = input
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let limit = input.limit.unwrap_or(20).clamp(1, 50) as usize;
+
+    github_service
+        .search_pull_requests(&working_dir, query, limit)
+        .await
+        .map(|results| {
+            results
+                .into_iter()
+                .map(GithubPullRequestSearchResult::from)
+                .collect()
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -1258,7 +1327,68 @@ fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
 #[cfg(test)]
 mod git_auth_command_tests {
     use super::*;
+    use crate::domain::services::{GithubServiceTrait, PrSearchResult};
     use crate::infrastructure::git_auth::GitRemoteAuthConfig;
+    use crate::tests::mock_github_service::MockGithubService;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    #[tokio::test]
+    async fn search_github_pull_requests_trims_query_clamps_limit_and_maps_results() {
+        let github = Arc::new(MockGithubService::new());
+        github.will_return_pull_request_search(vec![PrSearchResult {
+            number: 42,
+            title: "Add PR picker".to_string(),
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+            head_ref_name: "feature/pr-picker".to_string(),
+            head_ref_oid: Some("abc123".to_string()),
+            base_ref_name: "main".to_string(),
+            is_draft: true,
+            updated_at: Some("2026-05-21T10:00:00Z".to_string()),
+            author_login: Some("dev".to_string()),
+            is_cross_repository: false,
+        }]);
+
+        let mut state = AppState::new_test();
+        state.github_service = Some(github.clone() as Arc<dyn GithubServiceTrait>);
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let mut project = Project::new(
+            "PR Search".to_string(),
+            temp.path().to_string_lossy().to_string(),
+        );
+        project.id = ProjectId::from_string("project-pr-search".to_string());
+        state.project_repo.create(project).await.unwrap();
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let results = search_github_pull_requests(
+            SearchGithubPullRequestsInput {
+                project_id: "project-pr-search".to_string(),
+                query: Some("  picker  ".to_string()),
+                limit: Some(99),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("search should succeed");
+
+        let state = github.state();
+        assert_eq!(state.search_pull_requests_calls, 1);
+        assert_eq!(
+            state.last_search_pull_requests_args,
+            Some((Some("picker".to_string()), 50))
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].number, 42);
+        assert_eq!(results[0].head_ref_name, "feature/pr-picker");
+        assert_eq!(results[0].head_ref_oid.as_deref(), Some("abc123"));
+        assert_eq!(results[0].base_ref_name, "main");
+        assert!(results[0].is_draft);
+        assert_eq!(results[0].author_login.as_deref(), Some("dev"));
+        assert!(!results[0].is_cross_repository);
+    }
 
     #[test]
     fn diagnostics_response_marks_mixed_https_fetch_and_ssh_push() {

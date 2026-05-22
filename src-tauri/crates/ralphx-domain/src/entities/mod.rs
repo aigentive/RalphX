@@ -48,7 +48,8 @@ pub use agent_conversation_workspace::{
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrDescription, AgentWorkspaceSourcePullRequest,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,

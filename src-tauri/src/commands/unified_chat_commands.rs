@@ -80,8 +80,9 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentRunStatus, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    AgentRunStatus, AgentWorkspaceSourcePullRequest, ChatAttachmentId, ChatContextType,
+    ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem, DelegatedSessionId,
+    ExecutionPlanStatus,
     IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
     ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
@@ -195,6 +196,17 @@ impl From<SendResult> for SendAgentMessageResponse {
 }
 
 /// Input for creating a project-backed agent conversation with an isolated workspace.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentWorkspaceSourcePullRequestInput {
+    pub number: i64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub head_ref_name: String,
+    pub base_ref_name: Option<String>,
+    pub head_ref_oid: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartAgentConversationInput {
@@ -217,6 +229,8 @@ pub struct StartAgentConversationInput {
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
     pub base_display_name: Option<String>,
+    /// Optional source pull request metadata when the selected base came from a PR head branch.
+    pub base_source_pull_request: Option<AgentWorkspaceSourcePullRequestInput>,
     /// Structured composer project references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_project_references: Vec<ComposerProjectReference>,
@@ -226,6 +240,29 @@ pub struct StartAgentConversationInput {
 }
 
 /// Response for an agent conversation workspace.
+#[derive(Debug, Serialize)]
+pub struct AgentWorkspaceSourcePullRequestResponse {
+    pub number: i64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub head_ref_name: String,
+    pub base_ref_name: Option<String>,
+    pub head_ref_oid: Option<String>,
+}
+
+impl From<AgentWorkspaceSourcePullRequest> for AgentWorkspaceSourcePullRequestResponse {
+    fn from(pull_request: AgentWorkspaceSourcePullRequest) -> Self {
+        Self {
+            number: pull_request.number,
+            url: pull_request.url,
+            title: pull_request.title,
+            head_ref_name: pull_request.head_ref_name,
+            base_ref_name: pull_request.base_ref_name,
+            head_ref_oid: pull_request.head_ref_oid,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct AgentConversationWorkspaceResponse {
     pub conversation_id: String,
@@ -239,6 +276,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<String>,
     pub linked_plan_branch_id: Option<String>,
+    pub source_pull_request: Option<AgentWorkspaceSourcePullRequestResponse>,
     pub publication_pr_number: Option<i64>,
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
@@ -283,6 +321,9 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             linked_plan_branch_id: workspace
                 .linked_plan_branch_id
                 .map(|id| id.as_str().to_string()),
+            source_pull_request: workspace
+                .source_pull_request
+                .map(AgentWorkspaceSourcePullRequestResponse::from),
             publication_pr_number: workspace.publication_pr_number,
             publication_pr_url: workspace.publication_pr_url,
             publication_pr_status: workspace.publication_pr_status,
@@ -2121,6 +2162,52 @@ fn parse_agent_workspace_base_kind(
         .transpose()
 }
 
+fn trim_optional_input(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_agent_workspace_source_pull_request(
+    input: Option<AgentWorkspaceSourcePullRequestInput>,
+    base_ref_kind: Option<IdeationAnalysisBaseRefKind>,
+    base_ref: Option<&str>,
+) -> Result<Option<AgentWorkspaceSourcePullRequest>, String> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+
+    if input.number <= 0 {
+        return Err("Source pull request number must be positive".to_string());
+    }
+    if base_ref_kind != Some(IdeationAnalysisBaseRefKind::LocalBranch) {
+        return Err(
+            "Source pull request metadata requires a local_branch base ref".to_string(),
+        );
+    }
+
+    let head_ref_name = input.head_ref_name.trim().to_string();
+    if head_ref_name.is_empty() {
+        return Err("Source pull request head branch is required".to_string());
+    }
+    if let Some(base_ref) = base_ref.map(str::trim).filter(|value| !value.is_empty()) {
+        if base_ref != head_ref_name {
+            return Err(
+                "Source pull request head branch must match the selected base ref".to_string(),
+            );
+        }
+    }
+
+    Ok(Some(AgentWorkspaceSourcePullRequest {
+        number: input.number,
+        url: trim_optional_input(input.url),
+        title: trim_optional_input(input.title),
+        head_ref_name,
+        base_ref_name: trim_optional_input(input.base_ref_name),
+        head_ref_oid: trim_optional_input(input.head_ref_oid),
+    }))
+}
+
 fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode) -> bool {
     matches!(
         mode,
@@ -2421,6 +2508,13 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     let parse_input_started = Instant::now();
     let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_ref = trim_optional_input(input.base_ref);
+    let base_display_name = trim_optional_input(input.base_display_name);
+    let source_pull_request = normalize_agent_workspace_source_pull_request(
+        input.base_source_pull_request,
+        base_ref_kind,
+        base_ref.as_deref(),
+    )?;
     let project_id = ProjectId::from_string(input.project_id.clone());
     log_start_agent_conversation_phase(&input.project_id, None, "parse_input", parse_input_started);
 
@@ -2500,14 +2594,9 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
                 mode,
                 AgentConversationWorkspaceBaseSelection {
                     kind: base_ref_kind,
-                    base_ref: input
-                        .base_ref
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty()),
-                    display_name: input
-                        .base_display_name
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty()),
+                    base_ref,
+                    display_name: base_display_name,
+                    source_pull_request,
                 },
                 AgentConversationWorkspaceSetupMode::Deferred,
             )
@@ -2812,6 +2901,7 @@ pub async fn switch_agent_conversation_mode_for_state(
                             .base_display_name
                             .map(|value| value.trim().to_string())
                             .filter(|value| !value.is_empty()),
+                        source_pull_request: None,
                     },
                 )
                 .await
@@ -4025,6 +4115,7 @@ pub async fn update_agent_conversation_workspace_from_base(
         kind: parse_agent_workspace_base_kind(base_ref_kind.as_deref())?,
         base_ref,
         display_name: base_display_name,
+        source_pull_request: None,
     };
     update_agent_conversation_workspace_from_base_for_app_state(
         state.inner(),
@@ -6514,8 +6605,9 @@ mod tests {
         get_agent_timeline_item_tool_call_detail_for_app_state,
         invalidate_agent_workspace_freshness_cache,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
-        normalize_agent_runtime_selection, normalize_explicit_publish_base_selection,
-        normalized_effort_for_supported, parse_wrapped_mcp_result_object,
+        normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
+        normalize_explicit_publish_base_selection, normalized_effort_for_supported,
+        parse_wrapped_mcp_result_object,
         persist_workspace_base_resolution_if_retargeted,
         precompute_agent_conversation_workspace_pr_description_for_app_state,
         project_plan_branch_publication_into_workspace_response,
@@ -6539,7 +6631,8 @@ mod tests {
         AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
         AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
         AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        DelegatedToolRuntimeSnapshot, SwitchAgentConversationModeInput,
+        AgentWorkspaceSourcePullRequestInput, DelegatedToolRuntimeSnapshot,
+        SwitchAgentConversationModeInput,
         AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
@@ -6617,6 +6710,74 @@ mod tests {
         assert_eq!(
             normalized_effort_for_supported(None, &supported, LogicalEffort::Low),
             LogicalEffort::Low
+        );
+    }
+
+    #[test]
+    fn normalize_agent_workspace_source_pull_request_trims_and_maps_valid_metadata() {
+        let normalized = normalize_agent_workspace_source_pull_request(
+            Some(AgentWorkspaceSourcePullRequestInput {
+                number: 123,
+                url: Some(" https://github.com/owner/repo/pull/123 ".to_string()),
+                title: Some(" Add PR source context ".to_string()),
+                head_ref_name: " feature/source-pr ".to_string(),
+                base_ref_name: Some(" main ".to_string()),
+                head_ref_oid: Some(" abc123 ".to_string()),
+            }),
+            Some(IdeationAnalysisBaseRefKind::LocalBranch),
+            Some("feature/source-pr"),
+        )
+        .expect("valid source PR metadata should normalize")
+        .expect("source PR metadata should be present");
+
+        assert_eq!(normalized.number, 123);
+        assert_eq!(
+            normalized.url.as_deref(),
+            Some("https://github.com/owner/repo/pull/123")
+        );
+        assert_eq!(normalized.title.as_deref(), Some("Add PR source context"));
+        assert_eq!(normalized.head_ref_name, "feature/source-pr");
+        assert_eq!(normalized.base_ref_name.as_deref(), Some("main"));
+        assert_eq!(normalized.head_ref_oid.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn normalize_agent_workspace_source_pull_request_validates_pr_base_contract() {
+        let input = AgentWorkspaceSourcePullRequestInput {
+            number: 123,
+            url: None,
+            title: None,
+            head_ref_name: "feature/source-pr".to_string(),
+            base_ref_name: None,
+            head_ref_oid: None,
+        };
+
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(input.clone()),
+                Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                Some("main"),
+            )
+            .expect_err("source PR metadata must use local branch base"),
+            "Source pull request metadata requires a local_branch base ref"
+        );
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(input.clone()),
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some("different-branch"),
+            )
+            .expect_err("source PR head must match selected base"),
+            "Source pull request head branch must match the selected base ref"
+        );
+        assert_eq!(
+            normalize_agent_workspace_source_pull_request(
+                Some(AgentWorkspaceSourcePullRequestInput { number: 0, ..input }),
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some("feature/source-pr"),
+            )
+            .expect_err("source PR number must be positive"),
+            "Source pull request number must be positive"
         );
     }
 
@@ -6739,6 +6900,7 @@ mod tests {
             worktree_path: "/tmp/workspace".to_string(),
             linked_ideation_session_id: Some("session-1".to_string()),
             linked_plan_branch_id: Some("plan-branch-1".to_string()),
+            source_pull_request: None,
             publication_pr_number: None,
             publication_pr_url: None,
             publication_pr_status: None,
@@ -6800,6 +6962,7 @@ mod tests {
             worktree_path: "/tmp/workspace".to_string(),
             linked_ideation_session_id: Some("session-1".to_string()),
             linked_plan_branch_id: Some("plan-branch-1".to_string()),
+            source_pull_request: None,
             publication_pr_number: Some(12),
             publication_pr_url: Some("https://github.com/mock/project/pull/12".to_string()),
             publication_pr_status: Some("open".to_string()),
@@ -7511,6 +7674,7 @@ mod tests {
                 kind: None,
                 base_ref: Some("  ".to_string()),
                 display_name: Some("ignored".to_string()),
+                source_pull_request: None,
             }
         )
         .expect("blank base ref should be allowed as no explicit selection")
@@ -7521,6 +7685,7 @@ mod tests {
                 kind: None,
                 base_ref: Some("  release/0.8  ".to_string()),
                 display_name: None,
+                source_pull_request: None,
             })
             .expect("local branch should normalize")
             .expect("local branch should produce a selection");
@@ -7533,6 +7698,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: Some("  ".to_string()),
+                source_pull_request: None,
             })
             .expect("project default should normalize")
             .expect("project default should produce a selection");
@@ -7543,6 +7709,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::CurrentBranch),
                 base_ref: Some("feature/base".to_string()),
                 display_name: None,
+                source_pull_request: None,
             })
             .expect("current branch should normalize")
             .expect("current branch should produce a selection");
@@ -7553,6 +7720,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::PullRequest),
                 base_ref: Some("123".to_string()),
                 display_name: None,
+                source_pull_request: None,
             })
             .expect_err("pull-request bases should be rejected");
         assert!(error.contains("Pull-request base refs are not supported"));
@@ -7922,6 +8090,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -8794,6 +8963,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
+                source_pull_request: None,
             },
         )
         .await
@@ -8853,6 +9023,7 @@ mod tests {
                 kind: None,
                 base_ref: None,
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -8960,6 +9131,7 @@ mod tests {
                 kind: None,
                 base_ref: None,
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -9005,6 +9177,7 @@ mod tests {
                 kind: None,
                 base_ref: None,
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -9049,6 +9222,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
+                source_pull_request: None,
             },
         )
         .await
@@ -9092,6 +9266,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
                 base_ref: Some("release/missing".to_string()),
                 display_name: Some("release/missing".to_string()),
+                source_pull_request: None,
             },
         )
         .await

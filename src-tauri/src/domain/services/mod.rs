@@ -34,7 +34,8 @@ pub use artifact_service::ArtifactService;
 pub use bucket_classifier::BucketClassifier;
 pub use gap_fingerprint::{gap_fingerprint, gap_score, jaccard_similarity};
 pub use github_service::{
-    GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrStatus, PrSyncState,
+    GithubServiceTrait, PrBranchMatch, PrMergeStateStatus, PrMergeableState, PrSearchResult,
+    PrStatus, PrSyncState,
 };
 pub use index_rewriter::{IndexRewriter, RewriteResult};
 pub use verification_events::{
