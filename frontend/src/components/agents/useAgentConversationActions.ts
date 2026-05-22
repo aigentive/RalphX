@@ -3,19 +3,25 @@ import type { Dispatch, SetStateAction } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { chatApi } from "@/api/chat";
+import { chatApi, type AgentConversationWorkspace } from "@/api/chat";
 import { executionApi } from "@/api/execution";
 import { ideationApi } from "@/api/ideation";
-import { chatKeys } from "@/hooks/useChat";
+import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { projectsApi } from "@/api/projects";
 import { projectKeys } from "@/hooks/useProjects";
 import type { Project } from "@/types/project";
+import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 
 import {
   getAgentConversationStoreKey,
+  toProjectAgentConversation,
   type AgentConversation,
 } from "./agentConversations";
-import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
+import { runtimeFromConversation } from "./agentConversationRuntime";
+import {
+  agentWorkspaceKeys,
+  preflightAgentWorkspaceFreshness,
+} from "./agentWorkspaceQueries";
 
 interface UseAgentConversationActionsArgs {
   activeProjectId: string | null;
@@ -34,8 +40,16 @@ interface UseAgentConversationActionsArgs {
   selectedProjectId: string | null;
   setActiveConversation: (storeKey: string, conversationId: string | null) => void;
   setOptimisticConversationsById: Dispatch<SetStateAction<Record<string, AgentConversation>>>;
+  setOptimisticWorkspacesByConversationId: Dispatch<
+    SetStateAction<Record<string, AgentConversationWorkspace>>
+  >;
   setFocusedProject: (projectId: string | null) => void;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
+  setRuntimeForConversation: (
+    conversationId: string,
+    projectId: string,
+    runtime: AgentRuntimeSelection
+  ) => void;
 }
 
 export function useAgentConversationActions({
@@ -55,8 +69,10 @@ export function useAgentConversationActions({
   selectedProjectId,
   setActiveConversation,
   setOptimisticConversationsById,
+  setOptimisticWorkspacesByConversationId,
   setFocusedProject,
   setOptimisticSelectedConversationId,
+  setRuntimeForConversation,
 }: UseAgentConversationActionsArgs) {
   const handleSelectConversation = useCallback(
     (conversationProjectId: string, conversation: AgentConversation) => {
@@ -148,6 +164,73 @@ export function useAgentConversationActions({
       closeSidebarOverlay();
     }
   }, [closeSidebarOverlay, isSidebarOverlayOpen, showStarterComposer]);
+
+  const handleForkConversation = useCallback(
+    async (conversationId: string) => {
+      try {
+        const result = await chatApi.forkAgentConversation(conversationId);
+        const conversation = toProjectAgentConversation(result.conversation);
+        const conversationProjectId = conversation.projectId;
+        const forkRuntime = runtimeFromConversation(conversation);
+
+        queryClient.setQueryData(
+          chatKeys.conversationSummary(conversation.id),
+          result.conversation
+        );
+        queryClient.setQueryData(
+          agentWorkspaceKeys.workspace(conversation.id),
+          result.workspace
+        );
+        setOptimisticConversationsById((current) => ({
+          ...current,
+          [conversation.id]: conversation,
+        }));
+        if (result.workspace) {
+          setOptimisticWorkspacesByConversationId((current) => ({
+            ...current,
+            [conversation.id]: result.workspace!,
+          }));
+        }
+        setOptimisticSelectedConversationId(conversation.id);
+        setFocusedProject(conversationProjectId);
+        if (forkRuntime) {
+          setRuntimeForConversation(
+            conversation.id,
+            conversationProjectId,
+            forkRuntime
+          );
+        }
+        selectConversation(conversationProjectId, conversation.id);
+        setActiveConversation(
+          getAgentConversationStoreKey(conversation),
+          conversation.id
+        );
+        invalidateConversationDataQueries(queryClient, conversation.id);
+        void invalidateProjectConversations(conversationProjectId);
+        return result;
+      } catch (error) {
+        toast.error("Failed to fork conversation", {
+          description:
+            error instanceof Error
+              ? error.message
+              : "The agent conversation could not be forked.",
+          duration: 10000,
+        });
+        throw error;
+      }
+    },
+    [
+      invalidateProjectConversations,
+      queryClient,
+      selectConversation,
+      setActiveConversation,
+      setFocusedProject,
+      setOptimisticConversationsById,
+      setOptimisticSelectedConversationId,
+      setOptimisticWorkspacesByConversationId,
+      setRuntimeForConversation,
+    ]
+  );
 
   const handleArchiveProject = useCallback(
     async (targetProjectId: string) => {
@@ -247,6 +330,7 @@ export function useAgentConversationActions({
     handleArchiveProject,
     handleRenameConversation,
     handleRestoreConversation,
+    handleForkConversation,
     handleSidebarCreateAgent,
     handleSidebarFocusProject,
     handleSidebarSelectConversation,

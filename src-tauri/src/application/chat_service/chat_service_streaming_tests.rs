@@ -56,6 +56,20 @@ async fn spawn_jsonl_process(lines: &[&str]) -> tokio::process::Child {
     child
 }
 
+async fn spawn_interactive_jsonl_process_that_stays_alive(line: &str) -> tokio::process::Child {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("printf '%s\\n' \"$RALPHX_STREAM_LINE\"; sleep 10")
+        .env("RALPHX_STREAM_LINE", line)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    command.spawn().expect("spawn interactive jsonl fixture")
+}
+
 async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {
     let child = spawn_jsonl_process(lines).await;
     let conversation_id = ChatConversationId::new();
@@ -91,6 +105,59 @@ async fn run_claude_stream_lines(lines: &[&str]) -> Result<StreamOutcome, Stream
         false,
     )
     .await
+}
+
+#[tokio::test]
+async fn claude_stream_error_turn_complete_does_not_wait_for_interactive_timeout() {
+    let child = spawn_interactive_jsonl_process_that_stays_alive(
+        r#"{"type":"result","session_id":"sess-overloaded","is_error":true,"errors":["API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment."],"result":"API Error: 529 Overloaded. This is a server-side issue, usually temporary - try again in a moment.","cost_usd":0.0}"#,
+    )
+    .await;
+    let conversation_id = ChatConversationId::new();
+    let context_id = IdeationSessionId::new();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        process_stream_background::<MockRuntime>(
+            child,
+            AgentHarnessKind::Claude,
+            ChatContextType::Ideation,
+            context_id.as_str(),
+            &conversation_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            CancellationToken::new(),
+            None,
+            false,
+            StreamingStateCache::new(),
+            None,
+            None,
+            Some("stream-run-id".to_string()),
+            None,
+            None,
+            false,
+            false,
+        ),
+    )
+    .await
+    .expect("error TurnComplete should not wait for the interactive line-read timeout");
+
+    let error = result.expect_err("error result should fail the stream");
+    assert!(
+        matches!(
+            error,
+            StreamError::ProviderError {
+                category: ProviderErrorCategory::Overloaded,
+                ..
+            }
+        ),
+        "expected overloaded provider error, got {error:?}"
+    );
 }
 
 async fn run_codex_stream_lines(lines: &[&str]) -> Result<StreamOutcome, StreamError> {

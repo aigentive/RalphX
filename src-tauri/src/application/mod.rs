@@ -3,6 +3,7 @@
 
 pub mod agent_lane_settings_bootstrap;
 pub mod agent_lane_resolution;
+pub mod agent_conversation_fork;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub mod agent_workspace_pr_description;
@@ -48,6 +49,7 @@ pub mod permission_state;
 pub mod plan_ranking;
 pub mod priority_service;
 pub(crate) mod provider_onboarding_gate;
+pub mod provider_session_fork;
 pub mod pr_startup_recovery;
 pub mod prune_engine;
 pub mod publish_resilience;

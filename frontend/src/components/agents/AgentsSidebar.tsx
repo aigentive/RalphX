@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Folder,
   GitBranch,
+  GitFork,
   GitPullRequest,
   MoreHorizontal,
   Pencil,
@@ -31,6 +32,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import {
   Collapsible,
   CollapsibleContent,
@@ -139,6 +141,7 @@ interface AgentsSidebarProps {
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   showArchived: boolean;
   onShowArchivedChange: (showArchived: boolean) => void;
   isVisible?: boolean;
@@ -158,6 +161,7 @@ export function AgentsSidebar({
   onRenameConversation,
   onArchiveConversation,
   onRestoreConversation,
+  onForkConversation,
   showArchived,
   onShowArchivedChange,
   isVisible = true,
@@ -166,6 +170,7 @@ export function AgentsSidebar({
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const normalizedSearchInput = searchQuery.trim().toLowerCase();
   const normalizedSearch = useDebouncedValue(
     normalizedSearchInput,
@@ -215,6 +220,21 @@ export function AgentsSidebar({
       onSelectConversation(projectId, conversation);
     },
     [onSelectConversation]
+  );
+  const handleForkConversation = useCallback(
+    async (conversation: AgentConversation) => {
+      const confirmed = await confirm({
+        title: "Fork session?",
+        description:
+          "Create a new agent conversation copied from this one. The original conversation will stay unchanged.",
+        confirmText: "Fork session",
+      });
+      if (!confirmed) {
+        return;
+      }
+      await onForkConversation(conversation);
+    },
+    [confirm, onForkConversation],
   );
   const priorityConversationIds = useMemo(() => {
     const ids = new Set(pinnedConversationIdList);
@@ -478,6 +498,7 @@ export function AgentsSidebar({
             onArchiveConversation={onArchiveConversation}
             onRenameConversation={onRenameConversation}
             onRestoreConversation={onRestoreConversation}
+            onForkConversation={handleForkConversation}
             onSelectConversation={handleSelectVisibleConversation}
             onTogglePinnedConversation={togglePinnedConversation}
             showArchived={showArchived}
@@ -497,6 +518,7 @@ export function AgentsSidebar({
               onRenameConversation={onRenameConversation}
               onArchiveConversation={onArchiveConversation}
               onRestoreConversation={onRestoreConversation}
+              onForkConversation={handleForkConversation}
               onTogglePinnedConversation={togglePinnedConversation}
               priorityConversationIds={priorityConversationIds}
               pinnedConversationIds={pinnedConversationIds}
@@ -530,6 +552,7 @@ export function AgentsSidebar({
           Add project
         </button>
       </div>
+      <ConfirmationDialog {...confirmationDialogProps} />
     </aside>
   );
 }
@@ -932,6 +955,7 @@ interface PublicationStateGroupsProps {
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
   showArchived: boolean;
 }
@@ -948,6 +972,7 @@ function PublicationStateGroups({
   onArchiveConversation,
   onRenameConversation,
   onRestoreConversation,
+  onForkConversation,
   onSelectConversation,
   onTogglePinnedConversation,
   showArchived,
@@ -994,6 +1019,7 @@ function PublicationStateGroups({
           onArchiveConversation={onArchiveConversation}
           onRenameConversation={onRenameConversation}
           onRestoreConversation={onRestoreConversation}
+          onForkConversation={onForkConversation}
           onSelectConversation={onSelectConversation}
           onTogglePinnedConversation={onTogglePinnedConversation}
           onTogglePublicationState={(state, expanded) =>
@@ -1023,6 +1049,7 @@ interface PublicationStateGroupProps {
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
   onTogglePublicationState: (
     publicationState: AgentSidebarPublicationState,
@@ -1047,6 +1074,7 @@ function PublicationStateGroup({
   onArchiveConversation,
   onRenameConversation,
   onRestoreConversation,
+  onForkConversation,
   onSelectConversation,
   onTogglePinnedConversation,
   onTogglePublicationState,
@@ -1292,6 +1320,7 @@ function PublicationStateGroup({
                 onSelect={() => onSelectConversation(conversation.projectId, conversation)}
                 onRename={() => openRenameDialog(conversation)}
                 onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+                onFork={() => onForkConversation(conversation)}
                 onRestore={() => onRestoreConversation(conversation)}
                 onArchiveRequest={() => setArchiveDialogConversation(conversation)}
                 setActionsTriggerRef={(node) => {
@@ -1378,6 +1407,7 @@ interface AgentSessionRowProps {
   onSelect: () => void;
   onRename: () => void;
   onTogglePinned: () => void;
+  onFork: () => void;
   onRestore: () => void;
   onArchiveRequest: () => void;
   setActionsTriggerRef: (node: HTMLButtonElement | null) => void;
@@ -1400,6 +1430,7 @@ function AgentSessionRow({
   onSelect,
   onRename,
   onTogglePinned,
+  onFork,
   onRestore,
   onArchiveRequest,
   setActionsTriggerRef,
@@ -1543,6 +1574,10 @@ function AgentSessionRow({
             )}
             {isPinned ? "Unpin session" : "Pin session"}
           </DropdownMenuItem>
+          <DropdownMenuItem className="gap-2 text-xs" onClick={onFork}>
+            <GitFork className="w-3.5 h-3.5" />
+            Fork session
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           {conversation.archivedAt ? (
             <DropdownMenuItem className="gap-2 text-xs" onClick={onRestore}>
@@ -1573,6 +1608,7 @@ interface ProjectSessionGroupProps {
   onRenameConversation: (conversationId: string, title: string) => void | Promise<void>;
   onArchiveConversation: (conversation: AgentConversation) => void;
   onRestoreConversation: (conversation: AgentConversation) => void;
+  onForkConversation: (conversation: AgentConversation) => void | Promise<void>;
   onTogglePinnedConversation: (conversationId: string) => void;
   priorityConversationIds: string[];
   pinnedConversationIds: Record<string, true>;
@@ -1595,6 +1631,7 @@ function ProjectSessionGroup({
   onRenameConversation,
   onArchiveConversation,
   onRestoreConversation,
+  onForkConversation,
   onTogglePinnedConversation,
   priorityConversationIds,
   pinnedConversationIds,
@@ -1960,6 +1997,7 @@ function ProjectSessionGroup({
                       onSelect={() => onSelectConversation(project.id, conversation)}
                       onRename={() => openRenameDialog(conversation)}
                       onTogglePinned={() => onTogglePinnedConversation(conversation.id)}
+                      onFork={() => onForkConversation(conversation)}
                       onRestore={() => onRestoreConversation(conversation)}
                       onArchiveRequest={() => setArchiveDialogConversation(conversation)}
                       setActionsTriggerRef={(node) => {

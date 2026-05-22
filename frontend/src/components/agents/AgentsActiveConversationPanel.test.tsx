@@ -1,9 +1,14 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import type { ComponentProps, ReactNode } from "react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import {
+  chatApi,
+  type AgentConversationWorkspace,
+  type ForkAgentConversationResult,
+} from "@/api/chat";
 
 import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
@@ -29,6 +34,24 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     </div>
   ),
 }));
+
+vi.mock("@/api/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/chat")>();
+  return {
+    ...actual,
+    chatApi: {
+      ...actual.chatApi,
+      sendAgentMessage: vi.fn().mockResolvedValue({
+        conversationId: "conversation-fork",
+        agentRunId: "run-fork",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      }),
+    },
+  };
+});
 
 vi.mock("@/hooks/useAgentModels", () => ({
   useAgentModels: () => ({
@@ -107,10 +130,14 @@ vi.mock("./AgentComposerSurface", () => ({
     model,
     effort,
     showHelperText,
+    onSend,
+    onForkSession,
   }: {
     model: { value: string; onValueChange: (value: string) => void };
     effort: { value: string; onValueChange: (value: string) => void };
     showHelperText?: boolean;
+    onSend: (message: string) => Promise<void> | void;
+    onForkSession?: () => Promise<unknown> | void;
   }) => (
     <div>
       <div data-testid="workspace-model-value">{model.value}</div>
@@ -125,6 +152,21 @@ vi.mock("./AgentComposerSurface", () => ({
         type="button"
         data-testid="change-workspace-effort"
         onClick={() => effort.onValueChange("max")}
+      />
+      <button
+        type="button"
+        data-testid="send-fork-command"
+        onClick={() => void onSend("/fork")}
+      />
+      <button
+        type="button"
+        data-testid="send-fork-followup-command"
+        onClick={() => void onSend("/fork continue this thread")}
+      />
+      <button
+        type="button"
+        data-testid="composer-fork-action"
+        onClick={() => void onForkSession?.()}
       />
     </div>
   ),
@@ -192,57 +234,81 @@ function workspace(): AgentConversationWorkspace {
   };
 }
 
+function forkResult(): ForkAgentConversationResult {
+  return {
+    parentConversation: projectConversation() as never,
+    conversation: { ...projectConversation(), id: "conversation-fork" } as never,
+    workspace: null,
+    providerSessionForked: true,
+    copiedMessageCount: 2,
+    copiedTimelineItemCount: 0,
+  };
+}
+
+function renderPanel(
+  overrides: Partial<ComponentProps<typeof AgentsActiveConversationPanel>> = {},
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const props: ComponentProps<typeof AgentsActiveConversationPanel> = {
+    activeConversation: projectConversation(),
+    activeConversationMode: "ideation",
+    activeConversationModeLocked: false,
+    activeProjectId: "project-1",
+    activeProjectOptions: [{ id: "project-1", label: "RalphX" }],
+    activeWorkspace: workspace(),
+    activeWorkspaceFreshness: undefined,
+    attachedIdeationSessionId: null,
+    availableArtifactTabs: [],
+    chatFocus: { type: "workspace" },
+    chatFocusOptions: [],
+    hasAutoOpenArtifacts: false,
+    normalizedActiveRuntime: {
+      provider: "claude",
+      modelId: "opus",
+      effort: "xhigh",
+    },
+    onActiveConversationModeChange: vi.fn(),
+    onActiveConversationModeMenuOpen: vi.fn(),
+    onActiveEffortChange: vi.fn(),
+    onActiveModelChange: vi.fn(),
+    onAgentUserMessageSent: vi.fn(),
+    onFocusIdeationSession: vi.fn(),
+    onForkConversation: vi.fn().mockResolvedValue(forkResult()),
+    onOpenPublishPane: vi.fn(),
+    onOpenPublishFile: vi.fn(),
+    onPreloadArtifacts: vi.fn(),
+    onPublishWorkspace: vi.fn(),
+    onRenameConversation: vi.fn(),
+    onSelectArtifact: vi.fn(),
+    onToggleArtifacts: vi.fn(),
+    onSelectChatFocus: vi.fn(),
+    publishShortcutLabel: "P",
+    publishingConversationId: null,
+    selectedConversationId: "conversation-1",
+    setTerminalChatDockElement: vi.fn(),
+    switchingConversationModeId: null,
+    terminalUnavailableReason: null,
+    ...overrides,
+  };
+  render(
+    <QueryClientProvider client={queryClient}>
+      <AgentsActiveConversationPanel {...props} />
+    </QueryClientProvider>,
+  );
+  return props;
+}
+
 describe("AgentsActiveConversationPanel", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("normalizes workspace runtime and forwards provider-supported efforts", () => {
     const onActiveModelChange = vi.fn();
     const onActiveEffortChange = vi.fn();
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <AgentsActiveConversationPanel
-          activeConversation={projectConversation()}
-          activeConversationMode="ideation"
-          activeConversationModeLocked={false}
-          activeProjectId="project-1"
-          activeProjectOptions={[{ id: "project-1", label: "RalphX" }]}
-          activeWorkspace={workspace()}
-          activeWorkspaceFreshness={undefined}
-          attachedIdeationSessionId={null}
-          availableArtifactTabs={[]}
-          chatFocus={{ type: "workspace" }}
-          chatFocusOptions={[]}
-          hasAutoOpenArtifacts={false}
-          normalizedActiveRuntime={{
-            provider: "claude",
-            modelId: "opus",
-            effort: "xhigh",
-          }}
-          onActiveConversationModeChange={vi.fn()}
-          onActiveConversationModeMenuOpen={vi.fn()}
-          onActiveEffortChange={onActiveEffortChange}
-          onActiveModelChange={onActiveModelChange}
-          onAgentUserMessageSent={vi.fn()}
-          onFocusIdeationSession={vi.fn()}
-          onOpenPublishPane={vi.fn()}
-          onOpenPublishFile={vi.fn()}
-          onPreloadArtifacts={vi.fn()}
-          onPublishWorkspace={vi.fn()}
-          onRenameConversation={vi.fn()}
-          onSelectArtifact={vi.fn()}
-          onToggleArtifacts={vi.fn()}
-          onSelectChatFocus={vi.fn()}
-          publishShortcutLabel="P"
-          publishingConversationId={null}
-          selectedConversationId="conversation-1"
-          setTerminalChatDockElement={vi.fn()}
-          switchingConversationModeId={null}
-          terminalUnavailableReason={null}
-        />
-      </QueryClientProvider>,
-    );
+    renderPanel({ onActiveEffortChange, onActiveModelChange });
 
     expect(screen.getByTestId("workspace-effort-value").textContent).toBe("high");
     expect(screen.getByTestId("workspace-helper-enabled").textContent).toBe("true");
@@ -262,5 +328,84 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "max",
     ]);
+  });
+
+  it("requires confirmation before running the typed fork command", async () => {
+    const user = userEvent.setup();
+    const onForkConversation = vi.fn().mockResolvedValue(forkResult());
+    renderPanel({ onForkConversation });
+
+    await user.click(screen.getByTestId("send-fork-command"));
+
+    expect(screen.getByText("Fork session?")).toBeInTheDocument();
+    expect(onForkConversation).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Fork session" }));
+
+    await waitFor(() =>
+      expect(onForkConversation).toHaveBeenCalledWith("conversation-1"),
+    );
+  });
+
+  it("sends a follow-up message to the forked conversation after confirmation", async () => {
+    const user = userEvent.setup();
+    const onAgentUserMessageSent = vi.fn();
+    const onForkConversation = vi.fn().mockResolvedValue(forkResult());
+    renderPanel({
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+      onAgentUserMessageSent,
+      onForkConversation,
+    });
+
+    await user.click(screen.getByTestId("send-fork-followup-command"));
+    await user.click(screen.getByRole("button", { name: "Fork session" }));
+
+    await waitFor(() =>
+      expect(chatApi.sendAgentMessage).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+        "continue this thread",
+        undefined,
+        undefined,
+        {
+          conversationId: "conversation-fork",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "high",
+        },
+      ),
+    );
+    expect(onAgentUserMessageSent).toHaveBeenCalledWith({
+      content: "continue this thread",
+      result: {
+        conversationId: "conversation-fork",
+        agentRunId: "run-fork",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+  });
+
+  it("requires confirmation before running the composer fork action", async () => {
+    const user = userEvent.setup();
+    const onForkConversation = vi.fn().mockResolvedValue(forkResult());
+    renderPanel({ onForkConversation });
+
+    await user.click(screen.getByTestId("composer-fork-action"));
+
+    expect(screen.getByText("Fork session?")).toBeInTheDocument();
+    expect(onForkConversation).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Fork session" }));
+
+    await waitFor(() =>
+      expect(onForkConversation).toHaveBeenCalledWith("conversation-1"),
+    );
   });
 });
