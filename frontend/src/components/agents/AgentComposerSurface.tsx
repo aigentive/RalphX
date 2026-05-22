@@ -327,7 +327,7 @@ export function AgentComposerSurface({
 
     textarea.style.height = "auto";
     const nextHeight = Math.min(textarea.scrollHeight, 220);
-    textarea.style.height = `${Math.max(nextHeight, 116)}px`;
+    textarea.style.height = `${Math.max(nextHeight, 56)}px`;
   }, [value]);
 
   const matchOptionsFromInput = useCallback(
@@ -938,11 +938,11 @@ export function AgentComposerSurface({
         className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.625rem] font-medium"
         style={{ color: "var(--text-muted)" }}
       >
-        <span>{shouldShowStop ? "Stop the active run" : "Press Enter to send"}</span>
+        <span>Press Enter to send</span>
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
-        <span>Shift + Enter for a new line</span>
+        <span>&#x21E7; Enter for a new line</span>
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
@@ -957,7 +957,7 @@ export function AgentComposerSurface({
         <span>$ for skills</span>
       </div>
     );
-  }, [shouldShowStop, showHelperText]);
+  }, [showHelperText]);
 
   const updateCursorFromTextarea = useCallback((textarea: HTMLTextAreaElement) => {
     setCursorPosition(textarea.selectionStart ?? textarea.value.length);
@@ -1027,7 +1027,7 @@ export function AgentComposerSurface({
           }}
           disabled={isReadOnly || (isSubmitting && !canQueue)}
           placeholder={effectivePlaceholder}
-          className="block min-h-[116px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"
+          className="block min-h-[56px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"
           style={{
             color: "var(--text-primary)",
             boxShadow: "none",
