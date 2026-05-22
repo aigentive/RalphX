@@ -177,6 +177,7 @@ fn workspace_base_selection(
             kind: Some(workspace.base_ref_kind),
             base_ref: Some(workspace.base_ref.clone()),
             display_name: workspace.base_display_name.clone(),
+            source_pull_request: workspace.source_pull_request.clone(),
         })
         .unwrap_or_default()
 }

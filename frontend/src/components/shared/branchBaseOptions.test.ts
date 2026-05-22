@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { loadBranchBaseOptions, normalizeGitBranchName } from "./branchBaseOptions";
+import {
+  loadBranchBaseOptions,
+  loadPullRequestBaseOptions,
+  normalizeGitBranchName,
+} from "./branchBaseOptions";
 
 const {
   getGitBranchesMock,
   getGitCurrentBranchMock,
   getGitDefaultBranchMock,
+  searchGithubPullRequestsMock,
   getPlanBranchesMock,
   listIdeationSessionsMock,
   listConversationsMock,
@@ -14,6 +19,7 @@ const {
   getGitBranchesMock: vi.fn(),
   getGitCurrentBranchMock: vi.fn(),
   getGitDefaultBranchMock: vi.fn(),
+  searchGithubPullRequestsMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
   listConversationsMock: vi.fn(),
@@ -24,6 +30,8 @@ vi.mock("@/api/projects", () => ({
   getGitBranches: (...args: unknown[]) => getGitBranchesMock(...args),
   getGitCurrentBranch: (...args: unknown[]) => getGitCurrentBranchMock(...args),
   getGitDefaultBranch: (...args: unknown[]) => getGitDefaultBranchMock(...args),
+  searchGithubPullRequests: (...args: unknown[]) =>
+    searchGithubPullRequestsMock(...args),
 }));
 
 vi.mock("@/api/plan-branch", () => ({
@@ -61,6 +69,7 @@ describe("branchBaseOptions", () => {
       "  ralphx/ralphx/plan-456",
       "  ralphx/ralphx/agent-789",
     ]);
+    searchGithubPullRequestsMock.mockResolvedValue([]);
     getPlanBranchesMock.mockResolvedValue([
       {
         id: "plan-branch-1",
@@ -211,5 +220,66 @@ describe("branchBaseOptions", () => {
         source: "project",
       })
     );
+  });
+
+  it("maps same-repo pull requests to local branch base selections", async () => {
+    searchGithubPullRequestsMock.mockResolvedValue([
+      {
+        number: 42,
+        title: "Add PR picker",
+        url: "https://github.com/owner/repo/pull/42",
+        headRefName: "feature/pr-picker",
+        headRefOid: "abc123",
+        baseRefName: "main",
+        isDraft: false,
+        updatedAt: "2026-05-20T10:00:00Z",
+        authorLogin: "dev",
+        isCrossRepository: false,
+      },
+      {
+        number: 43,
+        title: "Forked contribution",
+        url: "https://github.com/owner/repo/pull/43",
+        headRefName: "fork-feature",
+        headRefOid: "def456",
+        baseRefName: "main",
+        isDraft: false,
+        updatedAt: "2026-05-20T11:00:00Z",
+        authorLogin: "external",
+        isCrossRepository: true,
+      },
+    ]);
+
+    const options = await loadPullRequestBaseOptions({
+      projectId: "project-1",
+      query: "picker",
+    });
+
+    expect(searchGithubPullRequestsMock).toHaveBeenCalledWith({
+      projectId: "project-1",
+      query: "picker",
+      limit: 30,
+    });
+    expect(options).toEqual([
+      {
+        key: "pull_request:42:feature/pr-picker",
+        label: "#42 Add PR picker",
+        detail: "feature/pr-picker -> main",
+        source: "pull_request",
+        selection: {
+          kind: "local_branch",
+          ref: "feature/pr-picker",
+          displayName: "PR #42: Add PR picker",
+          sourcePullRequest: {
+            number: 42,
+            url: "https://github.com/owner/repo/pull/42",
+            title: "Add PR picker",
+            headRefName: "feature/pr-picker",
+            baseRefName: "main",
+            headRefOid: "abc123",
+          },
+        },
+      },
+    ]);
   });
 });

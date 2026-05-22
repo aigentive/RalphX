@@ -1,7 +1,12 @@
-import { chatApi } from "@/api/chat";
+import { chatApi, type AgentConversationSourcePullRequest } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import { planBranchApi } from "@/api/plan-branch";
-import { getGitBranches, getGitCurrentBranch, getGitDefaultBranch } from "@/api/projects";
+import {
+  getGitBranches,
+  getGitCurrentBranch,
+  getGitDefaultBranch,
+  searchGithubPullRequests,
+} from "@/api/projects";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 export type BranchBaseRefKind = "project_default" | "current_branch" | "local_branch";
@@ -10,9 +15,16 @@ export interface BranchBaseSelection {
   kind: BranchBaseRefKind;
   ref: string;
   displayName: string;
+  sourcePullRequest?: AgentConversationSourcePullRequest | null;
 }
 
-export type BranchBaseOptionSource = "project" | "current" | "local" | "plan" | "agent";
+export type BranchBaseOptionSource =
+  | "project"
+  | "current"
+  | "local"
+  | "plan"
+  | "agent"
+  | "pull_request";
 
 export interface BranchBaseOption {
   key: string;
@@ -183,6 +195,55 @@ export function fallbackBranchBaseOptions(baseBranch: string | null | undefined)
     ],
     selectedKey: `project_default:${fallback}`,
   };
+}
+
+export async function loadPullRequestBaseOptions({
+  projectId,
+  query,
+}: {
+  projectId: string;
+  query?: string;
+}): Promise<BranchBaseOption[]> {
+  const input = {
+    projectId,
+    limit: 30,
+    ...(query !== undefined ? { query } : {}),
+  };
+  const pullRequests = await searchGithubPullRequests(input);
+  const options: BranchBaseOption[] = [];
+
+  for (const pullRequest of pullRequests) {
+    if (pullRequest.isCrossRepository) {
+      continue;
+    }
+    const branchName = normalizeGitBranchName(pullRequest.headRefName);
+    if (!branchName) {
+      continue;
+    }
+    const title = pullRequest.title.trim() || `Pull request #${pullRequest.number}`;
+    const draftLabel = pullRequest.isDraft ? " - Draft" : "";
+    options.push({
+      key: `pull_request:${pullRequest.number}:${branchName}`,
+      label: `#${pullRequest.number} ${title}`,
+      detail: `${branchName} -> ${pullRequest.baseRefName}${draftLabel}`,
+      source: "pull_request",
+      selection: {
+        kind: "local_branch",
+        ref: branchName,
+        displayName: `PR #${pullRequest.number}: ${title}`,
+        sourcePullRequest: {
+          number: pullRequest.number,
+          url: pullRequest.url ?? null,
+          title,
+          headRefName: branchName,
+          baseRefName: pullRequest.baseRefName ?? null,
+          headRefOid: pullRequest.headRefOid ?? null,
+        },
+      },
+    });
+  }
+
+  return options;
 }
 
 async function loadPlanBranchOptions(projectId: string): Promise<BranchBaseOption[]> {
