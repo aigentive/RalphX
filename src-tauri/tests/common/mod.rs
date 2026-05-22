@@ -10,8 +10,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use ralphx_lib::domain::services::github_service::{
-    GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrSearchResult,
-    PrStatus, PrSyncState,
+    GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrStatus,
+    PrSyncState,
 };
 use ralphx_lib::{AppError, AppResult};
 
@@ -40,8 +40,6 @@ pub struct MockGithubService {
     pub close_pr_calls: Arc<Mutex<u32>>,
     pub delete_remote_branch_calls: Arc<Mutex<u32>>,
     pub find_pr_by_head_branch_calls: Arc<Mutex<u32>>,
-    pub search_pull_requests_calls: Arc<Mutex<u32>>,
-    pub search_pull_requests_args: Arc<Mutex<Vec<(Option<String>, usize)>>>,
     push_branch_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
@@ -50,8 +48,6 @@ pub struct MockGithubService {
     update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
-    #[allow(clippy::type_complexity)]
-    search_pull_requests_result: Arc<Mutex<Option<AppResult<Vec<PrSearchResult>>>>>,
 }
 
 #[allow(dead_code)]
@@ -72,15 +68,12 @@ impl MockGithubService {
             close_pr_calls: Arc::new(Mutex::new(0)),
             delete_remote_branch_calls: Arc::new(Mutex::new(0)),
             find_pr_by_head_branch_calls: Arc::new(Mutex::new(0)),
-            search_pull_requests_calls: Arc::new(Mutex::new(0)),
-            search_pull_requests_args: Arc::new(Mutex::new(Vec::new())),
             push_branch_result: Arc::new(Mutex::new(None)),
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
             update_pr_details_result: Arc::new(Mutex::new(None)),
             update_pr_base_result: Arc::new(Mutex::new(None)),
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
-            search_pull_requests_result: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -138,10 +131,6 @@ impl MockGithubService {
             Some(Ok(Some((pr_number, pr_url.into()))));
     }
 
-    pub fn will_return_pull_request_search(&self, results: Vec<PrSearchResult>) {
-        *self.search_pull_requests_result.lock().unwrap() = Some(Ok(results));
-    }
-
     // --- Convenience accessors ---
 
     pub fn check_calls(&self) -> u32 {
@@ -173,12 +162,6 @@ impl MockGithubService {
     }
     pub fn find_pr_calls(&self) -> u32 {
         *self.find_pr_by_head_branch_calls.lock().unwrap()
-    }
-    pub fn search_pull_requests_calls(&self) -> u32 {
-        *self.search_pull_requests_calls.lock().unwrap()
-    }
-    pub fn search_pull_requests_args(&self) -> Vec<(Option<String>, usize)> {
-        self.search_pull_requests_args.lock().unwrap().clone()
     }
 }
 
@@ -316,22 +299,5 @@ impl GithubServiceTrait for MockGithubService {
             return result;
         }
         Ok(None)
-    }
-
-    async fn search_pull_requests(
-        &self,
-        _working_dir: &Path,
-        query: Option<&str>,
-        limit: usize,
-    ) -> AppResult<Vec<PrSearchResult>> {
-        *self.search_pull_requests_calls.lock().unwrap() += 1;
-        self.search_pull_requests_args
-            .lock()
-            .unwrap()
-            .push((query.map(str::to_string), limit));
-        if let Some(result) = self.search_pull_requests_result.lock().unwrap().take() {
-            return result;
-        }
-        Ok(Vec::new())
     }
 }

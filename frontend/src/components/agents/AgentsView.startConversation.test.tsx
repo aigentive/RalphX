@@ -363,6 +363,87 @@ describe("AgentsView start conversation", () => {
     );
   });
 
+  it("keeps a selected pull request visible across later start-from searches", async () => {
+    const user = userEvent.setup();
+    let pullRequestSearches = 0;
+    mockAgentViewData();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_git_default_branch") {
+        return Promise.resolve("main");
+      }
+      if (command === "get_git_current_branch") {
+        return Promise.resolve("main");
+      }
+      if (command === "get_git_branches") {
+        return Promise.resolve(["main", "feature/pr-picker"]);
+      }
+      if (command === "search_github_pull_requests") {
+        pullRequestSearches += 1;
+        return Promise.resolve(
+          pullRequestSearches === 1
+            ? [
+                {
+                  number: 42,
+                  title: "Add PR picker",
+                  url: "https://github.com/owner/repo/pull/42",
+                  headRefName: "feature/pr-picker",
+                  headRefOid: "abc123",
+                  baseRefName: "main",
+                  isDraft: false,
+                  updatedAt: "2026-05-21T10:00:00Z",
+                  authorLogin: "dev",
+                  isCrossRepository: false,
+                },
+              ]
+            : []
+        );
+      }
+      return Promise.resolve(undefined);
+    });
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await user.click(await screen.findByText("#42 Add PR picker"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+
+    await user.click(screen.getByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+    await waitFor(() => expect(pullRequestSearches).toBe(2));
+    expect(screen.getAllByText("#42 Add PR picker").length).toBeGreaterThan(1);
+  });
+
+  it("shows pull request search failures in the start composer", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_git_default_branch") {
+        return Promise.resolve("main");
+      }
+      if (command === "get_git_current_branch") {
+        return Promise.resolve("main");
+      }
+      if (command === "get_git_branches") {
+        return Promise.resolve(["main", "feature/pr-picker"]);
+      }
+      if (command === "search_github_pull_requests") {
+        return Promise.reject(new Error("GitHub search failed"));
+      }
+      return Promise.resolve(undefined);
+    });
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+    expect(await screen.findByText("GitHub search failed")).toBeInTheDocument();
+  });
+
   it("paints the conversation shell before the draft conversation IPC resolves", async () => {
     mockAgentViewData();
     const reservedConversation = conversation({

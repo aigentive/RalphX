@@ -275,6 +275,53 @@ describe("StartSessionPanel", () => {
       );
     });
 
+    it("keeps a selected pull request available across later searches", async () => {
+      const user = userEvent.setup();
+      mockSearchGithubPullRequests
+        .mockResolvedValueOnce([
+          {
+            number: 42,
+            title: "Add PR picker",
+            url: "https://github.com/owner/repo/pull/42",
+            headRefName: "feature/pr-picker",
+            headRefOid: "abc123",
+            baseRefName: "main",
+            isDraft: false,
+            updatedAt: "2026-05-21T10:00:00Z",
+            authorLogin: "dev",
+            isCrossRepository: false,
+          },
+        ])
+        .mockResolvedValueOnce([]);
+
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      await expectStartFromLabel("Project default (main)");
+
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(screen.getByRole("tab", { name: /PRs/i }));
+      await user.click(await screen.findByText("#42 Add PR picker"));
+      await expectStartFromLabel("#42 Add PR picker");
+
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+      await waitFor(() => expect(mockSearchGithubPullRequests).toHaveBeenCalledTimes(2));
+      expect(screen.getAllByText("#42 Add PR picker").length).toBeGreaterThan(1);
+    });
+
+    it("shows pull request search errors", async () => {
+      const user = userEvent.setup();
+      mockSearchGithubPullRequests.mockRejectedValueOnce(new Error("GitHub search failed"));
+
+      render(<StartSessionPanel onNewSession={onNewSession} />);
+      await expectStartFromLabel("Project default (main)");
+
+      await user.click(screen.getByTestId("start-from-select"));
+      await user.click(screen.getByRole("tab", { name: /PRs/i }));
+
+      expect(await screen.findByText("GitHub search failed")).toBeInTheDocument();
+    });
+
     it("adds session to store and sets active on success", async () => {
       render(<StartSessionPanel onNewSession={onNewSession} />);
       await expectStartFromLabel("Project default (main)");

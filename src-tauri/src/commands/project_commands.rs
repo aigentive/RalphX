@@ -1324,7 +1324,68 @@ fn build_mode_switch_transition_service<R: tauri::Runtime + 'static>(
 #[cfg(test)]
 mod git_auth_command_tests {
     use super::*;
+    use crate::domain::services::{GithubServiceTrait, PrSearchResult};
     use crate::infrastructure::git_auth::GitRemoteAuthConfig;
+    use crate::tests::mock_github_service::MockGithubService;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::Manager;
+
+    #[tokio::test]
+    async fn search_github_pull_requests_trims_query_clamps_limit_and_maps_results() {
+        let github = Arc::new(MockGithubService::new());
+        github.will_return_pull_request_search(vec![PrSearchResult {
+            number: 42,
+            title: "Add PR picker".to_string(),
+            url: "https://github.com/owner/repo/pull/42".to_string(),
+            head_ref_name: "feature/pr-picker".to_string(),
+            head_ref_oid: Some("abc123".to_string()),
+            base_ref_name: "main".to_string(),
+            is_draft: true,
+            updated_at: Some("2026-05-21T10:00:00Z".to_string()),
+            author_login: Some("dev".to_string()),
+            is_cross_repository: false,
+        }]);
+
+        let mut state = AppState::new_test();
+        state.github_service = Some(github.clone() as Arc<dyn GithubServiceTrait>);
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let mut project = Project::new(
+            "PR Search".to_string(),
+            temp.path().to_string_lossy().to_string(),
+        );
+        project.id = ProjectId::from_string("project-pr-search".to_string());
+        state.project_repo.create(project).await.unwrap();
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let results = search_github_pull_requests(
+            SearchGithubPullRequestsInput {
+                project_id: "project-pr-search".to_string(),
+                query: Some("  picker  ".to_string()),
+                limit: Some(99),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("search should succeed");
+
+        let state = github.state();
+        assert_eq!(state.search_pull_requests_calls, 1);
+        assert_eq!(
+            state.last_search_pull_requests_args,
+            Some((Some("picker".to_string()), 50))
+        );
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].number, 42);
+        assert_eq!(results[0].head_ref_name, "feature/pr-picker");
+        assert_eq!(results[0].head_ref_oid.as_deref(), Some("abc123"));
+        assert_eq!(results[0].base_ref_name, "main");
+        assert!(results[0].is_draft);
+        assert_eq!(results[0].author_login.as_deref(), Some("dev"));
+        assert!(!results[0].is_cross_repository);
+    }
 
     #[test]
     fn diagnostics_response_marks_mixed_https_fetch_and_ssh_push() {
