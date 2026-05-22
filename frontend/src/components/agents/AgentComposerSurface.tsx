@@ -24,6 +24,7 @@ import {
   FileText,
   FolderOpen,
   Gauge,
+  GitFork,
   Loader2,
   Paperclip,
   Plus,
@@ -170,6 +171,16 @@ export interface AgentComposerSendOptions {
   integrationReferences?: AgentComposerIntegrationReference[];
 }
 
+export interface AgentComposerSlashCommand {
+  id: string;
+  label: `/${string}`;
+  description?: string;
+  disabled?: boolean;
+  disabledReason?: string;
+  insertText?: string;
+  onSelect?: () => Promise<unknown> | unknown;
+}
+
 export interface AgentComposerSurfaceProps {
   project: ProjectFieldConfig;
   provider: ProviderFieldConfig;
@@ -196,6 +207,9 @@ export interface AgentComposerSurfaceProps {
   attachmentsUploading?: boolean;
   mode?: ModeFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
+  slashCommands?: AgentComposerSlashCommand[];
+  onForkSession?: (() => Promise<unknown> | void) | undefined;
+  forkSessionDisabled?: boolean;
   dataTestId?: string;
   textareaTestId?: string;
   actionTestId?: string;
@@ -232,6 +246,9 @@ export function AgentComposerSurface({
   attachmentsUploading = false,
   mode,
   chatFocus,
+  slashCommands = [],
+  onForkSession,
+  forkSessionDisabled = false,
   dataTestId,
   textareaTestId,
   actionTestId,
@@ -471,6 +488,13 @@ export function AgentComposerSurface({
       ]),
     [selectedIntegrationReferences],
   );
+  const slashCommandByMenuId = useMemo(() => {
+    const map = new Map<string, AgentComposerSlashCommand>();
+    for (const command of slashCommands) {
+      map.set(`command:custom:${command.id}`, command);
+    }
+    return map;
+  }, [slashCommands]);
   const hasSelectedReferences =
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0;
@@ -493,6 +517,20 @@ export function AgentComposerSurface({
           ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
         });
       }
+    }
+    for (const command of slashCommands) {
+      const item: AgentComposerMenuItem = {
+        id: `command:custom:${command.id}`,
+        kind: "slash-command",
+        label: command.label,
+        detail: `custom:${command.id}`,
+        ...(command.disabled !== undefined ? { disabled: command.disabled } : {}),
+      };
+      const description = command.disabledReason ?? command.description;
+      if (description) {
+        item.description = description;
+      }
+      items.push(item);
     }
     items.push({
       id: "command:clear",
@@ -522,7 +560,7 @@ export function AgentComposerSurface({
       items.push(item);
     }
     return items;
-  }, [mode, skills]);
+  }, [mode, skills, slashCommands]);
   const menuItems = useMemo<AgentComposerMenuItem[]>(() => {
     if (!activeTrigger) {
       return [];
@@ -681,6 +719,24 @@ export function AgentComposerSurface({
         applyComposerText(next.text, next.cursor);
         return;
       }
+      if (item.detail?.startsWith("custom:")) {
+        const command = slashCommandByMenuId.get(item.id);
+        if (!command) {
+          return;
+        }
+        if (command.onSelect) {
+          const next = replaceAgentComposerTrigger(value, activeTrigger, "");
+          applyComposerText(next.text, next.cursor);
+          void Promise.resolve(command.onSelect()).catch(() => {
+            // Parent command handlers surface their own errors.
+          });
+          return;
+        }
+        const replacement = command.insertText ?? `${command.label} `;
+        const next = replaceAgentComposerTrigger(value, activeTrigger, replacement);
+        applyComposerText(next.text, next.cursor);
+        return;
+      }
       if (item.detail?.startsWith("mode:") && mode && !mode.disabled) {
         const nextMode = item.detail.slice("mode:".length);
         const option = mode.options.find((candidate) => candidate.id === nextMode);
@@ -697,6 +753,7 @@ export function AgentComposerSurface({
       clearValue,
       integrationByMenuId,
       mode,
+      slashCommandByMenuId,
       skillByMenuId,
       value,
     ]
@@ -1091,6 +1148,13 @@ export function AgentComposerSurface({
               enableAttachments={enableAttachments}
               attachmentDisabled={attachmentDisabled}
               onOpenAttachmentPicker={handleOpenAttachmentPicker}
+              {...(onForkSession
+                ? {
+                    onForkSession,
+                    forkSessionDisabled:
+                      forkSessionDisabled || isReadOnly || (isSubmitting && !canQueue),
+                  }
+                : {})}
               open={actionMenuOpen}
               onOpenChange={setActionMenuOpen}
               onInsertIntegrationTrigger={(kind) => {
@@ -1204,6 +1268,8 @@ function ComposerActionMenu({
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
+  onForkSession,
+  forkSessionDisabled = false,
   open,
   onOpenChange,
   onInsertIntegrationTrigger,
@@ -1214,6 +1280,8 @@ function ComposerActionMenu({
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
+  onForkSession?: (() => Promise<unknown> | void) | undefined;
+  forkSessionDisabled?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
@@ -1221,7 +1289,10 @@ function ComposerActionMenu({
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
-    enableAttachments || Boolean(project.endAction) || Boolean(mode);
+    enableAttachments ||
+    Boolean(project.endAction) ||
+    Boolean(mode) ||
+    Boolean(onForkSession);
   const setOpen = onOpenChange;
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -1303,6 +1374,29 @@ function ComposerActionMenu({
               <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
             )}
             <ComposerModeMenuSection mode={mode} onDone={() => setOpen(false)} />
+          </>
+        )}
+
+        {onForkSession && (
+          <>
+            {(enableAttachments || project.endAction || mode) && (
+              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+            )}
+            <button
+              type="button"
+              disabled={forkSessionDisabled}
+              className="flex h-10 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-50"
+              style={{ color: "var(--text-primary)" }}
+              onClick={() => {
+                setOpen(false);
+                void Promise.resolve(onForkSession()).catch(() => {
+                  // Parent action handlers surface their own errors.
+                });
+              }}
+            >
+              <GitFork className="h-4 w-4" />
+              Fork session
+            </button>
           </>
         )}
 

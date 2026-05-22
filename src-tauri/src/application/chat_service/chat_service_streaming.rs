@@ -1843,9 +1843,73 @@ pub async fn process_stream_background<R: Runtime>(
                             tracing::warn!(
                                 conversation_id = %conversation_id_str,
                                 ?session_id,
-                                "TurnComplete carried a result error; preserving processor state for terminal error handling"
+                                "TurnComplete carried a result error; terminating interactive turn immediately"
                             );
-                            continue;
+
+                            flush_content_before_error(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &processor.response_text,
+                                &processor.tool_calls,
+                                &processor.content_blocks,
+                            )
+                            .await;
+                            persist_timeline_snapshot(
+                                &chat_timeline_repo,
+                                &conversation_id_str,
+                                &assistant_message_id,
+                                &processor.content_blocks,
+                                ChatTimelineItemStatus::Error,
+                            )
+                            .await;
+                            let turn_usage = processor.current_turn_usage();
+                            persist_assistant_message_usage(
+                                &chat_message_repo,
+                                &assistant_message_id,
+                                &turn_usage,
+                            )
+                            .await;
+                            persist_agent_run_usage(&agent_run_repo, &agent_run_id, &turn_usage)
+                                .await;
+
+                            if !session_id_persisted && persist_conversation_provider_session_ref {
+                                if let (Some(ref sess_id), Some(ref repo)) =
+                                    (&session_id, &conversation_repo)
+                                {
+                                    let session_ref =
+                                        provider_session_ref_for_harness(harness, sess_id.clone());
+                                    if let Err(e) = repo
+                                        .update_provider_session_ref(conversation_id, &session_ref)
+                                        .await
+                                    {
+                                        tracing::error!(
+                                            error = %e,
+                                            conversation_id = %conversation_id_str,
+                                            session_id = %sess_id,
+                                            "TurnComplete error: failed to persist provider_session_ref"
+                                        );
+                                    }
+                                }
+                            }
+
+                            let error_msg = if !processor.result_errors.is_empty() {
+                                processor.result_errors.join("; ")
+                            } else if !processor.response_text.trim().is_empty() {
+                                processor.response_text.trim().to_string()
+                            } else {
+                                "Agent failed during execution".to_string()
+                            };
+                            let provider_error =
+                                super::chat_service_errors::classify_provider_error(&error_msg);
+                            let _ = child.start_kill();
+                            stderr_task.abort();
+                            if let Some(provider_err) = provider_error {
+                                return Err(provider_err);
+                            }
+                            return Err(StreamError::AgentExit {
+                                exit_code: None,
+                                stderr: error_msg,
+                            });
                         }
 
                         // Finalize the current assistant message with accumulated content

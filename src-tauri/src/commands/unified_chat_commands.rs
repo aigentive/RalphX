@@ -80,11 +80,12 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRunId,
-    AgentRunStatus, AgentWorkspaceSourcePullRequest, ChatAttachmentId, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem, DelegatedSessionId,
-    ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch,
-    PlanBranchStatus, Project, ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ChatAttachmentId,
+    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId, TaskId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
@@ -1439,6 +1440,10 @@ pub struct AgentConversationResponse {
     pub provider_harness: Option<String>,
     pub upstream_provider: Option<String>,
     pub provider_profile: Option<String>,
+    pub logical_model: Option<String>,
+    pub effective_model_id: Option<String>,
+    pub logical_effort: Option<String>,
+    pub effective_effort: Option<String>,
     pub agent_mode: Option<String>,
     pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
@@ -1463,6 +1468,10 @@ impl From<ChatConversation> for AgentConversationResponse {
             provider_harness: provider_harness.map(|harness| harness.to_string()),
             upstream_provider: c.upstream_provider,
             provider_profile: c.provider_profile,
+            logical_model: None,
+            effective_model_id: None,
+            logical_effort: None,
+            effective_effort: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
             parent_conversation_id: c.parent_conversation_id,
             title: c.title,
@@ -1475,19 +1484,117 @@ impl From<ChatConversation> for AgentConversationResponse {
     }
 }
 
-impl From<AgentConversationForkResult> for ForkAgentConversationResponse {
-    fn from(result: AgentConversationForkResult) -> Self {
-        Self {
-            parent_conversation: result.parent_conversation.into(),
-            conversation: result.conversation.into(),
-            workspace: result
-                .workspace
-                .map(AgentConversationWorkspaceResponse::from),
-            provider_session_forked: result.provider_session.is_some(),
-            copied_message_count: result.copied_message_count,
-            copied_timeline_item_count: result.copied_timeline_item_count,
-        }
+impl AgentConversationResponse {
+    fn apply_runtime_attribution(&mut self, attribution: ConversationRuntimeAttribution) {
+        self.logical_model = attribution.logical_model;
+        self.effective_model_id = attribution.effective_model_id;
+        self.logical_effort = attribution.logical_effort.map(|value| value.to_string());
+        self.effective_effort = attribution.effective_effort;
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ConversationRuntimeAttribution {
+    logical_model: Option<String>,
+    effective_model_id: Option<String>,
+    logical_effort: Option<LogicalEffort>,
+    effective_effort: Option<String>,
+}
+
+impl ConversationRuntimeAttribution {
+    fn is_empty(&self) -> bool {
+        self.logical_model.is_none()
+            && self.effective_model_id.is_none()
+            && self.logical_effort.is_none()
+            && self.effective_effort.is_none()
+    }
+}
+
+fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAttribution> {
+    let attribution = ConversationRuntimeAttribution {
+        logical_model: run.logical_model.clone(),
+        effective_model_id: run.effective_model_id.clone(),
+        logical_effort: run.logical_effort,
+        effective_effort: run.effective_effort.clone(),
+    };
+    (!attribution.is_empty()).then_some(attribution)
+}
+
+fn runtime_attribution_from_message(
+    message: &ChatMessage,
+) -> Option<ConversationRuntimeAttribution> {
+    let attribution = ConversationRuntimeAttribution {
+        logical_model: message.logical_model.clone(),
+        effective_model_id: message.effective_model_id.clone(),
+        logical_effort: message.logical_effort,
+        effective_effort: message.effective_effort.clone(),
+    };
+    (!attribution.is_empty()).then_some(attribution)
+}
+
+async fn latest_conversation_runtime_attribution(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> Result<Option<ConversationRuntimeAttribution>, String> {
+    let runs = state
+        .agent_run_repo
+        .get_by_conversation(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(attribution) = runs.iter().find_map(runtime_attribution_from_run) {
+        return Ok(Some(attribution));
+    }
+
+    let messages = state
+        .chat_message_repo
+        .get_recent_by_conversation_paginated(conversation_id, 200, 0)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(messages.iter().find_map(runtime_attribution_from_message))
+}
+
+pub(crate) async fn agent_conversation_response_for_state(
+    state: &AppState,
+    conversation: ChatConversation,
+) -> Result<AgentConversationResponse, String> {
+    let conversation_id = conversation.id;
+    let mut response = AgentConversationResponse::from(conversation);
+    if let Some(attribution) = latest_conversation_runtime_attribution(state, &conversation_id).await?
+    {
+        response.apply_runtime_attribution(attribution);
+    }
+    Ok(response)
+}
+
+async fn agent_conversation_responses_for_state(
+    state: &AppState,
+    conversations: Vec<ChatConversation>,
+) -> Result<Vec<AgentConversationResponse>, String> {
+    let mut responses = Vec::with_capacity(conversations.len());
+    for conversation in conversations {
+        responses.push(agent_conversation_response_for_state(state, conversation).await?);
+    }
+    Ok(responses)
+}
+
+async fn fork_agent_conversation_response_for_state(
+    state: &AppState,
+    result: AgentConversationForkResult,
+) -> Result<ForkAgentConversationResponse, String> {
+    Ok(ForkAgentConversationResponse {
+        parent_conversation: agent_conversation_response_for_state(
+            state,
+            result.parent_conversation,
+        )
+        .await?,
+        conversation: agent_conversation_response_for_state(state, result.conversation).await?,
+        workspace: result
+            .workspace
+            .map(AgentConversationWorkspaceResponse::from),
+        provider_session_forked: result.provider_session.is_some(),
+        copied_message_count: result.copied_message_count,
+        copied_timeline_item_count: result.copied_timeline_item_count,
+    })
 }
 
 fn emit_agent_conversation_fork_events<R: Runtime>(
@@ -2857,7 +2964,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     );
 
     Ok(StartAgentConversationResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state.inner(), conversation).await?,
         workspace: workspace_response,
         send_result,
     })
@@ -2874,7 +2981,7 @@ pub async fn fork_agent_conversation<R: Runtime + 'static>(
     let result = fork_agent_conversation_in_state(state.inner(), &parent_conversation_id)
         .await
         .map_err(|error| error.to_string())?;
-    let response = ForkAgentConversationResponse::from(result);
+    let response = fork_agent_conversation_response_for_state(state.inner(), result).await?;
     emit_agent_conversation_fork_events(&app, &response);
     invalidate_agent_workspace_pr_description_cache(&parent_conversation_id);
     invalidate_agent_workspace_pr_description_cache(&ChatConversationId::from_string(
@@ -3021,7 +3128,7 @@ pub async fn switch_agent_conversation_mode_for_state(
     };
 
     Ok(SwitchAgentConversationModeResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
         workspace: workspace_response,
     })
 }
@@ -3061,7 +3168,7 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     let result = fork_agent_conversation_in_state(state, parent_conversation_id)
         .await
         .map_err(|error| error.to_string())?;
-    let response = ForkAgentConversationResponse::from(result);
+    let response = fork_agent_conversation_response_for_state(state, result).await?;
     emit_agent_conversation_fork_events(app, &response);
     invalidate_agent_workspace_pr_description_cache(parent_conversation_id);
     let child_conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
@@ -3343,10 +3450,7 @@ pub async fn list_agent_conversations(
             .map_err(|e| e.to_string())?
     };
 
-    Ok(conversations
-        .into_iter()
-        .map(AgentConversationResponse::from)
-        .collect())
+    agent_conversation_responses_for_state(state.inner(), conversations).await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -3383,11 +3487,11 @@ pub async fn list_agent_conversations_page(
     let has_more = page.has_more();
 
     Ok(AgentConversationListPageResponse {
-        conversations: page
-            .conversations
-            .into_iter()
-            .map(AgentConversationResponse::from)
-            .collect(),
+        conversations: agent_conversation_responses_for_state(
+            state.inner(),
+            page.conversations,
+        )
+        .await?,
         total: page.total_count,
         limit: page.limit,
         offset: page.offset,
@@ -3483,13 +3587,13 @@ pub async fn archive_agent_conversation(
     let conversation_id = ChatConversationId::from_string(conversation_id);
     archive_agent_conversation_inner(&conversation_id, &state).await?;
 
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
-        .map(AgentConversationResponse::from)
-        .ok_or_else(|| "Conversation not found".to_string())
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 /// Restore an archived conversation.
@@ -3504,13 +3608,13 @@ pub async fn restore_agent_conversation(
         .restore(&conversation_id)
         .await
         .map_err(|e| e.to_string())?;
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
-        .map(AgentConversationResponse::from)
-        .ok_or_else(|| "Conversation not found".to_string())
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 /// Get workspace metadata for a project-backed agent conversation.
@@ -6175,7 +6279,8 @@ pub async fn get_agent_conversation(
     }
 
     Ok(Some(AgentConversationWithMessagesResponse {
-        conversation: AgentConversationResponse::from(cwm.conversation),
+        conversation: agent_conversation_response_for_state(state.inner(), cwm.conversation)
+            .await?,
         messages,
     }))
 }
@@ -6194,12 +6299,17 @@ pub async fn get_agent_conversation_summary_for_app_state(
     conversation_id: String,
 ) -> Result<Option<AgentConversationResponse>, String> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
-        .map(|conversation| conversation.map(AgentConversationResponse::from))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    match conversation {
+        Some(conversation) => Ok(Some(
+            agent_conversation_response_for_state(state, conversation).await?,
+        )),
+        None => Ok(None),
+    }
 }
 
 /// Get a tail-first page of conversation messages for fast conversation switching.
@@ -6304,7 +6414,7 @@ pub async fn get_agent_conversation_messages_page_for_app_state(
     let has_older = fetched_count < total_message_count;
 
     Ok(Some(AgentConversationMessagesPageResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
         messages,
         limit,
         offset,
@@ -6372,7 +6482,7 @@ pub async fn get_agent_conversation_timeline_page_for_app_state(
         .map_err(|e| e.to_string())?;
 
     Ok(Some(AgentConversationTimelinePageResponse {
-        conversation: AgentConversationResponse::from(conversation),
+        conversation: agent_conversation_response_for_state(state, conversation).await?,
         items: page
             .items
             .into_iter()
@@ -6669,12 +6779,12 @@ pub async fn create_agent_conversation(
         conversation.set_title(title.to_string());
     }
 
-    state
+    let conversation = state
         .chat_conversation_repo
         .create(conversation)
         .await
-        .map(AgentConversationResponse::from)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 /// Update an existing conversation title.
@@ -6699,13 +6809,13 @@ pub async fn update_agent_conversation_title(
         .await
         .map_err(|e| e.to_string())?;
 
-    state
+    let conversation = state
         .chat_conversation_repo
         .get_by_id(&conversation_id)
         .await
         .map_err(|e| e.to_string())?
-        .map(AgentConversationResponse::from)
-        .ok_or_else(|| "Conversation not found".to_string())
+        .ok_or_else(|| "Conversation not found".to_string())?;
+    agent_conversation_response_for_state(state.inner(), conversation).await
 }
 
 async fn primary_jira_key_for_conversation(
@@ -6732,7 +6842,7 @@ mod tests {
         existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
-        invalidate_agent_workspace_freshness_cache,
+        invalidate_agent_workspace_freshness_cache, agent_conversation_response_for_state,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
@@ -6781,10 +6891,11 @@ mod tests {
     };
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
         AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ArtifactId,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessageId, ChatTimelineItem,
-        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
+        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+        ExecutionPlan,
         ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionId,
         MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -9870,6 +9981,78 @@ mod tests {
             Some("claude-session-456".to_string())
         );
         assert_eq!(response.provider_harness, Some("claude".to_string()));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_response_hydrates_runtime_from_copied_message_attribution() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should be created");
+        let mut message = ChatMessage::user_in_project(project_id, "assistant response");
+        message.role = MessageRole::Orchestrator;
+        message.conversation_id = Some(conversation.id);
+        message.logical_model = Some("gpt-5.5".to_string());
+        message.effective_model_id = Some("gpt-5.5".to_string());
+        message.logical_effort = Some(LogicalEffort::High);
+        message.effective_effort = Some("high".to_string());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should be created");
+
+        let response = agent_conversation_response_for_state(&state, conversation)
+            .await
+            .expect("response should hydrate runtime attribution");
+
+        assert_eq!(response.logical_model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(response.effective_model_id.as_deref(), Some("gpt-5.5"));
+        assert_eq!(response.logical_effort.as_deref(), Some("high"));
+        assert_eq!(response.effective_effort.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_response_prefers_latest_run_runtime_over_message_attribution() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let conversation = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("conversation should be created");
+        let mut message = ChatMessage::user_in_project(project_id, "assistant response");
+        message.role = MessageRole::Orchestrator;
+        message.conversation_id = Some(conversation.id);
+        message.effective_model_id = Some("sonnet".to_string());
+        state
+            .chat_message_repo
+            .create(message)
+            .await
+            .expect("message should be created");
+
+        let mut run = AgentRun::new(conversation.id);
+        run.logical_model = Some("opus".to_string());
+        run.effective_model_id = Some("opus".to_string());
+        run.logical_effort = Some(LogicalEffort::Medium);
+        run.effective_effort = Some("medium".to_string());
+        state
+            .agent_run_repo
+            .create(run)
+            .await
+            .expect("run should be created");
+
+        let response = agent_conversation_response_for_state(&state, conversation)
+            .await
+            .expect("response should hydrate runtime attribution");
+
+        assert_eq!(response.logical_model.as_deref(), Some("opus"));
+        assert_eq!(response.effective_model_id.as_deref(), Some("opus"));
+        assert_eq!(response.logical_effort.as_deref(), Some("medium"));
+        assert_eq!(response.effective_effort.as_deref(), Some("medium"));
     }
 
     fn mode_lock_test_workspace(

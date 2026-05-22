@@ -15,6 +15,7 @@ import {
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -172,6 +173,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
 }: AgentsActiveConversationPanelProps) {
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
   const {
     providers: configuredProviders,
@@ -395,26 +397,28 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             inputContainerClassName:
               "shrink-0 bg-transparent px-4 pb-4 pt-3",
             renderComposer: (composerProps: IntegratedChatComposerRenderProps) => {
-              const handleComposerSend = async (
-                message: string,
+              const runForkCommand = async (
+                followup: string,
                 options?: AgentComposerSendOptions,
               ) => {
-                const forkFollowup = !isFocusedChildChat
-                  ? parseForkCommand(message)
-                  : null;
-                if (forkFollowup == null) {
-                  await composerProps.onSend(message, options);
+                const confirmed = await confirm({
+                  title: "Fork session?",
+                  description:
+                    "Create a new agent conversation copied from this one. The original conversation will stay unchanged.",
+                  confirmText: "Fork session",
+                });
+                if (!confirmed) {
                   return;
                 }
-
                 setIsForkingConversation(true);
                 try {
                   const forkResult = await onForkConversation(selectedConversationId);
-                  if (forkFollowup.trim()) {
+                  const trimmedFollowup = followup.trim();
+                  if (trimmedFollowup) {
                     const sendResult = await chatApi.sendAgentMessage(
                       "project",
                       activeProjectId,
-                      forkFollowup.trim(),
+                      trimmedFollowup,
                       undefined,
                       undefined,
                       {
@@ -434,13 +438,27 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       },
                     );
                     onAgentUserMessageSent({
-                      content: forkFollowup.trim(),
+                      content: trimmedFollowup,
                       result: sendResult,
                     });
                   }
                 } finally {
                   setIsForkingConversation(false);
                 }
+              };
+              const handleComposerSend = async (
+                message: string,
+                options?: AgentComposerSendOptions,
+              ) => {
+                const forkFollowup = !isFocusedChildChat
+                  ? parseForkCommand(message)
+                  : null;
+                if (forkFollowup == null) {
+                  await composerProps.onSend(message, options);
+                  return;
+                }
+
+                await runForkCommand(forkFollowup, options);
               };
 
               return (
@@ -465,6 +483,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     isReadOnly={composerProps.isReadOnly || isForkingConversation}
                     autoFocus={composerProps.autoFocus}
                     conversationId={selectedConversationId}
+                    {...(!isFocusedChildChat
+                      ? {
+                          onForkSession: () => runForkCommand(""),
+                          forkSessionDisabled: isForkingConversation,
+                        }
+                      : {})}
                     placeholder={
                       isFocusedChildChat
                         ? "Send a message..."
@@ -519,6 +543,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         }
                       : {})}
                     {...(composerChatFocus ? { chatFocus: composerChatFocus } : {})}
+                    slashCommands={
+                      !isFocusedChildChat
+                        ? [
+                            {
+                              id: "fork",
+                              label: "/fork",
+                              description: "Fork this agent conversation",
+                              disabled: isForkingConversation,
+                              onSelect: () => runForkCommand(""),
+                            },
+                          ]
+                        : []
+                    }
                     project={{
                       value: activeProjectId,
                       onValueChange: () => undefined,
@@ -693,6 +730,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         setDockElement={setTerminalChatDockElement}
       />
+      <ConfirmationDialog {...confirmationDialogProps} />
     </div>
   );
 });

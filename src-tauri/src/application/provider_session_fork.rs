@@ -16,16 +16,30 @@ pub struct ProviderSessionForkResult {
     pub destination_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSessionForkTarget {
+    pub working_directory: PathBuf,
+    pub git_branch: Option<String>,
+}
+
 pub fn fork_provider_session_from_state_home(
     parent_ref: &ProviderSessionRef,
 ) -> AppResult<ProviderSessionForkResult> {
+    fork_provider_session_from_state_home_for_target(parent_ref, None)
+}
+
+pub fn fork_provider_session_from_state_home_for_target(
+    parent_ref: &ProviderSessionRef,
+    target: Option<&ProviderSessionForkTarget>,
+) -> AppResult<ProviderSessionForkResult> {
     let child_session_id = Uuid::new_v4().to_string();
     let home = provider_state_home_dir()?;
-    fork_provider_session_under(
+    fork_provider_session_under_for_target(
         parent_ref.harness,
         &parent_ref.provider_session_id,
         &child_session_id,
         &home,
+        target,
     )
 }
 
@@ -34,6 +48,16 @@ pub fn fork_provider_session_under(
     parent_session_id: &str,
     child_session_id: &str,
     home: &Path,
+) -> AppResult<ProviderSessionForkResult> {
+    fork_provider_session_under_for_target(harness, parent_session_id, child_session_id, home, None)
+}
+
+pub fn fork_provider_session_under_for_target(
+    harness: AgentHarnessKind,
+    parent_session_id: &str,
+    child_session_id: &str,
+    home: &Path,
+    target: Option<&ProviderSessionForkTarget>,
 ) -> AppResult<ProviderSessionForkResult> {
     validate_provider_session_id(parent_session_id)?;
     validate_provider_session_id(child_session_id)?;
@@ -45,7 +69,7 @@ pub fn fork_provider_session_under(
 
     match harness {
         AgentHarnessKind::Claude => {
-            fork_claude_session_under(parent_session_id, child_session_id, home)
+            fork_claude_session_under(parent_session_id, child_session_id, home, target)
         }
         AgentHarnessKind::Codex => {
             fork_codex_session_under(parent_session_id, child_session_id, home)
@@ -70,13 +94,18 @@ fn fork_claude_session_under(
     parent_session_id: &str,
     child_session_id: &str,
     home: &Path,
+    target: Option<&ProviderSessionForkTarget>,
 ) -> AppResult<ProviderSessionForkResult> {
     let root = home.join(".claude").join("projects");
     let source_path = find_claude_session_file(&root, parent_session_id)?;
-    let destination_path =
-        safe_destination_in_source_dir(&root, &source_path, &format!("{child_session_id}.jsonl"))?;
+    let destination_file_name = format!("{child_session_id}.jsonl");
+    let destination_path = if let Some(target) = target {
+        safe_destination_in_claude_project_dir(&root, target, &destination_file_name)?
+    } else {
+        safe_destination_in_source_dir(&root, &source_path, &destination_file_name)?
+    };
     copy_rewritten_jsonl(&source_path, &destination_path, |value| {
-        rewrite_claude_session_value(value, parent_session_id, child_session_id)
+        rewrite_claude_session_value(value, parent_session_id, child_session_id, target)
     })?;
 
     Ok(ProviderSessionForkResult {
@@ -267,15 +296,10 @@ fn safe_destination_in_source_dir(
             source_path.display()
         )));
     }
-    if destination_file_name.contains('/')
-        || destination_file_name.contains('\\')
-        || destination_file_name == "."
-        || destination_file_name == ".."
-    {
-        return Err(AppError::Validation(
-            "Provider session destination filename is unsafe".to_string(),
-        ));
-    }
+    validate_safe_path_component(
+        destination_file_name,
+        "Provider session destination filename",
+    )?;
     let parent = source_path.parent().ok_or_else(|| {
         AppError::Infrastructure(format!(
             "Provider session source has no parent directory: {}",
@@ -304,6 +328,75 @@ fn safe_destination_in_source_dir(
     Ok(destination_path)
 }
 
+fn safe_destination_in_claude_project_dir(
+    root: &Path,
+    target: &ProviderSessionForkTarget,
+    destination_file_name: &str,
+) -> AppResult<PathBuf> {
+    let root = root.canonicalize().map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Provider session root is not readable: {}: {error}",
+            root.display()
+        ))
+    })?;
+    validate_safe_path_component(
+        destination_file_name,
+        "Provider session destination filename",
+    )?;
+
+    let project_dir_name = claude_project_dir_name_for_cwd(&target.working_directory)?;
+    validate_safe_path_component(&project_dir_name, "Claude project directory name")?;
+    let destination_parent = root.join(project_dir_name);
+    let destination_parent = if destination_parent.exists() {
+        let canonical_parent = destination_parent.canonicalize().map_err(|error| {
+            AppError::Infrastructure(format!(
+                "Claude project directory is not readable: {}: {error}",
+                destination_parent.display()
+            ))
+        })?;
+        if !canonical_parent.starts_with(&root) {
+            return Err(AppError::Validation(format!(
+                "Claude project directory is outside provider root: {}",
+                canonical_parent.display()
+            )));
+        }
+        canonical_parent
+    } else {
+        destination_parent
+    };
+
+    let destination_path = destination_parent.join(destination_file_name);
+    if destination_path.exists() {
+        return Err(AppError::Conflict(format!(
+            "Forked provider session artifact already exists: {}",
+            destination_path.display()
+        )));
+    }
+    Ok(destination_path)
+}
+
+fn validate_safe_path_component(value: &str, label: &str) -> AppResult<()> {
+    if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value == "."
+        || value == ".."
+    {
+        return Err(AppError::Validation(format!("{label} is unsafe")));
+    }
+    Ok(())
+}
+
+fn claude_project_dir_name_for_cwd(working_directory: &Path) -> AppResult<String> {
+    let value = working_directory.to_string_lossy();
+    if value.trim().is_empty() {
+        return Err(AppError::Validation(
+            "Claude project working directory is empty".to_string(),
+        ));
+    }
+    Ok(value.replace('/', "-").replace('\\', "-"))
+}
+
 fn copy_rewritten_jsonl<F>(
     source_path: &Path,
     destination_path: &Path,
@@ -326,6 +419,14 @@ where
             .and_then(|value| value.to_str())
             .unwrap_or("jsonl")
     ));
+    if let Some(parent) = destination_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            AppError::Infrastructure(format!(
+                "Failed to create forked provider session directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
     fs::write(&temp_path, output).map_err(|error| {
         AppError::Infrastructure(format!(
             "Failed to write forked provider session artifact {}: {error}",
@@ -367,8 +468,12 @@ fn rewrite_claude_session_value(
     value: &mut Value,
     parent_session_id: &str,
     child_session_id: &str,
+    target: Option<&ProviderSessionForkTarget>,
 ) {
     rewrite_session_id_fields(value, parent_session_id, child_session_id);
+    if let Some(target) = target {
+        rewrite_claude_workspace_fields(value, target);
+    }
 }
 
 fn rewrite_codex_session_value(value: &mut Value, parent_session_id: &str, child_session_id: &str) {
@@ -403,6 +508,32 @@ fn rewrite_session_id_fields(value: &mut Value, parent_session_id: &str, child_s
         Value::Array(values) => {
             for nested in values {
                 rewrite_session_id_fields(nested, parent_session_id, child_session_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_claude_workspace_fields(value: &mut Value, target: &ProviderSessionForkTarget) {
+    match value {
+        Value::Object(map) => {
+            for (key, nested) in map.iter_mut() {
+                match key.as_str() {
+                    "cwd" if nested.is_string() => {
+                        *nested = Value::String(target.working_directory.display().to_string());
+                    }
+                    "gitBranch" if nested.is_string() => {
+                        if let Some(git_branch) = target.git_branch.as_ref() {
+                            *nested = Value::String(git_branch.clone());
+                        }
+                    }
+                    _ => rewrite_claude_workspace_fields(nested, target),
+                }
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                rewrite_claude_workspace_fields(nested, target);
             }
         }
         _ => {}
@@ -533,6 +664,65 @@ mod tests {
         assert!(copied.contains("\"sessionId\":\"child-session\""));
         assert!(copied.contains("keep parent-session in text"));
         assert!(copied.contains("not-json"));
+    }
+
+    #[test]
+    fn copies_claude_session_to_target_project_dir_and_rewrites_workspace_fields() {
+        let home = temp_home();
+        let source_dir = home.path().join(".claude/projects/parent-project");
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("parent-session.jsonl"),
+            serde_json::json!({
+                "sessionId": "parent-session",
+                "cwd": "/tmp/parent-worktree",
+                "gitBranch": "parent-branch",
+                "nested": {
+                    "session_id": "parent-session",
+                    "cwd": "/tmp/parent-worktree",
+                    "gitBranch": "parent-branch"
+                }
+            })
+            .to_string(),
+        )
+        .expect("write source");
+
+        let child_worktree = home.path().join("worktrees/child-worktree");
+        let target = ProviderSessionForkTarget {
+            working_directory: child_worktree.clone(),
+            git_branch: Some("ralphx/child-branch".to_string()),
+        };
+
+        let result = fork_provider_session_under_for_target(
+            AgentHarnessKind::Claude,
+            "parent-session",
+            "child-session",
+            home.path(),
+            Some(&target),
+        )
+        .expect("fork claude session");
+
+        let target_project_dir = home
+            .path()
+            .join(".claude/projects")
+            .canonicalize()
+            .expect("canonical claude projects root")
+            .join(claude_project_dir_name_for_cwd(&child_worktree).expect("encoded child cwd"));
+        let copied_path = target_project_dir.join("child-session.jsonl");
+        assert_eq!(result.destination_path, copied_path);
+        assert!(!source_dir.join("child-session.jsonl").exists());
+
+        let copied = fs::read_to_string(copied_path).expect("read copied session");
+        let copied: Value = serde_json::from_str(&copied).expect("copied json line");
+        assert_eq!(copied["sessionId"], "child-session");
+        assert_eq!(copied["cwd"], child_worktree.display().to_string());
+        assert_eq!(copied["gitBranch"], "ralphx/child-branch");
+        assert_eq!(copied["nested"]["session_id"], "child-session");
+        assert_eq!(
+            copied["nested"]["cwd"],
+            child_worktree.display().to_string()
+        );
+        assert_eq!(copied["nested"]["gitBranch"], "ralphx/child-branch");
     }
 
     #[test]

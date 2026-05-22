@@ -200,6 +200,31 @@ describe("AgentComposerSurface", () => {
     expect(textarea.value).toBe("");
   });
 
+  it("runs custom slash commands from the composer menu", async () => {
+    const onFork = vi.fn();
+    renderComposer({
+      slashCommands: [
+        {
+          id: "fork",
+          label: "/fork",
+          description: "Fork this agent conversation",
+          onSelect: onFork,
+        },
+      ],
+    });
+
+    const textarea = screen.getByLabelText("Message input") as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "/fo" } });
+    textarea.setSelectionRange(3, 3);
+    fireEvent.keyUp(textarea);
+    await screen.findByTestId("agent-composer-menu-item-command:custom:fork");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1));
+    expect(textarea.value).toBe("");
+  });
+
   it("bounds slash command suggestions to five visible rows", async () => {
     renderComposer({
       mode: {
@@ -410,6 +435,16 @@ describe("AgentComposerSurface", () => {
         input: { kind, query: "", limit: 12 },
       }),
     );
+  });
+
+  it("runs fork session from the plus menu", async () => {
+    const onForkSession = vi.fn().mockResolvedValue(undefined);
+    renderComposer({ onForkSession });
+
+    fireEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    fireEvent.click(screen.getByText("Fork session"));
+
+    await waitFor(() => expect(onForkSession).toHaveBeenCalledTimes(1));
   });
 
   it("appends internal skill directives for selected $ skills", async () => {

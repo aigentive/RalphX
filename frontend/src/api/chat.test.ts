@@ -239,6 +239,10 @@ describe("chat api", () => {
         claude_session_id: null,
         provider_session_id: "thread-1",
         provider_harness: "codex",
+        logical_model: "gpt-5.4",
+        effective_model_id: "gpt-5.4-2026-04-01",
+        logical_effort: "high",
+        effective_effort: "high",
         title: "Title",
         message_count: 2,
         last_message_at: null,
@@ -261,6 +265,10 @@ describe("chat api", () => {
       providerHarness: "codex",
       upstreamProvider: null,
       providerProfile: null,
+      logicalModel: "gpt-5.4",
+      effectiveModelId: "gpt-5.4-2026-04-01",
+      logicalEffort: "high",
+      effectiveEffort: "high",
       claudeSessionId: null,
     });
   });

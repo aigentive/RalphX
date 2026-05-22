@@ -29,10 +29,12 @@ import { useAgentsTerminalDocks } from "./useAgentsTerminalDocks";
 import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
 import { normalizeRuntimeSelection } from "./agentOptions";
+import { runtimeFromConversation } from "./agentConversationRuntime";
 import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
+  type AgentConversation,
 } from "./agentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
@@ -374,7 +376,14 @@ export function useAgentsViewController({
     setOptimisticConversationsById,
     setOptimisticSelectedConversationId,
     setOptimisticWorkspacesByConversationId,
+    setRuntimeForConversation,
   });
+  const handleSidebarForkConversation = useCallback(
+    async (conversation: AgentConversation) => {
+      await handleForkConversation(conversation.id);
+    },
+    [handleForkConversation],
+  );
 
   const {
     handleOpenPublishPane,
@@ -408,6 +417,7 @@ export function useAgentsViewController({
             return;
           }
           const agentConversation = toProjectAgentConversation(conversation);
+          const forkRuntime = runtimeFromConversation(agentConversation);
           queryClient.setQueryData(
             chatKeys.conversationSummary(conversation.id),
             conversation,
@@ -418,6 +428,13 @@ export function useAgentsViewController({
           }));
           setOptimisticSelectedConversationId(agentConversation.id);
           setFocusedProject(agentConversation.projectId);
+          if (forkRuntime) {
+            setRuntimeForConversation(
+              agentConversation.id,
+              agentConversation.projectId,
+              forkRuntime,
+            );
+          }
           selectConversation(agentConversation.projectId, agentConversation.id);
           setActiveConversation(
             getAgentConversationStoreKey(agentConversation),
@@ -440,6 +457,7 @@ export function useAgentsViewController({
     setFocusedProject,
     setOptimisticConversationsById,
     setOptimisticSelectedConversationId,
+    setRuntimeForConversation,
   ]);
   const handleOpenPublishFile = useCallback(
     (filePath: string, mode: DiffFilterMode) => {
@@ -521,6 +539,7 @@ export function useAgentsViewController({
     onSelectConversation: handleSidebarSelectConversation,
     onCreateAgent: handleSidebarCreateAgent,
     onCreateProject,
+    onForkConversation: handleSidebarForkConversation,
     onArchiveProject: handleArchiveProject,
     onRenameConversation: handleRenameConversation,
     onArchiveConversation: handleArchiveConversation,

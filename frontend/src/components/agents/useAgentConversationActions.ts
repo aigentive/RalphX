@@ -10,12 +10,14 @@ import { chatKeys, invalidateConversationDataQueries } from "@/hooks/useChat";
 import { projectsApi } from "@/api/projects";
 import { projectKeys } from "@/hooks/useProjects";
 import type { Project } from "@/types/project";
+import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
   type AgentConversation,
 } from "./agentConversations";
+import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
@@ -43,6 +45,11 @@ interface UseAgentConversationActionsArgs {
   >;
   setFocusedProject: (projectId: string | null) => void;
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
+  setRuntimeForConversation: (
+    conversationId: string,
+    projectId: string,
+    runtime: AgentRuntimeSelection
+  ) => void;
 }
 
 export function useAgentConversationActions({
@@ -65,6 +72,7 @@ export function useAgentConversationActions({
   setOptimisticWorkspacesByConversationId,
   setFocusedProject,
   setOptimisticSelectedConversationId,
+  setRuntimeForConversation,
 }: UseAgentConversationActionsArgs) {
   const handleSelectConversation = useCallback(
     (conversationProjectId: string, conversation: AgentConversation) => {
@@ -163,6 +171,7 @@ export function useAgentConversationActions({
         const result = await chatApi.forkAgentConversation(conversationId);
         const conversation = toProjectAgentConversation(result.conversation);
         const conversationProjectId = conversation.projectId;
+        const forkRuntime = runtimeFromConversation(conversation);
 
         queryClient.setQueryData(
           chatKeys.conversationSummary(conversation.id),
@@ -184,6 +193,13 @@ export function useAgentConversationActions({
         }
         setOptimisticSelectedConversationId(conversation.id);
         setFocusedProject(conversationProjectId);
+        if (forkRuntime) {
+          setRuntimeForConversation(
+            conversation.id,
+            conversationProjectId,
+            forkRuntime
+          );
+        }
         selectConversation(conversationProjectId, conversation.id);
         setActiveConversation(
           getAgentConversationStoreKey(conversation),
@@ -212,6 +228,7 @@ export function useAgentConversationActions({
       setOptimisticConversationsById,
       setOptimisticSelectedConversationId,
       setOptimisticWorkspacesByConversationId,
+      setRuntimeForConversation,
     ]
   );
 

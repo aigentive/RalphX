@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::application::agent_conversation_workspace::{
     prepare_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceBaseSelection,
@@ -6,7 +7,8 @@ use crate::application::agent_conversation_workspace::{
 };
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::provider_session_fork::{
-    fork_provider_session_from_state_home, ProviderSessionForkResult,
+    fork_provider_session_from_state_home_for_target, ProviderSessionForkResult,
+    ProviderSessionForkTarget,
 };
 use crate::application::AppState;
 use crate::domain::agents::ProviderSessionRef;
@@ -16,6 +18,10 @@ use crate::domain::entities::{
 };
 use crate::domain::services::RunningAgentKey;
 use crate::error::{AppError, AppResult};
+
+const DEFAULT_AGENT_TITLE: &str = "Untitled agent";
+const FORK_TITLE_PREFIX: &str = "[Fork] ";
+const MAX_FORK_TITLE_CHARS: usize = 72;
 
 #[derive(Debug, Clone)]
 pub struct AgentConversationForkResult {
@@ -62,6 +68,9 @@ pub async fn fork_agent_conversation(
 
     let mut child_conversation = ChatConversation::new_project(project_id.clone());
     child_conversation.parent_conversation_id = Some(parent_conversation.id.as_str().to_string());
+    child_conversation.set_title(forked_conversation_title(
+        parent_conversation.title.as_deref(),
+    ));
     child_conversation.set_agent_mode(Some(mode));
     child_conversation.upstream_provider = parent_conversation.upstream_provider.clone();
     child_conversation.provider_profile = parent_conversation.provider_profile.clone();
@@ -82,7 +91,7 @@ pub async fn fork_agent_conversation(
         None
     };
 
-    let provider_session = fork_parent_provider_session(&parent_conversation)?;
+    let provider_session = fork_parent_provider_session(&parent_conversation, workspace.as_ref())?;
     if let Some(provider_session) = provider_session.as_ref() {
         child_conversation.set_provider_session_ref(provider_session.session_ref.clone());
     }
@@ -182,13 +191,50 @@ fn workspace_base_selection(
         .unwrap_or_default()
 }
 
+fn forked_conversation_title(parent_title: Option<&str>) -> String {
+    let source_title = parent_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(DEFAULT_AGENT_TITLE);
+    let unprefixed_title = source_title
+        .strip_prefix(FORK_TITLE_PREFIX)
+        .unwrap_or(source_title)
+        .trim();
+    truncate_fork_title(&format!("{FORK_TITLE_PREFIX}{unprefixed_title}"))
+}
+
+fn truncate_fork_title(title: &str) -> String {
+    let char_count = title.chars().count();
+    if char_count <= MAX_FORK_TITLE_CHARS {
+        return title.to_string();
+    }
+
+    let mut truncated = title
+        .chars()
+        .take(MAX_FORK_TITLE_CHARS)
+        .collect::<String>();
+    if let Some((prefix, _)) = truncated.rsplit_once(char::is_whitespace) {
+        if prefix.len() >= FORK_TITLE_PREFIX.len() {
+            truncated = prefix.trim_end().to_string();
+        }
+    }
+    truncated
+}
+
 fn fork_parent_provider_session(
     parent_conversation: &ChatConversation,
+    child_workspace: Option<&AgentConversationWorkspace>,
 ) -> AppResult<Option<ProviderSessionForkResult>> {
+    let target = child_workspace.map(|workspace| ProviderSessionForkTarget {
+        working_directory: PathBuf::from(&workspace.worktree_path),
+        git_branch: Some(workspace.branch_name.clone()),
+    });
     parent_conversation
         .provider_session_ref()
         .as_ref()
-        .map(fork_provider_session_from_state_home)
+        .map(|parent_ref| {
+            fork_provider_session_from_state_home_for_target(parent_ref, target.as_ref())
+        })
         .transpose()
 }
 
@@ -329,6 +375,41 @@ fn rewrite_provider_session_metadata(
 mod tests {
     use super::*;
     use crate::domain::entities::{ChatMessage, MessageRole};
+
+    #[test]
+    fn forked_conversation_title_prefixes_parent_title() {
+        assert_eq!(
+            forked_conversation_title(Some("Build checkout flow")),
+            "[Fork] Build checkout flow"
+        );
+    }
+
+    #[test]
+    fn forked_conversation_title_uses_safe_default_for_blank_parent_title() {
+        assert_eq!(
+            forked_conversation_title(Some("  ")),
+            "[Fork] Untitled agent"
+        );
+        assert_eq!(forked_conversation_title(None), "[Fork] Untitled agent");
+    }
+
+    #[test]
+    fn forked_conversation_title_does_not_duplicate_prefix() {
+        assert_eq!(
+            forked_conversation_title(Some("[Fork] Build checkout flow")),
+            "[Fork] Build checkout flow"
+        );
+    }
+
+    #[test]
+    fn forked_conversation_title_truncates_long_titles() {
+        let title = forked_conversation_title(Some(
+            "Investigate provider session continuity and linked workspace publication state",
+        ));
+
+        assert!(title.starts_with("[Fork] "));
+        assert!(title.chars().count() <= MAX_FORK_TITLE_CHARS);
+    }
 
     #[test]
     fn cloned_message_rewrites_parent_link_and_provider_session() {
