@@ -1,10 +1,10 @@
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, Registry, fmt, prelude::*};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
 use crate::utils::redacting_writer::RedactingMakeWriter;
 
-pub(crate) fn initialize_process_bootstrap(
-) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+pub(crate) fn initialize_process_bootstrap() -> Option<tracing_appender::non_blocking::WorkerGuard>
+{
     if std::env::var_os("RUST_MIN_STACK").is_none() {
         std::env::set_var("RUST_MIN_STACK", "8388608");
     }
@@ -20,8 +20,8 @@ pub(crate) fn initialize_process_bootstrap(
 
         let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
         let log_filename = format!("ralphx_{timestamp}.log");
-        let log_file = std::fs::File::create(log_dir.join(&log_filename))
-            .expect("Failed to create log file");
+        let log_file =
+            std::fs::File::create(log_dir.join(&log_filename)).expect("Failed to create log file");
 
         let (non_blocking_writer, guard) = tracing_appender::non_blocking(log_file);
         let layer = fmt::layer()

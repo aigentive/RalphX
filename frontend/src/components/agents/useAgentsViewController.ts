@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { chatApi } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
+import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
+import { useEventBus } from "@/providers/EventProvider";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
@@ -27,6 +30,10 @@ import { useAgentsSidebarState } from "./useAgentsSidebarState";
 import { useAgentsSidebarProps } from "./useAgentsSidebarProps";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { preflightAgentWorkspaceFreshness } from "./agentWorkspaceQueries";
+import {
+  getAgentConversationStoreKey,
+  toProjectAgentConversation,
+} from "./agentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
@@ -48,6 +55,7 @@ export function useAgentsViewController({
   onCreateProject,
 }: UseAgentsViewControllerParams) {
   const queryClient = useQueryClient();
+  const eventBus = useEventBus();
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
@@ -340,6 +348,7 @@ export function useAgentsViewController({
   const {
     handleArchiveConversation,
     handleArchiveProject,
+    handleForkConversation,
     handleRenameConversation,
     handleRestoreConversation,
     handleSidebarCreateAgent,
@@ -364,6 +373,7 @@ export function useAgentsViewController({
     setFocusedProject,
     setOptimisticConversationsById,
     setOptimisticSelectedConversationId,
+    setOptimisticWorkspacesByConversationId,
   });
 
   const {
@@ -377,6 +387,60 @@ export function useAgentsViewController({
     selectedConversationId,
     setArtifactPaneVisibility,
   });
+  useEffect(() => {
+    return eventBus.subscribe<{
+      parent_conversation_id: string;
+      conversation_id: string;
+      context_type: string;
+      context_id: string;
+    }>("agent:conversation_forked", (payload) => {
+      if (
+        payload.context_type !== "project" ||
+        payload.parent_conversation_id !== selectedConversationId
+      ) {
+        return;
+      }
+
+      void chatApi
+        .getConversationSummary(payload.conversation_id)
+        .then((conversation) => {
+          if (!conversation || conversation.contextType !== "project") {
+            return;
+          }
+          const agentConversation = toProjectAgentConversation(conversation);
+          queryClient.setQueryData(
+            chatKeys.conversationSummary(conversation.id),
+            conversation,
+          );
+          setOptimisticConversationsById((current) => ({
+            ...current,
+            [agentConversation.id]: agentConversation,
+          }));
+          setOptimisticSelectedConversationId(agentConversation.id);
+          setFocusedProject(agentConversation.projectId);
+          selectConversation(agentConversation.projectId, agentConversation.id);
+          setActiveConversation(
+            getAgentConversationStoreKey(agentConversation),
+            agentConversation.id,
+          );
+          void invalidateProjectConversations(agentConversation.projectId);
+        })
+        .catch(() => {
+          // Manual /fork already handles errors. This listener only keeps
+          // terminal continuity sends aligned when the backend auto-forks.
+        });
+    });
+  }, [
+    eventBus,
+    invalidateProjectConversations,
+    queryClient,
+    selectConversation,
+    selectedConversationId,
+    setActiveConversation,
+    setFocusedProject,
+    setOptimisticConversationsById,
+    setOptimisticSelectedConversationId,
+  ]);
   const handleOpenPublishFile = useCallback(
     (filePath: string, mode: DiffFilterMode) => {
       if (!selectedConversationId) {
@@ -491,6 +555,7 @@ export function useAgentsViewController({
       onAgentUserMessageSent: handleAgentUserMessageSent,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onForkConversation: handleForkConversation,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,
       onPreloadArtifacts: handlePreloadArtifacts,

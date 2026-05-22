@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::AppState;
 use crate::application::harness_runtime_registry::{
     default_agent_harness_settings_config, default_execution_settings_config,
 };
@@ -14,6 +13,7 @@ use crate::application::{
 use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::infrastructure::agents::claude::apply_claude_provider_permission_settings;
+use crate::AppState;
 
 pub(crate) fn initialize_settings_defaults(
     app_state: &AppState,
@@ -174,10 +174,11 @@ mod tests {
     #[test]
     fn initialize_settings_defaults_keeps_execution_running_with_default_provider() {
         let mut app_state = AppState::new_test();
-        app_state.agent_provider_settings_repo =
-            Arc::new(MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
+        app_state.agent_provider_settings_repo = Arc::new(
+            MemoryAgentProviderSettingsRepository::with_all_providers_enabled(
                 DEFAULT_AGENT_HARNESS,
-            ));
+            ),
+        );
         let execution_state = Arc::new(ExecutionState::new());
 
         initialize_settings_defaults(&app_state, Arc::clone(&execution_state));

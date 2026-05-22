@@ -34,7 +34,9 @@ pub async fn seed_ideation_effort_defaults(
 
     tracing::info!("ideation_effort_bootstrap: seeded global inherit/inherit row");
 
-    Ok(IdeationEffortBootstrapResult { seeded_global: true })
+    Ok(IdeationEffortBootstrapResult {
+        seeded_global: true,
+    })
 }
 
 #[cfg(test)]

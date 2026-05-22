@@ -82,6 +82,7 @@ export const ChatConversationSchema = z.object({
   upstreamProvider: z.string().nullable().optional(),
   providerProfile: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  parentConversationId: z.string().nullable().optional(),
   title: z.string().nullable(),
   messageCount: z.number().int().min(0),
   lastMessageAt: z.string().datetime().nullable(),

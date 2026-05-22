@@ -1045,7 +1045,6 @@ pub fn start_teammate_stream<R: Runtime>(
     }.instrument(span))
 }
 
-
 /// Extract usage tokens from a `"type": "assistant"` event's `message.usage` field.
 ///
 /// Claude Code emits assistant events with cumulative usage per-message:
@@ -1062,15 +1061,19 @@ fn extract_assistant_usage(
     total_input: &mut u64,
     total_output: &mut u64,
 ) -> bool {
-    let usage = raw
-        .get("message")
-        .and_then(|m| m.get("usage"));
+    let usage = raw.get("message").and_then(|m| m.get("usage"));
     let Some(usage) = usage else {
         return false;
     };
 
-    let input = usage.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
-    let output = usage.get("output_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
+    let input = usage
+        .get("input_tokens")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
 
     // Only update if the new cumulative values exceed current totals.
     // Assistant usage is cumulative within a turn — later messages have higher counts.

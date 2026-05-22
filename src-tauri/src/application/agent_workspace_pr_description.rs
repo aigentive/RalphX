@@ -1063,7 +1063,10 @@ mod tests {
             AgentWorkspacePrDescriptionCacheStatus::Coalesced.as_str(),
             "coalesced"
         );
-        assert_eq!(AgentWorkspacePrDescriptionCacheStatus::Miss.as_str(), "miss");
+        assert_eq!(
+            AgentWorkspacePrDescriptionCacheStatus::Miss.as_str(),
+            "miss"
+        );
         assert_eq!(
             AgentWorkspacePrDescriptionCacheStatus::Disabled.as_str(),
             "disabled"
@@ -1155,9 +1158,15 @@ mod tests {
         .await
         .expect("first draft should succeed");
 
-        assert_eq!(first.cache_status, AgentWorkspacePrDescriptionCacheStatus::Miss);
+        assert_eq!(
+            first.cache_status,
+            AgentWorkspacePrDescriptionCacheStatus::Miss
+        );
         assert!(first.cache_age_ms.is_none());
-        assert_eq!(first.description.title.as_deref(), Some("Cached draft title"));
+        assert_eq!(
+            first.description.title.as_deref(),
+            Some("Cached draft title")
+        );
         assert_eq!(client.spawned_configs().await.len(), 1);
 
         let second = get_or_draft_agent_workspace_pr_description(
@@ -1172,10 +1181,16 @@ mod tests {
         .await
         .expect("second draft should hit cache");
 
-        assert_eq!(second.cache_status, AgentWorkspacePrDescriptionCacheStatus::Hit);
+        assert_eq!(
+            second.cache_status,
+            AgentWorkspacePrDescriptionCacheStatus::Hit
+        );
         assert!(second.cache_age_ms.is_some());
         assert_eq!(second.cache_wait_ms, 0);
-        assert_eq!(second.description.body_markdown, "## Summary\n\nCached draft body.");
+        assert_eq!(
+            second.description.body_markdown,
+            "## Summary\n\nCached draft body."
+        );
         assert_eq!(
             client.spawned_configs().await.len(),
             1,

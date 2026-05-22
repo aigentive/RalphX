@@ -4,8 +4,8 @@ use std::process::Command;
 #[tokio::test]
 async fn test_resolve_project_default_branch_prefers_configured_branch() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let branch = GitService::resolve_project_default_branch(temp_dir.path(), Some(" develop "))
-        .await;
+    let branch =
+        GitService::resolve_project_default_branch(temp_dir.path(), Some(" develop ")).await;
 
     assert_eq!(branch, "develop");
 }
@@ -835,11 +835,9 @@ async fn test_branch_exists_returns_true_for_existing_branch() {
         .unwrap();
     let branch_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    assert!(
-        GitService::branch_exists(repo, &branch_name)
-            .await
-            .unwrap_or(false)
-    );
+    assert!(GitService::branch_exists(repo, &branch_name)
+        .await
+        .unwrap_or(false));
 }
 
 #[tokio::test]
@@ -875,11 +873,9 @@ async fn test_branch_exists_returns_false_for_nonexistent_branch() {
         .output()
         .unwrap();
 
-    assert!(
-        !GitService::branch_exists(repo, "nonexistent-branch")
-            .await
-            .unwrap_or(true)
-    );
+    assert!(!GitService::branch_exists(repo, "nonexistent-branch")
+        .await
+        .unwrap_or(true));
 }
 
 // =========================================================================
@@ -1012,13 +1008,11 @@ async fn test_is_ancestor_returns_false_for_invalid_ref() {
     };
 
     // Invalid ref should return false (conservative failure mode)
-    let result = GitService::is_ancestor(repo, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &head_sha)
-        .await
-        .unwrap_or(false);
-    assert!(
-        !result,
-        "invalid ref should not be considered an ancestor"
-    );
+    let result =
+        GitService::is_ancestor(repo, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &head_sha)
+            .await
+            .unwrap_or(false);
+    assert!(!result, "invalid ref should not be considered an ancestor");
 }
 
 // =========================================================================
@@ -1259,11 +1253,17 @@ async fn test_is_branch_merged_or_content_equivalent_deleted_branch_returns_cont
         .unwrap();
 
     // Call with a branch that doesn't exist — git ops return errors which collapse to false
-    let (safe, reason) =
-        GitService::is_branch_merged_or_content_equivalent(repo, "nonexistent-task-branch", "plan-branch")
-            .await;
+    let (safe, reason) = GitService::is_branch_merged_or_content_equivalent(
+        repo,
+        "nonexistent-task-branch",
+        "plan-branch",
+    )
+    .await;
     // Expected: both ancestor check and content check fail → (false, "content_differs")
-    assert!(!safe, "deleted/nonexistent branch: should NOT be safe to delete");
+    assert!(
+        !safe,
+        "deleted/nonexistent branch: should NOT be safe to delete"
+    );
     assert_eq!(reason, "content_differs");
 }
 

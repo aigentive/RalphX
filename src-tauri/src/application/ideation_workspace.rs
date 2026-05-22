@@ -5,9 +5,8 @@ use sha2::{Digest, Sha256};
 
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    AgentConversationWorkspace,
-    IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
-    IdeationSession, IdeationSessionId, Project,
+    AgentConversationWorkspace, IdeationAnalysisBaseRefKind, IdeationAnalysisState,
+    IdeationAnalysisWorkspaceKind, IdeationSession, IdeationSessionId, Project,
 };
 use crate::error::{AppError, AppResult};
 

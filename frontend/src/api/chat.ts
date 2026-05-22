@@ -535,6 +535,7 @@ const ChatConversationResponseSchema = z.object({
   upstream_provider: z.string().nullable().optional(),
   provider_profile: z.string().nullable().optional(),
   agent_mode: z.enum(["chat", "edit", "ideation"]).nullable().optional(),
+  parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
   message_count: z.number(),
   last_message_at: z.string().nullable(),
@@ -581,6 +582,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     upstreamProvider: raw.upstream_provider ?? null,
     providerProfile: raw.provider_profile ?? null,
     agentMode: raw.agent_mode ?? null,
+    parentConversationId: raw.parent_conversation_id ?? null,
     title: raw.title,
     messageCount: raw.message_count,
     lastMessageAt: raw.last_message_at,
@@ -1468,6 +1470,7 @@ export const chatApi = {
   getBulkWorkspacePublicationStates,
   // Message sending & queue
   startAgentConversation,
+  forkAgentConversation,
   switchAgentConversationMode,
   sendAgentMessage,
   getQueuedAgentMessages,
@@ -1590,6 +1593,15 @@ export interface StartAgentConversationResult {
   conversation: ChatConversation;
   workspace: AgentConversationWorkspace | null;
   sendResult: SendAgentMessageResult;
+}
+
+export interface ForkAgentConversationResult {
+  parentConversation: ChatConversation;
+  conversation: ChatConversation;
+  workspace: AgentConversationWorkspace | null;
+  providerSessionForked: boolean;
+  copiedMessageCount: number;
+  copiedTimelineItemCount: number;
 }
 
 export interface SwitchAgentConversationModeInput {
@@ -1778,6 +1790,15 @@ const StartAgentConversationResponseSchema = z.object({
   send_result: SendAgentMessageResponseSchema,
 });
 
+const ForkAgentConversationResponseSchema = z.object({
+  parent_conversation: ChatConversationResponseSchema,
+  conversation: ChatConversationResponseSchema,
+  workspace: AgentConversationWorkspaceResponseSchema.nullable(),
+  provider_session_forked: z.boolean(),
+  copied_message_count: z.number(),
+  copied_timeline_item_count: z.number(),
+});
+
 const SwitchAgentConversationModeResponseSchema = z.object({
   conversation: ChatConversationResponseSchema,
   workspace: AgentConversationWorkspaceResponseSchema.nullable(),
@@ -1814,6 +1835,9 @@ type RawAgentSidebarConversationGroups = z.infer<
 >;
 type RawStartAgentConversationResponse = z.infer<
   typeof StartAgentConversationResponseSchema
+>;
+type RawForkAgentConversationResponse = z.infer<
+  typeof ForkAgentConversationResponseSchema
 >;
 type RawSwitchAgentConversationModeResponse = z.infer<
   typeof SwitchAgentConversationModeResponseSchema
@@ -1909,6 +1933,19 @@ function transformStartAgentConversationResponse(
     conversation: transformConversation(raw.conversation),
     workspace: raw.workspace ? transformAgentConversationWorkspace(raw.workspace) : null,
     sendResult: transformSendAgentMessageResponse(raw.send_result),
+  };
+}
+
+function transformForkAgentConversationResponse(
+  raw: RawForkAgentConversationResponse
+): ForkAgentConversationResult {
+  return {
+    parentConversation: transformConversation(raw.parent_conversation),
+    conversation: transformConversation(raw.conversation),
+    workspace: raw.workspace ? transformAgentConversationWorkspace(raw.workspace) : null,
+    providerSessionForked: raw.provider_session_forked,
+    copiedMessageCount: raw.copied_message_count,
+    copiedTimelineItemCount: raw.copied_timeline_item_count,
   };
 }
 
@@ -2204,6 +2241,21 @@ export async function startAgentConversation(
     StartAgentConversationResponseSchema
   );
   return transformStartAgentConversationResponse(raw);
+}
+
+export async function forkAgentConversation(
+  conversationId: string
+): Promise<ForkAgentConversationResult> {
+  const raw = await typedInvoke(
+    "fork_agent_conversation",
+    {
+      input: {
+        conversationId,
+      },
+    },
+    ForkAgentConversationResponseSchema
+  );
+  return transformForkAgentConversationResponse(raw);
 }
 
 export async function switchAgentConversationMode(

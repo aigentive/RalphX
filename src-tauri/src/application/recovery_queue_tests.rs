@@ -56,7 +56,10 @@ fn test_dedup_rejects_duplicate_context_id() {
     assert!(accepted, "first enqueue should be accepted");
 
     let rejected = queue.enqueue(make_item("session-1", RecoveryPriority::Ideation));
-    assert!(!rejected, "second enqueue with same context_id should be rejected");
+    assert!(
+        !rejected,
+        "second enqueue with same context_id should be rejected"
+    );
 
     assert_eq!(queue.len(), 1, "queue should contain exactly one item");
 }
@@ -68,7 +71,10 @@ fn test_dedup_across_priorities() {
 
     queue.enqueue(make_item("ctx-1", RecoveryPriority::Ideation));
     let rejected = queue.enqueue(make_item("ctx-1", RecoveryPriority::Verification));
-    assert!(!rejected, "duplicate should be rejected even if priority differs");
+    assert!(
+        !rejected,
+        "duplicate should be rejected even if priority differs"
+    );
     assert_eq!(queue.len(), 1);
 }
 
@@ -151,7 +157,10 @@ async fn test_error_isolation_callback_failure_continues_queue() {
         .await;
 
     assert_eq!(summary.failed, 1, "one item should have failed");
-    assert_eq!(summary.recovered, 1, "second item should still be recovered");
+    assert_eq!(
+        summary.recovered, 1,
+        "second item should still be recovered"
+    );
     assert_eq!(summary.skipped, 0);
     assert!(
         processed.contains(&"session-ok".to_string()),

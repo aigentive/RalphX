@@ -449,10 +449,7 @@ impl SessionExportService {
             });
 
             if versions.len() >= MAX_VERSIONS {
-                warn!(
-                    "Version chain truncated at 1000 for session {}",
-                    session_id
-                );
+                warn!("Version chain truncated at 1000 for session {}", session_id);
                 break;
             }
 
@@ -477,11 +474,7 @@ impl SessionExportService {
 
     /// Import a session from JSON content into the given project.
     /// Returns ImportedSession with the new session_id and counts.
-    pub async fn import(
-        &self,
-        json_content: &str,
-        project_id: &str,
-    ) -> AppResult<ImportedSession> {
+    pub async fn import(&self, json_content: &str, project_id: &str) -> AppResult<ImportedSession> {
         // File size guard (10MB)
         if json_content.len() > 10_485_760 {
             warn!(
@@ -494,11 +487,10 @@ impl SessionExportService {
         }
 
         // Parse JSON
-        let export: SessionExport = serde_json::from_str(json_content).map_err(|e| {
-            AppError::ImportInvalidFormat {
+        let export: SessionExport =
+            serde_json::from_str(json_content).map_err(|e| AppError::ImportInvalidFormat {
                 detail: format!("Invalid JSON: {}", e),
-            }
-        })?;
+            })?;
 
         // Validate schema version
         if export.schema_version != 1 {

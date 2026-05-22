@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 /// Replicates the staleness check logic from `recover_timeout_failures`.
 ///

@@ -157,6 +157,26 @@ impl ChatTimelineRepository for SqliteChatTimelineRepository {
             .await
     }
 
+    async fn get_by_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Vec<ChatTimelineItem>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(&format!(
+                    "{} WHERE b.conversation_id = ?1 ORDER BY b.sequence ASC",
+                    timeline_item_select_sql(true)
+                ))?;
+                let mut items = stmt
+                    .query_map(params![conversation_id], row_to_timeline_item)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                hydrate_diff_tool_payloads(conn, &mut items)?;
+                Ok(items)
+            })
+            .await
+    }
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()> {
         let message_id = message_id.as_str().to_string();
         let finalized_at = Utc::now().to_rfc3339();

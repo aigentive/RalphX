@@ -280,9 +280,7 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
     let offsets = input.offsets.unwrap_or_default();
     let groups = match group_by {
         SidebarGroupBy::Publication => publication_groups(rows, selected_states, limit, &offsets),
-        SidebarGroupBy::Project => {
-            project_groups(rows, project_labels, row_sort, limit, &offsets)
-        }
+        SidebarGroupBy::Project => project_groups(rows, project_labels, row_sort, limit, &offsets),
     };
 
     Ok(AgentSidebarConversationGroupsResponse { groups })
@@ -1140,9 +1138,13 @@ mod tests {
         )
         .await;
         create_workspace(&state, &pinned, &alpha.id, Some(42), Some("open"), None).await;
-        let beta_conversation =
-            create_conversation(&state, &beta.id, "Beta work", now - chrono::Duration::seconds(1))
-                .await;
+        let beta_conversation = create_conversation(
+            &state,
+            &beta.id,
+            "Beta work",
+            now - chrono::Duration::seconds(1),
+        )
+        .await;
         create_workspace(
             &state,
             &beta_conversation,

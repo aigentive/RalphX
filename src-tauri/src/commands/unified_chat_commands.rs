@@ -25,6 +25,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::{Emitter, Manager, Runtime, State};
 
+use crate::application::agent_conversation_fork::{
+    fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
+};
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode, is_terminal_agent_conversation_publication_status,
     prepare_agent_conversation_workspace, prepare_agent_conversation_workspace_with_setup_mode,
@@ -67,9 +70,7 @@ use crate::application::publish_resilience::{
     push_publish_branch, remote_tracking_ref_for_publish, review_base_for_publish,
     PublishBranchFreshnessOutcome, PublishBranchFreshnessStatus, PublishFailureClass,
 };
-use crate::application::services::pr_merge_poller::{
-    sync_agent_workspace_auto_merge_preference_for_workspace,
-};
+use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
@@ -86,9 +87,9 @@ use crate::domain::entities::{
     ProjectId, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
+    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerIntegrationReference, ComposerProjectReference,
-    normalize_title_with_jira_key, primary_jira_key_from_composer_metadata, QueuedMessage,
-    RunningAgentKey, RunningAgentRegistry,
+    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -226,7 +227,7 @@ pub struct StartAgentConversationInput {
 }
 
 /// Response for an agent conversation workspace.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentConversationWorkspaceResponse {
     pub conversation_id: String,
     pub project_id: String,
@@ -263,6 +264,30 @@ pub struct AgentConversationWorkspacePrSupervisionInput {
     pub auto_fix_enabled: bool,
     pub auto_merge_desired: bool,
     pub auto_merge_method: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkAgentConversationInput {
+    pub conversation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ForkAgentConversationResponse {
+    pub parent_conversation: AgentConversationResponse,
+    pub conversation: AgentConversationResponse,
+    pub workspace: Option<AgentConversationWorkspaceResponse>,
+    pub provider_session_forked: bool,
+    pub copied_message_count: usize,
+    pub copied_timeline_item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentConversationForkedPayload {
+    pub parent_conversation_id: String,
+    pub conversation_id: String,
+    pub context_type: String,
+    pub context_id: String,
 }
 
 impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
@@ -1364,7 +1389,7 @@ impl From<QueuedMessage> for QueuedMessageResponse {
 }
 
 /// Response for conversation listing
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentConversationResponse {
     pub id: String,
     pub context_type: String,
@@ -1375,6 +1400,7 @@ pub struct AgentConversationResponse {
     pub upstream_provider: Option<String>,
     pub provider_profile: Option<String>,
     pub agent_mode: Option<String>,
+    pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
     pub message_count: i64,
     pub last_message_at: Option<String>,
@@ -1398,6 +1424,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             upstream_provider: c.upstream_provider,
             provider_profile: c.provider_profile,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
+            parent_conversation_id: c.parent_conversation_id,
             title: c.title,
             message_count: c.message_count,
             last_message_at: c.last_message_at.map(|dt| dt.to_rfc3339()),
@@ -1406,6 +1433,44 @@ impl From<ChatConversation> for AgentConversationResponse {
             archived_at: c.archived_at.map(|dt| dt.to_rfc3339()),
         }
     }
+}
+
+impl From<AgentConversationForkResult> for ForkAgentConversationResponse {
+    fn from(result: AgentConversationForkResult) -> Self {
+        Self {
+            parent_conversation: result.parent_conversation.into(),
+            conversation: result.conversation.into(),
+            workspace: result
+                .workspace
+                .map(AgentConversationWorkspaceResponse::from),
+            provider_session_forked: result.provider_session.is_some(),
+            copied_message_count: result.copied_message_count,
+            copied_timeline_item_count: result.copied_timeline_item_count,
+        }
+    }
+}
+
+fn emit_agent_conversation_fork_events<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    response: &ForkAgentConversationResponse,
+) {
+    let _ = app.emit(
+        "agent:conversation_created",
+        AgentConversationCreatedPayload {
+            conversation_id: response.conversation.id.clone(),
+            context_type: response.conversation.context_type.clone(),
+            context_id: response.conversation.context_id.clone(),
+        },
+    );
+    let _ = app.emit(
+        "agent:conversation_forked",
+        AgentConversationForkedPayload {
+            parent_conversation_id: response.parent_conversation.id.clone(),
+            conversation_id: response.conversation.id.clone(),
+            context_type: response.conversation.context_type.clone(),
+            context_id: response.conversation.context_id.clone(),
+        },
+    );
 }
 
 /// Response for paginated conversation listing
@@ -2712,6 +2777,26 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     })
 }
 
+/// Fork a project-backed agent conversation into a new conversation/workspace branch.
+#[tauri::command]
+pub async fn fork_agent_conversation<R: Runtime + 'static>(
+    input: ForkAgentConversationInput,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle<R>,
+) -> Result<ForkAgentConversationResponse, String> {
+    let parent_conversation_id = ChatConversationId::from_string(input.conversation_id);
+    let result = fork_agent_conversation_in_state(state.inner(), &parent_conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = ForkAgentConversationResponse::from(result);
+    emit_agent_conversation_fork_events(&app, &response);
+    invalidate_agent_workspace_pr_description_cache(&parent_conversation_id);
+    invalidate_agent_workspace_pr_description_cache(&ChatConversationId::from_string(
+        response.conversation.id.clone(),
+    ));
+    Ok(response)
+}
+
 /// Switch a project-backed agent conversation between chat/edit/ideation modes.
 #[tauri::command]
 pub async fn switch_agent_conversation_mode(
@@ -2866,6 +2951,37 @@ pub async fn switch_agent_conversation_mode_for_state(
 /// - agent:message_created - When messages are persisted
 /// - agent:run_completed or agent:turn_completed (interactive) - When agent finishes
 /// - agent:error - On failure
+async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
+    state: &AppState,
+    app: &tauri::AppHandle<R>,
+    conversation_id: Option<&ChatConversationId>,
+) -> Result<Option<ChatConversationId>, String> {
+    let Some(parent_conversation_id) = conversation_id else {
+        return Ok(None);
+    };
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(parent_conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    if !workspace.has_terminal_publication_pr_status() {
+        return Ok(None);
+    }
+
+    let result = fork_agent_conversation_in_state(state, parent_conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let response = ForkAgentConversationResponse::from(result);
+    emit_agent_conversation_fork_events(app, &response);
+    invalidate_agent_workspace_pr_description_cache(parent_conversation_id);
+    let child_conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
+    invalidate_agent_workspace_pr_description_cache(&child_conversation_id);
+    Ok(Some(child_conversation_id))
+}
+
 #[tauri::command]
 pub async fn send_agent_message(
     input: SendAgentMessageInput,
@@ -2890,7 +3006,7 @@ pub async fn send_agent_message(
 
     let mut service = create_chat_service(
         &state,
-        app,
+        app.clone(),
         &execution_state,
         Some(team_service.inner().clone()),
     );
@@ -2988,18 +3104,31 @@ pub async fn send_agent_message(
         input.logical_effort,
     )
     .await?;
-    let conversation_id_override = input
+    let mut conversation_id_override = input
         .conversation_id
         .as_deref()
         .map(str::trim)
         .filter(|conversation_id| !conversation_id.is_empty())
         .map(ChatConversationId::from_string);
+    let mut auto_forked_terminal_conversation = false;
+    if context_type == ChatContextType::Project {
+        if let Some(forked_conversation_id) = fork_terminal_agent_conversation_for_send(
+            state.inner(),
+            &app,
+            conversation_id_override.as_ref(),
+        )
+        .await?
+        {
+            conversation_id_override = Some(forked_conversation_id);
+            auto_forked_terminal_conversation = true;
+        }
+    }
     if let Some(conversation_id) = conversation_id_override.as_ref() {
         invalidate_agent_workspace_pr_description_cache(conversation_id);
     }
     let attachment_ids = parse_chat_attachment_ids(&input.attachment_ids)?;
 
-    service
+    let mut response = service
         .send_message(
             context_type,
             &input.context_id,
@@ -3017,7 +3146,11 @@ pub async fn send_agent_message(
         )
         .await
         .map(SendAgentMessageResponse::from)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if auto_forked_terminal_conversation {
+        response.is_new_conversation = true;
+    }
+    Ok(response)
 }
 
 /// Queue a message to be sent when the current agent run completes
@@ -6468,8 +6601,7 @@ pub async fn update_agent_conversation_title(
     }
 
     let conversation_id = ChatConversationId::from_string(input.conversation_id);
-    if let Some(jira_key) =
-        primary_jira_key_for_conversation(state.inner(), &conversation_id).await
+    if let Some(jira_key) = primary_jira_key_for_conversation(state.inner(), &conversation_id).await
     {
         title = normalize_title_with_jira_key(&title, &jira_key);
     }
@@ -9367,8 +9499,7 @@ mod tests {
     async fn publish_workspace_records_waiting_when_auto_merge_sync_fails() {
         let github = Arc::new(MockGithubService::new());
         let (_temp, state, conversation_id, github) =
-            setup_publish_command_state("auto-merge-publish-waiting", true, None, github)
-                .await;
+            setup_publish_command_state("auto-merge-publish-waiting", true, None, github).await;
         let project = state
             .project_repo
             .get_all()

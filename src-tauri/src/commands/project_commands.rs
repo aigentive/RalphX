@@ -215,9 +215,7 @@ pub async fn ensure_git_initialized_async(path: &str) -> Result<(), String> {
         // Run git init
         let mut init_cmd = TokioCommand::new(resolve_git_cli_path());
         init_cmd.args(["init"]).current_dir(path);
-        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(
-            init_cmd.as_std_mut(),
-        );
+        crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(init_cmd.as_std_mut());
         let output = init_cmd
             .output()
             .await
@@ -1372,12 +1370,10 @@ mod git_auth_command_tests {
             .current_dir(repo)
             .output()
             .expect("git detached checkout should run");
-        assert!(
-            get_git_current_branch(repo.to_string_lossy().to_string())
-                .await
-                .expect_err("detached HEAD should not return a local branch")
-                .contains("Repository is not currently on a local branch")
-        );
+        assert!(get_git_current_branch(repo.to_string_lossy().to_string())
+            .await
+            .expect_err("detached HEAD should not return a local branch")
+            .contains("Repository is not currently on a local branch"));
     }
 
     #[tokio::test]

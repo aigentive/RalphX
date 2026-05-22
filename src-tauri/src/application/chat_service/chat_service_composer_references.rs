@@ -81,11 +81,7 @@ fn collect_project_references(
 
     for reference in structured_references {
         let path = reference.path.trim();
-        if path.is_empty()
-            || path.contains('\0')
-            || path.contains('\n')
-            || path.contains('\r')
-        {
+        if path.is_empty() || path.contains('\0') || path.contains('\n') || path.contains('\r') {
             continue;
         }
         if seen.insert(path.to_string()) {
@@ -117,13 +113,15 @@ fn extract_visible_project_reference_tokens(message: &str) -> Vec<String> {
         };
         if marker_index > 0 {
             let previous = token[..marker_index].chars().next_back();
-            if !previous.is_some_and(|value| matches!(value, '(' | '[' | '{' | '"' | '\'' | '`'))
-            {
+            if !previous.is_some_and(|value| matches!(value, '(' | '[' | '{' | '"' | '\'' | '`')) {
                 continue;
             }
         }
         let raw_path = token[marker_index + 1..].trim_matches(|value: char| {
-            matches!(value, ')' | ']' | '}' | ',' | '.' | ';' | ':' | '"' | '\'' | '`')
+            matches!(
+                value,
+                ')' | ']' | '}' | ',' | '.' | ';' | ':' | '"' | '\'' | '`'
+            )
         });
         if raw_path.is_empty() || raw_path.contains('\0') {
             continue;

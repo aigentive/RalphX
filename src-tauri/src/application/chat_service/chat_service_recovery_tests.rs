@@ -44,11 +44,20 @@ async fn test_recovery_metadata_includes_verification_fields_when_in_progress() 
     )
     .await;
 
-    assert!(metadata.is_some(), "metadata must be returned for valid session");
+    assert!(
+        metadata.is_some(),
+        "metadata must be returned for valid session"
+    );
     let m = metadata.unwrap();
     assert_eq!(m.verification_status, "reviewing");
-    assert!(m.verification_in_progress, "must capture in_progress=true before reset");
-    assert_eq!(m.current_round, 2, "must extract current_round from summary fields");
+    assert!(
+        m.verification_in_progress,
+        "must capture in_progress=true before reset"
+    );
+    assert_eq!(
+        m.current_round, 2,
+        "must extract current_round from summary fields"
+    );
 
     // Recovery resets verification state when in_progress=true
     let after = session_repo.get_by_id(&session_id).await.unwrap().unwrap();
@@ -92,7 +101,10 @@ async fn test_recovery_metadata_no_reset_when_not_in_progress() {
     let m = metadata.unwrap();
     assert_eq!(m.verification_status, "verified");
     assert!(!m.verification_in_progress);
-    assert_eq!(m.current_round, 0, "current_round is 0 when no summary is present");
+    assert_eq!(
+        m.current_round, 0,
+        "current_round is 0 when no summary is present"
+    );
 
     // Status must NOT be reset since verification was not in-progress
     let after = session_repo.get_by_id(&session_id).await.unwrap().unwrap();
@@ -125,6 +137,10 @@ async fn test_recovery_metadata_returns_none_for_missing_session() {
 
 #[tokio::test]
 async fn test_recovery_metadata_returns_none_when_repos_absent() {
-    let metadata = build_ideation_recovery_metadata("any-id", None, None, None::<&tauri::AppHandle>).await;
-    assert!(metadata.is_none(), "must return None when repos are not provided");
+    let metadata =
+        build_ideation_recovery_metadata("any-id", None, None, None::<&tauri::AppHandle>).await;
+    assert!(
+        metadata.is_none(),
+        "must return None when repos are not provided"
+    );
 }

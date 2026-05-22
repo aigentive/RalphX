@@ -28,19 +28,18 @@ use crate::application::interactive_process_registry::InteractiveProcessRegistry
 use crate::application::TaskTransitionService;
 use crate::commands::execution_commands::ExecutionState;
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentRunRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
-    TaskRepository,
+    ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ExecutionSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository,
 };
 use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 
+pub use policy::UserRecoveryAction;
 #[doc(hidden)]
 pub use policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, RecoveryPolicy,
 };
-pub use policy::UserRecoveryAction;
 
 pub struct ReconciliationRunner<R: Runtime = tauri::Wry> {
     pub(crate) task_repo: Arc<dyn TaskRepository>,

@@ -66,7 +66,9 @@ pub(crate) fn query_weekly_throughput(
         ORDER BY w.week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
         .query_map(params![project_id], |row| {
             let week_start: String = row.get(0)?;
@@ -144,7 +146,9 @@ pub(crate) fn query_weekly_cycle_time(
         ORDER BY week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
         .query_map(params![project_id], |row| {
             let week_start: String = row.get(0)?;
@@ -218,7 +222,9 @@ pub(crate) fn query_weekly_pipeline_cycle_time(
         ORDER BY week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
         .query_map(params![project_id], |row| {
             let week_start: String = row.get(0)?;
@@ -272,7 +278,9 @@ pub(crate) fn query_weekly_success_rate(
         ORDER BY week_start"
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Database(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Database(e.to_string()))?;
     let rows = stmt
         .query_map(params![project_id], |row| {
             let week_start: String = row.get(0)?;
@@ -304,10 +312,14 @@ pub fn compute_project_trends(
     week_start_day: u8,
     tz_offset_minutes: i32,
 ) -> AppResult<ProjectTrends> {
-    let weekly_throughput = query_weekly_throughput(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let weekly_cycle_time = query_weekly_cycle_time(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let weekly_pipeline_cycle_time = query_weekly_pipeline_cycle_time(conn, project_id, week_start_day, tz_offset_minutes)?;
-    let weekly_success_rate = query_weekly_success_rate(conn, project_id, week_start_day, tz_offset_minutes)?;
+    let weekly_throughput =
+        query_weekly_throughput(conn, project_id, week_start_day, tz_offset_minutes)?;
+    let weekly_cycle_time =
+        query_weekly_cycle_time(conn, project_id, week_start_day, tz_offset_minutes)?;
+    let weekly_pipeline_cycle_time =
+        query_weekly_pipeline_cycle_time(conn, project_id, week_start_day, tz_offset_minutes)?;
+    let weekly_success_rate =
+        query_weekly_success_rate(conn, project_id, week_start_day, tz_offset_minutes)?;
 
     Ok(ProjectTrends {
         weekly_throughput,

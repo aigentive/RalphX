@@ -226,6 +226,7 @@ describe("AgentsActiveConversationPanel", () => {
           onActiveModelChange={onActiveModelChange}
           onAgentUserMessageSent={vi.fn()}
           onFocusIdeationSession={vi.fn()}
+          onForkConversation={vi.fn()}
           onOpenPublishPane={vi.fn()}
           onOpenPublishFile={vi.fn()}
           onPreloadArtifacts={vi.fn()}

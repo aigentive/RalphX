@@ -108,7 +108,9 @@ pub enum DiffRefKind {
     Head,
     Staged,
     Unstaged,
-    Commit { sha: String },
+    Commit {
+        sha: String,
+    },
     /// Workspace cumulative base ref — caller must resolve before passing to DiffService
     CumulativeBase,
     /// Workspace cumulative head ref — caller must resolve before passing to DiffService
@@ -177,10 +179,8 @@ impl DiffService {
     /// Get files staged in the index (git diff --cached).
     /// Only shows changes between HEAD and the index — excludes unstaged working-tree edits.
     pub fn get_staged_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {
-        let name_status =
-            run_git_text(project_path, &["diff", "--cached", "--name-status"])?;
-        let line_counts =
-            run_git_numstat_lossy(project_path, &["diff", "--cached", "--numstat"]);
+        let name_status = run_git_text(project_path, &["diff", "--cached", "--name-status"])?;
+        let line_counts = run_git_numstat_lossy(project_path, &["diff", "--cached", "--numstat"]);
         Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
@@ -195,14 +195,9 @@ impl DiffService {
     /// Get the diff for a specific file between HEAD and the staging area.
     ///
     /// Old = committed HEAD version; New = staged (index) version.
-    pub fn get_staged_file_diff(
-        &self,
-        file_path: &str,
-        project_path: &str,
-    ) -> AppResult<FileDiff> {
-        let raw_diff =
-            run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
-                .unwrap_or_default();
+    pub fn get_staged_file_diff(&self, file_path: &str, project_path: &str) -> AppResult<FileDiff> {
+        let raw_diff = run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
+            .unwrap_or_default();
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -229,8 +224,7 @@ impl DiffService {
         file_path: &str,
         project_path: &str,
     ) -> AppResult<FileDiff> {
-        let raw_diff =
-            run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
+        let raw_diff = run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -253,11 +247,7 @@ impl DiffService {
     ///
     /// Uses `git show :<file>` where the leading `:` refers to the index.
     /// Returns `None` if the file is not staged (e.g. untracked or only on disk).
-    fn get_file_content_at_index(
-        &self,
-        project_path: &str,
-        file_path: &str,
-    ) -> Option<String> {
+    fn get_file_content_at_index(&self, project_path: &str, file_path: &str) -> Option<String> {
         let output = Command::new(resolve_git_cli_path())
             .args(["show", &format!(":{}", file_path)])
             .current_dir(project_path)
@@ -278,8 +268,7 @@ impl DiffService {
         base_branch: &str,
     ) -> AppResult<FileDiff> {
         let raw_diff =
-            run_git_text(project_path, &["diff", base_branch, "--", file_path])
-                .unwrap_or_default();
+            run_git_text(project_path, &["diff", base_branch, "--", file_path]).unwrap_or_default();
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -358,9 +347,8 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<FileDiff> {
-        let raw_diff =
-            run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
-                .unwrap_or_default();
+        let raw_diff = run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
+            .unwrap_or_default();
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -610,8 +598,7 @@ impl DiffService {
             DiffRefKind::Unstaged => {
                 if matches!(side, DiffSide::New) {
                     // Working-tree file — use safe read helper (CodeQL path containment)
-                    let full_path =
-                        std::path::PathBuf::from(workspace_path).join(path);
+                    let full_path = std::path::PathBuf::from(workspace_path).join(path);
                     crate::utils::path_safety::checked_read_to_string(
                         &full_path,
                         "content range file",
@@ -626,30 +613,21 @@ impl DiffService {
                         })?
                 }
             }
-            DiffRefKind::Staged => {
-                self.get_file_content_at_index(workspace_path, path)
-                    .ok_or_else(|| {
-                        AppError::GitOperation(format!(
-                            "File '{path}' not found in the git index"
-                        ))
-                    })?
-            }
-            DiffRefKind::Head => {
-                self.get_file_content_at_ref(workspace_path, "HEAD", path)
-                    .ok_or_else(|| {
-                        AppError::GitOperation(format!(
-                            "File '{path}' not found at HEAD"
-                        ))
-                    })?
-            }
-            DiffRefKind::Commit { sha } => {
-                self.get_file_content_at_ref(workspace_path, sha, path)
-                    .ok_or_else(|| {
-                        AppError::GitOperation(format!(
-                            "File '{path}' not found at commit {sha}"
-                        ))
-                    })?
-            }
+            DiffRefKind::Staged => self
+                .get_file_content_at_index(workspace_path, path)
+                .ok_or_else(|| {
+                    AppError::GitOperation(format!("File '{path}' not found in the git index"))
+                })?,
+            DiffRefKind::Head => self
+                .get_file_content_at_ref(workspace_path, "HEAD", path)
+                .ok_or_else(|| {
+                    AppError::GitOperation(format!("File '{path}' not found at HEAD"))
+                })?,
+            DiffRefKind::Commit { sha } => self
+                .get_file_content_at_ref(workspace_path, sha, path)
+                .ok_or_else(|| {
+                    AppError::GitOperation(format!("File '{path}' not found at commit {sha}"))
+                })?,
             DiffRefKind::CumulativeBase | DiffRefKind::CumulativeHead => {
                 return Err(AppError::Validation(
                     "CumulativeBase/CumulativeHead must be resolved to Commit by the caller"
@@ -960,9 +938,7 @@ impl DiffService {
                 Ok(flags)
             }
             Err(e) => {
-                tracing::warn!(
-                    "git check-attr failed, falling back to heuristic: {e}"
-                );
+                tracing::warn!("git check-attr failed, falling back to heuristic: {e}");
                 let flags = paths
                     .iter()
                     .map(|&p| (p.to_string(), is_generated_by_heuristic(p)))
@@ -987,9 +963,7 @@ impl DiffService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| {
-                AppError::GitOperation(format!("Failed to spawn git check-attr: {e}"))
-            })?;
+            .map_err(|e| AppError::GitOperation(format!("Failed to spawn git check-attr: {e}")))?;
 
         // Write all paths to stdin (drop closes the pipe, signalling EOF to git)
         if let Some(mut stdin) = child.stdin.take() {
@@ -1455,7 +1429,9 @@ fn validate_diff_file_path(path: &str) -> AppResult<()> {
         }
     }
     if path.is_empty() {
-        return Err(AppError::Validation("File path must not be empty".to_string()));
+        return Err(AppError::Validation(
+            "File path must not be empty".to_string(),
+        ));
     }
     Ok(())
 }

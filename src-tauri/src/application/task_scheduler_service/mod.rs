@@ -10,9 +10,9 @@
 // - StartupJobRunner after resuming agent-active tasks
 // - resume_execution and set_max_concurrent commands (future Phase 26 tasks)
 
-mod watchdog;
 mod helpers;
 mod merge_retry;
+mod watchdog;
 
 pub use watchdog::ReadyWatchdog;
 
@@ -25,11 +25,13 @@ use std::sync::{
 use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex as TokioMutex, RwLock};
 
-use crate::commands::ExecutionState;
-use crate::application::harness_runtime_registry::default_scheduler_runtime_config;
-use crate::application::runtime_factory::{RuntimeFactoryDeps, build_transition_service_with_fallback};
 use crate::application::chat_service::uses_execution_slot;
+use crate::application::harness_runtime_registry::default_scheduler_runtime_config;
+use crate::application::runtime_factory::{
+    build_transition_service_with_fallback, RuntimeFactoryDeps,
+};
 use crate::commands::execution_commands::context_matches_running_status_for_gc;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     task_metadata::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
@@ -47,9 +49,11 @@ use crate::domain::repositories::{
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
 
-use super::{AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService};
-use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_trigger_origin};
+use super::{
+    AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService,
+};
 use crate::domain::state_machine::transition_handler::freshness::FreshnessMetadata;
+use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_trigger_origin};
 
 /// Production implementation of TaskScheduler for auto-scheduling Ready tasks.
 ///
@@ -372,7 +376,8 @@ impl<R: Runtime> TaskSchedulerService<R> {
 
     #[doc(hidden)]
     pub fn set_contention_retry_pending_for_test(&self, value: u32) {
-        self.contention_retry_pending.store(value, Ordering::Relaxed);
+        self.contention_retry_pending
+            .store(value, Ordering::Relaxed);
     }
 
     /// Build a TaskTransitionService for transitioning tasks.

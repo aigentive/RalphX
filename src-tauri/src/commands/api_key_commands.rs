@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::app_state::AppState;
+use crate::domain::entities::ApiKeyId;
 use crate::domain::entities::AuditLogEntry;
 use crate::domain::services::api_key_service::{ApiKeyService, KeySource};
-use crate::domain::entities::ApiKeyId;
 
 // ── Input structs ──────────────────────────────────────────────────────────────
 
@@ -92,10 +92,7 @@ pub async fn list_api_keys(
 
     let mut result = Vec::with_capacity(keys.len());
     for key in keys {
-        let project_ids = repo
-            .get_projects(&key.id)
-            .await
-            .unwrap_or_default();
+        let project_ids = repo.get_projects(&key.id).await.unwrap_or_default();
         result.push(ApiKeyInfoResponse {
             id: key.id.as_str().to_string(),
             name: key.name,

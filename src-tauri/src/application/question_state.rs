@@ -126,7 +126,11 @@ impl QuestionState {
     /// holds a Receiver sees the value change before the Sender is dropped.
     /// HashMap removal is unconditional — if repo.resolve() fails, the entry stays
     /// removed (no re-insert) to avoid inconsistent in-memory state.
-    pub async fn resolve(&self, request_id: &str, answer: QuestionAnswer) -> (bool, Option<String>) {
+    pub async fn resolve(
+        &self,
+        request_id: &str,
+        answer: QuestionAnswer,
+    ) -> (bool, Option<String>) {
         // Phase 1: lock held — signal channel and remove from HashMap atomically
         let session_id = {
             let mut pending = self.pending.lock().await;

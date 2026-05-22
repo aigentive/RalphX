@@ -12,9 +12,8 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    is_terminal_publication_pr_status,
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project, Task,
+    is_terminal_publication_pr_status, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    ChatConversationId, IdeationAnalysisBaseRefKind, Project, Task,
 };
 use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
@@ -270,8 +269,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         publication_push_status: None,
         pr_autofix_enabled: false,
         pr_auto_merge_desired: false,
-        pr_auto_merge_method:
-            crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string(),
+        pr_auto_merge_method: crate::domain::entities::DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+            .to_string(),
         pr_auto_merge_current: None,
         pr_supervision_status: None,
         pr_supervision_summary: None,

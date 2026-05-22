@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
-use crate::AppState;
 use crate::infrastructure::ExternalMcpHandle;
+use crate::AppState;
 
 /// Visual height of the app's top navbar in points. Must match the frontend
 /// header (`h-12` → 48 in `frontend/src/App.tsx`). Traffic-light centering

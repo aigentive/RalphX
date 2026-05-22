@@ -3,13 +3,13 @@
 use tauri::{Emitter, Runtime};
 use tracing::warn;
 
+use crate::application::harness_runtime_registry::default_reconciliation_merger_timeout_secs;
 use crate::domain::entities::{
     AgentRun, AgentRunId, ChatContextType, InternalStatus, MergeFailureSource, MergeRecoveryEvent,
     MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource,
     MergeRecoveryState, Task, TaskId,
 };
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
-use crate::application::harness_runtime_registry::default_reconciliation_merger_timeout_secs;
 
 use super::policy::{RecoveryContext, RecoveryEvidence, RecoveryPromptAction, RecoveryPromptEvent};
 use super::ReconciliationRunner;

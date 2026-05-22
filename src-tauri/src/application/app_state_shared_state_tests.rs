@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use crate::application::AppState;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
+use crate::application::AppState;
 use crate::domain::entities::ChatContextType;
 
 /// Helper: create a real stdin pipe via `cat` subprocess for testing writes.
