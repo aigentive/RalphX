@@ -381,6 +381,7 @@ export function RepositorySettingsSection() {
         <div className="settings-diagnostics__repair">
           <GitAuthRepairPanel
             projectId={project.id}
+            showWhenHealthy
             requiresGhAuth={project.githubPrEnabled ?? false}
           />
         </div>
