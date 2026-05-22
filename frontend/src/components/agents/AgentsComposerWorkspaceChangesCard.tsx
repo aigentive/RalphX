@@ -1,5 +1,6 @@
 import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Check, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { agentTaskApi } from "@/api/agent-tasks";
 import type { AgentTaskState, AgentTaskSummary } from "@/api/agent-tasks";
@@ -22,6 +23,8 @@ import {
 const ACTIVE_AGENT_REVIEW_REFRESH_MS = 2_500;
 const ACTIVE_AGENT_TASK_REFRESH_MS = 2_500;
 const EMPTY_AGENT_TASKS: AgentTaskSummary[] = [];
+const VISIBLE_TASK_COUNT = 3;
+const TASK_ROW_HEIGHT_PX = 36;
 
 type ComposerContextPanel = "tasks" | "changes";
 
@@ -243,6 +246,14 @@ function AgentsComposerWorkspaceChangesCardContent({
     () => new Map(tasks.map((task) => [task.taskId, task.taskNumber])),
     [tasks],
   );
+  const [showAllTasks, setShowAllTasks] = useState(false);
+  const taskListRef = useRef<HTMLDivElement>(null);
+  const taskProgress = useMemo(() => {
+    const actionable = tasks.filter((t) => t.state !== "dropped");
+    const done = actionable.filter((t) => t.state === "done").length;
+    const active = actionable.filter((t) => t.state === "active").length;
+    return { actionable: actionable.length, done, active, total: tasks.length };
+  }, [tasks]);
   const shouldShowTasks = tasksQuery.isSuccess && tasks.length > 0;
   const shouldShowChanges =
     canInspectChanges &&
@@ -255,6 +266,7 @@ function AgentsComposerWorkspaceChangesCardContent({
   useEffect(() => {
     setActivePanel(null);
     setHighlightedTaskId(null);
+    setShowAllTasks(false);
     userDismissedTaskPanel.current = false;
     hasObservedTaskSnapshot.current = false;
     previousTaskSignatures.current = new Map();
@@ -332,6 +344,25 @@ function AgentsComposerWorkspaceChangesCardContent({
   }, [activePanel, highlightedTaskId]);
 
   useEffect(() => {
+    if (activePanel !== "tasks") {
+      return;
+    }
+    const container = taskListRef.current;
+    if (!container) {
+      return;
+    }
+    const lastActive = [...tasks].reverse().find((t) => t.state === "active");
+    if (lastActive) {
+      const node = taskRowRefs.current.get(lastActive.taskId);
+      if (node) {
+        node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [activePanel, tasks]);
+
+  useEffect(() => {
     if (activePanel === "tasks" && !shouldShowTasks) {
       setActivePanel(null);
     }
@@ -339,6 +370,14 @@ function AgentsComposerWorkspaceChangesCardContent({
       setActivePanel(null);
     }
   }, [activePanel, shouldShowChanges, shouldShowTasks]);
+
+  const visibleTasks = useMemo(() => {
+    if (showAllTasks) {
+      return tasks;
+    }
+    return tasks.slice(-VISIBLE_TASK_COUNT);
+  }, [showAllTasks, tasks]);
+  const hiddenTaskCount = tasks.length - visibleTasks.length;
 
   if (!shouldShow) {
     return null;
@@ -358,7 +397,11 @@ function AgentsComposerWorkspaceChangesCardContent({
   const changesCountLabel = hasCommitSummary
     ? `${commits.length} ${commits.length === 1 ? "commit" : "commits"}`
     : fileLabel;
-  const taskLabel = `${tasks.length}`;
+  const allDone = taskProgress.actionable > 0 && taskProgress.done === taskProgress.actionable;
+  const hasActive = taskProgress.active > 0;
+  const taskCountLabel = allDone
+    ? `${taskProgress.actionable}`
+    : `${taskProgress.done}/${taskProgress.actionable}`;
   const togglePanel = (panel: ComposerContextPanel) =>
     setActivePanel((current) => {
       const nextPanel = current === panel ? null : panel;
@@ -384,6 +427,9 @@ function AgentsComposerWorkspaceChangesCardContent({
     }
   };
 
+  const TasksChevron = activePanel === "tasks" ? ChevronDown : ChevronRight;
+  const ChangesChevron = activePanel === "changes" ? ChevronDown : ChevronRight;
+
   return (
     <div
       data-testid="agents-composer-context-tray"
@@ -394,7 +440,10 @@ function AgentsComposerWorkspaceChangesCardContent({
       <div data-testid="agents-composer-workspace-changes">
         <div
           data-testid="agents-composer-workspace-changes-header"
-          className="flex min-h-7 min-w-0 flex-wrap items-center gap-1.5"
+          className={cn(
+            "flex min-h-7 min-w-0 flex-wrap items-center gap-1.5",
+            activePanel && "mb-0",
+          )}
           onClick={handleHeaderClick}
         >
           {shouldShowTasks && (
@@ -404,22 +453,31 @@ function AgentsComposerWorkspaceChangesCardContent({
               aria-expanded={activePanel === "tasks"}
               onClick={() => togglePanel("tasks")}
               className={cn(
-                "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded border px-2 text-[0.6875rem] font-medium transition-colors hover:bg-[var(--bg-hover)]",
-                activePanel === "tasks" && "bg-[var(--bg-hover)]",
+                "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
+                activePanel === "tasks"
+                  ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
+                  : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
-                borderColor: "var(--border-subtle)",
+                borderColor: activePanel === "tasks" ? "var(--border-subtle)" : "transparent",
                 color: "var(--text-secondary)",
               }}
             >
+              <TasksChevron className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
               <span>Tasks</span>
               <span
                 data-testid="agents-composer-tasks-count"
                 className="font-mono"
                 style={{ color: "var(--text-muted)" }}
               >
-                {taskLabel}
+                {taskCountLabel}
               </span>
+              {allDone && (
+                <Check className="h-3 w-3 shrink-0" style={{ color: "var(--status-success)" }} />
+              )}
+              {hasActive && !allDone && (
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" style={{ color: "var(--accent-primary)" }} />
+              )}
             </button>
           )}
           {shouldShowChanges && (
@@ -429,14 +487,17 @@ function AgentsComposerWorkspaceChangesCardContent({
               aria-expanded={activePanel === "changes"}
               onClick={() => togglePanel("changes")}
               className={cn(
-                "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded border px-2 text-[0.6875rem] font-medium transition-colors hover:bg-[var(--bg-hover)]",
-                activePanel === "changes" && "bg-[var(--bg-hover)]",
+                "inline-flex h-7 max-w-full min-w-0 items-center gap-1 overflow-hidden px-2 text-[0.6875rem] font-medium transition-colors",
+                activePanel === "changes"
+                  ? "rounded-t border border-b-0 bg-[var(--bg-base)]"
+                  : "rounded hover:bg-[var(--bg-hover)]",
               )}
               style={{
-                borderColor: "var(--border-subtle)",
+                borderColor: activePanel === "changes" ? "var(--border-subtle)" : "transparent",
                 color: "var(--text-secondary)",
               }}
             >
+              <ChangesChevron className="h-3 w-3 shrink-0" style={{ color: "var(--text-muted)" }} />
               <span className="truncate">{changesLabel}</span>
               <span
                 data-testid="agents-composer-workspace-changes-count"
@@ -471,18 +532,33 @@ function AgentsComposerWorkspaceChangesCardContent({
 
         {activePanel && (
           <div
-            className="mt-1.5 max-h-44 overflow-y-auto rounded border"
+            ref={activePanel === "tasks" ? taskListRef : undefined}
+            className="overflow-y-auto rounded-b rounded-tr border"
             data-testid="agents-composer-context-tray-body"
             style={{
               backgroundColor: "var(--bg-base)",
               borderColor: "var(--border-subtle)",
               borderStyle: "solid",
               borderWidth: "1px",
+              maxHeight: activePanel === "tasks" && !showAllTasks
+                ? `${VISIBLE_TASK_COUNT * TASK_ROW_HEIGHT_PX + (hiddenTaskCount > 0 ? 30 : 0)}px`
+                : "11rem",
             }}
           >
             {activePanel === "tasks" ? (
               <div data-testid="agents-composer-task-list">
-                {tasks.map((task) => (
+                {hiddenTaskCount > 0 && (
+                  <button
+                    type="button"
+                    data-testid="agents-composer-tasks-show-older"
+                    onClick={() => setShowAllTasks(true)}
+                    className="flex w-full items-center justify-center py-1 text-[0.625rem] font-medium transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    See {hiddenTaskCount} older {hiddenTaskCount === 1 ? "task" : "tasks"}
+                  </button>
+                )}
+                {visibleTasks.map((task) => (
                   <div
                     key={task.taskId}
                     ref={(node) => {
