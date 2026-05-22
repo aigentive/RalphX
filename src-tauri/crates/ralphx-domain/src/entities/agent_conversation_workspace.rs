@@ -79,6 +79,16 @@ impl FromStr for AgentConversationWorkspaceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceSourcePullRequest {
+    pub number: i64,
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub head_ref_name: String,
+    pub base_ref_name: Option<String>,
+    pub head_ref_oid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentConversationWorkspace {
     pub conversation_id: ChatConversationId,
     pub project_id: ProjectId,
@@ -91,6 +101,7 @@ pub struct AgentConversationWorkspace {
     pub worktree_path: String,
     pub linked_ideation_session_id: Option<IdeationSessionId>,
     pub linked_plan_branch_id: Option<PlanBranchId>,
+    pub source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
     pub publication_pr_number: Option<i64>,
     pub publication_pr_url: Option<String>,
     pub publication_pr_status: Option<String>,
@@ -132,6 +143,7 @@ impl AgentConversationWorkspace {
             worktree_path,
             linked_ideation_session_id: None,
             linked_plan_branch_id: None,
+            source_pull_request: None,
             publication_pr_number: None,
             publication_pr_url: None,
             publication_pr_status: None,

@@ -12,8 +12,9 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    is_terminal_publication_pr_status, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    ChatConversationId, IdeationAnalysisBaseRefKind, Project, Task,
+    is_terminal_publication_pr_status,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+    AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, Project, Task,
 };
 use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
@@ -29,6 +30,7 @@ pub struct AgentConversationWorkspaceBaseSelection {
     pub kind: Option<IdeationAnalysisBaseRefKind>,
     pub base_ref: Option<String>,
     pub display_name: Option<String>,
+    pub source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +200,11 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         })?,
         IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
     };
+    let base_ref = if kind == IdeationAnalysisBaseRefKind::LocalBranch {
+        GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &base_ref).await?
+    } else {
+        base_ref
+    };
 
     let ref_check_started = Instant::now();
     let base_commit = GitService::get_branch_sha(&repo_path, &base_ref)
@@ -263,6 +270,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         worktree_path: worktree_path.to_string_lossy().to_string(),
         linked_ideation_session_id: None,
         linked_plan_branch_id: None,
+        source_pull_request: selection.source_pull_request,
         publication_pr_number: None,
         publication_pr_url: None,
         publication_pr_status: None,
@@ -872,6 +880,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -920,6 +929,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
             AgentConversationWorkspaceSetupMode::Deferred,
         )
@@ -1000,6 +1010,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
             AgentConversationWorkspaceSetupMode::Deferred,
         )
@@ -1045,6 +1056,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -1104,6 +1116,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -1160,6 +1173,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await
@@ -1208,6 +1222,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await

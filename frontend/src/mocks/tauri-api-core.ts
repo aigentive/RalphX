@@ -372,6 +372,7 @@ function mockGitAuthDiagnostics(): GitAuthDiagnostics {
     fetchKind: "SSH",
     pushKind: "SSH",
     mixedAuthModes: false,
+    githubHttpsCredentialHelperConfigured: false,
     canSwitchToSsh: false,
     suggestedSshUrl: null,
   };
@@ -696,6 +697,7 @@ const commandHandlers: Record<
       fetchKind: "SSH",
       pushKind: "SSH",
       mixedAuthModes: false,
+      githubHttpsCredentialHelperConfigured: false,
       canSwitchToSsh: false,
       suggestedSshUrl: null,
     };
@@ -707,7 +709,19 @@ const commandHandlers: Record<
     window.__mockGhAuthStatus = true;
     return true;
   },
-  setup_gh_git_auth: async () => true,
+  setup_gh_git_auth: async () => {
+    const current = mockGitAuthDiagnostics();
+    if (
+      current.fetchUrl?.startsWith("https://github.com/") ||
+      current.pushUrl?.startsWith("https://github.com/")
+    ) {
+      window.__mockGitAuthDiagnostics = {
+        ...current,
+        githubHttpsCredentialHelperConfigured: true,
+      };
+    }
+    return true;
+  },
   resume_deferred_git_startup: async () => true,
   update_github_pr_enabled: async () => null,
 

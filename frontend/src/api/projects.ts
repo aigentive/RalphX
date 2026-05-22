@@ -81,6 +81,36 @@ export async function getGitCurrentBranch(workingDirectory: string): Promise<str
   return result;
 }
 
+const GithubPullRequestSearchResultSchema = z.object({
+  number: z.number(),
+  title: z.string(),
+  url: z.string(),
+  headRefName: z.string(),
+  headRefOid: z.string().nullable().optional(),
+  baseRefName: z.string(),
+  isDraft: z.boolean(),
+  updatedAt: z.string().nullable().optional(),
+  authorLogin: z.string().nullable().optional(),
+  isCrossRepository: z.boolean(),
+});
+
+export type GithubPullRequestSearchResult = z.infer<
+  typeof GithubPullRequestSearchResultSchema
+>;
+
+export interface SearchGithubPullRequestsInput {
+  projectId: string;
+  query?: string;
+  limit?: number;
+}
+
+export async function searchGithubPullRequests(
+  input: SearchGithubPullRequestsInput
+): Promise<GithubPullRequestSearchResult[]> {
+  const result = await invoke<unknown>("search_github_pull_requests", { input });
+  return z.array(GithubPullRequestSearchResultSchema).parse(result);
+}
+
 /**
  * Projects API object containing all typed Tauri command wrappers for projects
  */

@@ -360,6 +360,9 @@ mod v20260520125526_atlassian_integrations_tests;
 mod v20260520150000_atlassian_oauth;
 #[cfg(test)]
 mod v20260520150000_atlassian_oauth_tests;
+mod v20260521150003_agent_workspace_source_pull_request;
+#[cfg(test)]
+mod v20260521150003_agent_workspace_source_pull_request_tests;
 mod v20260521222911_agent_plan_mode;
 #[cfg(test)]
 mod v20260521222911_agent_plan_mode_tests;
@@ -1027,6 +1030,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260520150000,
         name: "atlassian_oauth",
         migrate: v20260520150000_atlassian_oauth::migrate,
+    },
+    Migration {
+        version: 20260521150003,
+        name: "agent_workspace_source_pull_request",
+        migrate: v20260521150003_agent_workspace_source_pull_request::migrate,
     },
     Migration {
         version: 20260521222911,

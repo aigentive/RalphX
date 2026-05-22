@@ -66,6 +66,7 @@ impl GitNetworkOperation {
 pub(crate) struct GitRemoteAuthConfig {
     pub fetch_url: Option<String>,
     pub push_url: Option<String>,
+    pub github_https_credential_helper_configured: bool,
 }
 
 impl GitRemoteAuthConfig {
@@ -93,6 +94,13 @@ impl GitRemoteAuthConfig {
         let fetch_kind = self.fetch_kind();
         let push_kind = self.push_kind();
         fetch_kind.is_some() && push_kind.is_some() && fetch_kind != push_kind
+    }
+
+    pub(crate) fn has_github_https_remote(&self) -> bool {
+        [self.fetch_url.as_deref(), self.push_url.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(is_github_https_remote)
     }
 }
 
@@ -247,24 +255,30 @@ pub(crate) async fn git_auth_error_from_failure(
 pub(crate) async fn inspect_origin_auth_config(
     working_dir: &Path,
 ) -> AppResult<GitRemoteAuthConfig> {
-    if let Some(config) = read_origin_auth_config_from_git_config(working_dir)? {
-        return Ok(config);
-    }
-
-    let fetch_url = read_origin_url(working_dir, &["remote", "get-url", "origin"]).await?;
-    let push_url = if fetch_url.is_some() {
-        match read_origin_url(working_dir, &["remote", "get-url", "--push", "origin"]).await {
-            Ok(Some(url)) => Some(url),
-            _ => fetch_url.clone(),
-        }
+    let mut config = if let Some(config) = read_origin_auth_config_from_git_config(working_dir)? {
+        config
     } else {
-        None
+        let fetch_url = read_origin_url(working_dir, &["remote", "get-url", "origin"]).await?;
+        let push_url = if fetch_url.is_some() {
+            match read_origin_url(working_dir, &["remote", "get-url", "--push", "origin"]).await {
+                Ok(Some(url)) => Some(url),
+                _ => fetch_url.clone(),
+            }
+        } else {
+            None
+        };
+
+        GitRemoteAuthConfig {
+            fetch_url,
+            push_url,
+            github_https_credential_helper_configured: false,
+        }
     };
 
-    Ok(GitRemoteAuthConfig {
-        fetch_url,
-        push_url,
-    })
+    config.github_https_credential_helper_configured =
+        inspect_github_https_credential_helper_configured(working_dir, &config).await;
+
+    Ok(config)
 }
 
 fn read_origin_auth_config_from_git_config(
@@ -343,6 +357,7 @@ fn parse_origin_auth_config_from_git_config(raw: &str) -> GitRemoteAuthConfig {
     GitRemoteAuthConfig {
         fetch_url,
         push_url,
+        github_https_credential_helper_configured: false,
     }
 }
 
@@ -355,6 +370,74 @@ fn is_origin_remote_section(section: &str) -> bool {
     body.eq_ignore_ascii_case(r#"remote "origin""#)
         || body.eq_ignore_ascii_case("remote.origin")
         || body.eq_ignore_ascii_case("remote 'origin'")
+}
+
+async fn inspect_github_https_credential_helper_configured(
+    working_dir: &Path,
+    config: &GitRemoteAuthConfig,
+) -> bool {
+    if !config.has_github_https_remote() {
+        return false;
+    }
+
+    let Ok(working_dir) = validate_absolute_non_root_path(working_dir, "git working directory")
+    else {
+        return false;
+    };
+    let started_at = std::time::Instant::now();
+    let mut command = Command::new(resolve_git_cli_path());
+    apply_git_subprocess_env(&mut command);
+    let child = match command
+        .args([
+            "config",
+            "--get-urlmatch",
+            "credential.helper",
+            "https://github.com",
+        ])
+        .current_dir(&working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::warn!(
+                cwd = %working_dir.display(),
+                error = %error,
+                "Git auth diagnostics: failed to spawn credential helper inspection"
+            );
+            return false;
+        }
+    };
+
+    let output = match timeout(Duration::from_secs(5), child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                cwd = %working_dir.display(),
+                error = %error,
+                "Git auth diagnostics: failed to inspect credential helper"
+            );
+            return false;
+        }
+        Err(_) => {
+            tracing::warn!(
+                cwd = %working_dir.display(),
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "Git auth diagnostics: credential helper inspection timed out"
+            );
+            return false;
+        }
+    };
+
+    output.status.success() && credential_helper_output_has_configured_helper(&output.stdout)
+}
+
+fn credential_helper_output_has_configured_helper(stdout: &[u8]) -> bool {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .any(|line| !line.trim().is_empty())
 }
 
 fn format_git_auth_recovery(
@@ -499,6 +582,11 @@ fn is_safe_github_path_component(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn is_github_https_remote(url: &str) -> bool {
+    url.trim().starts_with("https://github.com/")
+        && matches!(classify_git_remote_url(url), GitRemoteUrlKind::Https)
+}
+
 fn kind_label(kind: Option<GitRemoteUrlKind>) -> &'static str {
     match kind {
         Some(GitRemoteUrlKind::Https) => "HTTPS",
@@ -574,6 +662,7 @@ mod tests {
         let remotes = GitRemoteAuthConfig {
             fetch_url: Some("https://github.com/owner/repo.git".to_string()),
             push_url: Some("git@github.com:owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
         };
 
         let message = format_git_auth_recovery(
@@ -675,6 +764,44 @@ mod tests {
             Some("https://github.com/owner/repo.git")
         );
         assert_eq!(config.push_url, config.fetch_url);
+        assert!(!config.github_https_credential_helper_configured);
+    }
+
+    #[test]
+    fn detects_non_empty_credential_helper_output() {
+        assert!(credential_helper_output_has_configured_helper(
+            b"\n!gh auth git-credential\n"
+        ));
+        assert!(!credential_helper_output_has_configured_helper(b"\n \n"));
+    }
+
+    #[tokio::test]
+    async fn inspect_origin_auth_config_detects_github_https_credential_helper() {
+        let repo = tempfile::tempdir().expect("temp repo");
+        git(repo.path(), &["init"]);
+        git(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        );
+        git(
+            repo.path(),
+            &[
+                "config",
+                "credential.https://github.com.helper",
+                "!gh auth git-credential",
+            ],
+        );
+
+        let config = inspect_origin_auth_config(repo.path())
+            .await
+            .expect("origin config should inspect");
+
+        assert!(config.github_https_credential_helper_configured);
     }
 
     #[test]

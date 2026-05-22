@@ -10,8 +10,8 @@ use crate::infrastructure::services::gh_cli_github_service::{
     parse_code_scanning_alert_annotations_output, parse_pr_annotation_head_sha_output,
     parse_pr_create_output, parse_pr_create_plain_output,
     parse_pr_health_output, parse_pr_review_comment_annotations_output,
-    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_status_output,
-    parse_pr_sync_state_output, sanitize_stderr_line, scrub_token_urls,
+    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_search_output,
+    parse_pr_status_output, parse_pr_sync_state_output, sanitize_stderr_line, scrub_token_urls,
     CheckRunAnnotationSource,
 };
 
@@ -67,6 +67,45 @@ fn parse_pr_create_plain_output_extracts_url_from_wrapped_text() {
 #[test]
 fn parse_pr_create_plain_output_fails_without_url() {
     let err = parse_pr_create_plain_output("created pull request successfully").unwrap_err();
+    assert!(matches!(err, AppError::Infrastructure(_)));
+}
+
+// ── parse_pr_search_output ─────────────────────────────────────────────────
+
+#[test]
+fn parse_pr_search_output_returns_base_picker_fields() {
+    let json = r#"[
+        {
+            "number": 42,
+            "title": "Add PR picker",
+            "url": "https://github.com/owner/repo/pull/42",
+            "headRefName": "feature/pr-picker",
+            "headRefOid": "abc123",
+            "baseRefName": "main",
+            "isDraft": true,
+            "updatedAt": "2026-05-20T10:00:00Z",
+            "author": {"login": "dev"},
+            "isCrossRepository": false
+        }
+    ]"#;
+
+    let results = parse_pr_search_output(json).unwrap();
+    assert_eq!(results.len(), 1);
+    let result = &results[0];
+    assert_eq!(result.number, 42);
+    assert_eq!(result.title, "Add PR picker");
+    assert_eq!(result.head_ref_name, "feature/pr-picker");
+    assert_eq!(result.head_ref_oid.as_deref(), Some("abc123"));
+    assert_eq!(result.base_ref_name, "main");
+    assert!(result.is_draft);
+    assert_eq!(result.author_login.as_deref(), Some("dev"));
+    assert!(!result.is_cross_repository);
+}
+
+#[test]
+fn parse_pr_search_output_fails_on_missing_head_ref() {
+    let json = r#"[{"number": 42, "title": "Missing head", "url": "https://example.test", "baseRefName": "main"}]"#;
+    let err = parse_pr_search_output(json).unwrap_err();
     assert!(matches!(err, AppError::Infrastructure(_)));
 }
 

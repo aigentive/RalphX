@@ -312,6 +312,7 @@ pub async fn update_agent_workspace_from_base(
             .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?,
         base_ref: req.base_ref,
         display_name: req.base_display_name,
+        source_pull_request: None,
     };
     match update_agent_conversation_workspace_from_base_for_app_state(
         state.app_state.as_ref(),
@@ -2262,6 +2263,7 @@ mod tests {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
                 base_ref: Some("main".to_string()),
                 display_name: None,
+                source_pull_request: None,
             },
         )
         .await

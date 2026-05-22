@@ -2,7 +2,7 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
-    IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
+    AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -49,6 +49,42 @@ fn make_workspace(conversation_id: ChatConversationId) -> AgentConversationWorks
         "ralphx/project/agent-11111111".to_string(),
         "/tmp/ralphx/agent-11111111".to_string(),
     )
+}
+
+#[tokio::test]
+async fn source_pull_request_metadata_round_trips() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.base_ref_kind = IdeationAnalysisBaseRefKind::LocalBranch;
+    workspace.base_ref = "feature/pr-origin".to_string();
+    workspace.base_display_name = Some("PR #123: Add PR context".to_string());
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 123,
+        url: Some("https://github.com/owner/repo/pull/123".to_string()),
+        title: Some("Add PR context".to_string()),
+        head_ref_name: "feature/pr-origin".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("abc123".to_string()),
+    });
+
+    repo.create_or_update(workspace).await.unwrap();
+
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should load");
+    assert_eq!(
+        loaded.source_pull_request,
+        Some(AgentWorkspaceSourcePullRequest {
+            number: 123,
+            url: Some("https://github.com/owner/repo/pull/123".to_string()),
+            title: Some("Add PR context".to_string()),
+            head_ref_name: "feature/pr-origin".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("abc123".to_string()),
+        })
+    );
 }
 
 #[tokio::test]

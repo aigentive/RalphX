@@ -108,6 +108,11 @@ pub async fn prepare_ideation_analysis_state(
             })?,
         IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
     };
+    let base_ref = if kind == IdeationAnalysisBaseRefKind::LocalBranch {
+        GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &base_ref).await?
+    } else {
+        base_ref
+    };
 
     let display_name = selection
         .display_name
