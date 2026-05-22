@@ -35,6 +35,7 @@ function diagnostics(overrides: Partial<GitAuthDiagnostics> = {}): GitAuthDiagno
     fetchKind: "SSH",
     pushKind: "SSH",
     mixedAuthModes: false,
+    githubHttpsCredentialHelperConfigured: false,
     canSwitchToSsh: false,
     suggestedSshUrl: null,
     ...overrides,
@@ -68,6 +69,40 @@ describe("hasStartupGitAuthIssue", () => {
         project({ githubPrEnabled: false }),
         diagnostics(),
         false,
+      ),
+    ).toBe(false);
+  });
+
+  it("flags GitHub HTTPS without a credential helper even when gh is authenticated", () => {
+    expect(
+      hasStartupGitAuthIssue(
+        project({ githubPrEnabled: false }),
+        diagnostics({
+          fetchUrl: "https://github.com/owner/repo.git",
+          pushUrl: "https://github.com/owner/repo.git",
+          fetchKind: "HTTPS",
+          pushKind: "HTTPS",
+          githubHttpsCredentialHelperConfigured: false,
+        }),
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not flag GitHub HTTPS with a credential helper when gh is authenticated", () => {
+    expect(
+      hasStartupGitAuthIssue(
+        project({ githubPrEnabled: false }),
+        diagnostics({
+          fetchUrl: "https://github.com/owner/repo.git",
+          pushUrl: "https://github.com/owner/repo.git",
+          fetchKind: "HTTPS",
+          pushKind: "HTTPS",
+          githubHttpsCredentialHelperConfigured: true,
+          canSwitchToSsh: true,
+          suggestedSshUrl: "git@github.com:owner/repo.git",
+        }),
+        true,
       ),
     ).toBe(false);
   });

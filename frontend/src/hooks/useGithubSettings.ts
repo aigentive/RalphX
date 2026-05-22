@@ -22,6 +22,7 @@ export interface GitAuthDiagnostics {
   fetchKind: string | null;
   pushKind: string | null;
   mixedAuthModes: boolean;
+  githubHttpsCredentialHelperConfigured: boolean;
   canSwitchToSsh: boolean;
   suggestedSshUrl: string | null;
 }

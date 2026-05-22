@@ -640,6 +640,7 @@ pub struct GitAuthDiagnosticsResponse {
     pub fetch_kind: Option<String>,
     pub push_kind: Option<String>,
     pub mixed_auth_modes: bool,
+    pub github_https_credential_helper_configured: bool,
     pub can_switch_to_ssh: bool,
     pub suggested_ssh_url: Option<String>,
 }
@@ -662,6 +663,8 @@ impl From<crate::infrastructure::git_auth::GitRemoteAuthConfig> for GitAuthDiagn
             fetch_kind,
             push_kind,
             mixed_auth_modes,
+            github_https_credential_helper_configured: config
+                .github_https_credential_helper_configured,
             can_switch_to_ssh,
             suggested_ssh_url,
         }
@@ -1260,11 +1263,13 @@ mod git_auth_command_tests {
         let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
             fetch_url: Some("https://github.com/owner/repo.git".to_string()),
             push_url: Some("git@github.com:owner/repo.git".to_string()),
+            github_https_credential_helper_configured: false,
         });
 
         assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
         assert_eq!(response.push_kind.as_deref(), Some("SSH"));
         assert!(response.mixed_auth_modes);
+        assert!(!response.github_https_credential_helper_configured);
         assert!(response.can_switch_to_ssh);
         assert_eq!(
             response.suggested_ssh_url.as_deref(),
@@ -1277,6 +1282,7 @@ mod git_auth_command_tests {
         let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
             fetch_url: Some("https://gitlab.com/owner/repo.git".to_string()),
             push_url: None,
+            github_https_credential_helper_configured: false,
         });
 
         assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
@@ -1284,6 +1290,19 @@ mod git_auth_command_tests {
         assert!(!response.mixed_auth_modes);
         assert!(!response.can_switch_to_ssh);
         assert!(response.suggested_ssh_url.is_none());
+    }
+
+    #[test]
+    fn diagnostics_response_exposes_github_https_credential_helper_state() {
+        let response = GitAuthDiagnosticsResponse::from(GitRemoteAuthConfig {
+            fetch_url: Some("https://github.com/owner/repo.git".to_string()),
+            push_url: Some("https://github.com/owner/repo.git".to_string()),
+            github_https_credential_helper_configured: true,
+        });
+
+        assert_eq!(response.fetch_kind.as_deref(), Some("HTTPS"));
+        assert_eq!(response.push_kind.as_deref(), Some("HTTPS"));
+        assert!(response.github_https_credential_helper_configured);
     }
 
     #[test]
