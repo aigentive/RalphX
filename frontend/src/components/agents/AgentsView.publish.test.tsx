@@ -367,6 +367,170 @@ describe("AgentsView publish", () => {
     });
   });
 
+  it("shows a check icon when all tasks are done", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "First task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+      {
+        taskId: "task-2",
+        taskNumber: 2,
+        title: "Second task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:01:00Z",
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-context-tray",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    const toggle = screen.getByTestId("agents-composer-tasks-toggle");
+    expect(toggle).toHaveTextContent("Tasks");
+    expect(screen.getByTestId("agents-composer-tasks-count")).toHaveTextContent("2");
+    expect(toggle.querySelector("svg.lucide-check")).toBeInTheDocument();
+    expect(toggle.querySelector("svg.lucide-loader-circle")).not.toBeInTheDocument();
+  });
+
+  it("shows a spinner icon when tasks are actively in progress", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "Done task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+      {
+        taskId: "task-2",
+        taskNumber: 2,
+        title: "Active task",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:01:00Z",
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-context-tray",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    const toggle = screen.getByTestId("agents-composer-tasks-toggle");
+    expect(screen.getByTestId("agents-composer-tasks-count")).toHaveTextContent("1/2");
+    expect(toggle.querySelector("svg.lucide-loader-circle")).toBeInTheDocument();
+    expect(toggle.querySelector("svg.lucide-check")).not.toBeInTheDocument();
+  });
+
+  it("paginates older tasks and reveals them on click", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "Oldest task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+      {
+        taskId: "task-2",
+        taskNumber: 2,
+        title: "Second task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:01:00Z",
+      },
+      {
+        taskId: "task-3",
+        taskNumber: 3,
+        title: "Third task",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:02:00Z",
+      },
+      {
+        taskId: "task-4",
+        taskNumber: 4,
+        title: "Fourth task",
+        state: "open",
+        ownerAgent: null,
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:03:00Z",
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-context-tray",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-composer-task-list")).toBeInTheDocument(),
+    );
+
+    expect(screen.queryByTestId("agents-composer-task-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-2")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-3")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-4")).toBeInTheDocument();
+
+    const showOlderBtn = screen.getByTestId("agents-composer-tasks-show-older");
+    expect(showOlderBtn).toHaveTextContent("See 1 older task");
+
+    fireEvent.click(showOlderBtn);
+
+    expect(screen.getByTestId("agents-composer-task-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
+  });
+
   it("opens the publish pane with a focused file request from the composer summary", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
