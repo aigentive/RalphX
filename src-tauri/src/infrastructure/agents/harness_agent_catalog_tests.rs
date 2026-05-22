@@ -867,6 +867,11 @@ fn plan_chat_surface_uses_plan_tools_without_proposal_or_external_ideation_tools
     for prompt in [claude_prompt, codex_prompt] {
         assert!(prompt.contains("<planning_session_id>"));
         assert!(prompt.contains("ask_user_question"));
+        assert!(prompt.contains("Agent-owned unknowns are facts"));
+        assert!(prompt.contains("User-owned decisions are product, scope, priority"));
+        assert!(prompt.contains("do not ask it only in prose"));
+        assert!(prompt.contains("Do not end a normal chat reply with a user-facing question"));
+        assert!(prompt.contains("do not park blocking user-owned decisions here"));
         assert!(prompt.contains("Do not create task proposals"));
         assert!(prompt.contains("switch to Edit mode"));
     }
