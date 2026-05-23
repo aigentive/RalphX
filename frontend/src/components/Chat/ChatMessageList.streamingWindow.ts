@@ -1,8 +1,5 @@
 import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 
-/** Keep the live streaming row bounded while preserving recent Codex block boundaries. */
-export const STREAMING_TEXT_BLOCK_TAIL_LIMIT = 40;
-
 /** Maximum live streaming blocks rendered in the scrollable transcript tail. */
 export const STREAMING_TRANSCRIPT_BLOCK_TAIL_LIMIT = 40;
 
@@ -17,64 +14,6 @@ export const EMPTY_STREAMING_TRANSCRIPT_WINDOW: StreamingTranscriptWindow = {
   hiddenBlockCount: 0,
   sourceBlockCount: 0,
 };
-
-function compactStreamingTextRun(
-  run: Extract<StreamingContentBlock, { type: "text" }>[]
-): StreamingContentBlock[] {
-  if (run.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
-    return run;
-  }
-
-  const compactedBlocks = run.slice(0, -STREAMING_TEXT_BLOCK_TAIL_LIMIT);
-  const recentBlocks = run.slice(-STREAMING_TEXT_BLOCK_TAIL_LIMIT);
-  const compactedText = compactedBlocks
-    .map((block) => block.text.trimEnd())
-    .filter((text) => text.length > 0)
-    .join("\n\n");
-
-  if (compactedText.length === 0) {
-    return recentBlocks;
-  }
-
-  const firstBlock = compactedBlocks[0];
-  const compactedBlock: Extract<StreamingContentBlock, { type: "text" }> =
-    firstBlock?.seq != null
-      ? { type: "text", text: compactedText, seq: firstBlock.seq }
-      : { type: "text", text: compactedText };
-
-  return [compactedBlock, ...recentBlocks];
-}
-
-function compactStreamingTextBlocks(
-  contentBlocks: StreamingContentBlock[]
-): StreamingContentBlock[] {
-  if (contentBlocks.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
-    return contentBlocks;
-  }
-
-  const compacted: StreamingContentBlock[] = [];
-  let textRun: Extract<StreamingContentBlock, { type: "text" }>[] = [];
-
-  const flushTextRun = () => {
-    if (textRun.length === 0) {
-      return;
-    }
-    compacted.push(...compactStreamingTextRun(textRun));
-    textRun = [];
-  };
-
-  for (const block of contentBlocks) {
-    if (block.type === "text") {
-      textRun.push(block);
-      continue;
-    }
-    flushTextRun();
-    compacted.push(block);
-  }
-
-  flushTextRun();
-  return compacted;
-}
 
 function isActiveStreamingTaskBlock(
   block: StreamingContentBlock,
@@ -96,7 +35,7 @@ export function buildStreamingTranscriptWindow(
 
   if (contentBlocks.length <= STREAMING_TRANSCRIPT_BLOCK_TAIL_LIMIT) {
     return {
-      contentBlocks: compactStreamingTextBlocks(contentBlocks),
+      contentBlocks,
       hiddenBlockCount: 0,
       sourceBlockCount: contentBlocks.length,
     };
@@ -116,7 +55,7 @@ export function buildStreamingTranscriptWindow(
 
   const selectedBlocks = contentBlocks.filter((_, index) => keepIndexes.has(index));
   return {
-    contentBlocks: compactStreamingTextBlocks(selectedBlocks),
+    contentBlocks: selectedBlocks,
     hiddenBlockCount: Math.max(0, contentBlocks.length - keepIndexes.size),
     sourceBlockCount: contentBlocks.length,
   };
