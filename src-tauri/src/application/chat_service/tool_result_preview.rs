@@ -4,6 +4,11 @@ use crate::infrastructure::agents::claude::ToolCall;
 
 const TOOL_RESULT_PREVIEW_MAX_LINES: usize = 10;
 const TOOL_RESULT_PREVIEW_MAX_CHARS: usize = 4_000;
+const TOOL_RESULT_PREVIEW_MAX_ARRAY_ITEMS: usize = 50;
+const TOOL_RESULT_PREVIEW_MAX_OBJECT_FIELDS: usize = 80;
+const TOOL_RESULT_PREVIEW_MARKER: &str = "__ralphx_preview_truncated";
+const TOOL_RESULT_PREVIEW_OMITTED_ITEMS: &str = "__ralphx_preview_omitted_items";
+const TOOL_RESULT_PREVIEW_OMITTED_FIELDS: &str = "__ralphx_preview_omitted_fields";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolResultPreview {
@@ -19,6 +24,7 @@ pub(crate) struct ToolResultPreviewPayload {
     pub original_bytes: usize,
     pub line_count: usize,
     pub omitted_lines: usize,
+    pub paths: Vec<String>,
     pub detail_ref: Option<JsonValue>,
 }
 
@@ -124,6 +130,131 @@ pub(crate) fn build_tool_result_preview(value: &JsonValue) -> Option<ToolResultP
     truncate_preview_text(&tool_result_preview_text(value))
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct StructuredToolResultPreview {
+    value: JsonValue,
+    paths: Vec<String>,
+}
+
+fn object_child_path(parent: &str, key: &str) -> String {
+    if parent == "$" {
+        format!("$.{key}")
+    } else {
+        format!("{parent}.{key}")
+    }
+}
+
+fn array_child_path(parent: &str, index: usize) -> String {
+    format!("{parent}[{index}]")
+}
+
+fn preview_string_leaf(value: &str, path: &str) -> Option<StructuredToolResultPreview> {
+    let preview = truncate_preview_text(value)?;
+    Some(StructuredToolResultPreview {
+        value: JsonValue::String(preview.text),
+        paths: vec![path.to_string()],
+    })
+}
+
+fn preview_array(items: &[JsonValue], path: &str) -> Option<StructuredToolResultPreview> {
+    let keep_count = items.len().min(TOOL_RESULT_PREVIEW_MAX_ARRAY_ITEMS);
+    let mut changed = items.len() > keep_count;
+    let mut paths = Vec::new();
+    let mut preview_items = Vec::with_capacity(keep_count + usize::from(changed));
+
+    for (index, item) in items.iter().take(keep_count).enumerate() {
+        if let Some(preview) = preview_value(item, &array_child_path(path, index)) {
+            preview_items.push(preview.value);
+            paths.extend(preview.paths);
+            changed = true;
+        } else {
+            preview_items.push(item.clone());
+        }
+    }
+
+    if items.len() > keep_count {
+        preview_items.push(serde_json::json!({
+            TOOL_RESULT_PREVIEW_MARKER: true,
+            TOOL_RESULT_PREVIEW_OMITTED_ITEMS: items.len() - keep_count,
+        }));
+        paths.push(format!("{path}[{keep_count}:]"));
+    }
+
+    changed.then_some(StructuredToolResultPreview {
+        value: JsonValue::Array(preview_items),
+        paths,
+    })
+}
+
+fn preview_object(
+    object: &JsonMap<String, JsonValue>,
+    path: &str,
+) -> Option<StructuredToolResultPreview> {
+    let keep_count = object.len().min(TOOL_RESULT_PREVIEW_MAX_OBJECT_FIELDS);
+    let mut changed = object.len() > keep_count;
+    let mut paths = Vec::new();
+    let mut preview_object = JsonMap::new();
+
+    for (key, value) in object.iter().take(keep_count) {
+        if let Some(preview) = preview_value(value, &object_child_path(path, key)) {
+            preview_object.insert(key.clone(), preview.value);
+            paths.extend(preview.paths);
+            changed = true;
+        } else {
+            preview_object.insert(key.clone(), value.clone());
+        }
+    }
+
+    if object.len() > keep_count {
+        preview_object.insert(
+            TOOL_RESULT_PREVIEW_MARKER.to_string(),
+            JsonValue::Bool(true),
+        );
+        preview_object.insert(
+            TOOL_RESULT_PREVIEW_OMITTED_FIELDS.to_string(),
+            serde_json::json!(object.len() - keep_count),
+        );
+        paths.push(format!("{path}.*"));
+    }
+
+    changed.then_some(StructuredToolResultPreview {
+        value: JsonValue::Object(preview_object),
+        paths,
+    })
+}
+
+fn preview_value(value: &JsonValue, path: &str) -> Option<StructuredToolResultPreview> {
+    match value {
+        JsonValue::String(text) => preview_string_leaf(text, path),
+        JsonValue::Array(items) => preview_array(items, path),
+        JsonValue::Object(object) => preview_object(object, path),
+        _ => None,
+    }
+}
+
+fn fallback_preview_value(
+    value: &JsonValue,
+    preview: &ToolResultPreview,
+) -> StructuredToolResultPreview {
+    match value {
+        JsonValue::String(_) => StructuredToolResultPreview {
+            value: JsonValue::String(preview.text.clone()),
+            paths: vec!["$".to_string()],
+        },
+        JsonValue::Array(_) | JsonValue::Object(_) => StructuredToolResultPreview {
+            value: serde_json::json!({
+                TOOL_RESULT_PREVIEW_MARKER: true,
+                "preview_text": preview.text,
+            }),
+            paths: vec!["$".to_string()],
+        },
+        _ => StructuredToolResultPreview {
+            value: value.clone(),
+            paths: Vec::new(),
+        },
+    }
+}
+
 pub(crate) fn should_skip_tool_result_preview(name: Option<&str>) -> bool {
     let Some(name) = name else {
         return false;
@@ -157,11 +288,14 @@ pub(crate) fn build_tool_result_preview_payload(
         return None;
     }
     let preview = build_tool_result_preview(result)?;
+    let structured_preview =
+        preview_value(result, "$").unwrap_or_else(|| fallback_preview_value(result, &preview));
     Some(ToolResultPreviewPayload {
-        result: JsonValue::String(preview.text),
+        result: structured_preview.value,
         original_bytes: preview.original_bytes,
         line_count: preview.line_count,
         omitted_lines: preview.omitted_lines,
+        paths: structured_preview.paths,
         detail_ref,
     })
 }
@@ -275,6 +409,12 @@ pub(crate) fn preview_tool_result_object(
         "result_preview_omitted_lines".to_string(),
         serde_json::json!(preview.omitted_lines),
     );
+    if !preview.paths.is_empty() {
+        object.insert(
+            "result_preview_paths".to_string(),
+            serde_json::json!(preview.paths),
+        );
+    }
     if let Some(detail_ref) = preview.detail_ref {
         object.insert("detail_ref".to_string(), detail_ref);
     }

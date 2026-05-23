@@ -88,6 +88,36 @@ describe("AgentTaskWidget", () => {
     expect(screen.getByText("blocked by 1")).toBeInTheDocument();
   });
 
+  it("clarifies that an empty default list is an unresolved-task snapshot", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__list_agent_tasks",
+          arguments: {
+            include_done: false,
+          },
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  tasks: [],
+                  error: null,
+                }),
+              },
+            ],
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("0 unresolved")).toBeInTheDocument();
+    expect(
+      screen.getByText("No unresolved agent tasks found in this snapshot"),
+    ).toBeInTheDocument();
+  });
+
   it("renders structured tool errors without falling back to the generic widget", () => {
     render(
       <AgentTaskWidget
@@ -125,5 +155,30 @@ describe("AgentTaskWidget", () => {
     );
     expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent("done");
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      toolName: "mcp__ralphx_internal__claim_agent_task",
+      expectedText: "Agent task claimed #7 Validate ledger labels",
+    },
+    {
+      toolName: "mcp__ralphx_internal__complete_agent_task",
+      expectedText: "Agent task completed #7 Validate ledger labels",
+    },
+  ])("renders task identity from a truncated $toolName preview", ({ toolName, expectedText }) => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: toolName,
+          arguments: {},
+          resultPreviewTruncated: true,
+          result:
+            "{\n  \"success\": true,\n  \"task\": {\n    \"task_number\": 7,\n    \"title\": \"Validate ledger labels\"\n",
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(expectedText);
   });
 });
