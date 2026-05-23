@@ -109,6 +109,16 @@ fn classifies_commit_hook_environment_failures_as_operational() {
 }
 
 #[test]
+fn classifies_commit_hook_module_resolution_failures_as_operational() {
+    let error = "Failed to commit changes: pre-commit failed: Cannot find module 'zod'";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::Operational
+    );
+}
+
+#[test]
 fn requires_captured_base_commit_for_publish_review_base() {
     assert_eq!(
         review_base_for_publish(Some("abc123"), "main").expect("captured commit"),
