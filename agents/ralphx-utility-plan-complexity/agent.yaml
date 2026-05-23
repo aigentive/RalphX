@@ -1,0 +1,15 @@
+name: ralphx-utility-plan-complexity
+role: plan_complexity_assessor
+description: "Grades approved Plan-mode artifacts and recommends direct implementation or proposal decomposition"
+capabilities:
+  mcp_tools:
+    - submit_plan_complexity_assessment
+harnesses:
+  claude:
+    model: haiku
+    tools:
+      mcp_only: true
+    preapproved_cli_tools: []
+  codex:
+    runtime_features:
+      shell_tool: false

@@ -71,12 +71,19 @@ pub async fn approve_plan_artifact(
             "plan_artifact:approved",
             serde_json::json!({
                 "sessionId": session_id.as_str(),
-                "artifactId": response_id,
+                "artifactId": response_id.clone(),
                 "version": response_version,
                 "approvedAt": approved_at,
             }),
         );
     }
+
+    crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
+        std::sync::Arc::clone(&state.app_state),
+        session_id.as_str().to_string(),
+        response_id,
+        response_version,
+    );
 
     Ok(Json(response))
 }

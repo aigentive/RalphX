@@ -55,6 +55,7 @@ import {
   REVIEWER,
   GENERAL_WORKER,
   AGENT_WORKSPACE_PR_FIXER,
+  PLAN_COMPLEXITY_ASSESSOR,
   WORKER,
   MERGER,
   CHAT_PROJECT,
@@ -169,6 +170,14 @@ describe('getAllowedToolNames', () => {
     expect(canonicalAgentName('pr-describer')).toBe('ralphx-utility-pr-describer');
     expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('pr-describer'));
     expect(getAllowedToolNames()).toContain('submit_agent_workspace_pr_description');
+  });
+
+  it('resolves the plan complexity legacy alias to canonical metadata', () => {
+    setAgentType('plan-complexity');
+
+    expect(canonicalAgentName('plan-complexity')).toBe('ralphx-utility-plan-complexity');
+    expect(getAllowedToolNames()).toEqual(loadCanonicalMcpTools('plan-complexity'));
+    expect(getAllowedToolNames()).toEqual(['submit_plan_complexity_assessment']);
   });
 });
 
@@ -1366,6 +1375,47 @@ describe('agent workspace PR description tool', () => {
       title: 'Generated title',
       body_markdown: '## Summary\n\nGenerated body',
     });
+  });
+});
+
+describe('plan complexity assessment tool', () => {
+  const allTools = getAllTools();
+  const tool = allTools.find((t) => t.name === 'submit_plan_complexity_assessment');
+
+  it('should exist in ALL_TOOLS', () => {
+    expect(tool).toBeDefined();
+  });
+
+  it('should require the current approved plan assessment fields', () => {
+    expect(tool?.inputSchema.type).toBe('object');
+    expect(tool?.inputSchema.properties).toHaveProperty('session_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('artifact_id');
+    expect(tool?.inputSchema.properties).toHaveProperty('artifact_version');
+    expect(tool?.inputSchema.properties).toHaveProperty('level');
+    expect(tool?.inputSchema.properties).toHaveProperty('score');
+    expect(tool?.inputSchema.properties).toHaveProperty('recommended_action');
+    expect(tool?.inputSchema.properties).toHaveProperty('confidence');
+    expect(tool?.inputSchema.properties).toHaveProperty('reason_summary');
+    expect(tool?.inputSchema.required).toEqual(
+      expect.arrayContaining([
+        'session_id',
+        'artifact_id',
+        'artifact_version',
+        'level',
+        'score',
+        'recommended_action',
+        'confidence',
+        'reason_summary',
+      ])
+    );
+  });
+
+  it('exposes the submit tool only through the utility assessor metadata', () => {
+    setAgentType(PLAN_COMPLEXITY_ASSESSOR);
+
+    const toolNames = getFilteredTools().map((candidate) => candidate.name);
+    expect(toolNames).toEqual(loadCanonicalMcpTools(PLAN_COMPLEXITY_ASSESSOR));
+    expect(toolNames).toEqual(['submit_plan_complexity_assessment']);
   });
 });
 

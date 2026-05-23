@@ -3315,6 +3315,150 @@ async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
 }
 
 #[tokio::test]
+async fn test_submit_plan_complexity_assessment_persists_for_current_approved_plan() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let created = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Agent Plan".to_string(),
+            content: "Plan-mode content".to_string(),
+        }),
+    )
+    .await
+    .expect("create_plan_artifact should succeed")
+    .0;
+
+    let _ = approve_plan_artifact(
+        State(state.clone()),
+        Json(ApprovePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: Some(created.id.clone()),
+        }),
+    )
+    .await
+    .expect("approve_plan_artifact should succeed");
+
+    let submitted = submit_plan_complexity_assessment(
+        State(state.clone()),
+        Json(SubmitPlanComplexityAssessmentRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: created.id.clone(),
+            artifact_version: created.version,
+            level: "complex".to_string(),
+            score: 84,
+            recommended_action: "create_proposals".to_string(),
+            confidence: 0.91,
+            reason_summary: "Multiple dependent work items need tracked checkpoints."
+                .to_string(),
+            signals: Some(serde_json::json!({
+                "dependent_work_items": 4,
+                "cross_layer_scope": true
+            })),
+        }),
+    )
+    .await
+    .expect("submit_plan_complexity_assessment should succeed")
+    .0;
+
+    assert!(submitted.success);
+    assert_eq!(submitted.assessment.session_id, session_id.as_str());
+    assert_eq!(submitted.assessment.artifact_id, created.id);
+    assert_eq!(submitted.assessment.artifact_version, created.version);
+    assert_eq!(submitted.assessment.level, "complex");
+    assert_eq!(submitted.assessment.score, 84);
+    assert_eq!(submitted.assessment.recommended_action, "create_proposals");
+    assert_eq!(
+        submitted.assessment.assessed_by,
+        "ralphx-utility-plan-complexity"
+    );
+
+    let fetched = get_plan_complexity_assessment(
+        State(state.clone()),
+        Path(session_id.as_str().to_string()),
+    )
+    .await
+    .expect("get_plan_complexity_assessment should succeed")
+    .0
+    .expect("assessment should be persisted for the current plan");
+    assert_eq!(fetched.id, submitted.assessment.id);
+    assert_eq!(
+        fetched.signals["dependent_work_items"],
+        serde_json::json!(4)
+    );
+}
+
+#[tokio::test]
+async fn test_submit_plan_complexity_assessment_rejects_draft_plan() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let created = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Agent Plan".to_string(),
+            content: "Plan-mode content".to_string(),
+        }),
+    )
+    .await
+    .expect("create_plan_artifact should succeed")
+    .0;
+
+    let result = submit_plan_complexity_assessment(
+        State(state.clone()),
+        Json(SubmitPlanComplexityAssessmentRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: created.id,
+            artifact_version: created.version,
+            level: "simple".to_string(),
+            score: 20,
+            recommended_action: "implement_directly".to_string(),
+            confidence: 0.8,
+            reason_summary: "Linear small plan.".to_string(),
+            signals: None,
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "draft plans should not accept complexity assessments"
+    );
+    let err = result.unwrap_err();
+    assert_eq!(err.status, StatusCode::CONFLICT);
+    let msg = err.message.expect("409 should include message body");
+    assert!(
+        msg.contains("current approved plan version"),
+        "error should explain approval requirement: got '{msg}'"
+    );
+}
+
+#[tokio::test]
 async fn test_approve_plan_artifact_rejects_non_planning_session() {
     let state = setup_test_state().await;
 

@@ -208,6 +208,43 @@ export const PlanApprovalSchema = z.object({
 
 export type PlanApproval = z.infer<typeof PlanApprovalSchema>;
 
+export const PlanComplexityLevelSchema = z.enum([
+  "trivial",
+  "simple",
+  "moderate",
+  "complex",
+  "very_complex",
+]);
+export type PlanComplexityLevel = z.infer<typeof PlanComplexityLevelSchema>;
+
+export const PlanComplexityRecommendedActionSchema = z.enum([
+  "implement_directly",
+  "create_proposals",
+]);
+export type PlanComplexityRecommendedAction = z.infer<
+  typeof PlanComplexityRecommendedActionSchema
+>;
+
+export const PlanComplexityAssessmentSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  artifactId: z.string(),
+  artifactVersion: z.number().int().positive(),
+  level: PlanComplexityLevelSchema,
+  score: z.number().int().min(0).max(100),
+  recommendedAction: PlanComplexityRecommendedActionSchema,
+  confidence: z.number().min(0).max(1),
+  reasonSummary: z.string(),
+  signals: z.record(z.string(), z.unknown()),
+  assessedBy: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export type PlanComplexityAssessment = z.infer<
+  typeof PlanComplexityAssessmentSchema
+>;
+
 // ============================================
 // Artifact
 // ============================================

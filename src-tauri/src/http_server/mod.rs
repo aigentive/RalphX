@@ -164,6 +164,14 @@ pub async fn start_http_server(
         // UI-owned Plan-mode action; intentionally not exposed as an agent MCP tool.
         .route("/api/approve_plan_artifact", post(approve_plan_artifact))
         .route(
+            "/api/plan_complexity_assessment/:session_id",
+            get(get_plan_complexity_assessment),
+        )
+        .route(
+            "/api/submit_plan_complexity_assessment",
+            post(submit_plan_complexity_assessment),
+        )
+        .route(
             "/api/artifact/:artifact_id/history",
             get(get_artifact_history),
         )

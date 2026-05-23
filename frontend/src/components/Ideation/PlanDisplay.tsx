@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -71,6 +71,12 @@ export interface PlanDisplayProps {
   /** Called when user clicks the proposal action — triggers orchestrator to decompose plan into tasks */
   onCreateProposals?: () => void;
   createProposalsLabel?: string;
+  /** Called when user chooses to implement the approved plan directly in the agent workspace */
+  onImplementDirectly?: () => void;
+  implementDirectlyLabel?: string;
+  isImplementingDirectly?: boolean;
+  primaryPlanAction?: "implement_directly" | "create_proposals";
+  planActionHint?: string | null;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
   /**
@@ -347,6 +353,11 @@ export function PlanDisplay({
   onVersionViewed,
   onCreateProposals,
   createProposalsLabel = "Create Proposals",
+  onImplementDirectly,
+  implementDirectlyLabel = "Implement Directly",
+  isImplementingDirectly = false,
+  primaryPlanAction,
+  planActionHint = null,
   showOverflowActions = true,
   chromeless = false,
 }: PlanDisplayProps) {
@@ -357,8 +368,36 @@ export function PlanDisplay({
   const showCreateProposals =
     onCreateProposals &&
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
+  const showImplementDirectly = Boolean(onImplementDirectly);
+  const isCreateProposalsPrimary =
+    primaryPlanAction === "create_proposals" ||
+    (!showImplementDirectly && Boolean(showCreateProposals));
+  const isImplementDirectlyPrimary =
+    primaryPlanAction === "implement_directly" ||
+    (showImplementDirectly && !showCreateProposals);
   const isOpen = isExpanded !== undefined ? isExpanded : internalIsOpen;
   const setIsOpen = onExpandedChange ?? setInternalIsOpen;
+  const actionButtonStyle = (isPrimary: boolean) => ({
+    color: isPrimary ? "var(--accent-primary)" : "var(--text-secondary)",
+    background: isPrimary ? withAlpha("var(--accent-primary)", 10) : "transparent",
+    border: isPrimary ? "1px solid var(--accent-border)" : "1px solid var(--border-subtle)",
+  });
+  const actionButtonHover = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    isPrimary: boolean,
+  ) => {
+    e.currentTarget.style.background = isPrimary
+      ? withAlpha("var(--accent-primary)", 15)
+      : "var(--overlay-faint)";
+  };
+  const actionButtonLeave = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    isPrimary: boolean,
+  ) => {
+    e.currentTarget.style.background = isPrimary
+      ? withAlpha("var(--accent-primary)", 10)
+      : "transparent";
+  };
 
   // Version selector state
   const [selectedVersion, setSelectedVersion] = useState(plan.metadata.version);
@@ -481,21 +520,21 @@ export function PlanDisplay({
 
     return (
       <div data-testid="plan-display-chromeless" className="group">
-        <div
-          className="flex items-center justify-between gap-3 pb-2 mb-3"
-          style={{ borderBottom: "1px solid var(--border-subtle)" }}
-        >
-          <h1
-            className="text-[1.125rem] font-semibold tracking-[-0.02em] flex-1 min-w-0 leading-tight"
-            style={{ color: "var(--text-primary)" }}
+        <div className="pb-2 mb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+          <div
+            className="flex items-center justify-between gap-3"
           >
-            {headingTitle ?? plan.name}
-          </h1>
-          {/* Slim action row — keeps every control the wrapper card had
-              (approve, create proposals, version history, overflow menu)
-              without the file-icon header chrome that duplicated the
-              in-content H1 title. */}
-          <div className="flex items-center gap-1 shrink-0">
+            <h1
+              className="text-[1.125rem] font-semibold tracking-[-0.02em] flex-1 min-w-0 leading-tight"
+              style={{ color: "var(--text-primary)" }}
+            >
+              {headingTitle ?? plan.name}
+            </h1>
+            {/* Slim action row — keeps every control the wrapper card had
+                (approve, create proposals, version history, overflow menu)
+                without the file-icon header chrome that duplicated the
+                in-content H1 title. */}
+            <div className="flex items-center gap-1 shrink-0">
           {showApprove && !isApproved && (
             <Button
               type="button"
@@ -566,27 +605,86 @@ export function PlanDisplay({
             </Button>
           )}
 
-          {showCreateProposals && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onCreateProposals}
-              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-              style={{
-                color: "var(--accent-primary)",
-                background: withAlpha("var(--accent-primary)", 10),
-                border: "1px solid var(--accent-border)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
-              }}
-            >
-              <ListPlus className="w-3 h-3" />
-              {createProposalsLabel}
-            </Button>
+          {primaryPlanAction === "create_proposals" ? (
+            <>
+              {showCreateProposals && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onCreateProposals}
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={actionButtonStyle(isCreateProposalsPrimary)}
+                  onMouseEnter={(e) => actionButtonHover(e, isCreateProposalsPrimary)}
+                  onMouseLeave={(e) => actionButtonLeave(e, isCreateProposalsPrimary)}
+                >
+                  <ListPlus className="w-3 h-3" />
+                  {createProposalsLabel}
+                </Button>
+              )}
+              {showImplementDirectly && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onImplementDirectly}
+                  disabled={isImplementingDirectly}
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={actionButtonStyle(isImplementDirectlyPrimary)}
+                  onMouseEnter={(e) => actionButtonHover(e, isImplementDirectlyPrimary)}
+                  onMouseLeave={(e) => actionButtonLeave(e, isImplementDirectlyPrimary)}
+                >
+                  {isImplementingDirectly ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Rocket className="w-3 h-3" />
+                  )}
+                  {isImplementingDirectly ? "Starting..." : implementDirectlyLabel}
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              {showImplementDirectly && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onImplementDirectly}
+                  disabled={isImplementingDirectly}
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={actionButtonStyle(isImplementDirectlyPrimary)}
+                  onMouseEnter={(e) =>
+                    actionButtonHover(e, isImplementDirectlyPrimary)
+                  }
+                  onMouseLeave={(e) =>
+                    actionButtonLeave(e, isImplementDirectlyPrimary)
+                  }
+                >
+                  {isImplementingDirectly ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Rocket className="w-3 h-3" />
+                  )}
+                  {isImplementingDirectly ? "Starting..." : implementDirectlyLabel}
+                </Button>
+              )}
+              {showCreateProposals && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onCreateProposals}
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={actionButtonStyle(isCreateProposalsPrimary)}
+                  onMouseEnter={(e) =>
+                    actionButtonHover(e, isCreateProposalsPrimary)
+                  }
+                  onMouseLeave={(e) =>
+                    actionButtonLeave(e, isCreateProposalsPrimary)
+                  }
+                >
+                  <ListPlus className="w-3 h-3" />
+                  {createProposalsLabel}
+                </Button>
+              )}
+            </>
           )}
 
           {showOverflowActions && plan.metadata.version > 1 && (
@@ -712,7 +810,16 @@ export function PlanDisplay({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
+            </div>
           </div>
+          {planActionHint && (
+            <p
+              className="mt-2 text-[0.6875rem] leading-snug"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {planActionHint}
+            </p>
+          )}
         </div>
 
         {/* Debate summary — shown for debate-mode plans */}

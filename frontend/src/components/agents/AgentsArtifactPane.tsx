@@ -36,7 +36,7 @@ import { useConversationHistoryWindow } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
-import type { Artifact } from "@/types/artifact";
+import type { Artifact, PlanComplexityAssessment } from "@/types/artifact";
 import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/ideation";
 import type {
   DependencyGraphResponse,
@@ -61,8 +61,38 @@ import {
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 const PLAN_TO_PROPOSALS_REQUEST =
   "Proceed to proposals for the approved plan. Read the current plan, run cross_project_guide if needed, create implementation task proposals, and finalize proposals only after all proposal and dependency updates are complete.";
+const PLAN_IMPLEMENT_DIRECTLY_REQUEST =
+  "Implement the approved plan directly. Use the linked plan as implementation guidance, edit the workspace branch, and do not create task proposals unless the user explicitly asks.";
 
 function noop() {}
+
+function buildPlanActionHint({
+  assessment,
+  isAssessing,
+  canChoose,
+}: {
+  assessment: PlanComplexityAssessment | null | undefined;
+  isAssessing: boolean;
+  canChoose: boolean;
+}): string | null {
+  if (!canChoose) {
+    return null;
+  }
+
+  if (assessment) {
+    const recommendation =
+      assessment.recommendedAction === "create_proposals"
+        ? "Create Proposals"
+        : "Implement Directly";
+    return `Recommended: ${recommendation}. ${assessment.reasonSummary} Both paths remain available.`;
+  }
+
+  if (isAssessing) {
+    return "Assessing plan complexity. Both paths are available while the recommendation is prepared.";
+  }
+
+  return "Use direct implementation for small, linear plans; use proposals when the work needs tracked tasks or review checkpoints.";
+}
 
 const LazyTaskGraphView = lazy(() =>
   import("@/components/TaskGraph").then((module) => ({ default: module.TaskGraphView })),
@@ -831,6 +861,7 @@ function AgentPlanPanel({
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [isApprovingPlan, setIsApprovingPlan] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
+  const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -897,6 +928,30 @@ function AgentPlanPanel({
     isOwnedCurrentPlan && isPlanApproved && !isPlanVerificationSatisfied;
   const canCreateProposals =
     session !== null && (!isPlanningSession || isPlanApproved);
+  const canImplementDirectly = Boolean(
+    isOwnedCurrentPlan &&
+      isPlanApproved &&
+      session?.projectId &&
+      workspace?.conversationId,
+  );
+  const planComplexityQuery = useQuery({
+    queryKey: [
+      "agents",
+      "plan-complexity",
+      session?.id,
+      planArtifact?.id,
+      planArtifact?.metadata.version,
+    ],
+    queryFn: () => artifactApi.getPlanComplexityAssessment(session!.id),
+    enabled: Boolean(session && isOwnedCurrentPlan && isPlanApproved),
+    staleTime: 5_000,
+    refetchInterval: (query) => (query.state.data ? false : 4_000),
+  });
+  const planActionHint = buildPlanActionHint({
+    assessment: planComplexityQuery.data,
+    isAssessing: planComplexityQuery.isFetching && !planComplexityQuery.data,
+    canChoose: canImplementDirectly && canCreateProposals,
+  });
 
   const handleApprovePlan = useCallback(async () => {
     if (!session || !planArtifact || !canApprovePlan) {
@@ -917,6 +972,9 @@ function AgentPlanPanel({
         ["agents", "plan-approval", session.id],
         approvedPlan,
       );
+      await queryClient.invalidateQueries({
+        queryKey: ["agents", "plan-complexity", session.id],
+      });
       toast.success("Plan approved");
     } catch (err) {
       console.error("Failed to approve plan:", err);
@@ -925,6 +983,43 @@ function AgentPlanPanel({
       setIsApprovingPlan(false);
     }
   }, [canApprovePlan, onPlanUpdated, planArtifact, queryClient, session]);
+
+  const handleImplementDirectly = useCallback(async () => {
+    if (!session || !workspace?.conversationId || !canImplementDirectly) {
+      return;
+    }
+    setIsImplementingPlanDirectly(true);
+    try {
+      if (workspace.mode !== "edit") {
+        const result = await chatApi.switchAgentConversationMode({
+          conversationId: workspace.conversationId,
+          mode: "edit",
+        });
+        if (result.workspace) {
+          queryClient.setQueryData(
+            agentWorkspaceKeys.workspace(workspace.conversationId),
+            result.workspace,
+          );
+        }
+        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
+      }
+
+      await chatApi.sendAgentMessage(
+        "project",
+        session.projectId,
+        PLAN_IMPLEMENT_DIRECTLY_REQUEST,
+        undefined,
+        undefined,
+        { conversationId: workspace.conversationId },
+      );
+      toast.success("Implementation started");
+    } catch (err) {
+      console.error("Failed to implement plan directly:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to start implementation");
+    } finally {
+      setIsImplementingPlanDirectly(false);
+    }
+  }, [canImplementDirectly, queryClient, session, workspace]);
 
   const handleVerifyPlan = useCallback(async () => {
     if (!session || !canVerifyPlan || verificationInProgress) {
@@ -1000,6 +1095,14 @@ function AgentPlanPanel({
                 isVerifyingPlan:
                   isStartingPlanVerification || verificationInProgress,
               })}
+              {...(canImplementDirectly && {
+                onImplementDirectly: handleImplementDirectly,
+                isImplementingDirectly: isImplementingPlanDirectly,
+              })}
+              {...(planComplexityQuery.data && {
+                primaryPlanAction: planComplexityQuery.data.recommendedAction,
+              })}
+              {...(planActionHint && { planActionHint })}
               {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}
               {...(isPlanningSession && {
                 createProposalsLabel: "Create Proposals",

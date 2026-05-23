@@ -2,8 +2,12 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
-import type { Artifact } from "@/types/artifact";
-import { PlanApprovalStatusSchema } from "@/types/artifact";
+import type { Artifact, PlanComplexityAssessment } from "@/types/artifact";
+import {
+  PlanApprovalStatusSchema,
+  PlanComplexityLevelSchema,
+  PlanComplexityRecommendedActionSchema,
+} from "@/types/artifact";
 import { ArtifactVersionSummarySchema } from "@/types/artifact";
 import type { ArtifactVersionSummary } from "@/types/artifact";
 import { backendApiUrl } from "@/api/backend";
@@ -32,6 +36,26 @@ export const ArtifactResponseSchema = z.object({
 });
 
 export type ArtifactResponse = z.infer<typeof ArtifactResponseSchema>;
+
+export const PlanComplexityAssessmentResponseSchema = z.object({
+  id: z.string(),
+  session_id: z.string(),
+  artifact_id: z.string(),
+  artifact_version: z.number().int().positive(),
+  level: PlanComplexityLevelSchema,
+  score: z.number().int().min(0).max(100),
+  recommended_action: PlanComplexityRecommendedActionSchema,
+  confidence: z.number().min(0).max(1),
+  reason_summary: z.string(),
+  signals: z.record(z.string(), z.unknown()),
+  assessed_by: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export type PlanComplexityAssessmentResponse = z.infer<
+  typeof PlanComplexityAssessmentResponseSchema
+>;
 
 // ============================================================================
 // Transform Functions (snake_case -> camelCase)
@@ -73,6 +97,26 @@ export function transformArtifactResponse(raw: ArtifactResponse): Artifact {
     derivedFrom: raw.derived_from,
     bucketId: raw.bucket_id ?? undefined,
     ...(planApproval !== undefined && { planApproval }),
+  };
+}
+
+export function transformPlanComplexityAssessmentResponse(
+  raw: PlanComplexityAssessmentResponse,
+): PlanComplexityAssessment {
+  return {
+    id: raw.id,
+    sessionId: raw.session_id,
+    artifactId: raw.artifact_id,
+    artifactVersion: raw.artifact_version,
+    level: raw.level,
+    score: raw.score,
+    recommendedAction: raw.recommended_action,
+    confidence: raw.confidence,
+    reasonSummary: raw.reason_summary,
+    signals: raw.signals,
+    assessedBy: raw.assessed_by,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
   };
 }
 
@@ -164,6 +208,33 @@ export const artifactApi = {
       throw new Error("Plan approval did not return an artifact.");
     }
     return artifact;
+  },
+
+  /**
+   * Get the current approved Plan-mode complexity assessment, if one exists.
+   */
+  getPlanComplexityAssessment: async (
+    sessionId: string,
+  ): Promise<PlanComplexityAssessment | null> => {
+    const response = await fetch(
+      backendApiUrl(`plan_complexity_assessment/${encodeURIComponent(sessionId)}`),
+    );
+    if (!response.ok) {
+      let message = response.statusText;
+      try {
+        const body = await response.json();
+        if (typeof body?.message === "string" && body.message.trim()) {
+          message = body.message;
+        }
+      } catch {
+        // Keep statusText fallback.
+      }
+      throw new Error(message || `Request failed with status ${response.status}`);
+    }
+
+    const raw = await response.json();
+    const parsed = PlanComplexityAssessmentResponseSchema.nullable().parse(raw);
+    return parsed ? transformPlanComplexityAssessmentResponse(parsed) : null;
   },
 
   /**

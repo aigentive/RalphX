@@ -35,12 +35,18 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "pr_describer",
         "ralphx-utility-pr-describer",
     ),
+    (
+        "ralphx-utility-plan-complexity",
+        "plan_complexity_assessor",
+        "ralphx-utility-plan-complexity",
+    ),
 ];
 
 const CODEX_PILOT_AGENTS: &[&str] = &[
     "ralphx-ideation",
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
+    "ralphx-utility-plan-complexity",
 ];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-chat-task",
@@ -234,6 +240,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-ideation-team-lead",
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
+    "ralphx-utility-plan-complexity",
     "ralphx-chat-task",
     "ralphx-chat-project",
     "ralphx-review-chat",
@@ -260,6 +267,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
     "ralphx-utility-pr-describer",
+    "ralphx-utility-plan-complexity",
     "ralphx-plan-verifier",
     "ralphx-plan-critic-completeness",
     "ralphx-plan-critic-implementation-feasibility",
@@ -405,6 +413,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-agent-workspace-repair", "opus"),
     ("ralphx-agent-workspace-pr-fixer", "opus"),
     ("ralphx-utility-session-namer", "haiku"),
+    ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
     ("ralphx-chat-project", "sonnet"),
     ("ralphx-review-chat", "sonnet"),
@@ -1227,6 +1236,34 @@ fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
 }
 
 #[test]
+fn plan_complexity_codex_surface_uses_shared_prompt_and_submit_tool() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-utility-plan-complexity")
+        .expect("expected canonical plan complexity definition");
+    let prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-utility-plan-complexity",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected plan complexity Codex prompt");
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-utility-plan-complexity");
+
+    assert_eq!(
+        definition.capabilities.mcp_tools,
+        vec!["submit_plan_complexity_assessment".to_string()]
+    );
+    assert!(
+        prompt.contains("submit_plan_complexity_assessment"),
+        "Codex plan complexity prompt should expose the submit contract"
+    );
+    assert!(
+        !prompt.contains("mcp__ralphx__"),
+        "Codex plan complexity prompt should not use Claude-style MCP names"
+    );
+    assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
+}
+
+#[test]
 fn project_analyzer_codex_prompt_uses_harness_neutral_file_inspection_language() {
     let root = project_root();
     let prompt =
@@ -1374,7 +1411,9 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
 
         if matches!(
             *agent_name,
-            "ralphx-utility-session-namer" | "ralphx-utility-pr-describer"
+            "ralphx-utility-session-namer"
+                | "ralphx-utility-pr-describer"
+                | "ralphx-utility-plan-complexity"
         ) {
             assert!(
                 claude_path.as_ref().is_some_and(
@@ -1590,6 +1629,7 @@ fn legacy_agent_aliases_resolve_into_canonical_catalog_entries() {
         ("ralphx-worker", "ralphx-execution-worker"),
         ("session-namer", "ralphx-utility-session-namer"),
         ("pr-describer", "ralphx-utility-pr-describer"),
+        ("plan-complexity", "ralphx-utility-plan-complexity"),
     ];
 
     for (legacy_name, canonical_name) in cases {

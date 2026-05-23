@@ -796,6 +796,43 @@ pub struct ApprovePlanArtifactRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SubmitPlanComplexityAssessmentRequest {
+    pub session_id: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub level: String,
+    pub score: u8,
+    pub recommended_action: String,
+    pub confidence: f64,
+    pub reason_summary: String,
+    #[serde(default)]
+    pub signals: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubmitPlanComplexityAssessmentResponse {
+    pub success: bool,
+    pub assessment: PlanComplexityAssessmentResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanComplexityAssessmentResponse {
+    pub id: String,
+    pub session_id: String,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub level: String,
+    pub score: u8,
+    pub recommended_action: String,
+    pub confidence: f64,
+    pub reason_summary: String,
+    pub signals: Value,
+    pub assessed_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PlanEdit {
     pub old_text: String,
     pub new_text: String,

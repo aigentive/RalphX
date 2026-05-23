@@ -32,6 +32,7 @@ const {
   getArtifactMock,
   getSessionPlanMock,
   approvePlanArtifactMock,
+  getPlanComplexityAssessmentMock,
   confirmVerificationMock,
   getVerificationSpecialistsMock,
   getIdeationSessionMock,
@@ -68,6 +69,7 @@ const {
   getArtifactMock: vi.fn(),
   getSessionPlanMock: vi.fn(),
   approvePlanArtifactMock: vi.fn(),
+  getPlanComplexityAssessmentMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
@@ -202,6 +204,8 @@ vi.mock("@/api/artifact", async (importOriginal) => {
       getSessionPlan: (...args: unknown[]) => getSessionPlanMock(...args),
       approvePlanArtifact: (...args: unknown[]) =>
         approvePlanArtifactMock(...args),
+      getPlanComplexityAssessment: (...args: unknown[]) =>
+        getPlanComplexityAssessmentMock(...args),
     },
   };
 });
@@ -516,6 +520,7 @@ describe("AgentsArtifactPane", () => {
     getArtifactMock.mockResolvedValue(null);
     getSessionPlanMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
+    getPlanComplexityAssessmentMock.mockResolvedValue(null);
     confirmVerificationMock.mockResolvedValue({ status: "ok" });
     getVerificationSpecialistsMock.mockResolvedValue({ specialists: [] });
     getIdeationSessionMock.mockResolvedValue(null);
@@ -1051,6 +1056,110 @@ describe("AgentsArtifactPane", () => {
     expect(
       sendAgentMessageMock.mock.invocationCallOrder[0]!,
     ).toBeGreaterThan(switchAgentConversationModeMock.mock.invocationCallOrder[0]!);
+  });
+
+  it("shows plan complexity guidance while still allowing direct implementation", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-1",
+      sessionId: "session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "complex",
+      score: 82,
+      recommendedAction: "create_proposals",
+      confidence: 0.88,
+      reasonSummary: "Multiple dependent work items need tracked review checkpoints.",
+      signals: { dependency_count: 4 },
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-04-23T09:31:00Z",
+      updatedAt: "2026-04-23T09:31:00Z",
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(
+      await screen.findByText(/Recommended: Create Proposals/i),
+    ).toHaveTextContent("Both paths remain available");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Implement Directly/i }),
+    );
+
+    await waitFor(() =>
+      expect(switchAgentConversationModeMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        mode: "edit",
+      }),
+    );
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+        expect.stringContaining("Implement the approved plan directly"),
+        undefined,
+        undefined,
+        { conversationId: "conversation-1" },
+      ),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Implementation started");
   });
 
   it("approves a draft Plan-mode artifact without requesting proposals", async () => {
