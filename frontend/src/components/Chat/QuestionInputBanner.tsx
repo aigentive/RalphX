@@ -10,7 +10,7 @@
  */
 
 import { useState, useCallback, useEffect } from "react";
-import { Check, X, Maximize2, Minimize2 } from "lucide-react";
+import { Check, CheckCircle2, Loader2, X, Maximize2, Minimize2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
@@ -35,6 +35,13 @@ export interface QuestionInputBannerProps {
   answeredValue?: string | undefined;
   /** Called when user clicks dismiss on the answered banner */
   onDismissAnswered?: (() => void) | undefined;
+  /** Optional Plan-mode artifact approval action shown alongside the question. */
+  planApprovalAction?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    isPending?: boolean;
+  } | undefined;
 }
 
 // ============================================================================
@@ -122,6 +129,7 @@ export function QuestionInputBanner({
   onDismiss,
   answeredValue,
   onDismissAnswered,
+  planApprovalAction,
 }: QuestionInputBannerProps) {
   const [visible, setVisible] = useState(false);
   const [computedHeight, setComputedHeight] = useState(320);
@@ -271,6 +279,37 @@ export function QuestionInputBanner({
               >
                 {question.header ?? "Question from agent"}
               </span>
+
+              {planApprovalAction && (
+                <button
+                  type="button"
+                  onClick={planApprovalAction.onClick}
+                  disabled={planApprovalAction.disabled || planApprovalAction.isPending}
+                  className="inline-flex h-7 flex-shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[0.6875rem] font-semibold transition-colors"
+                  style={{
+                    border: "1px solid var(--accent-border)",
+                    background: "var(--accent-muted)",
+                    color: "var(--accent-primary)",
+                    cursor:
+                      planApprovalAction.disabled || planApprovalAction.isPending
+                        ? "not-allowed"
+                        : "pointer",
+                    opacity:
+                      planApprovalAction.disabled || planApprovalAction.isPending
+                        ? 0.65
+                        : 1,
+                  }}
+                >
+                  {planApprovalAction.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3" />
+                  )}
+                  {planApprovalAction.isPending
+                    ? "Approving..."
+                    : planApprovalAction.label}
+                </button>
+              )}
 
               {/* Expand/collapse button - only shown when content is near clipping threshold */}
               {showExpandButton && (

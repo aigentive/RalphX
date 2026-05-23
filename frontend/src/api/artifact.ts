@@ -3,14 +3,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import type { Artifact } from "@/types/artifact";
+import { PlanApprovalStatusSchema } from "@/types/artifact";
 import { ArtifactVersionSummarySchema } from "@/types/artifact";
 import type { ArtifactVersionSummary } from "@/types/artifact";
+import { backendApiUrl } from "@/api/backend";
 
 // ============================================================================
 // Response Schemas (matching Rust backend serialization with snake_case)
 // ============================================================================
 
-const ArtifactResponseSchema = z.object({
+export const ArtifactResponseSchema = z.object({
   id: z.string(),
   name: z.string(),
   artifact_type: z.string(),
@@ -23,19 +25,38 @@ const ArtifactResponseSchema = z.object({
   task_id: z.string().nullable(),
   process_id: z.string().nullable(),
   derived_from: z.array(z.string()),
+  plan_approval_status: PlanApprovalStatusSchema.optional(),
+  plan_approved_artifact_id: z.string().nullable().optional(),
+  plan_approved_version: z.number().int().positive().nullable().optional(),
+  plan_approved_at: z.string().nullable().optional(),
 });
 
-type ArtifactResponse = z.infer<typeof ArtifactResponseSchema>;
+export type ArtifactResponse = z.infer<typeof ArtifactResponseSchema>;
 
 // ============================================================================
 // Transform Functions (snake_case -> camelCase)
 // ============================================================================
 
-function transformArtifact(raw: ArtifactResponse): Artifact {
+export function transformArtifactResponse(raw: ArtifactResponse): Artifact {
   const content =
     raw.content_type === "inline"
       ? { type: "inline" as const, text: raw.content }
       : { type: "file" as const, path: raw.content };
+
+  const planApproval = raw.plan_approval_status
+    ? {
+        status: raw.plan_approval_status,
+        ...(raw.plan_approved_artifact_id != null && {
+          approvedArtifactId: raw.plan_approved_artifact_id,
+        }),
+        ...(raw.plan_approved_version != null && {
+          approvedVersion: raw.plan_approved_version,
+        }),
+        ...(raw.plan_approved_at != null && {
+          approvedAt: raw.plan_approved_at,
+        }),
+      }
+    : undefined;
 
   return {
     id: raw.id,
@@ -51,6 +72,7 @@ function transformArtifact(raw: ArtifactResponse): Artifact {
     },
     derivedFrom: raw.derived_from,
     bucketId: raw.bucket_id ?? undefined,
+    ...(planApproval !== undefined && { planApproval }),
   };
 }
 
@@ -65,6 +87,25 @@ async function typedInvoke<T>(
 ): Promise<T> {
   const result = await invoke(cmd, args);
   return schema.parse(result);
+}
+
+async function parseHttpArtifactResponse(response: Response): Promise<Artifact | null> {
+  if (!response.ok) {
+    let message = response.statusText;
+    try {
+      const body = await response.json();
+      if (typeof body?.message === "string" && body.message.trim()) {
+        message = body.message;
+      }
+    } catch {
+      // Keep statusText fallback.
+    }
+    throw new Error(message || `Request failed with status ${response.status}`);
+  }
+
+  const raw = await response.json();
+  const parsed = ArtifactResponseSchema.nullable().parse(raw);
+  return parsed ? transformArtifactResponse(parsed) : null;
 }
 
 // ============================================================================
@@ -86,7 +127,43 @@ export const artifactApi = {
       { id: artifactId },
       ArtifactResponseSchema.nullable()
     );
-    return raw ? transformArtifact(raw) : null;
+    return raw ? transformArtifactResponse(raw) : null;
+  },
+
+  /**
+   * Get the current plan artifact for an ideation/planning session.
+   * Planning sessions include backend-owned approval state.
+   */
+  getSessionPlan: async (sessionId: string): Promise<Artifact | null> => {
+    const response = await fetch(
+      backendApiUrl(`get_session_plan/${encodeURIComponent(sessionId)}`),
+    );
+    return parseHttpArtifactResponse(response);
+  },
+
+  /**
+   * Approve the current Plan-mode artifact version for a planning session.
+   */
+  approvePlanArtifact: async ({
+    sessionId,
+    artifactId,
+  }: {
+    sessionId: string;
+    artifactId?: string | undefined;
+  }): Promise<Artifact> => {
+    const response = await fetch(backendApiUrl("approve_plan_artifact"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionId,
+        ...(artifactId !== undefined && { artifact_id: artifactId }),
+      }),
+    });
+    const artifact = await parseHttpArtifactResponse(response);
+    if (!artifact) {
+      throw new Error("Plan approval did not return an artifact.");
+    }
+    return artifact;
   },
 
   /**
@@ -101,7 +178,7 @@ export const artifactApi = {
       { id: artifactId, version },
       ArtifactResponseSchema.nullable()
     );
-    return raw ? transformArtifact(raw) : null;
+    return raw ? transformArtifactResponse(raw) : null;
   },
 
   /**
@@ -115,7 +192,7 @@ export const artifactApi = {
       { taskId },
       z.array(ArtifactResponseSchema)
     );
-    return raw.map(transformArtifact);
+    return raw.map(transformArtifactResponse);
   },
 
   /**
@@ -129,7 +206,7 @@ export const artifactApi = {
       { bucketId },
       z.array(ArtifactResponseSchema)
     );
-    return raw.map(transformArtifact);
+    return raw.map(transformArtifactResponse);
   },
 
   /**

@@ -50,6 +50,8 @@ export interface PlanDisplayProps {
   onEdit?: () => void;
   onExport?: () => void;
   onApprove?: () => void;
+  isApproving?: boolean;
+  approveLabel?: string;
   isApproved?: boolean;
   /** Controlled expanded state - if provided, component is controlled */
   isExpanded?: boolean;
@@ -329,6 +331,8 @@ export function PlanDisplay({
   onEdit,
   onExport,
   onApprove,
+  isApproving = false,
+  approveLabel = "Approve Plan",
   isApproved = false,
   isExpanded,
   onExpandedChange,
@@ -488,9 +492,12 @@ export function PlanDisplay({
           <div className="flex items-center gap-1 shrink-0">
           {showApprove && !isApproved && (
             <Button
+              type="button"
               variant="ghost"
               size="sm"
               onClick={onApprove}
+              disabled={isApproving}
+              data-testid="plan-approve-button"
               className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
               style={{
                 color: "var(--accent-primary)",
@@ -505,7 +512,7 @@ export function PlanDisplay({
               }}
             >
               <Sparkles className="w-3 h-3" />
-              Approve
+              {isApproving ? "Approving..." : approveLabel}
             </Button>
           )}
 
@@ -519,7 +526,7 @@ export function PlanDisplay({
               }}
             >
               <CheckCircle2 className="w-3 h-3" />
-              Approved
+              Plan Approved
             </span>
           )}
 
@@ -840,9 +847,12 @@ export function PlanDisplay({
               {/* Approve — only when plan approval is enabled */}
               {showApprove && !isApproved && (
                 <Button
+                  type="button"
                   variant="ghost"
                   size="sm"
                   onClick={onApprove}
+                  disabled={isApproving}
+                  data-testid="plan-approve-button"
                   className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
                   style={{
                     color: "var(--accent-primary)",
@@ -857,7 +867,7 @@ export function PlanDisplay({
                   }}
                 >
                   <Sparkles className="w-3 h-3" />
-                  Approve
+                  {isApproving ? "Approving..." : approveLabel}
                 </Button>
               )}
 
@@ -871,7 +881,7 @@ export function PlanDisplay({
                   }}
                 >
                   <CheckCircle2 className="w-3 h-3" />
-                  Approved
+                  Plan Approved
                 </span>
               )}
 

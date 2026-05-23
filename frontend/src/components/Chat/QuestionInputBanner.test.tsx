@@ -133,7 +133,7 @@ describe("QuestionInputBanner", () => {
       );
 
       await user.click(screen.getByRole("button", { name: "Approve Plan" }));
-      await user.click(screen.getByRole("button", { name: "1 React" }));
+      await user.click(screen.getByRole("button", { name: /1\s*React/ }));
 
       expect(onApprovePlan).toHaveBeenCalledTimes(1);
       expect(onChipClick).toHaveBeenCalledWith(0);

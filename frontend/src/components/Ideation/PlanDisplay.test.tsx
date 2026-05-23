@@ -122,7 +122,7 @@ describe("PlanDisplay", () => {
   it("shows approved badge when already approved", () => {
     render(<PlanDisplay plan={mockPlan} showApprove={true} isApproved={true} />);
 
-    expect(screen.getByText("Approved")).toBeInTheDocument();
+    expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
   });
 

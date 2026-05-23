@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Clock, Lightbulb, MessageSquare, ShieldCheck } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import type {
   AgentConversationWorkspace,
@@ -8,6 +10,7 @@ import type {
   ForkAgentConversationResult,
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
+import { artifactApi } from "@/api/artifact";
 import {
   IntegratedChatPanel,
   type IntegratedChatComposerRenderProps,
@@ -171,6 +174,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   switchingConversationModeId,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
+  const queryClient = useQueryClient();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
@@ -193,6 +197,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [composerActivityTick, setComposerActivityTick] = useState(0);
   const [isComposerHydrationPaused, setIsComposerHydrationPaused] = useState(false);
   const [isForkingConversation, setIsForkingConversation] = useState(false);
+  const [isApprovingPlan, setIsApprovingPlan] = useState(false);
   const markComposerActivity = useCallback(() => {
     setIsComposerHydrationPaused(true);
     setComposerActivityTick((tick) => tick + 1);
@@ -354,6 +359,61 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversationMode,
     activeConversationModeLocked,
     activeWorkspace?.modeSwitchLockReason,
+  ]);
+
+  const planApprovalSessionId =
+    !isFocusedChildChat && activeConversationMode === "plan"
+      ? attachedIdeationSessionId
+      : null;
+  const planApprovalQuery = useQuery({
+    queryKey: ["agents", "plan-approval", planApprovalSessionId],
+    queryFn: () => artifactApi.getSessionPlan(planApprovalSessionId!),
+    enabled: !!planApprovalSessionId,
+    staleTime: 5_000,
+  });
+  const planApprovalArtifact = planApprovalQuery.data ?? null;
+  const handleApprovePlanFromQuestion = useCallback(async () => {
+    if (!planApprovalSessionId || !planApprovalArtifact) {
+      return;
+    }
+    setIsApprovingPlan(true);
+    try {
+      const approved = await artifactApi.approvePlanArtifact({
+        sessionId: planApprovalSessionId,
+        artifactId: planApprovalArtifact.id,
+      });
+      queryClient.setQueryData(
+        ["agents", "plan-approval", planApprovalSessionId],
+        approved,
+      );
+      queryClient.setQueryData(
+        ["agents", "session-plan", planApprovalSessionId, approved.id],
+        approved,
+      );
+      toast.success("Plan approved");
+    } catch (err) {
+      console.error("Failed to approve plan:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to approve plan");
+    } finally {
+      setIsApprovingPlan(false);
+    }
+  }, [planApprovalArtifact, planApprovalSessionId, queryClient]);
+  const planApprovalAction = useMemo(() => {
+    if (planApprovalArtifact?.planApproval?.status !== "draft") {
+      return undefined;
+    }
+    return {
+      label: "Approve Plan",
+      onClick: () => {
+        void handleApprovePlanFromQuestion();
+      },
+      disabled: isApprovingPlan,
+      isPending: isApprovingPlan,
+    };
+  }, [
+    handleApprovePlanFromQuestion,
+    isApprovingPlan,
+    planApprovalArtifact?.planApproval?.status,
   ]);
 
   return (
@@ -696,6 +756,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           {...(!isFocusedChildChat && activeConversation.contextType === "project" && attachedIdeationSessionId
             ? { additionalQuestionSessionIds: [attachedIdeationSessionId] }
             : {})}
+          {...(planApprovalAction !== undefined ? { planApprovalAction } : {})}
           headerContent={
             <AgentsChatHeaderController
               conversation={activeConversation}

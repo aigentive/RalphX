@@ -1018,7 +1018,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await userEvent.click(
-      await screen.findByRole("button", { name: /Proceed to Proposals/i }),
+      await screen.findByRole("button", { name: /Create Proposals/i }),
     );
 
     await waitFor(() =>

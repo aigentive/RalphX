@@ -308,10 +308,23 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const shouldLoadDependencyGraph =
     shouldLoadIdeationData &&
     (effectiveActiveTab === "proposal" || effectiveActiveTab === "tasks");
+  const shouldUseSessionPlanQuery =
+    shouldLoadIdeationData &&
+    sessionData?.session.sessionFlow === "planning" &&
+    !!attachedSessionId;
+  const planArtifactQueryKey = shouldUseSessionPlanQuery
+    ? ["agents", "session-plan", attachedSessionId, planArtifactId]
+    : ["agents", "artifact", planArtifactId];
   const planArtifactQuery = useQuery({
-    queryKey: ["agents", "artifact", planArtifactId],
-    queryFn: () => artifactApi.get(planArtifactId!),
-    enabled: shouldLoadIdeationData && !!planArtifactId,
+    queryKey: planArtifactQueryKey,
+    queryFn: () =>
+      shouldUseSessionPlanQuery
+        ? artifactApi.getSessionPlan(attachedSessionId!)
+        : artifactApi.get(planArtifactId!),
+    enabled:
+      shouldLoadIdeationData &&
+      !!planArtifactId &&
+      (!shouldUseSessionPlanQuery || !!attachedSessionId),
     staleTime: 5_000,
   });
   const verificationQuery = useVerificationStatus(
@@ -364,8 +377,18 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const handlePlanUpdated = useCallback(
     (updatedPlan: Artifact) => {
       queryClient.setQueryData(["agents", "artifact", updatedPlan.id], updatedPlan);
+      if (attachedSessionId) {
+        queryClient.setQueryData(
+          ["agents", "session-plan", attachedSessionId, updatedPlan.id],
+          updatedPlan,
+        );
+        queryClient.setQueryData(
+          ["agents", "plan-approval", attachedSessionId],
+          updatedPlan,
+        );
+      }
     },
-    [queryClient],
+    [attachedSessionId, queryClient],
   );
 
   return (
@@ -787,6 +810,7 @@ function AgentPlanPanel({
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [isApprovingPlan, setIsApprovingPlan] = useState(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -836,6 +860,48 @@ function AgentPlanPanel({
     }
   }, [queryClient, session, workspace]);
 
+  const isPlanningSession = session?.sessionFlow === "planning";
+  const isOwnedCurrentPlan = Boolean(
+    isPlanningSession &&
+      session?.planArtifactId &&
+      planArtifact?.id === session.planArtifactId,
+  );
+  const planApprovalStatus = isOwnedCurrentPlan
+    ? planArtifact?.planApproval?.status ?? "draft"
+    : undefined;
+  const isPlanApproved = planApprovalStatus === "approved";
+  const canApprovePlan = isOwnedCurrentPlan && planApprovalStatus === "draft";
+  const canCreateProposals =
+    session !== null && (!isPlanningSession || isPlanApproved);
+
+  const handleApprovePlan = useCallback(async () => {
+    if (!session || !planArtifact || !canApprovePlan) {
+      return;
+    }
+    setIsApprovingPlan(true);
+    try {
+      const approvedPlan = await artifactApi.approvePlanArtifact({
+        sessionId: session.id,
+        artifactId: planArtifact.id,
+      });
+      onPlanUpdated(approvedPlan);
+      queryClient.setQueryData(
+        ["agents", "session-plan", session.id, approvedPlan.id],
+        approvedPlan,
+      );
+      queryClient.setQueryData(
+        ["agents", "plan-approval", session.id],
+        approvedPlan,
+      );
+      toast.success("Plan approved");
+    } catch (err) {
+      console.error("Failed to approve plan:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to approve plan");
+    } finally {
+      setIsApprovingPlan(false);
+    }
+  }, [canApprovePlan, onPlanUpdated, planArtifact, queryClient, session]);
+
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
   }
@@ -865,9 +931,15 @@ function AgentPlanPanel({
               onExpandedChange={setIsPlanExpanded}
               chromeless
               {...(teamMetadata !== undefined && { teamMetadata })}
-              {...(session !== null && { onCreateProposals: handleCreateProposals })}
-              {...(session?.sessionFlow === "planning" && {
-                createProposalsLabel: "Proceed to Proposals",
+              {...(canApprovePlan && {
+                showApprove: true,
+                onApprove: handleApprovePlan,
+                isApproving: isApprovingPlan,
+              })}
+              {...(isOwnedCurrentPlan && { isApproved: isPlanApproved })}
+              {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}
+              {...(isPlanningSession && {
+                createProposalsLabel: "Create Proposals",
               })}
             />
           </Suspense>

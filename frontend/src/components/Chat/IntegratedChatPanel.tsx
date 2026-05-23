@@ -127,6 +127,13 @@ interface IntegratedChatPanelProps {
   contentWidthClassName?: string;
   /** Extra session ids whose ask-user prompts should surface in this chat. */
   additionalQuestionSessionIds?: string[];
+  /** Optional Plan-mode approval action rendered in the active question banner. */
+  planApprovalAction?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+    isPending?: boolean;
+  };
   /** Called when Escape is pressed with input blurred - used to close the panel */
   onClose?: () => void;
   /** Whether to autofocus chat input on mount */
@@ -202,6 +209,7 @@ export function IntegratedChatPanel({
   surfaceBackground,
   contentWidthClassName,
   additionalQuestionSessionIds,
+  planApprovalAction,
   onClose,
   autoFocusInput = true,
   isVisible = true,
@@ -1375,6 +1383,7 @@ export function IntegratedChatPanel({
                   onDismiss={dismissQuestion}
                   answeredValue={answeredQuestion}
                   onDismissAnswered={clearAnswered}
+                  {...(planApprovalAction !== undefined && { planApprovalAction })}
                 />
               )}
 
