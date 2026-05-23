@@ -3,8 +3,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::domain::entities::{
-    AgentTaskCreate, AgentTaskDetail, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
-    AgentTaskState, AgentTaskSummary,
+    AgentTaskCreate, AgentTaskDetail, AgentTaskListId, AgentTaskListSummary,
+    AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState, AgentTaskSummary,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
@@ -40,6 +40,22 @@ impl AgentTaskService {
         options: AgentTaskListOptions,
     ) -> AppResult<Vec<AgentTaskSummary>> {
         self.repo.list_tasks(scope, options).await
+    }
+
+    pub async fn list_task_lists(
+        &self,
+        scope: &AgentTaskScope,
+    ) -> AppResult<Vec<AgentTaskListSummary>> {
+        self.repo.list_task_lists(scope).await
+    }
+
+    pub async fn list_tasks_for_list(
+        &self,
+        scope: &AgentTaskScope,
+        list_id: &AgentTaskListId,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        self.repo.list_tasks_for_list(scope, list_id, options).await
     }
 
     pub async fn update_task(
