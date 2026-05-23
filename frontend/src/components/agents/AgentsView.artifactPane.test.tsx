@@ -7,9 +7,10 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ideationKeys } from "@/hooks/useIdeation";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
@@ -312,6 +313,51 @@ describe("AgentsView artifact pane", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-artifact-pane")).toBeInTheDocument()
     );
+  });
+
+  it("opens plan artifacts and header controls when a plan-mode session gains a plan", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      })
+    );
+    mockSessionWithData({ id: "session-1", planArtifactId: null });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    const { queryClient } = renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+    );
+    expect(screen.queryByTestId("agents-artifact-pane")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
+
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ideationKeys.sessionDetail("session-1"),
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-active-tab",
+        "plan"
+      )
+    );
+    expect(screen.getByLabelText("Close panel")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Close panel"));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
+    );
+    expect(screen.getByLabelText("Plan")).toBeInTheDocument();
   });
 
 });

@@ -54,6 +54,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("./useIdeation", () => ({
   ideationKeys: {
+    sessionDetail: (sessionId: string) => ["ideation", "session", sessionId],
     sessionWithData: (sessionId: string) => ["ideation", "session", sessionId, "with-data"],
   },
 }));
@@ -189,7 +190,7 @@ describe("usePlanArtifactEvents", () => {
         expect.objectContaining({ id: "artifact-2" })
       );
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-1", "with-data"],
+        queryKey: ["ideation", "session", "session-1"],
       });
     });
 
@@ -214,7 +215,7 @@ describe("usePlanArtifactEvents", () => {
       expect(mockSetPlanArtifact).toHaveBeenCalledTimes(1);
       expect(mockInvalidateQueries).toHaveBeenCalledTimes(3);
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-1", "with-data"],
+        queryKey: ["ideation", "session", "session-1"],
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["agents", "artifact", "artifact-2"],
@@ -278,7 +279,7 @@ describe("usePlanArtifactEvents", () => {
         planUpdateSeq: 1,
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-1", "with-data"],
+        queryKey: ["ideation", "session", "session-1"],
       });
     });
 
@@ -326,7 +327,7 @@ describe("usePlanArtifactEvents", () => {
         planUpdateSeq: 1,
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-other", "with-data"],
+        queryKey: ["ideation", "session", "session-other"],
       });
     });
   });
@@ -355,7 +356,7 @@ describe("usePlanArtifactEvents", () => {
       expect(mockSetPlanArtifact).not.toHaveBeenCalled();
       expect(mockUpdateSession).not.toHaveBeenCalled();
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-active", "with-data"],
+        queryKey: ["ideation", "session", "session-active"],
       });
     });
 
@@ -587,7 +588,7 @@ describe("usePlanArtifactEvents", () => {
         planUpdateSeq: 1,
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
-        queryKey: ["ideation", "session", "session-followup", "with-data"],
+        queryKey: ["ideation", "session", "session-followup"],
       });
     });
   });

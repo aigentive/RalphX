@@ -120,9 +120,10 @@ export function usePlanArtifactEvents() {
             });
           }
 
-          // Invalidate session query to refetch with new plan artifact link
+          // Invalidate the base session detail key so both the Ideation
+          // with-data view and Agents header/artifact availability refetch.
           queryClientRef.current.invalidateQueries({
-            queryKey: ideationKeys.sessionWithData(sessionId),
+            queryKey: ideationKeys.sessionDetail(sessionId),
           });
           invalidateAgentArtifacts(artifact.id);
         }
@@ -179,7 +180,7 @@ export function usePlanArtifactEvents() {
               planUpdateSeq: currentSeq + 1,
             });
             queryClientRef.current.invalidateQueries({
-              queryKey: ideationKeys.sessionWithData(sessionId),
+              queryKey: ideationKeys.sessionDetail(sessionId),
             });
             invalidateAgentArtifacts(artifact.id, artifactId, previousArtifactId);
             return;
@@ -222,7 +223,7 @@ export function usePlanArtifactEvents() {
                 });
               }
               queryClientRef.current.invalidateQueries({
-                queryKey: ideationKeys.sessionWithData(session.id),
+                queryKey: ideationKeys.sessionDetail(session.id),
               });
               invalidateAgentArtifacts(artifact.id, artifactId, previousArtifactId);
             }
@@ -232,7 +233,7 @@ export function usePlanArtifactEvents() {
           // invalidate its query so it re-fetches and picks up the latest artifact
           if (!tier2Matched && currentActiveSessionId) {
             queryClientRef.current.invalidateQueries({
-              queryKey: ideationKeys.sessionWithData(currentActiveSessionId),
+              queryKey: ideationKeys.sessionDetail(currentActiveSessionId),
             });
           }
         }
