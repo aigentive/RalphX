@@ -77,6 +77,7 @@ use crate::domain::agents::{
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
+    render_agent_runtime_profile_context,
     resolve_harness_agent_prompt_path, resolve_project_root_from_plugin_dir,
     try_load_canonical_claude_metadata_for_profile, AgentPromptHarness,
 };
@@ -739,6 +740,8 @@ fn load_agent_system_prompt_with_internal_skills(
         AgentPromptHarness::Claude,
         agent_profile,
     )?;
+    let runtime_profile_context =
+        render_agent_runtime_profile_context(&project_root, short, agent_profile);
     match inject_internal_skills_into_system_prompt_for_profile(
         &project_root,
         short,
@@ -746,15 +749,31 @@ fn load_agent_system_prompt_with_internal_skills(
         &system_prompt,
         prompt,
     ) {
-        Ok(injection) => Some((injection.system_prompt, injection.injected_skill_names)),
+        Ok(injection) => Some((
+            append_runtime_profile_context(injection.system_prompt, runtime_profile_context),
+            injection.injected_skill_names,
+        )),
         Err(error) => {
             warn!(
                 agent = agent_name,
                 error = %error,
                 "Failed to inject internal skills into Claude prompt"
             );
-            Some((system_prompt, Vec::new()))
+            Some((
+                append_runtime_profile_context(system_prompt, runtime_profile_context),
+                Vec::new(),
+            ))
         }
+    }
+}
+
+fn append_runtime_profile_context(
+    system_prompt: String,
+    runtime_profile_context: Option<String>,
+) -> String {
+    match runtime_profile_context {
+        Some(context) => format!("{system_prompt}\n\n{context}"),
+        None => system_prompt,
     }
 }
 
@@ -977,6 +996,7 @@ pub fn create_mcp_config_with_runtime_context_for_profile(
     write_mcp_config_temp(&mcp_config)
 }
 
+#[cfg(test)]
 pub(crate) fn build_mcp_config_with_runtime_context(
     plugin_dir: &Path,
     agent_type: &str,

@@ -469,6 +469,32 @@ fn trusted_canonical_profile_name(profile_name: &str) -> Option<&str> {
     }
 }
 
+fn escape_prompt_context_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+pub fn render_agent_runtime_profile_context(
+    project_root: &Path,
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    let profile_name = profile_name?;
+    let trusted_profile_name = trusted_canonical_profile_name(profile_name)?;
+    let definition =
+        load_canonical_agent_definition_for_profile(project_root, agent_name, Some(profile_name))?;
+    let agent_name = canonical_agent_name(agent_name);
+
+    Some(format!(
+        "<agent_runtime_profile>\n<agent_name>{}</agent_name>\n<profile_slug>{}</profile_slug>\n<profile_role>{}</profile_role>\n</agent_runtime_profile>",
+        escape_prompt_context_text(&agent_name),
+        escape_prompt_context_text(trusted_profile_name),
+        escape_prompt_context_text(&definition.role)
+    ))
+}
+
 fn canonical_agent_root(project_root: &Path, agent_name: &str) -> Option<PathBuf> {
     let trusted_agent_name = trusted_canonical_agent_name(agent_name)?;
     let agents_root = trusted_canonical_agents_root(project_root)?;

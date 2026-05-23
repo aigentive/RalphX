@@ -1,8 +1,9 @@
 use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
-    compose_codex_prompt, configure_spawn, probe_codex_cli, resolve_codex_cli_from_candidates,
-    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
+    compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn, probe_codex_cli,
+    resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
+    CodexMcpRuntimeContext,
 };
 use crate::domain::agents::LogicalEffort;
 use std::ffi::{OsStr, OsString};
@@ -918,6 +919,31 @@ fn build_codex_mcp_overrides_filters_plan_question_tool_for_external_runs() {
         args.contains("get_session_plan"),
         "Filtering interactive tools must preserve non-interactive Plan tools: {overrides:?}"
     );
+}
+
+#[test]
+fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
+    let root = project_root();
+    let plugin_dir = root.join("plugins/app");
+    let prompt = compose_codex_prompt_for_profile(
+        "Create a plan",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+        Some("plan"),
+    );
+
+    assert!(prompt.contains("<agent_runtime_profile>"));
+    assert!(prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(prompt.contains("<profile_slug>plan</profile_slug>"));
+    assert!(prompt.contains("<profile_role>plan_chat</profile_role>"));
+
+    let default_prompt = compose_codex_prompt(
+        "Create a plan",
+        Some(&plugin_dir),
+        Some("ralphx-ideation"),
+    );
+    assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
 }
 
 #[test]

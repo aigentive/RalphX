@@ -3,7 +3,7 @@ use super::{
     load_canonical_agent_definition_for_profile, load_canonical_claude_metadata,
     load_canonical_claude_metadata_for_profile, load_canonical_codex_metadata,
     load_canonical_codex_metadata_for_profile, load_harness_agent_prompt,
-    load_harness_agent_prompt_for_profile,
+    load_harness_agent_prompt_for_profile, render_agent_runtime_profile_context,
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
 };
@@ -822,6 +822,9 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         Some("plan"),
     )
     .expect("missing codex prompt for ralphx-ideation plan profile");
+    let runtime_profile_context =
+        render_agent_runtime_profile_context(&root, "ralphx-ideation", Some("plan"))
+            .expect("missing runtime profile context");
 
     assert_eq!(
         definition.capabilities.mcp_tools, runtime_config.allowed_mcp_tools,
@@ -838,6 +841,13 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "Plan profile should clear the base ideation Task preapproval"
     );
     assert_eq!(codex_metadata.runtime_features.get("shell_tool"), Some(&false));
+    assert!(runtime_profile_context.contains("<agent_runtime_profile>"));
+    assert!(runtime_profile_context.contains("<profile_slug>plan</profile_slug>"));
+    assert!(runtime_profile_context.contains("<profile_role>plan_chat</profile_role>"));
+    assert!(
+        render_agent_runtime_profile_context(&root, "ralphx-ideation", None).is_none(),
+        "default launches should not receive profile context"
+    );
 
     for required_tool in [
         "ask_user_question",
@@ -896,7 +906,8 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("ask_user_question"));
         assert!(prompt.contains("Create or update exactly one linked plan artifact"));
         assert!(prompt.contains("Call `get_session_plan` before"));
-        assert!(prompt.contains("explicitly approves it through the Plan-mode UI"));
+        assert!(prompt.contains("clicks the Plan-mode UI action `Approve Plan`"));
+        assert!(prompt.contains("approval is backend/UI-owned"));
         assert!(prompt.contains("Agent-owned unknowns are facts"));
         assert!(prompt.contains("User-owned decisions are product, scope, priority"));
         assert!(prompt.contains("do not ask it only in prose"));
@@ -910,7 +921,7 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("Do not expose raw tool names"));
         assert!(prompt.contains("do not park blocking user-owned decisions there"));
         assert!(prompt.contains("Do not create task proposals"));
-        assert!(prompt.contains("Implement Plan action"));
+        assert!(prompt.contains("`Implement Plan` action"));
         assert!(!prompt.contains("<agent_task_ledger_contract>"));
         assert!(!prompt.contains("## RalphX Delegation Policy"));
     }

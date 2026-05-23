@@ -17,6 +17,7 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
+    render_agent_runtime_profile_context,
     resolve_project_root_from_plugin_dir, try_load_canonical_codex_metadata_for_profile,
     AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
@@ -340,6 +341,8 @@ pub fn compose_codex_prompt_for_profile(
     let Some(system_prompt) = system_prompt else {
         return prompt.to_string();
     };
+    let runtime_profile_context =
+        render_agent_runtime_profile_context(&project_root, agent_name, agent_profile);
     let system_prompt = match inject_internal_skills_into_system_prompt_for_profile(
         &project_root,
         agent_name,
@@ -356,6 +359,10 @@ pub fn compose_codex_prompt_for_profile(
             );
             system_prompt
         }
+    };
+    let system_prompt = match runtime_profile_context {
+        Some(context) => format!("{system_prompt}\n\n{context}"),
+        None => system_prompt,
     };
 
     format!(

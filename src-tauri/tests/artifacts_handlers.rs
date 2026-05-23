@@ -3253,3 +3253,237 @@ async fn test_planning_flow_session_does_not_auto_verify_or_prompt_on_plan_creat
         "planning-flow sessions should not spawn verification children on plan creation"
     );
 }
+
+#[tokio::test]
+async fn test_planning_flow_plan_starts_draft_then_approves_current_artifact() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let created = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Agent Plan".to_string(),
+            content: "Plan-mode content".to_string(),
+        }),
+    )
+    .await
+    .expect("create_plan_artifact should succeed")
+    .0;
+    assert_eq!(created.plan_approval_status.as_deref(), Some("draft"));
+
+    let approved = approve_plan_artifact(
+        State(state.clone()),
+        Json(ApprovePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: Some(created.id.clone()),
+        }),
+    )
+    .await
+    .expect("approve_plan_artifact should succeed for planning sessions")
+    .0;
+
+    assert_eq!(approved.id, created.id);
+    assert_eq!(approved.version, created.version);
+    assert_eq!(approved.plan_approval_status.as_deref(), Some("approved"));
+    assert_eq!(approved.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(approved.plan_approved_version, Some(created.version));
+    assert!(
+        approved.plan_approved_at.is_some(),
+        "approved plans should expose the approval timestamp"
+    );
+
+    let current = get_session_plan(State(state.clone()), Path(session_id.as_str().to_string()))
+        .await
+        .expect("get_session_plan should succeed")
+        .0
+        .expect("planning session should have a plan");
+    assert_eq!(current.plan_approval_status.as_deref(), Some("approved"));
+    assert_eq!(current.plan_approved_artifact_id.as_deref(), Some(created.id.as_str()));
+    assert_eq!(current.plan_approved_version, Some(created.version));
+}
+
+#[tokio::test]
+async fn test_approve_plan_artifact_rejects_non_planning_session() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Ideation)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let created =
+        create_plan_artifact_quiesced(&state, &session_id, "Ideation Plan", "Ideation content")
+            .await;
+
+    let result = approve_plan_artifact(
+        State(state.clone()),
+        Json(ApprovePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: Some(created.id.clone()),
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "approve_plan_artifact should reject full ideation sessions"
+    );
+    let err = result.unwrap_err();
+    assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let msg = err.message.expect("422 should include message body");
+    assert!(
+        msg.contains("Plan approval is only available for planning sessions"),
+        "error should explain the planning-session guard: got '{msg}'"
+    );
+}
+
+#[tokio::test]
+async fn test_approve_plan_artifact_rejects_stale_artifact_id() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let v1 = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Agent Plan".to_string(),
+            content: "Plan v1".to_string(),
+        }),
+    )
+    .await
+    .expect("create_plan_artifact should succeed")
+    .0;
+
+    let v2 = update_plan_artifact(
+        State(state.clone()),
+        axum::http::HeaderMap::new(),
+        Json(UpdatePlanArtifactRequest {
+            artifact_id: v1.id.clone(),
+            content: "Plan v2".to_string(),
+            caller_session_id: None,
+        }),
+    )
+    .await
+    .expect("update_plan_artifact should succeed")
+    .0;
+    assert_ne!(v1.id, v2.id);
+
+    let result = approve_plan_artifact(
+        State(state.clone()),
+        Json(ApprovePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: Some(v1.id),
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "approving a stale artifact id should fail"
+    );
+    let err = result.unwrap_err();
+    assert_eq!(err.status, StatusCode::CONFLICT);
+    let msg = err.message.expect("409 should include message body");
+    assert!(
+        msg.contains("Plan changed before approval"),
+        "error should explain stale approval: got '{msg}'"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_update_after_approval_returns_current_plan_to_draft() {
+    let state = setup_test_state().await;
+
+    let session = IdeationSessionBuilder::new()
+        .project_id(ProjectId::new())
+        .session_flow(IdeationSessionFlow::Planning)
+        .build();
+    let session_id = session.id.clone();
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let created = create_plan_artifact(
+        State(state.clone()),
+        Json(CreatePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            title: "Agent Plan".to_string(),
+            content: "Plan v1".to_string(),
+        }),
+    )
+    .await
+    .expect("create_plan_artifact should succeed")
+    .0;
+
+    let approved = approve_plan_artifact(
+        State(state.clone()),
+        Json(ApprovePlanArtifactRequest {
+            session_id: session_id.as_str().to_string(),
+            artifact_id: Some(created.id.clone()),
+        }),
+    )
+    .await
+    .expect("approve_plan_artifact should succeed")
+    .0;
+    assert_eq!(approved.plan_approval_status.as_deref(), Some("approved"));
+
+    let updated = update_plan_artifact(
+        State(state.clone()),
+        axum::http::HeaderMap::new(),
+        Json(UpdatePlanArtifactRequest {
+            artifact_id: created.id.clone(),
+            content: "Plan v2".to_string(),
+            caller_session_id: None,
+        }),
+    )
+    .await
+    .expect("update_plan_artifact should succeed")
+    .0;
+
+    assert_ne!(updated.id, created.id);
+    assert_eq!(updated.plan_approval_status.as_deref(), Some("draft"));
+    assert_eq!(updated.plan_approved_artifact_id, None);
+    assert_eq!(updated.plan_approved_version, None);
+    assert_eq!(updated.plan_approved_at, None);
+
+    let current = get_session_plan(State(state.clone()), Path(session_id.as_str().to_string()))
+        .await
+        .expect("get_session_plan should succeed")
+        .0
+        .expect("planning session should have a plan");
+    assert_eq!(current.id, updated.id);
+    assert_eq!(current.plan_approval_status.as_deref(), Some("draft"));
+}

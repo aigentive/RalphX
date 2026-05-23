@@ -789,6 +789,13 @@ pub struct EditPlanArtifactRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ApprovePlanArtifactRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub artifact_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PlanEdit {
     pub old_text: String,
     pub new_text: String,
@@ -841,6 +848,18 @@ pub struct ArtifactResponse {
     /// The working directory of the project this session belongs to (only set on get_session_plan responses).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_working_directory: Option<String>,
+    /// Plan-mode approval state for the current artifact version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approval_status: Option<String>,
+    /// Approved artifact id when the current artifact version is approved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_artifact_id: Option<String>,
+    /// Approved artifact version when the current artifact version is approved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_version: Option<u32>,
+    /// Approval timestamp for the current artifact version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approved_at: Option<String>,
 }
 
 impl From<Artifact> for ArtifactResponse {
@@ -862,6 +881,10 @@ impl From<Artifact> for ArtifactResponse {
             session_id: None,
             is_inherited: None,
             project_working_directory: None,
+            plan_approval_status: None,
+            plan_approved_artifact_id: None,
+            plan_approved_version: None,
+            plan_approved_at: None,
         }
     }
 }

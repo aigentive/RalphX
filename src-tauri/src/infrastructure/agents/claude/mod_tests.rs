@@ -701,6 +701,33 @@ fn test_plan_profile_mcp_config_external_filters_ask_user_question() {
 }
 
 #[test]
+fn test_plan_profile_system_prompt_includes_runtime_profile_context() {
+    let (_dir, _root, plugin_dir, _runtime_guard) = make_isolated_live_project_plugin_dir();
+    let (system_prompt, _) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        "Create a plan",
+    )
+    .expect("plan profile prompt");
+
+    assert!(system_prompt.contains("<agent_runtime_profile>"));
+    assert!(system_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(system_prompt.contains("<profile_slug>plan</profile_slug>"));
+    assert!(system_prompt.contains("<profile_role>plan_chat</profile_role>"));
+
+    let (default_prompt, _) = load_agent_system_prompt_with_internal_skills(
+        &plugin_dir,
+        "ralphx-ideation",
+        None,
+        "Create a plan",
+    )
+    .expect("default profile prompt");
+    assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
+    assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
+}
+
+#[test]
 fn test_create_mcp_config_uses_claude_external_mcp_transport() {
     let (_dir, root, plugin_dir) = make_temp_project_plugin_dir();
     std::fs::create_dir_all(root.join("agents/ralphx-chat-project"))

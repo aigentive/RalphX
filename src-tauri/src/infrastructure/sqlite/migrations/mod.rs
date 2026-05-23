@@ -369,9 +369,12 @@ mod v20260521222911_agent_plan_mode_tests;
 mod v20260522093000_ideation_session_flow;
 #[cfg(test)]
 mod v20260522093000_ideation_session_flow_tests;
+mod v20260523070000_plan_artifact_approvals;
+#[cfg(test)]
+mod v20260523070000_plan_artifact_approvals_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260522093000;
+pub const SCHEMA_VERSION: i64 = 20260523070000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1045,6 +1048,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260522093000,
         name: "ideation_session_flow",
         migrate: v20260522093000_ideation_session_flow::migrate,
+    },
+    Migration {
+        version: 20260523070000,
+        name: "plan_artifact_approvals",
+        migrate: v20260523070000_plan_artifact_approvals::migrate,
     },
 ];
 

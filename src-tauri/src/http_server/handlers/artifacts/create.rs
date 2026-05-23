@@ -22,6 +22,7 @@ pub async fn create_plan_artifact(
         auto_verify_generation,
         project_id,
         session_title,
+        is_planning_flow,
         should_auto_verify,
         should_offer_verification_confirmation,
     ) =
@@ -83,7 +84,7 @@ pub async fn create_plan_artifact(
                 };
 
                 let session_title = session.title.clone();
-                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_title, should_auto_verify, should_offer_verification_confirmation))
+                Ok((sid, created, auto_verify_generation, session.project_id.clone(), session_title, is_planning_flow, should_auto_verify, should_offer_verification_confirmation))
             })
             .await
             .map_err(|e| {
@@ -258,5 +259,9 @@ pub async fn create_plan_artifact(
         }
     }
 
-    Ok(Json(ArtifactResponse::from(created)))
+    let mut response = ArtifactResponse::from(created);
+    if is_planning_flow {
+        attach_plan_approval(&mut response, PlanApprovalView::draft());
+    }
+    Ok(Json(response))
 }

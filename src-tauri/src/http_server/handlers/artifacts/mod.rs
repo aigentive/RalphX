@@ -21,6 +21,7 @@ use crate::infrastructure::sqlite::{
     SqliteTaskProposalRepository as ProposalRepo,
 };
 
+mod approval;
 mod create;
 mod edit;
 mod events;
@@ -29,6 +30,7 @@ mod query;
 mod shared;
 mod update;
 
+pub use approval::approve_plan_artifact;
 pub use create::create_plan_artifact;
 pub use edit::edit_plan_artifact;
 pub use linking::link_proposals_to_plan;
@@ -37,4 +39,7 @@ pub use shared::{apply_edits, check_verification_freeze, EditError};
 pub use update::update_plan_artifact;
 
 use events::emit_plan_update_events;
-use shared::{finalize_plan_update, map_app_err, resolve_caller_session_id};
+use shared::{
+    attach_plan_approval, finalize_plan_update, map_app_err, plan_approval_view_sync,
+    resolve_caller_session_id, upsert_plan_approval_sync, PlanApprovalView,
+};
