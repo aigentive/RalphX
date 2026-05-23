@@ -323,6 +323,7 @@ describe("useChatEvents", () => {
           result_preview_line_count: 120,
           result_preview_omitted_lines: 110,
           result_preview_original_bytes: 48_000,
+          result_preview_paths: ["$.task.details"],
           detail_ref: {
             conversation_id: CONV_ID,
             message_id: "msg-live",
@@ -343,6 +344,7 @@ describe("useChatEvents", () => {
       expect(result[0]!.resultPreviewLineCount).toBe(120);
       expect(result[0]!.resultPreviewOmittedLines).toBe(110);
       expect(result[0]!.resultPreviewOriginalBytes).toBe(48_000);
+      expect(result[0]!.resultPreviewPaths).toEqual(["$.task.details"]);
       expect(result[0]!.detailRef).toEqual({
         conversationId: CONV_ID,
         messageId: "msg-live",

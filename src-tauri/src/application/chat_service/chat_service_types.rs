@@ -204,6 +204,8 @@ pub struct AgentToolCallPreviewFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_preview_omitted_lines: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_preview_paths: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_ref: Option<serde_json::Value>,
 }
 
@@ -219,6 +221,7 @@ impl AgentToolCallPreviewFields {
             result_preview_original_bytes: Some(preview.original_bytes),
             result_preview_line_count: Some(preview.line_count),
             result_preview_omitted_lines: Some(preview.omitted_lines),
+            result_preview_paths: (!preview.paths.is_empty()).then(|| preview.paths.clone()),
             detail_ref: preview.detail_ref.clone(),
         }
     }

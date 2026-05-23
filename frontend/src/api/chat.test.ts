@@ -78,6 +78,7 @@ describe("chat api", () => {
         result_preview_line_count: 40,
         result_preview_omitted_lines: 30,
         result_preview_original_bytes: 12000,
+        result_preview_paths: ["$.task.details"],
         detail_ref: {
           conversation_id: "conv-1",
           message_id: "msg-1",
@@ -92,6 +93,7 @@ describe("chat api", () => {
       resultPreviewLineCount: 40,
       resultPreviewOmittedLines: 30,
       resultPreviewOriginalBytes: 12000,
+      resultPreviewPaths: ["$.task.details"],
       detailRef: {
         conversationId: "conv-1",
         messageId: "msg-1",
@@ -111,6 +113,7 @@ describe("chat api", () => {
         resultPreviewLineCount: 12,
         resultPreviewOmittedLines: 2,
         resultPreviewOriginalBytes: 1200,
+        resultPreviewPaths: ["$.output"],
         detailRef: {
           conversationId: "conv-1",
         },
@@ -123,6 +126,7 @@ describe("chat api", () => {
       resultPreviewLineCount: 12,
       resultPreviewOmittedLines: 2,
       resultPreviewOriginalBytes: 1200,
+      resultPreviewPaths: ["$.output"],
     });
     expect(parsed[0]?.detailRef).toBeUndefined();
   });
@@ -186,6 +190,7 @@ describe("chat api", () => {
         result: "first lines",
         result_preview_truncated: true,
         result_preview_line_count: 20,
+        result_preview_paths: ["$.content[1].text"],
         detail_ref: {
           conversation_id: "conv-1",
           message_id: "msg-1",
@@ -201,6 +206,7 @@ describe("chat api", () => {
       arguments: { file_path: "big.txt" },
       resultPreviewTruncated: true,
       resultPreviewLineCount: 20,
+      resultPreviewPaths: ["$.content[1].text"],
       detailRef: {
         conversationId: "conv-1",
         messageId: "msg-1",

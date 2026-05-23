@@ -47,6 +47,8 @@ export interface ToolCall {
   resultPreviewLineCount?: number;
   /** Number of lines omitted from the preview */
   resultPreviewOmittedLines?: number;
+  /** JSON paths that were structurally trimmed in the preview payload */
+  resultPreviewPaths?: string[];
   /** Backend locator for lazily loading a full previewed result */
   detailRef?: ToolCallDetailRef;
   /** Parent tool_use id when this call belongs to a delegated/child task transcript */

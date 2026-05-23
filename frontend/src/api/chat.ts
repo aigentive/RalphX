@@ -126,6 +126,17 @@ function getNumberField(record: Record<string, unknown>, snake: string, camel: s
   return typeof value === "number" ? value : undefined;
 }
 
+function getStringArrayField(
+  record: Record<string, unknown>,
+  snake: string,
+  camel: string
+): string[] | undefined {
+  const value = record[snake] ?? record[camel];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : undefined;
+}
+
 function normalizeToolCallDetailRef(raw: unknown): ToolCallDetailRef | undefined {
   const record = getRecord(raw);
   if (!record) return undefined;
@@ -157,6 +168,7 @@ type ToolPreviewMetadataTarget = {
   resultPreviewOriginalBytes?: number | undefined;
   resultPreviewLineCount?: number | undefined;
   resultPreviewOmittedLines?: number | undefined;
+  resultPreviewPaths?: string[] | undefined;
   detailRef?: ToolCallDetailRef | undefined;
 };
 
@@ -190,6 +202,13 @@ function applyToolPreviewMetadata(target: ToolPreviewMetadataTarget, raw: unknow
     "resultPreviewOmittedLines"
   );
   if (omittedLines != null) target.resultPreviewOmittedLines = omittedLines;
+
+  const previewPaths = getStringArrayField(
+    record,
+    "result_preview_paths",
+    "resultPreviewPaths"
+  );
+  if (previewPaths != null) target.resultPreviewPaths = previewPaths;
 
   const detailRef = normalizeToolCallDetailRef(record.detail_ref ?? record.detailRef);
   if (detailRef) target.detailRef = detailRef;
