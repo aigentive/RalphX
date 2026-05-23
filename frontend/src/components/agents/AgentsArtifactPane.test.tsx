@@ -32,6 +32,8 @@ const {
   getArtifactMock,
   getSessionPlanMock,
   approvePlanArtifactMock,
+  confirmVerificationMock,
+  getVerificationSpecialistsMock,
   getIdeationSessionMock,
   getIdeationChildrenMock,
   useConversationMock,
@@ -66,6 +68,8 @@ const {
   getArtifactMock: vi.fn(),
   getSessionPlanMock: vi.fn(),
   approvePlanArtifactMock: vi.fn(),
+  confirmVerificationMock: vi.fn(),
+  getVerificationSpecialistsMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
   useConversationMock: vi.fn(),
@@ -202,6 +206,13 @@ vi.mock("@/api/artifact", async (importOriginal) => {
   };
 });
 
+vi.mock("@/api/verification", () => ({
+  verificationApi: {
+    confirm: (...args: unknown[]) => confirmVerificationMock(...args),
+    getSpecialists: (...args: unknown[]) => getVerificationSpecialistsMock(...args),
+  },
+}));
+
 vi.mock("@/hooks/useChat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/useChat")>();
   return {
@@ -216,6 +227,7 @@ vi.mock("@/hooks/useDependencyGraph", () => ({
 
 vi.mock("@/hooks/useVerificationStatus", () => ({
   useVerificationStatus: (...args: unknown[]) => useVerificationStatusMock(...args),
+  verificationStatusKey: (sessionId: string) => ["verification", sessionId] as const,
 }));
 
 vi.mock("@/hooks/useGithubSettings", () => ({
@@ -504,6 +516,8 @@ describe("AgentsArtifactPane", () => {
     getArtifactMock.mockResolvedValue(null);
     getSessionPlanMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
+    confirmVerificationMock.mockResolvedValue({ status: "ok" });
+    getVerificationSpecialistsMock.mockResolvedValue({ specialists: [] });
     getIdeationSessionMock.mockResolvedValue(null);
     getIdeationChildrenMock.mockResolvedValue([]);
     useConversationMock.mockReturnValue({
@@ -1118,6 +1132,101 @@ describe("AgentsArtifactPane", () => {
         artifactId: "artifact-1",
       }),
     );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("starts verification for an approved Plan-mode artifact", async () => {
+    const onTabChange = vi.fn();
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+    getVerificationSpecialistsMock.mockResolvedValue({
+      specialists: [
+        {
+          name: "security-review",
+          display_name: "Security Review",
+          description: null,
+          enabled_by_default: false,
+        },
+        {
+          name: "implementation-feasibility",
+          display_name: "Implementation Feasibility",
+          description: null,
+          enabled_by_default: true,
+        },
+      ],
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onTabChange },
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Verify Plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1", [
+        "security-review",
+      ]),
+    );
+    expect(onTabChange).toHaveBeenCalledWith("verification");
+    expect(toastSuccessMock).toHaveBeenCalledWith("Plan verification started");
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });

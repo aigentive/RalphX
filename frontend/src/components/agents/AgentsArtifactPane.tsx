@@ -14,6 +14,7 @@ import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
+import { verificationApi } from "@/api/verification";
 import {
   chatApi,
   type AgentConversationWorkspace,
@@ -34,7 +35,7 @@ import type {
 import { useConversationHistoryWindow } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
-import { useVerificationStatus } from "@/hooks/useVerificationStatus";
+import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import type { Artifact } from "@/types/artifact";
 import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/ideation";
 import type {
@@ -587,6 +588,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           publishFocusRequest={publishFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
+          verificationState={verificationState}
+          verificationInProgress={verificationInProgress}
+          onOpenVerification={() => onTabChange("verification")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
         />
@@ -618,6 +622,9 @@ type ArtifactContentProps = {
     status: VerificationStatus;
     inProgress: boolean;
   } | null) => void;
+  verificationState: VerificationStatus | null;
+  verificationInProgress: boolean;
+  onOpenVerification: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
 };
@@ -642,6 +649,9 @@ function ArtifactContent({
   publishFocusRequest,
   onFocusVerificationSession: _onFocusVerificationSession,
   onDisplayedVerificationStatusChange,
+  verificationState,
+  verificationInProgress,
+  onOpenVerification,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
@@ -716,6 +726,9 @@ function ArtifactContent({
         isPlanLoading={isPlanLoading}
         proposals={proposals}
         onPlanUpdated={onPlanUpdated}
+        verificationState={verificationState}
+        verificationInProgress={verificationInProgress}
+        onOpenVerification={onOpenVerification}
       />
     );
   }
@@ -798,6 +811,9 @@ function AgentPlanPanel({
   isPlanLoading,
   proposals,
   onPlanUpdated,
+  verificationState,
+  verificationInProgress,
+  onOpenVerification,
 }: {
   workspace: AgentConversationWorkspace | null;
   session: IdeationSession | null;
@@ -806,11 +822,15 @@ function AgentPlanPanel({
   isPlanLoading: boolean;
   proposals: TaskProposal[];
   onPlanUpdated: (updatedPlan: Artifact) => void;
+  verificationState: VerificationStatus | null;
+  verificationInProgress: boolean;
+  onOpenVerification: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [isApprovingPlan, setIsApprovingPlan] = useState(false);
+  const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -871,6 +891,10 @@ function AgentPlanPanel({
     : undefined;
   const isPlanApproved = planApprovalStatus === "approved";
   const canApprovePlan = isOwnedCurrentPlan && planApprovalStatus === "draft";
+  const isPlanVerificationSatisfied =
+    verificationState === "verified" || verificationState === "imported_verified";
+  const canVerifyPlan =
+    isOwnedCurrentPlan && isPlanApproved && !isPlanVerificationSatisfied;
   const canCreateProposals =
     session !== null && (!isPlanningSession || isPlanApproved);
 
@@ -901,6 +925,40 @@ function AgentPlanPanel({
       setIsApprovingPlan(false);
     }
   }, [canApprovePlan, onPlanUpdated, planArtifact, queryClient, session]);
+
+  const handleVerifyPlan = useCallback(async () => {
+    if (!session || !canVerifyPlan || verificationInProgress) {
+      return;
+    }
+    setIsStartingPlanVerification(true);
+    try {
+      let disabledSpecialists: string[] = [];
+      try {
+        const specialists = await verificationApi.getSpecialists();
+        disabledSpecialists = specialists.specialists
+          .filter((specialist) => !specialist.enabled_by_default)
+          .map((specialist) => specialist.name);
+      } catch (err) {
+        console.warn("Failed to load verification specialists:", err);
+      }
+
+      await verificationApi.confirm(session.id, disabledSpecialists);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: verificationStatusKey(session.id) }),
+        queryClient.invalidateQueries({ queryKey: ideationKeys.sessionWithData(session.id) }),
+        queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
+      ]);
+      onOpenVerification();
+      toast.success("Plan verification started");
+    } catch (err) {
+      console.error("Failed to start plan verification:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to start plan verification",
+      );
+    } finally {
+      setIsStartingPlanVerification(false);
+    }
+  }, [canVerifyPlan, onOpenVerification, queryClient, session, verificationInProgress]);
 
   if (isPlanLoading) {
     return <EmptyArtifactState title="Loading plan..." />;
@@ -937,6 +995,11 @@ function AgentPlanPanel({
                 isApproving: isApprovingPlan,
               })}
               {...(isOwnedCurrentPlan && { isApproved: isPlanApproved })}
+              {...(canVerifyPlan && {
+                onVerifyPlan: handleVerifyPlan,
+                isVerifyingPlan:
+                  isStartingPlanVerification || verificationInProgress,
+              })}
               {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}
               {...(isPlanningSession && {
                 createProposalsLabel: "Create Proposals",

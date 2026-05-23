@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -53,6 +53,9 @@ export interface PlanDisplayProps {
   isApproving?: boolean;
   approveLabel?: string;
   isApproved?: boolean;
+  onVerifyPlan?: () => void;
+  isVerifyingPlan?: boolean;
+  verifyPlanLabel?: string;
   /** Controlled expanded state - if provided, component is controlled */
   isExpanded?: boolean;
   /** Callback when expanded state changes */
@@ -334,6 +337,9 @@ export function PlanDisplay({
   isApproving = false,
   approveLabel = "Approve Plan",
   isApproved = false,
+  onVerifyPlan,
+  isVerifyingPlan = false,
+  verifyPlanLabel = "Verify Plan",
   isExpanded,
   onExpandedChange,
   teamMetadata,
@@ -528,6 +534,36 @@ export function PlanDisplay({
               <CheckCircle2 className="w-3 h-3" />
               Plan Approved
             </span>
+          )}
+
+          {onVerifyPlan && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onVerifyPlan}
+              disabled={isVerifyingPlan}
+              data-testid="plan-verify-button"
+              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+              style={{
+                color: "var(--accent-primary)",
+                background: withAlpha("var(--accent-primary)", 10),
+                border: "1px solid var(--accent-border)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
+              }}
+            >
+              {isVerifyingPlan ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <ShieldCheck className="w-3 h-3" />
+              )}
+              {isVerifyingPlan ? "Verifying..." : verifyPlanLabel}
+            </Button>
           )}
 
           {showCreateProposals && (
@@ -883,6 +919,36 @@ export function PlanDisplay({
                   <CheckCircle2 className="w-3 h-3" />
                   Plan Approved
                 </span>
+              )}
+
+              {onVerifyPlan && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onVerifyPlan}
+                  disabled={isVerifyingPlan}
+                  data-testid="plan-verify-button"
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={{
+                    color: "var(--accent-primary)",
+                    background: withAlpha("var(--accent-primary)", 10),
+                    border: "1px solid var(--accent-border)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
+                  }}
+                >
+                  {isVerifyingPlan ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-3 h-3" />
+                  )}
+                  {isVerifyingPlan ? "Verifying..." : verifyPlanLabel}
+                </Button>
               )}
 
               {showCreateProposals && (
