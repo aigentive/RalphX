@@ -100,6 +100,23 @@ impl ChatAttachmentRepository for MemoryChatAttachmentRepository {
         Ok(())
     }
 
+    async fn reparent_pending_attachments(
+        &self,
+        from_conversation_id: &ChatConversationId,
+        to_conversation_id: &ChatConversationId,
+    ) -> AppResult<usize> {
+        let mut attachments = self.attachments.write().unwrap();
+        let mut count = 0;
+        for attachment in attachments.values_mut() {
+            if attachment.conversation_id == *from_conversation_id && attachment.message_id.is_none()
+            {
+                attachment.conversation_id = to_conversation_id.clone();
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     async fn delete(&self, id: &ChatAttachmentId) -> AppResult<()> {
         self.attachments.write().unwrap().remove(&id.as_str());
         Ok(())

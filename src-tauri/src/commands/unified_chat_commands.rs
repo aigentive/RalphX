@@ -3306,13 +3306,28 @@ pub async fn send_agent_message(
         .map(ChatConversationId::from_string);
     let mut auto_forked_terminal_conversation = false;
     if context_type == ChatContextType::Project {
+        let parent_conversation_id = conversation_id_override.clone();
         if let Some(forked_conversation_id) = fork_terminal_agent_conversation_for_send(
             state.inner(),
             &app,
-            conversation_id_override.as_ref(),
+            parent_conversation_id.as_ref(),
         )
         .await?
         {
+            if let Some(parent_id) = parent_conversation_id.as_ref() {
+                let reparented = state
+                    .chat_attachment_repo
+                    .reparent_pending_attachments(parent_id, &forked_conversation_id)
+                    .await;
+                if let Err(error) = &reparented {
+                    tracing::warn!(
+                        parent_conversation_id = %parent_id,
+                        child_conversation_id = %forked_conversation_id,
+                        %error,
+                        "Failed to reparent pending attachments during terminal fork"
+                    );
+                }
+            }
             conversation_id_override = Some(forked_conversation_id);
             auto_forked_terminal_conversation = true;
         }
