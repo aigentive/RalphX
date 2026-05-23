@@ -43,12 +43,12 @@ export function TextBubble({ text, isUser }: TextBubbleProps) {
     <div
       data-testid={isUser ? "text-bubble-user" : "text-bubble-assistant"}
       className={cn(
-        "w-fit text-[0.8125rem] leading-relaxed break-words",
-        isUser ? "px-3 py-2 rounded-xl" : "px-0 py-0 rounded-none",
+        "text-[0.8125rem] leading-relaxed break-words",
+        isUser ? "w-fit px-3 py-2 rounded-xl" : "w-full px-0 py-0 rounded-none",
         isUser ? "self-end" : "self-start"
       )}
       style={{
-        maxWidth: "min(85%, 620px)",
+        maxWidth: isUser ? "min(85%, 620px)" : undefined,
         background: isUser ? "var(--chat-user-bubble-bg)" : "transparent",
         color: isUser ? "var(--chat-user-bubble-text)" : "var(--text-primary)",
         borderWidth: isUser ? "1px" : "0",
