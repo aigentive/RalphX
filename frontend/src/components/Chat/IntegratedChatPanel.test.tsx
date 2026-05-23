@@ -154,8 +154,12 @@ const mockChatPanelContext = {
   activeConversationId: null as string | null,
   streamingToolCalls: [] as unknown[],
   setStreamingToolCalls: vi.fn(),
+  streamingContentBlocks: [] as Array<{ type: "text"; text: string }>,
+  setStreamingContentBlocks: vi.fn(),
   streamingTasks: new Map(),
   setStreamingTasks: vi.fn(),
+  isFinalizing: false,
+  setIsFinalizing: vi.fn(),
   autoSelectConversation: vi.fn(),
 };
 
@@ -309,6 +313,10 @@ describe("IntegratedChatPanel", () => {
     mockChatPanelContext.currentContextType = "task";
     mockChatPanelContext.currentContextId = "task-1";
     mockChatPanelContext.activeConversationId = null;
+    mockChatPanelContext.streamingToolCalls = [];
+    mockChatPanelContext.streamingContentBlocks = [];
+    mockChatPanelContext.streamingTasks = new Map();
+    mockChatPanelContext.isFinalizing = false;
   });
 
   describe("task selection override", () => {
@@ -386,6 +394,65 @@ describe("IntegratedChatPanel", () => {
         ])
       );
       expect(await screen.findByText("Latest loaded message")).toBeInTheDocument();
+    });
+
+    it("keeps live client stream visible when a persisted timeline row is still streaming", async () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      mockChatPanelContext.streamingContentBlocks = [
+        { type: "text", text: "Live chunk from client events" },
+      ];
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.historyData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "msg-user",
+            role: "user",
+            content: "Start a long run",
+            createdAt: "2026-04-23T09:00:00Z",
+            toolCalls: null,
+            contentBlocks: null,
+          },
+          {
+            id: "msg-live-db",
+            role: "assistant",
+            content: "Persisted streaming snapshot",
+            createdAt: "2026-04-23T09:00:01Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "streaming",
+            timelineSequence: 1,
+            parentMessageId: "msg-user",
+          },
+        ],
+        loadedStartIndex: 0,
+      };
+      act(() => {
+        useChatStore.getState().setAgentRunning("project:project-1", true);
+      });
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>
+      );
+
+      expect(await screen.findByText("Live chunk from client events")).toBeInTheDocument();
     });
   });
 
