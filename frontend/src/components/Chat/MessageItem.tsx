@@ -54,6 +54,7 @@ export interface ContentBlockItem {
   resultPreviewOriginalBytes?: number;
   resultPreviewLineCount?: number;
   resultPreviewOmittedLines?: number;
+  resultPreviewPaths?: string[];
   detailRef?: ToolCall["detailRef"];
   parentToolUseId?: string;
   /** Diff context for Edit/Write tool calls (old file content for computing diffs) */
@@ -385,6 +386,9 @@ export const MessageItem = React.memo(function MessageItem({
               }
               if (block.resultPreviewOmittedLines != null) {
                 toolCall.resultPreviewOmittedLines = block.resultPreviewOmittedLines;
+              }
+              if (block.resultPreviewPaths) {
+                toolCall.resultPreviewPaths = block.resultPreviewPaths;
               }
               if (block.detailRef) {
                 toolCall.detailRef = block.detailRef;

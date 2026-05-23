@@ -88,6 +88,36 @@ describe("AgentTaskWidget", () => {
     expect(screen.getByText("blocked by 1")).toBeInTheDocument();
   });
 
+  it("clarifies that an empty default list is an unresolved-task snapshot", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__list_agent_tasks",
+          arguments: {
+            include_done: false,
+          },
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  success: true,
+                  tasks: [],
+                  error: null,
+                }),
+              },
+            ],
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("0 unresolved")).toBeInTheDocument();
+    expect(
+      screen.getByText("No unresolved agent tasks found in this snapshot"),
+    ).toBeInTheDocument();
+  });
+
   it("renders structured tool errors without falling back to the generic widget", () => {
     render(
       <AgentTaskWidget
@@ -125,5 +155,67 @@ describe("AgentTaskWidget", () => {
     );
     expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent("done");
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      toolName: "mcp__ralphx_internal__claim_agent_task",
+      expectedText: "Agent task claimed #7 Validate ledger labels",
+    },
+    {
+      toolName: "mcp__ralphx_internal__complete_agent_task",
+      expectedText: "Agent task completed #7 Validate ledger labels",
+    },
+  ])("renders task identity from a truncated $toolName preview", ({ toolName, expectedText }) => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: toolName,
+          arguments: {},
+          resultPreviewTruncated: true,
+          result:
+            "{\n  \"success\": true,\n  \"task\": {\n    \"task_number\": 7,\n    \"title\": \"Validate ledger labels\"\n",
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(expectedText);
+  });
+
+  it("renders task identity from object text preview payloads", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__claim_agent_task",
+          resultPreviewTruncated: true,
+          result: {
+            text: String.raw`{"success":true,"task":{"task_number":8,"title":"Bad\q title"}}`,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(
+      String.raw`Agent task claimed #8 Bad\q title`,
+    );
+  });
+
+  it("falls back to the requested ref when a preview result has no task text", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__claim_agent_task",
+          arguments: {
+            task_ref: "9",
+          },
+          resultPreviewTruncated: true,
+          result: 7,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(
+      "Claim agent task #9",
+    );
   });
 });
