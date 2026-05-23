@@ -1,7 +1,7 @@
 use super::publish_resilience::review_base_for_publish;
 use super::publish_resilience::{
     classify_publish_failure, count_unpublished_publish_commits,
-    publish_branch_freshness_outcome_from_source_update,
+    publish_branch_freshness_outcome_from_source_update, publish_push_status_for_failure,
     publish_branch_freshness_status_from_commits,
     publish_branch_freshness_status_from_commits_and_branch, remote_tracking_ref_for_publish,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
@@ -75,6 +75,17 @@ fn classifies_git_authentication_failures_as_operational() {
         classify_publish_failure(error),
         PublishFailureClass::Operational
     );
+}
+
+#[test]
+fn classifies_git_command_timeouts_as_operational() {
+    let error = "Git operation error: git command timed out after 60s";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::Operational
+    );
+    assert_eq!(publish_push_status_for_failure(error), "failed");
 }
 
 #[test]

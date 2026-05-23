@@ -1179,6 +1179,25 @@ async fn workspace_publish_operational_failure_is_not_routed_to_agent() {
     assert!(service.get_sent_messages().await.is_empty());
 }
 
+#[tokio::test]
+async fn workspace_publish_git_timeout_is_not_routed_to_agent() {
+    let state = AppState::new_test();
+    let service = MockChatService::new();
+    let workspace = test_agent_workspace();
+
+    mark_agent_workspace_publish_failure(
+        &state,
+        &workspace,
+        "Git operation error: git command timed out after 60s",
+        None,
+        &service,
+    )
+    .await;
+
+    assert_eq!(service.call_count(), 0);
+    assert!(service.get_sent_messages().await.is_empty());
+}
+
 #[test]
 fn workspace_repair_action_defaults_to_publish_for_legacy_events() {
     assert_eq!(

@@ -51,10 +51,12 @@ pub fn classify_publish_failure(error: &str) -> PublishFailureClass {
         return PublishFailureClass::Operational;
     }
 
-    match classify_commit_hook_failure_text(error) {
-        CommitHookFailureKind::PolicyFailure => return PublishFailureClass::AgentFixable,
-        CommitHookFailureKind::EnvironmentFailure => return PublishFailureClass::Operational,
-        CommitHookFailureKind::Unknown => {}
+    if is_commit_hook_failure_context(&normalized) {
+        match classify_commit_hook_failure_text(error) {
+            CommitHookFailureKind::PolicyFailure => return PublishFailureClass::AgentFixable,
+            CommitHookFailureKind::EnvironmentFailure => return PublishFailureClass::Operational,
+            CommitHookFailureKind::Unknown => {}
+        }
     }
 
     if is_agent_fixable_failure(&normalized) {
@@ -509,6 +511,20 @@ fn is_agent_fixable_failure(normalized: &str) -> bool {
         "failed to push some refs",
         "updates were rejected",
         "fetch first",
+    ];
+
+    PATTERNS.iter().any(|pattern| normalized.contains(pattern))
+}
+
+fn is_commit_hook_failure_context(normalized: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "pre-commit",
+        "precommit",
+        "[pre-commit]",
+        "commit-msg",
+        "prepare-commit-msg",
+        "husky",
+        "hook declined",
     ];
 
     PATTERNS.iter().any(|pattern| normalized.contains(pattern))
