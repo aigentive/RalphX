@@ -556,6 +556,31 @@ fn build_base_cli_command_inner_with_runtime_context(
     mcp_runtime_context: Option<&McpRuntimeContext>,
     enforce_spawn_guard: bool,
 ) -> Result<Command, String> {
+    build_base_cli_command_inner_with_runtime_context_and_mcp_agent(
+        cli_path,
+        plugin_dir,
+        agent_type,
+        None,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+        enforce_spawn_guard,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_base_cli_command_inner_with_runtime_context_and_mcp_agent(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    agent_type: Option<&str>,
+    mcp_agent_type_override: Option<&str>,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+    enforce_spawn_guard: bool,
+) -> Result<Command, String> {
     if enforce_spawn_guard {
         ensure_claude_spawn_allowed()?;
     }
@@ -652,14 +677,20 @@ fn build_base_cli_command_inner_with_runtime_context(
     // Always enforce strict MCP isolation from user/global servers.
     // Hard error on invalid config — MCP is critical infra, fail loud.
     if let Some(agent) = agent_type {
+        let mcp_agent = mcp_agent_type_override.unwrap_or(agent);
         let temp_path = create_mcp_config_with_runtime_context(
             plugin_dir,
-            agent,
+            mcp_agent,
             is_external_mcp,
             mcp_runtime_context,
         )
         .map_err(|e| {
-            tracing::error!(error = %e, agent = %agent, "MCP config creation failed");
+            tracing::error!(
+                error = %e,
+                agent = %agent,
+                mcp_agent = %mcp_agent,
+                "MCP config creation failed"
+            );
             e
         })?;
         cmd.args([
@@ -670,6 +701,7 @@ fn build_base_cli_command_inner_with_runtime_context(
         tracing::debug!(
             path = %temp_path.display(),
             agent_type = agent,
+            mcp_agent_type = mcp_agent,
             "Dynamic MCP config written (strict)"
         );
     }
@@ -1666,10 +1698,40 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context(
+    build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        None,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    mcp_agent: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_mcp_agent(
         cli_path,
         plugin_dir,
         agent,
+        mcp_agent,
         is_external_mcp,
         effort_override,
         model_override,
@@ -1722,10 +1784,41 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    let mut cmd = build_base_cli_command_inner_with_runtime_context(
+    build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent_for_test(
+        cli_path,
+        plugin_dir,
+        prompt,
+        agent,
+        None,
+        resume_session,
+        working_directory,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        mcp_runtime_context,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    prompt: &str,
+    agent: Option<&str>,
+    mcp_agent: Option<&str>,
+    resume_session: Option<&str>,
+    working_directory: &Path,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+    mcp_runtime_context: Option<&McpRuntimeContext>,
+) -> Result<SpawnableCommand, String> {
+    let mut cmd = build_base_cli_command_inner_with_runtime_context_and_mcp_agent(
         cli_path,
         plugin_dir,
         agent,
+        mcp_agent,
         is_external_mcp,
         effort_override,
         model_override,

@@ -797,18 +797,18 @@ fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
 }
 
 #[test]
-fn plan_chat_surface_uses_plan_tools_without_proposal_or_external_ideation_tools() {
+fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-chat-plan")
         .expect("missing definition for ralphx-chat-plan");
     let runtime_config =
         get_agent_config("ralphx-chat-plan").expect("missing runtime config for ralphx-chat-plan");
     let claude_prompt =
-        load_harness_agent_prompt(&root, "ralphx-chat-plan", AgentPromptHarness::Claude)
-            .expect("missing claude prompt for ralphx-chat-plan");
+        load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Claude)
+            .expect("missing claude prompt for ralphx-ideation");
     let codex_prompt =
-        load_harness_agent_prompt(&root, "ralphx-chat-plan", AgentPromptHarness::Codex)
-            .expect("missing codex prompt for ralphx-chat-plan");
+        load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Codex)
+            .expect("missing codex prompt for ralphx-ideation");
 
     assert_eq!(
         definition.capabilities.mcp_tools, runtime_config.allowed_mcp_tools,
@@ -865,15 +865,17 @@ fn plan_chat_surface_uses_plan_tools_without_proposal_or_external_ideation_tools
     }
 
     for prompt in [claude_prompt, codex_prompt] {
+        assert!(prompt.contains("Agent Conversation Plan Mode"));
+        assert!(prompt.contains("<plan_mode_context>"));
         assert!(prompt.contains("<planning_session_id>"));
         assert!(prompt.contains("ask_user_question"));
         assert!(prompt.contains("Agent-owned unknowns are facts"));
         assert!(prompt.contains("User-owned decisions are product, scope, priority"));
         assert!(prompt.contains("do not ask it only in prose"));
         assert!(prompt.contains("Do not end a normal chat reply with a user-facing question"));
-        assert!(prompt.contains("do not park blocking user-owned decisions here"));
+        assert!(prompt.contains("do not park blocking user-owned decisions there"));
         assert!(prompt.contains("Do not create task proposals"));
-        assert!(prompt.contains("switch to Edit mode"));
+        assert!(prompt.contains("Implement Plan action"));
     }
 }
 

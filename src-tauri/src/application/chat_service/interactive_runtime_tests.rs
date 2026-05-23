@@ -12,7 +12,7 @@ use crate::domain::entities::{
     IdeationSessionId, ProjectId, TaskId,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PLAN, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
 };
 
 #[test]
@@ -83,7 +83,7 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
 
     assert_eq!(edit_agent, AGENT_GENERAL_WORKER);
     assert_eq!(chat_agent, AGENT_GENERAL_EXPLORER);
-    assert_eq!(plan_agent, AGENT_CHAT_PLAN);
+    assert_eq!(plan_agent, AGENT_ORCHESTRATOR_IDEATION);
     assert_eq!(ideation_agent, AGENT_CHAT_PROJECT);
     assert_eq!(default_project_agent, AGENT_CHAT_PROJECT);
 }

@@ -124,6 +124,7 @@ fn build_claude_spawnable_interactive_command(
     plugin_dir: &Path,
     prompt: &str,
     agent: Option<&str>,
+    mcp_agent: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -133,11 +134,12 @@ fn build_claude_spawnable_interactive_command(
 ) -> Result<SpawnableCommand, String> {
     #[cfg(test)]
     {
-        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
+        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent_for_test(
             cli_path,
             plugin_dir,
             prompt,
             agent,
+            mcp_agent,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -148,11 +150,12 @@ fn build_claude_spawnable_interactive_command(
     }
     #[cfg(not(test))]
     {
-        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context(
+        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent(
             cli_path,
             plugin_dir,
             prompt,
             agent,
+            mcp_agent,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -215,6 +218,7 @@ struct BuildHarnessLaunchRequest<'a> {
     conversation: &'a ChatConversation,
     user_message: &'a str,
     agent_name_override: Option<&'a str>,
+    mcp_agent_name_override: Option<&'a str>,
     context_type: ChatContextType,
     context_id: &'a str,
     working_directory: &'a Path,
@@ -345,6 +349,7 @@ impl ResolvedChatHarnessCli {
                         request.conversation,
                         request.user_message,
                         None,
+                        None,
                         request.working_directory,
                         request.entity_status,
                         request.project_id,
@@ -427,6 +432,7 @@ impl ResolvedChatHarnessCli {
                         request.context_id,
                         request.message,
                         None,
+                        None,
                         request.working_directory,
                         request.session_id,
                         request.project_id,
@@ -461,6 +467,7 @@ impl ResolvedChatHarnessCli {
                     request.conversation,
                     request.user_message,
                     request.agent_name_override,
+                    request.mcp_agent_name_override,
                     request.working_directory,
                     request.entity_status,
                     request.project_id,
@@ -496,6 +503,7 @@ impl ResolvedChatHarnessCli {
                             request.context_id,
                             request.user_message,
                             request.agent_name_override,
+                            request.mcp_agent_name_override,
                             request.working_directory,
                             session_id,
                             request.project_id,
@@ -526,6 +534,7 @@ impl ResolvedChatHarnessCli {
                             request.conversation,
                             request.user_message,
                             request.agent_name_override,
+                            request.mcp_agent_name_override,
                             request.working_directory,
                             request.entity_status,
                             request.project_id,
@@ -2145,6 +2154,7 @@ pub async fn build_codex_command(
     conversation: &ChatConversation,
     user_message: &str,
     agent_name_override: Option<&str>,
+    mcp_agent_name_override: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2268,7 +2278,7 @@ pub async fn build_codex_command(
     );
     let config_overrides = build_codex_mcp_overrides(
         plugin_dir,
-        agent_name,
+        mcp_agent_name_override.unwrap_or(agent_name),
         is_external_mcp,
         Some(&runtime_context),
     )?;
@@ -2374,6 +2384,7 @@ pub(crate) async fn build_launch_plan_for_harness(
     conversation: &ChatConversation,
     user_message: &str,
     agent_name_override: Option<&str>,
+    mcp_agent_name_override: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
     working_directory: &Path,
@@ -2401,6 +2412,7 @@ pub(crate) async fn build_launch_plan_for_harness(
             conversation,
             user_message,
             agent_name_override,
+            mcp_agent_name_override,
             context_type,
             context_id,
             working_directory,
@@ -2489,6 +2501,7 @@ pub async fn build_interactive_command(
     conversation: &ChatConversation,
     user_message: &str,
     agent_name_override: Option<&str>,
+    mcp_agent_name_override: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2610,6 +2623,7 @@ pub async fn build_interactive_command(
         plugin_dir,
         &prompt,
         Some(agent_name),
+        mcp_agent_name_override,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -2885,6 +2899,7 @@ pub async fn build_codex_resume_command(
     context_id: &str,
     message: &str,
     agent_name_override: Option<&str>,
+    mcp_agent_name_override: Option<&str>,
     working_directory: &Path,
     session_id: &str,
     project_id: Option<&str>,
@@ -2925,7 +2940,7 @@ pub async fn build_codex_resume_command(
     );
     let config_overrides = build_codex_mcp_overrides(
         plugin_dir,
-        agent_name,
+        mcp_agent_name_override.unwrap_or(agent_name),
         is_external_mcp,
         Some(&runtime_context),
     )?;
@@ -3427,6 +3442,7 @@ exit 0
         working_directory: &Path,
         project_id: &ProjectId,
         agent_name: &str,
+        mcp_agent_name_override: Option<&str>,
     ) -> ResolvedChatHarnessLaunch {
         let conversation = ChatConversation::new_project(project_id.clone());
         let resolved_spawn_settings =
@@ -3448,6 +3464,7 @@ exit 0
             &conversation,
             "hello from agents view",
             Some(agent_name),
+            mcp_agent_name_override,
             ChatContextType::Project,
             project_id.as_str(),
             working_directory,
@@ -3469,6 +3486,28 @@ exit 0
         )
         .await
         .expect("project agent launch plan should build")
+    }
+
+    fn claude_mcp_config_args(spawnable: &SpawnableCommand) -> Vec<String> {
+        let args = spawnable.get_args_for_test();
+        let config_path = args
+            .windows(2)
+            .find_map(|window| (window[0] == "--mcp-config").then(|| window[1].clone()))
+            .expect("Claude launch should include --mcp-config");
+        let content =
+            fs::read_to_string(config_path).expect("Claude MCP config should be readable");
+        let json: serde_json::Value =
+            serde_json::from_str(&content).expect("Claude MCP config should be valid JSON");
+        json["mcpServers"]
+            .as_object()
+            .and_then(|servers| servers.values().next())
+            .and_then(|server| server["args"].as_array())
+            .map(|args| {
+                args.iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     async fn build_fresh_ideation_launch_prompt(
@@ -3497,6 +3536,7 @@ exit 0
             plugin_dir,
             &conversation,
             "hello from fresh ideation",
+            None,
             None,
             ChatContextType::Ideation,
             session_id.as_str(),
@@ -3949,6 +3989,7 @@ exit 0
             temp.path(),
             &project_id,
             agent_names::AGENT_WORKSPACE_REPAIR,
+            None,
         )
         .await;
         let prompt = launch_spawnable(&launch_plan)
@@ -3994,6 +4035,7 @@ exit 0
                 &conversation,
                 "review this PR",
                 Some(agent_name),
+                None,
                 ChatContextType::Project,
                 project_id.as_str(),
                 temp.path(),
@@ -4135,6 +4177,7 @@ exit 0
                 &conversation,
                 "read the attached file",
                 Some(agent_names::AGENT_GENERAL_WORKER),
+                None,
                 ChatContextType::Project,
                 project_id.as_str(),
                 temp.path(),
@@ -4215,6 +4258,7 @@ exit 0
                 &conversation,
                 "read the pending file",
                 Some(agent_names::AGENT_GENERAL_WORKER),
+                None,
                 ChatContextType::Project,
                 project_id.as_str(),
                 temp.path(),
@@ -4392,6 +4436,7 @@ exit 0
             &conversation,
             "continue from the same Claude session",
             Some(agent_name),
+            None,
             ChatContextType::Project,
             project_id.as_str(),
             temp.path(),
@@ -4448,18 +4493,22 @@ exit 0
             (
                 AgentConversationWorkspaceMode::Chat,
                 agent_names::AGENT_GENERAL_EXPLORER,
+                None,
             ),
             (
                 AgentConversationWorkspaceMode::Edit,
                 agent_names::AGENT_GENERAL_WORKER,
+                None,
             ),
             (
                 AgentConversationWorkspaceMode::Plan,
-                agent_names::AGENT_CHAT_PLAN,
+                agent_names::AGENT_ORCHESTRATOR_IDEATION,
+                Some(agent_names::AGENT_CHAT_PLAN),
             ),
             (
                 AgentConversationWorkspaceMode::Ideation,
                 agent_names::AGENT_CHAT_PROJECT,
+                None,
             ),
         ];
         let harness_clis = [
@@ -4472,7 +4521,7 @@ exit 0
         ];
 
         for (harness, cli_path, harness_label) in harness_clis {
-            for (mode, expected_agent_name) in mode_agents {
+            for (mode, expected_agent_name, mcp_agent_name_override) in mode_agents {
                 let launch_plan = build_project_agent_launch_plan(
                     harness,
                     &cli_path,
@@ -4480,6 +4529,7 @@ exit 0
                     temp.path(),
                     &project_id,
                     expected_agent_name,
+                    mcp_agent_name_override,
                 )
                 .await;
                 let spawnable = launch_spawnable(&launch_plan);
@@ -4487,8 +4537,28 @@ exit 0
                 assert_eq!(
                     spawnable_env_value(spawnable, "RALPHX_AGENT_TYPE").as_deref(),
                     Some(mcp_agent_type(expected_agent_name)),
-                    "{harness_label} launch for {mode} should use the selected Agents view agent"
+                    "{harness_label} launch for {mode} should use the selected provider agent"
                 );
+                if mode == AgentConversationWorkspaceMode::Plan {
+                    let mcp_args = match harness {
+                        AgentHarnessKind::Claude => claude_mcp_config_args(spawnable).join("\n"),
+                        AgentHarnessKind::Codex => spawnable
+                            .get_args_for_test()
+                            .into_iter()
+                            .filter(|arg| arg.starts_with("mcp_servers."))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    };
+                    assert!(
+                        mcp_args.contains("ralphx-chat-plan"),
+                        "{harness_label} Plan launch should keep the constrained Plan MCP surface"
+                    );
+                    assert!(
+                        !mcp_args.contains("create_task_proposal")
+                            && !mcp_args.contains("finalize_proposals"),
+                        "{harness_label} Plan launch must not expose proposal tools"
+                    );
+                }
             }
         }
     }
@@ -4503,22 +4573,26 @@ exit 0
             (
                 AgentConversationWorkspaceMode::Chat,
                 agent_names::AGENT_GENERAL_EXPLORER,
+                None,
             ),
             (
                 AgentConversationWorkspaceMode::Edit,
                 agent_names::AGENT_GENERAL_WORKER,
+                None,
             ),
             (
                 AgentConversationWorkspaceMode::Plan,
-                agent_names::AGENT_CHAT_PLAN,
+                agent_names::AGENT_ORCHESTRATOR_IDEATION,
+                Some(agent_names::AGENT_CHAT_PLAN),
             ),
             (
                 AgentConversationWorkspaceMode::Ideation,
                 agent_names::AGENT_CHAT_PROJECT,
+                None,
             ),
         ];
 
-        for (mode, expected_agent_name) in mode_agents {
+        for (mode, expected_agent_name, mcp_agent_name_override) in mode_agents {
             let launch_plan = build_project_agent_launch_plan(
                 AgentHarnessKind::Codex,
                 &cli_path,
@@ -4526,6 +4600,7 @@ exit 0
                 temp.path(),
                 &project_id,
                 expected_agent_name,
+                mcp_agent_name_override,
             )
             .await;
             let args = launch_spawnable(&launch_plan)

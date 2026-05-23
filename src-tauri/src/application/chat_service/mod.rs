@@ -70,6 +70,7 @@ use crate::domain::services::{
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PLAN, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_ORCHESTRATOR_IDEATION,
 };
 use crate::utils::truncate_str;
 use async_trait::async_trait;
@@ -374,8 +375,17 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
     match mode {
         AgentConversationWorkspaceMode::Chat => AGENT_GENERAL_EXPLORER,
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
-        AgentConversationWorkspaceMode::Plan => AGENT_CHAT_PLAN,
+        AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+    }
+}
+
+fn mcp_agent_name_for_conversation_mode(
+    mode: AgentConversationWorkspaceMode,
+) -> Option<&'static str> {
+    match mode {
+        AgentConversationWorkspaceMode::Plan => Some(AGENT_CHAT_PLAN),
+        _ => None,
     }
 }
 
@@ -417,7 +427,7 @@ fn plan_mode_runtime_message(
          <agent_conversation_id>{}</agent_conversation_id>\n\
          <planning_session_id>{}</planning_session_id>\n\
          <workspace_mode>plan</workspace_mode>\n\
-         <contract>Use this planning session for ask_user_question and plan artifact tools. Do not create proposals or start task execution from Plan mode.</contract>\n\
+         <contract>Run the ideation orchestrator in Agent conversation Plan phase. Use this planning session for ask_user_question and plan artifact tools. Treat plan artifacts as drafts until the user accepts them. Do not create proposals or start task execution from Plan mode.</contract>\n\
          </plan_mode_context>\n\
          <user_request>{}</user_request>",
         workspace.conversation_id.as_str(),
@@ -1916,6 +1926,7 @@ impl<R: Runtime> AppChatService<R> {
         conversation: &ChatConversation,
         message: &str,
         agent_name_override: Option<&str>,
+        mcp_agent_name_override: Option<&str>,
         context_type: ChatContextType,
         context_id: &str,
         runtime_context_id: &str,
@@ -1994,6 +2005,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             message,
             agent_name_override,
+            mcp_agent_name_override,
             context_type,
             context_id,
             working_directory,
@@ -2756,6 +2768,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             options.agent_name_override.as_deref(),
             agent_conversation_mode,
         );
+        let mcp_agent_name_override =
+            agent_conversation_mode.and_then(mcp_agent_name_for_conversation_mode);
         if matches!(
             agent_conversation_mode,
             Some(
@@ -3626,6 +3640,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 &conversation,
                 &runtime_message,
                 Some(resolved_agent_name.as_str()),
+                mcp_agent_name_override,
                 context_type,
                 context_id,
                 &runtime_context_id,

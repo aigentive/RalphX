@@ -87,7 +87,7 @@ pub const AGENT_CHAT_TASK: &str = "ralphx:ralphx-chat-task";
 /// Project-scoped chat (ChatContextType::Project)
 pub const AGENT_CHAT_PROJECT: &str = "ralphx:ralphx-chat-project";
 
-/// Plan-mode project chat for agent conversation workspaces
+/// Plan-mode constrained MCP surface for agent conversation workspaces.
 pub const AGENT_CHAT_PLAN: &str = "ralphx:ralphx-chat-plan";
 
 /// General read-only project explorer for project-scoped agent conversations
