@@ -1003,6 +1003,12 @@ export function IntegratedChatPanel({
     () => sortedMessages.some((message) => message.timelineStatus === "streaming"),
     [sortedMessages]
   );
+  const hasClientLiveStreamingState =
+    streamingToolCalls.length > 0 ||
+    (streamingContentBlocks?.length ?? 0) > 0 ||
+    streamingTasks.size > 0;
+  const shouldUsePersistedStreamingTimelineItems =
+    hasPersistedStreamingTimelineItems && !hasClientLiveStreamingState;
   const statsFallbackMessages = useMemo(
     () =>
       effectiveConversationId
@@ -1219,11 +1225,11 @@ export function IntegratedChatPanel({
               isAgentRunning={agentStatus === "generating"}
               typingIndicatorLabel={agentActivityLabel}
               streamingToolCalls={
-                hasPersistedStreamingTimelineItems ? [] : streamingToolCalls
+                shouldUsePersistedStreamingTimelineItems ? [] : streamingToolCalls
               }
-              streamingTasks={hasPersistedStreamingTimelineItems ? new Map() : streamingTasks}
+              streamingTasks={shouldUsePersistedStreamingTimelineItems ? new Map() : streamingTasks}
               streamingContentBlocks={
-                hasPersistedStreamingTimelineItems ? [] : streamingContentBlocks
+                shouldUsePersistedStreamingTimelineItems ? [] : streamingContentBlocks
               }
               scrollToTimestamp={isHistoryMode ? taskHistoryState?.timestamp : null}
               isFinalizing={isFinalizing}

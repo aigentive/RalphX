@@ -52,6 +52,12 @@ import {
   shouldShowScrollToBottomControl,
   VISUAL_BOTTOM_EPSILON_PX,
 } from "./ChatMessageList.scroll";
+import {
+  buildStreamingTranscriptWindow,
+  EMPTY_STREAMING_TRANSCRIPT_WINDOW,
+  getNextStreamingTranscriptWindow,
+  type StreamingTranscriptWindow,
+} from "./ChatMessageList.streamingWindow";
 
 // ============================================================================
 // Constants
@@ -67,9 +73,6 @@ export const AT_BOTTOM_THRESHOLD = 150;
 /** Bucket size for text length change detection during streaming.
  *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
 export const TEXT_LENGTH_BUCKET_SIZE = 150;
-
-/** Keep the live streaming row bounded while preserving recent Codex block boundaries. */
-export const STREAMING_TEXT_BLOCK_TAIL_LIMIT = 40;
 
 const INITIAL_TRANSCRIPT_PAINT_MAX_FRAMES = 240;
 const INITIAL_TRANSCRIPT_PAINT_MAX_MS = 2_500;
@@ -96,64 +99,6 @@ function ContentShell({
       {children}
     </div>
   );
-}
-
-function compactStreamingTextRun(
-  run: Extract<StreamingContentBlock, { type: "text" }>[]
-): StreamingContentBlock[] {
-  if (run.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
-    return run;
-  }
-
-  const compactedBlocks = run.slice(0, -STREAMING_TEXT_BLOCK_TAIL_LIMIT);
-  const recentBlocks = run.slice(-STREAMING_TEXT_BLOCK_TAIL_LIMIT);
-  const compactedText = compactedBlocks
-    .map((block) => block.text.trimEnd())
-    .filter((text) => text.length > 0)
-    .join("\n\n");
-
-  if (compactedText.length === 0) {
-    return recentBlocks;
-  }
-
-  const firstBlock = compactedBlocks[0];
-  const compactedBlock: Extract<StreamingContentBlock, { type: "text" }> =
-    firstBlock?.seq != null
-      ? { type: "text", text: compactedText, seq: firstBlock.seq }
-      : { type: "text", text: compactedText };
-
-  return [compactedBlock, ...recentBlocks];
-}
-
-function compactStreamingTextBlocks(
-  contentBlocks: StreamingContentBlock[]
-): StreamingContentBlock[] {
-  if (contentBlocks.length <= STREAMING_TEXT_BLOCK_TAIL_LIMIT) {
-    return contentBlocks;
-  }
-
-  const compacted: StreamingContentBlock[] = [];
-  let textRun: Extract<StreamingContentBlock, { type: "text" }>[] = [];
-
-  const flushTextRun = () => {
-    if (textRun.length === 0) {
-      return;
-    }
-    compacted.push(...compactStreamingTextRun(textRun));
-    textRun = [];
-  };
-
-  for (const block of contentBlocks) {
-    if (block.type === "text") {
-      textRun.push(block);
-      continue;
-    }
-    flushTextRun();
-    compacted.push(block);
-  }
-
-  flushTextRun();
-  return compacted;
 }
 
 function ScrollToBottomControl({
@@ -675,10 +620,24 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       () => normalizeStreamingVerificationContentBlocks(streamingContentBlocks),
       [streamingContentBlocks],
     );
-    const renderedStreamingContentBlocks = useMemo(
-      () => compactStreamingTextBlocks(normalizedStreamingContentBlocks),
-      [normalizedStreamingContentBlocks],
+    const liveStreamingTranscriptWindow = useMemo(
+      () => buildStreamingTranscriptWindow(normalizedStreamingContentBlocks, streamingTasks),
+      [normalizedStreamingContentBlocks, streamingTasks],
     );
+    const [streamingTranscriptWindow, setStreamingTranscriptWindow] =
+      useState<StreamingTranscriptWindow>(EMPTY_STREAMING_TRANSCRIPT_WINDOW);
+
+    useEffect(() => {
+      setStreamingTranscriptWindow((prev) => {
+        return getNextStreamingTranscriptWindow(
+          prev,
+          liveStreamingTranscriptWindow,
+          isVisuallyAtBottom
+        );
+      });
+    }, [isVisuallyAtBottom, liveStreamingTranscriptWindow]);
+
+    const renderedStreamingContentBlocks = streamingTranscriptWindow.contentBlocks;
 
     // Footer content hash — drives the streaming auto-scroll useEffect below.
     // NOTE: Virtuoso's followOutput does NOT react to context/Footer changes,
@@ -701,15 +660,15 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     // Recompute cumulative text length whenever streaming blocks change.
     // Resets to 0 when streaming ends (no blocks) so the next stream starts fresh.
     useEffect(() => {
-      if (!normalizedStreamingContentBlocks.length) {
+      if (!renderedStreamingContentBlocks.length) {
         setCumulativeTextLength(0);
         return;
       }
-      const total = normalizedStreamingContentBlocks.reduce(
+      const total = renderedStreamingContentBlocks.reduce(
         (sum, block) => block.type === "text" ? sum + block.text.length : sum, 0
       );
       setCumulativeTextLength(prev => Math.max(prev, total));
-    }, [normalizedStreamingContentBlocks]);
+    }, [renderedStreamingContentBlocks]);
 
     const hasRenderableStreamingBlocks = useMemo(
       () =>
@@ -742,7 +701,10 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const activeTypingIndicatorLabel =
       typingIndicatorLabel?.trim()
         || (isSending ? "Starting agent" : isAgentRunning ? "Agent working" : undefined);
-    const shouldShowFooterFallback = (isSending || isAgentRunning) && !hasRenderableStreamingBlocks;
+    const hasLiveStreamingBlocks =
+      normalizedStreamingContentBlocks.length > 0 || Boolean(streamingTasks && streamingTasks.size > 0);
+    const shouldShowFooterFallback =
+      (isSending || isAgentRunning) && !hasRenderableStreamingBlocks && !hasLiveStreamingBlocks;
     const hasFooterStreamingContent = hasRenderableStreamingBlocks || shouldShowFooterFallback;
     const hasVisiblePendingToolFallback =
       shouldShowFooterFallback &&
@@ -770,9 +732,9 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       toolResultCount: streamingToolCalls.filter(tc => tc.result != null || tc.error != null).length,
       childCallCount: totalChildCalls,
       taskCount: streamingTasks?.size ?? 0,
-      contentBlockCount: normalizedStreamingContentBlocks.length,
+      contentBlockCount: renderedStreamingContentBlocks.length,
       textLengthBucket: Math.floor(cumulativeTextLength / TEXT_LENGTH_BUCKET_SIZE),
-    }), [streamingToolCalls, totalChildCalls, streamingTasks?.size, normalizedStreamingContentBlocks.length, cumulativeTextLength]);
+    }), [streamingToolCalls, totalChildCalls, streamingTasks?.size, renderedStreamingContentBlocks.length, cumulativeTextLength]);
 
     // Build timeline data for Virtuoso. Always wraps messages as TimelineItem
     // for consistent typing. When hook events exist, they're interleaved and sorted.
@@ -1424,6 +1386,19 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               showAssistantIcon={shouldShowStreamingAssistantIcon}
               hideMeta
             >
+              {streamingTranscriptWindow.hiddenBlockCount > 0 && (
+                <div
+                  data-testid="streaming-transcript-window-notice"
+                  className="mb-2 rounded-md px-2 py-1 text-[11px]"
+                  style={{
+                    backgroundColor: "color-mix(in srgb, var(--bg-elevated) 72%, transparent)",
+                    border: "1px solid var(--border-subtle)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  {streamingTranscriptWindow.hiddenBlockCount} earlier live updates hidden
+                </div>
+              )}
               {renderedStreamingContentBlocks.map((block, idx) => {
                 if (block.type === "text") {
                   // Skip empty/whitespace-only text blocks (e.g. pre-stream flush artifacts)
@@ -1508,6 +1483,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       shouldShowActiveTypingIndicator,
       shouldShowFooterFallback,
       streamingMessageCreatedAt,
+      streamingTranscriptWindow.hiddenBlockCount,
       streamingTasks,
       streamingToolCalls,
     ]);
