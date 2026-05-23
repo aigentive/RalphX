@@ -25,6 +25,8 @@ const {
   getWorkspaceReviewMock,
   getWorkspaceStagedChangesMock,
   getWorkspaceUnstagedChangesMock,
+  listAgentTaskListTasksMock,
+  listAgentTaskListsMock,
   listAgentTasksMock,
   publishAgentConversationWorkspaceMock,
   sendAgentMessageMock,
@@ -523,12 +525,111 @@ describe("AgentsView publish", () => {
     expect(screen.getByTestId("agents-composer-task-4")).toBeInTheDocument();
 
     const showOlderBtn = screen.getByTestId("agents-composer-tasks-show-older");
-    expect(showOlderBtn).toHaveTextContent("See 1 older task");
+    expect(showOlderBtn).toHaveTextContent("Show 1 more in this list");
 
     fireEvent.click(showOlderBtn);
 
     expect(screen.getByTestId("agents-composer-task-1")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
+  });
+
+  it("loads previous task lists as grouped history inside the tasks tray", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-current",
+        taskNumber: 1,
+        title: "Current slice task",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-23T10:00:00Z",
+      },
+    ]);
+    listAgentTaskListsMock.mockResolvedValue([
+      {
+        listId: "list-current",
+        listSequence: 2,
+        taskCount: 1,
+        openCount: 0,
+        activeCount: 1,
+        doneCount: 0,
+        droppedCount: 0,
+        createdAt: "2026-05-23T10:00:00Z",
+        updatedAt: "2026-05-23T10:01:00Z",
+      },
+      {
+        listId: "list-previous",
+        listSequence: 1,
+        taskCount: 2,
+        openCount: 0,
+        activeCount: 0,
+        doneCount: 2,
+        droppedCount: 0,
+        createdAt: "2026-05-22T10:00:00Z",
+        updatedAt: "2026-05-22T10:01:00Z",
+      },
+    ]);
+    listAgentTaskListTasksMock.mockResolvedValue([
+      {
+        taskId: "task-previous-1",
+        taskNumber: 1,
+        title: "Previous slice task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-22T10:00:00Z",
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    await screen.findByTestId(
+      "agents-composer-context-tray",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+
+    const previousListsToggle = await screen.findByTestId(
+      "agents-composer-task-lists-show-previous",
+    );
+    expect(previousListsToggle).toHaveTextContent("Previous task lists");
+    expect(previousListsToggle).toHaveTextContent("1");
+    expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent(
+      "Current slice task",
+    );
+
+    fireEvent.click(previousListsToggle);
+    const previousSlice = await screen.findByTestId(
+      "agents-composer-task-list-slice-list-previous",
+    );
+    expect(previousSlice).toHaveTextContent("Task list #1");
+    expect(previousSlice).toHaveTextContent("2 tasks");
+    expect(previousSlice).toHaveTextContent("Done");
+
+    fireEvent.click(previousSlice.querySelector("button")!);
+
+    await waitFor(() =>
+      expect(listAgentTaskListTasksMock).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        taskListId: "list-previous",
+        includeDone: true,
+      }),
+    );
+    expect(
+      await screen.findByTestId(
+        "agents-composer-task-list-list-previous-task-1",
+      ),
+    ).toHaveTextContent("Previous slice task");
   });
 
   it("opens the publish pane with a focused file request from the composer summary", async () => {

@@ -244,6 +244,11 @@ pub async fn start_http_server(
         .route("/api/agent_tasks/create", post(create_agent_task))
         .route("/api/agent_tasks/get", post(get_agent_task))
         .route("/api/agent_tasks/list", post(list_agent_tasks))
+        .route("/api/agent_tasks/lists", post(list_agent_task_lists))
+        .route(
+            "/api/agent_tasks/list_for_list",
+            post(list_agent_tasks_for_list),
+        )
         .route("/api/agent_tasks/update", post(update_agent_task))
         .route("/api/agent_tasks/claim", post(claim_agent_task))
         .route("/api/agent_tasks/complete", post(complete_agent_task))
