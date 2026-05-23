@@ -96,7 +96,7 @@ async fn test_register_and_resolve_question() {
     }
 
     // Resolve with an answer
-    let (resolved, session_id) = state
+    let result = state
         .resolve(
             &request_id,
             QuestionAnswer {
@@ -105,8 +105,9 @@ async fn test_register_and_resolve_question() {
             },
         )
         .await;
-    assert!(resolved);
-    assert_eq!(session_id, Some("session-1".to_string()));
+    assert!(result.resolved);
+    assert_eq!(result.session_id, Some("session-1".to_string()));
+    assert!(result.delivered_to_waiting_agent);
 
     // Check the answer was received
     let answer = rx.borrow().clone();
@@ -201,7 +202,7 @@ async fn test_expire_pending_question() {
 async fn test_resolve_nonexistent_question() {
     let state = QuestionState::new();
 
-    let (resolved, session_id) = state
+    let result = state
         .resolve(
             "nonexistent",
             QuestionAnswer {
@@ -210,8 +211,9 @@ async fn test_resolve_nonexistent_question() {
             },
         )
         .await;
-    assert!(!resolved);
-    assert!(session_id.is_none());
+    assert!(!result.resolved);
+    assert!(result.session_id.is_none());
+    assert!(!result.delivered_to_waiting_agent);
 }
 
 #[tokio::test]
@@ -311,6 +313,75 @@ mod with_repo {
     }
 
     #[tokio::test]
+    async fn test_get_pending_info_keeps_live_question_when_repo_create_fails() {
+        use crate::error::AppError;
+
+        struct FailingCreateRepo(MemoryQuestionRepository);
+
+        #[async_trait::async_trait]
+        impl QuestionRepository for FailingCreateRepo {
+            async fn create_pending(
+                &self,
+                _info: &PendingQuestionInfo,
+            ) -> crate::error::AppResult<()> {
+                Err(AppError::Database("simulated create failure".to_string()))
+            }
+            async fn resolve(
+                &self,
+                request_id: &str,
+                answer: &QuestionAnswer,
+            ) -> crate::error::AppResult<bool> {
+                self.0.resolve(request_id, answer).await
+            }
+            async fn get_pending(&self) -> crate::error::AppResult<Vec<PendingQuestionInfo>> {
+                self.0.get_pending().await
+            }
+            async fn get_by_request_id(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<PendingQuestionInfo>> {
+                self.0.get_by_request_id(request_id).await
+            }
+            async fn expire_all_pending(&self) -> crate::error::AppResult<u64> {
+                self.0.expire_all_pending().await
+            }
+            async fn expire_by_request_id(&self, request_id: &str) -> crate::error::AppResult<()> {
+                self.0.expire_by_request_id(request_id).await
+            }
+            async fn remove(&self, request_id: &str) -> crate::error::AppResult<bool> {
+                self.0.remove(request_id).await
+            }
+            async fn get_resolved_answer(
+                &self,
+                request_id: &str,
+            ) -> crate::error::AppResult<Option<QuestionAnswer>> {
+                self.0.get_resolved_answer(request_id).await
+            }
+        }
+
+        let repo = Arc::new(FailingCreateRepo(MemoryQuestionRepository::new()));
+        let state = QuestionState::with_repo(
+            repo as Arc<dyn crate::domain::repositories::QuestionRepository>,
+        );
+
+        state
+            .register(
+                "req-live-only".to_string(),
+                "session-1".to_string(),
+                "Still visible?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+
+        let pending = state.get_pending_info().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, "req-live-only");
+        assert_eq!(pending[0].question, "Still visible?");
+    }
+
+    #[tokio::test]
     async fn test_resolve_persists_to_repo() {
         let (state, repo) = make_state_with_repo();
 
@@ -329,9 +400,10 @@ mod with_repo {
             selected_options: vec!["a".to_string()],
             text: None,
         };
-        let (resolved, session_id) = state.resolve("req-1", answer).await;
-        assert!(resolved);
-        assert_eq!(session_id, Some("session-1".to_string()));
+        let result = state.resolve("req-1", answer).await;
+        assert!(result.resolved);
+        assert_eq!(result.session_id, Some("session-1".to_string()));
+        assert!(result.delivered_to_waiting_agent);
 
         // After resolve, HashMap should be empty (immediate removal)
         let pending_info = state.get_pending_info().await;
@@ -372,11 +444,11 @@ mod with_repo {
     #[tokio::test]
     async fn test_expire_persists_to_repo() {
         let _db = SqliteTestDb::new("question-state");
-        let repo = Arc::new(crate::infrastructure::sqlite::SqliteQuestionRepository::new(
-            _db.new_connection(),
-        ));
+        let repo = Arc::new(
+            crate::infrastructure::sqlite::SqliteQuestionRepository::new(_db.new_connection()),
+        );
         let state = QuestionState::with_repo(
-            repo.clone() as Arc<dyn crate::domain::repositories::QuestionRepository>,
+            repo.clone() as Arc<dyn crate::domain::repositories::QuestionRepository>
         );
 
         state
@@ -394,10 +466,81 @@ mod with_repo {
         assert!(expired.is_some());
 
         let pending = repo.get_pending().await.unwrap();
-        assert!(pending.is_empty());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, "req-exp");
 
         let found = repo.get_by_request_id("req-exp").await.unwrap();
         assert!(found.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_info_rehydrates_wait_expired_question_from_repo() {
+        let _db = SqliteTestDb::new("question-state-durable-pending");
+        let repo = Arc::new(
+            crate::infrastructure::sqlite::SqliteQuestionRepository::new(_db.new_connection()),
+        );
+        let state = QuestionState::with_repo(
+            repo.clone() as Arc<dyn crate::domain::repositories::QuestionRepository>
+        );
+
+        state
+            .register(
+                "req-durable".to_string(),
+                "session-1".to_string(),
+                "Need clarification?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+
+        state.expire("req-durable").await;
+
+        let pending = state.get_pending_info().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, "req-durable");
+        assert_eq!(pending[0].question, "Need clarification?");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_wait_expired_question_without_live_waiter() {
+        let _db = SqliteTestDb::new("question-state-durable-resolve");
+        let repo = Arc::new(
+            crate::infrastructure::sqlite::SqliteQuestionRepository::new(_db.new_connection()),
+        );
+        let state = QuestionState::with_repo(
+            repo.clone() as Arc<dyn crate::domain::repositories::QuestionRepository>
+        );
+
+        state
+            .register(
+                "req-late".to_string(),
+                "session-1".to_string(),
+                "Need clarification?".to_string(),
+                None,
+                vec![],
+                false,
+            )
+            .await;
+        state.expire("req-late").await;
+
+        let result = state
+            .resolve(
+                "req-late",
+                QuestionAnswer {
+                    selected_options: vec![],
+                    text: Some("Late answer".to_string()),
+                },
+            )
+            .await;
+
+        assert!(result.resolved);
+        assert_eq!(result.session_id, Some("session-1".to_string()));
+        assert!(!result.delivered_to_waiting_agent);
+        assert!(repo.get_pending().await.unwrap().is_empty());
+
+        let answer = state.get_resolved_answer("req-late").await.unwrap();
+        assert_eq!(answer.unwrap().text, Some("Late answer".to_string()));
     }
 
     #[tokio::test]
@@ -422,8 +565,8 @@ mod with_repo {
         let state = QuestionState::with_repo(repo.clone());
         state.expire_stale_on_startup().await;
 
-        // All stale questions should be expired
-        assert!(repo.get_pending().await.unwrap().is_empty());
+        // Startup only expires the live wait; the durable question remains user-visible.
+        assert_eq!(repo.get_pending().await.unwrap().len(), 3);
     }
 
     #[tokio::test]
@@ -453,7 +596,7 @@ mod with_repo {
         let pending_before = state.get_pending_info().await;
         assert_eq!(pending_before.len(), 1);
 
-        let (resolved, _) = state
+        let result = state
             .resolve(
                 "req-imm",
                 QuestionAnswer {
@@ -462,7 +605,8 @@ mod with_repo {
                 },
             )
             .await;
-        assert!(resolved);
+        assert!(result.resolved);
+        assert!(result.delivered_to_waiting_agent);
 
         // HashMap must be empty immediately after resolve
         let pending_after = state.get_pending_info().await;
@@ -484,7 +628,7 @@ mod with_repo {
             )
             .await;
 
-        let (resolved, _) = state
+        let result = state
             .resolve(
                 "req-rx",
                 QuestionAnswer {
@@ -493,7 +637,8 @@ mod with_repo {
                 },
             )
             .await;
-        assert!(resolved);
+        assert!(result.resolved);
+        assert!(result.delivered_to_waiting_agent);
 
         // HashMap is now empty, but the Receiver must still have the answer
         let pending_after = state.get_pending_info().await;
@@ -543,10 +688,7 @@ mod with_repo {
             async fn expire_by_request_id(&self, request_id: &str) -> crate::error::AppResult<()> {
                 self.0.expire_by_request_id(request_id).await
             }
-            async fn remove(
-                &self,
-                request_id: &str,
-            ) -> crate::error::AppResult<bool> {
+            async fn remove(&self, request_id: &str) -> crate::error::AppResult<bool> {
                 self.0.remove(request_id).await
             }
             async fn get_resolved_answer(
@@ -573,7 +715,7 @@ mod with_repo {
             )
             .await;
 
-        let (resolved, _) = state
+        let result = state
             .resolve(
                 "req-fail",
                 QuestionAnswer {
@@ -582,10 +724,11 @@ mod with_repo {
                 },
             )
             .await;
-        assert!(resolved);
+        assert!(result.resolved);
+        assert!(result.delivered_to_waiting_agent);
 
         // HashMap must be empty even though repo.resolve() errored
-        let pending_after = state.get_pending_info().await;
+        let pending_after = state.pending.lock().await;
         assert!(pending_after.is_empty());
     }
 
@@ -604,7 +747,7 @@ mod with_repo {
             )
             .await;
 
-        let (resolved, _) = state
+        let result = state
             .resolve(
                 "req-ans",
                 QuestionAnswer {
@@ -613,7 +756,8 @@ mod with_repo {
                 },
             )
             .await;
-        assert!(resolved);
+        assert!(result.resolved);
+        assert!(result.delivered_to_waiting_agent);
 
         // get_resolved_answer should return Some after resolve persisted to memory repo
         let answer = state.get_resolved_answer("req-ans").await.unwrap();
@@ -687,9 +831,10 @@ mod with_repo {
             assert!(!pending.contains_key("old-req-1"));
         }
 
-        // Should also be expired in repo (removed from pending in MemoryQuestionRepository)
+        // Should remain durable in repo so the UI can still collect a late answer.
         let repo_pending = repo.get_pending().await.unwrap();
-        assert!(repo_pending.is_empty());
+        assert_eq!(repo_pending.len(), 1);
+        assert_eq!(repo_pending[0].request_id, "old-req-1");
     }
 
     #[tokio::test]

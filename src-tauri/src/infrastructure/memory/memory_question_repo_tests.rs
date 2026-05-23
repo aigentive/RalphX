@@ -91,6 +91,24 @@ async fn test_expire_all_pending() {
 
     let expired = repo.expire_all_pending().await.unwrap();
     assert_eq!(expired, 2);
+    assert_eq!(repo.get_pending().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_expired_wait_remains_resolvable() {
+    let repo = MemoryQuestionRepository::new();
+    repo.create_pending(&sample_question("req-1"))
+        .await
+        .unwrap();
+
+    repo.expire_by_request_id("req-1").await.unwrap();
+    assert_eq!(repo.get_pending().await.unwrap().len(), 1);
+
+    let answer = QuestionAnswer {
+        selected_options: vec![],
+        text: Some("late".to_string()),
+    };
+    assert!(repo.resolve("req-1", &answer).await.unwrap());
     assert!(repo.get_pending().await.unwrap().is_empty());
 }
 

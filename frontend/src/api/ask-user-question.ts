@@ -21,6 +21,12 @@ export interface ResolveQuestionInput {
   customResponse?: string;
 }
 
+export interface ResolveQuestionResult {
+  success: boolean;
+  message?: string | null;
+  deliveredToWaitingAgent: boolean;
+}
+
 /** Raw shape returned by the backend get_pending_questions command (snake_case) */
 interface PendingQuestionInfoRaw {
   request_id: string;
@@ -51,8 +57,8 @@ export const askUserQuestionApi = {
    * Used when the agent asks questions via the ask_user_question MCP tool
    * @param input The resolution including requestId and selected options
    */
-  resolveQuestion: async (input: ResolveQuestionInput): Promise<void> => {
-    await invoke("resolve_user_question", {
+  resolveQuestion: async (input: ResolveQuestionInput): Promise<ResolveQuestionResult> => {
+    return await invoke<ResolveQuestionResult>("resolve_user_question", {
       args: {
         requestId: input.requestId,
         selectedOptions: input.selectedOptions,
@@ -62,9 +68,8 @@ export const askUserQuestionApi = {
   },
 
   /**
-   * Fetch all currently pending questions from the backend in-memory state.
-   * Used to hydrate the UI for questions whose Tauri events were missed
-   * (e.g., because the chat panel wasn't mounted when the event fired).
+   * Fetch all unresolved questions from backend state, including durable
+   * questions whose agent-side wait has timed out.
    */
   getPendingQuestions: async (): Promise<AskUserQuestionPayload[]> => {
     const raw = await invoke<PendingQuestionInfoRaw[]>("get_pending_questions");

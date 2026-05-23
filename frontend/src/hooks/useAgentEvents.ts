@@ -25,7 +25,6 @@ import type {
 import { extractConversationProviderMetadataFromRunPayload } from "@/types/events";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
-import { useUiStore } from "@/stores/uiStore";
 import { useTeamStore } from "@/stores/teamStore";
 import { buildStoreKey, parseStoreKey } from "@/lib/chat-context-registry";
 import { buildAgentEventStoreKey } from "@/lib/agent-store-key";
@@ -125,7 +124,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
   const setActiveConversation = useChatStore((s) => s.setActiveConversation);
   const setActiveAgentRun = useChatStore((s) => s.setActiveAgentRun);
   const clearActiveAgentRun = useChatStore((s) => s.clearActiveAgentRun);
-  const clearActiveQuestion = useUiStore((s) => s.clearActiveQuestion);
   const clearPendingPlan = useTeamStore((s) => s.clearPendingPlan);
 
   useEffect(() => {
@@ -217,13 +215,11 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
 
     function handleAgentTermination(
       storeKey: string,
-      eventContextId: string,
       conversationId: string,
       eventRunId: string | null
     ) {
       clearActiveAgentRun(storeKey, eventRunId);
       setAgentStatus(storeKey, "idle");
-      clearActiveQuestion(eventContextId);
       clearPendingPlan(storeKey);
       queryClient.invalidateQueries({ queryKey: chatKeys.agentRun(conversationId) });
       invalidateConversationDataQueries(queryClient, conversationId);
@@ -296,7 +292,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     // Uses getState() pattern (not closure-captured values) matching watchdog at line 438.
     function guardedTermination(
       storeKey: string,
-      eventContextId: string,
       conversationId: string,
       eventRunId: string | null,
       eventName: string
@@ -314,7 +309,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           return true;
         }
       }
-      handleAgentTermination(storeKey, eventContextId, conversationId, eventRunId);
+      handleAgentTermination(storeKey, conversationId, eventRunId);
       return true;
     }
 
@@ -494,7 +489,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (
           !guardedTermination(
             eventContextKey,
-            eventContextId,
             conversation_id,
             eventRunId,
             "run_completed"
@@ -680,7 +674,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (
           guardedTermination(
             eventContextKey,
-            eventContextId,
             conversation_id,
             lifecycleRunId(payload),
             "stopped"
@@ -719,7 +712,6 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         if (
           !guardedTermination(
             eventContextKey,
-            eventContextId,
             conversation_id,
             lifecycleRunId(payload),
             "error"
@@ -793,7 +785,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
     return () => {
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun, clearActiveQuestion, clearPendingPlan]);
+  }, [bus, activeConversationId, storeKey, queryClient, setAgentStatus, updateLastAgentEvent, deleteQueuedMessage, queueMessage, setActiveConversation, setActiveAgentRun, clearActiveAgentRun, clearPendingPlan]);
 
   // Global singleton watchdog — defense-in-depth for stuck generating state.
   // If the backend misses run_completed for any reason, this forces idle after

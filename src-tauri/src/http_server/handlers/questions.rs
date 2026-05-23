@@ -78,20 +78,17 @@ async fn resolved_answer_or_timeout(
     }
 }
 
-async fn expire_question_and_emit(
+async fn expire_question_wait(
     state: &HttpServerState,
     request_id: &str,
 ) -> Result<Json<QuestionAnswer>, StatusCode> {
-    if let Some(info) = state.app_state.question_state.expire(request_id).await {
-        if let Some(ref app_handle) = state.app_state.app_handle {
-            let _ = app_handle.emit(
-                "agent:question_expired",
-                serde_json::json!({
-                    "sessionId": info.session_id,
-                    "requestId": info.request_id,
-                }),
-            );
-        }
+    if state
+        .app_state
+        .question_state
+        .expire(request_id)
+        .await
+        .is_some()
+    {
         Err(StatusCode::REQUEST_TIMEOUT)
     } else {
         resolved_answer_or_timeout(state, request_id).await
@@ -148,7 +145,7 @@ pub async fn await_question(
 
         // Check timeout
         if start.elapsed() >= timeout {
-            return expire_question_and_emit(&state, &request_id).await;
+            return expire_question_wait(&state, &request_id).await;
         }
 
         // Wait for change with remaining timeout
@@ -162,7 +159,7 @@ pub async fn await_question(
                 return resolved_answer_or_timeout(&state, &request_id).await;
             }
             Err(_) => {
-                return expire_question_and_emit(&state, &request_id).await;
+                return expire_question_wait(&state, &request_id).await;
             }
         }
     }
@@ -172,7 +169,7 @@ pub async fn resolve_question(
     State(state): State<HttpServerState>,
     Json(input): Json<ResolveQuestionInput>,
 ) -> StatusCode {
-    let (resolved, session_id) = state
+    let result = state
         .app_state
         .question_state
         .resolve(
@@ -184,8 +181,8 @@ pub async fn resolve_question(
         )
         .await;
 
-    if resolved {
-        if let Some(ref sid) = session_id {
+    if result.resolved {
+        if let Some(ref sid) = result.session_id {
             if let Some(ref app_handle) = state.app_state.app_handle {
                 let _ = app_handle.emit(
                     "agent:question_resolved",

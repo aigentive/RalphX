@@ -8,11 +8,39 @@
 
 import { useState, useEffect, useCallback } from "react";
 import type { AskUserQuestionPayload, AskUserQuestionResponse } from "@/types/ask-user-question";
+import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
+
+type QuestionSubmitResult = boolean | SubmitQuestionAnswerResult;
 
 export interface UseQuestionInputParams {
   activeQuestion: AskUserQuestionPayload | null;
-  submitAnswer: (response: AskUserQuestionResponse) => Promise<boolean>;
+  submitAnswer: (response: AskUserQuestionResponse) => Promise<QuestionSubmitResult>;
   handleSend: (text: string) => Promise<void>;
+}
+
+function normalizeSubmitResult(result: QuestionSubmitResult): SubmitQuestionAnswerResult {
+  if (typeof result === "boolean") {
+    return { success: result, deliveredToWaitingAgent: true };
+  }
+  return result;
+}
+
+function formatLateQuestionAnswer(
+  question: AskUserQuestionPayload,
+  response: AskUserQuestionResponse
+): string {
+  const selectedLabels = response.selectedOptions.map((selected) => (
+    question.options.find((option) => option.value === selected)?.label ?? selected
+  ));
+  const answer = selectedLabels.length > 0
+    ? selectedLabels.join(", ")
+    : response.customResponse?.trim() ?? "";
+
+  return [
+    "Answer to previous clarification question:",
+    `Question: ${question.question}`,
+    `Answer: ${answer}`,
+  ].join("\n");
 }
 
 export function useQuestionInput({
@@ -82,10 +110,14 @@ export function useQuestionInput({
         return; // Nothing to submit
       }
 
-      const success = await submitAnswer(response);
+      const submitResult = normalizeSubmitResult(await submitAnswer(response));
+      const success = submitResult.success;
       if (success) {
         setSelectedOptions(new Set());
         setQuestionInputValue("");
+        if (!submitResult.deliveredToWaitingAgent) {
+          await handleSend(formatLateQuestionAnswer(activeQuestion, response));
+        }
       }
     },
     [activeQuestion, selectedOptions, submitAnswer, handleSend]

@@ -1,0 +1,86 @@
+import { act, renderHook } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import { useQuestionInput } from "./useQuestionInput";
+import type { AskUserQuestionPayload } from "@/types/ask-user-question";
+
+const question: AskUserQuestionPayload = {
+  requestId: "req-1",
+  sessionId: "session-1",
+  question: "Which database should we use?",
+  options: [
+    { value: "pg", label: "PostgreSQL" },
+    { value: "sqlite", label: "SQLite" },
+  ],
+  multiSelect: false,
+};
+
+describe("useQuestionInput", () => {
+  it("sends a normal chat message when a late answer is not delivered to a waiting agent", async () => {
+    const submitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: false,
+    });
+    const handleSend = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useQuestionInput({
+        activeQuestion: question,
+        submitAnswer,
+        handleSend,
+      })
+    );
+
+    act(() => {
+      result.current.handleChipClick(0);
+    });
+    await act(async () => {
+      await result.current.handleQuestionSend("");
+    });
+
+    expect(submitAnswer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-1",
+        selectedOptions: ["pg"],
+      })
+    );
+    expect(handleSend).toHaveBeenCalledWith(
+      [
+        "Answer to previous clarification question:",
+        "Question: Which database should we use?",
+        "Answer: PostgreSQL",
+      ].join("\n")
+    );
+  });
+
+  it("does not send a normal chat message when the answer reaches a waiting agent", async () => {
+    const submitAnswer = vi.fn().mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    const handleSend = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useQuestionInput({
+        activeQuestion: question,
+        submitAnswer,
+        handleSend,
+      })
+    );
+
+    act(() => {
+      result.current.handleChipClick(1);
+    });
+    await act(async () => {
+      await result.current.handleQuestionSend("");
+    });
+
+    expect(submitAnswer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-1",
+        selectedOptions: ["sqlite"],
+      })
+    );
+    expect(handleSend).not.toHaveBeenCalled();
+  });
+});

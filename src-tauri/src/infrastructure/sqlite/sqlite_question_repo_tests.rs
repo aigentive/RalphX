@@ -122,7 +122,10 @@ async fn test_expire_all_pending() {
     assert_eq!(expired, 2);
 
     let pending = repo.get_pending().await.unwrap();
-    assert!(pending.is_empty());
+    assert_eq!(pending.len(), 2);
+    let request_ids: Vec<_> = pending.iter().map(|p| p.request_id.as_str()).collect();
+    assert!(request_ids.contains(&"req-1"));
+    assert!(request_ids.contains(&"req-2"));
 }
 
 #[tokio::test]
@@ -173,8 +176,30 @@ async fn test_expire_all_pending_via_question_state() {
         as Arc<dyn crate::domain::repositories::question_repository::QuestionRepository>);
     state.expire_stale_on_startup().await;
 
-    // All pending should be expired
+    // Startup only expires the live wait; durable questions stay user-visible.
+    assert_eq!(repo.get_pending().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_expired_wait_remains_resolvable() {
+    let (_db, repo) = setup();
+    repo.create_pending(&sample_info()).await.unwrap();
+
+    repo.expire_by_request_id("req-1").await.unwrap();
+
+    let pending = repo.get_pending().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].request_id, "req-1");
+
+    let answer = QuestionAnswer {
+        selected_options: vec![],
+        text: Some("Use SQLite".to_string()),
+    };
+    assert!(repo.resolve("req-1", &answer).await.unwrap());
     assert!(repo.get_pending().await.unwrap().is_empty());
+
+    let stored = repo.get_resolved_answer("req-1").await.unwrap().unwrap();
+    assert_eq!(stored.text, Some("Use SQLite".to_string()));
 }
 
 #[tokio::test]

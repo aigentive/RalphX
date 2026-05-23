@@ -71,7 +71,7 @@ impl QuestionRepository for SqliteQuestionRepository {
                          answer_selected_options = ?1,
                          answer_text = ?2,
                          resolved_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
-                     WHERE request_id = ?3 AND status = 'pending'",
+                     WHERE request_id = ?3 AND status IN ('pending', 'wait_expired')",
                     rusqlite::params![selected_json, answer_text, request_id],
                 )?;
                 Ok(rows > 0)
@@ -84,7 +84,8 @@ impl QuestionRepository for SqliteQuestionRepository {
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT request_id, session_id, question, header, options, multi_select
-                     FROM pending_questions WHERE status = 'pending'",
+                     FROM pending_questions
+                     WHERE status IN ('pending', 'wait_expired')",
                 )?;
 
                 let mapped_rows = stmt.query_map([], |row| {
@@ -144,7 +145,14 @@ impl QuestionRepository for SqliteQuestionRepository {
                 );
 
                 match result {
-                    Ok((request_id, session_id, question, header, options_json, multi_select_int)) => {
+                    Ok((
+                        request_id,
+                        session_id,
+                        question,
+                        header,
+                        options_json,
+                        multi_select_int,
+                    )) => {
                         let options: Vec<QuestionOption> = serde_json::from_str(&options_json)
                             .map_err(|e| AppError::Database(e.to_string()))?;
                         Ok(Some(PendingQuestionInfo {
@@ -168,7 +176,7 @@ impl QuestionRepository for SqliteQuestionRepository {
             .run(move |conn| {
                 let rows = conn.execute(
                     "UPDATE pending_questions
-                     SET status = 'expired',
+                     SET status = 'wait_expired',
                          resolved_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
                      WHERE status = 'pending'",
                     [],
@@ -184,9 +192,9 @@ impl QuestionRepository for SqliteQuestionRepository {
             .run(move |conn| {
                 conn.execute(
                     "UPDATE pending_questions
-                     SET status = 'expired',
+                     SET status = 'wait_expired',
                          resolved_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
-                     WHERE request_id = ?1",
+                     WHERE request_id = ?1 AND status = 'pending'",
                     rusqlite::params![request_id],
                 )?;
                 Ok(())

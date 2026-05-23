@@ -7,7 +7,7 @@
 
 import type { AskUserQuestionResponse } from "@/types/ask-user-question";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
-import type { ResolveQuestionInput } from "@/api/ask-user-question";
+import type { ResolveQuestionInput, ResolveQuestionResult } from "@/api/ask-user-question";
 
 /**
  * Mock Ask User Question API matching the real API interface
@@ -17,8 +17,9 @@ export const mockAskUserQuestionApi = {
     console.log("[mock] answerQuestion called");
   },
 
-  resolveQuestion: async (_input: ResolveQuestionInput): Promise<void> => {
+  resolveQuestion: async (_input: ResolveQuestionInput): Promise<ResolveQuestionResult> => {
     console.log("[mock] resolveQuestion called");
+    return { success: true, message: null, deliveredToWaitingAgent: true };
   },
 
   getPendingQuestions: async (): Promise<AskUserQuestionPayload[]> => {

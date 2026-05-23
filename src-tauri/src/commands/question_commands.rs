@@ -18,9 +18,11 @@ pub struct ResolveQuestionArgs {
 
 /// Response for resolve_user_question command
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolveQuestionResponse {
     pub success: bool,
     pub message: Option<String>,
+    pub delivered_to_waiting_agent: bool,
 }
 
 /// Resolve a pending question with the user's answer
@@ -37,10 +39,10 @@ pub async fn resolve_user_question(
         text: args.custom_response,
     };
 
-    let (resolved, session_id) = state.question_state.resolve(&args.request_id, answer).await;
+    let result = state.question_state.resolve(&args.request_id, answer).await;
 
-    if resolved {
-        if let Some(ref sid) = session_id {
+    if result.resolved {
+        if let Some(ref sid) = result.session_id {
             if let Some(ref app_handle) = state.app_handle {
                 let _ = app_handle.emit(
                     "agent:question_resolved",
@@ -54,6 +56,7 @@ pub async fn resolve_user_question(
         Ok(ResolveQuestionResponse {
             success: true,
             message: Some(format!("Question {} resolved", args.request_id)),
+            delivered_to_waiting_agent: result.delivered_to_waiting_agent,
         })
     } else {
         Err(format!("Question request '{}' not found", args.request_id))

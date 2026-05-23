@@ -1620,7 +1620,7 @@ describe("useAgentEvents", () => {
     });
   });
 
-  describe("stale question cleanup", () => {
+  describe("durable question preservation", () => {
     const testQuestion: AskUserQuestionPayload = {
       requestId: "req-1",
       taskId: "task-123",
@@ -1631,7 +1631,7 @@ describe("useAgentEvents", () => {
       multiSelect: false,
     };
 
-    it("clears active question on agent:run_completed", () => {
+    it("keeps active question on agent:run_completed", () => {
       const wrapper = createWrapper();
 
       // Set up an active question for this context
@@ -1651,11 +1651,10 @@ describe("useAgentEvents", () => {
         });
       });
 
-      // Question should be cleaned up when agent dies
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
     });
 
-    it("clears active question on agent:stopped", () => {
+    it("keeps active question on agent:stopped", () => {
       const wrapper = createWrapper();
 
       act(() => {
@@ -1673,10 +1672,10 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
     });
 
-    it("clears active question on agent:error", () => {
+    it("keeps active question on agent:error", () => {
       const wrapper = createWrapper();
 
       act(() => {
@@ -1694,10 +1693,10 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
     });
 
-    it("clears ideation session question on agent:run_completed", () => {
+    it("keeps ideation session question on agent:run_completed", () => {
       const wrapper = createWrapper();
       const ideationQuestion = { ...testQuestion, sessionId: "session-789" };
 
@@ -1716,7 +1715,7 @@ describe("useAgentEvents", () => {
         });
       });
 
-      expect(useUiStore.getState().activeQuestions["session-789"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["session-789"]).toBeDefined();
     });
 
     it("does not affect questions for other contexts", () => {
@@ -1738,8 +1737,7 @@ describe("useAgentEvents", () => {
         });
       });
 
-      // Only task-123 should be cleared
-      expect(useUiStore.getState().activeQuestions["task-123"]).toBeUndefined();
+      expect(useUiStore.getState().activeQuestions["task-123"]).toBeDefined();
       expect(useUiStore.getState().activeQuestions["task-456"]).toBeDefined();
     });
   });

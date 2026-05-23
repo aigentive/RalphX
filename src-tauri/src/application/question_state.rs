@@ -3,7 +3,7 @@
 // Mirrors the permission_state.rs pattern exactly
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
@@ -44,6 +44,13 @@ pub struct PendingQuestion {
     pub created_at: Instant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestionResolveResult {
+    pub resolved: bool,
+    pub session_id: Option<String>,
+    pub delivered_to_waiting_agent: bool,
+}
+
 /// Shared state for managing pending questions from agents
 ///
 /// Uses tokio::sync::watch channels to allow long-polling:
@@ -74,6 +81,30 @@ impl QuestionState {
 
     /// Get info about all pending questions
     pub async fn get_pending_info(&self) -> Vec<PendingQuestionInfo> {
+        if let Some(repo) = &self.repo {
+            match repo.get_pending().await {
+                Ok(mut pending) => {
+                    let durable_request_ids: HashSet<_> = pending
+                        .iter()
+                        .map(|question| question.request_id.clone())
+                        .collect();
+                    let live_pending = self.pending.lock().await;
+                    pending.extend(
+                        live_pending
+                            .values()
+                            .filter(|question| {
+                                !durable_request_ids.contains(&question.info.request_id)
+                            })
+                            .map(|question| question.info.clone()),
+                    );
+                    return pending;
+                }
+                Err(e) => {
+                    error!("Failed to load pending questions from repo: {}", e);
+                }
+            }
+        }
+
         let pending = self.pending.lock().await;
         pending.values().map(|p| p.info.clone()).collect()
     }
@@ -116,8 +147,8 @@ impl QuestionState {
 
     /// Resolve a pending question with an answer.
     ///
-    /// Returns `(true, Some(session_id))` if found and resolved,
-    /// `(false, None)` if the request_id was not in the HashMap.
+    /// Returns a result indicating whether the answer was delivered to a live
+    /// waiter or only persisted for a later conversation resume.
     ///
     /// Phase 1 (lock held): send answer via watch channel, then remove from HashMap.
     /// Phase 2 (lock free): persist resolution to repo.
@@ -126,7 +157,7 @@ impl QuestionState {
     /// holds a Receiver sees the value change before the Sender is dropped.
     /// HashMap removal is unconditional — if repo.resolve() fails, the entry stays
     /// removed (no re-insert) to avoid inconsistent in-memory state.
-    pub async fn resolve(&self, request_id: &str, answer: QuestionAnswer) -> (bool, Option<String>) {
+    pub async fn resolve(&self, request_id: &str, answer: QuestionAnswer) -> QuestionResolveResult {
         // Phase 1: lock held — signal channel and remove from HashMap atomically
         let session_id = {
             let mut pending = self.pending.lock().await;
@@ -151,9 +182,61 @@ impl QuestionState {
                     );
                 }
             }
-            (true, Some(sid.clone()))
+            QuestionResolveResult {
+                resolved: true,
+                session_id: Some(sid.clone()),
+                delivered_to_waiting_agent: true,
+            }
         } else {
-            (false, None)
+            let Some(repo) = &self.repo else {
+                return QuestionResolveResult {
+                    resolved: false,
+                    session_id: None,
+                    delivered_to_waiting_agent: false,
+                };
+            };
+
+            let question_info = match repo.get_by_request_id(request_id).await {
+                Ok(info) => info,
+                Err(e) => {
+                    error!(
+                        "Failed to load question {} before durable resolution: {}",
+                        request_id, e
+                    );
+                    None
+                }
+            };
+            let Some(question_info) = question_info else {
+                return QuestionResolveResult {
+                    resolved: false,
+                    session_id: None,
+                    delivered_to_waiting_agent: false,
+                };
+            };
+
+            match repo.resolve(request_id, &answer).await {
+                Ok(true) => QuestionResolveResult {
+                    resolved: true,
+                    session_id: Some(question_info.session_id),
+                    delivered_to_waiting_agent: false,
+                },
+                Ok(false) => QuestionResolveResult {
+                    resolved: false,
+                    session_id: None,
+                    delivered_to_waiting_agent: false,
+                },
+                Err(e) => {
+                    error!(
+                        "Failed to persist durable question resolution {}: {}",
+                        request_id, e
+                    );
+                    QuestionResolveResult {
+                        resolved: false,
+                        session_id: None,
+                        delivered_to_waiting_agent: false,
+                    }
+                }
+            }
         }
     }
 
@@ -161,7 +244,8 @@ impl QuestionState {
     ///
     /// Returns the removed question metadata when the request_id existed in the
     /// in-memory map. Repo persistence is best-effort and marks the question as
-    /// expired instead of deleting audit history.
+    /// wait-expired instead of deleting audit history, so the UI can keep
+    /// rendering the original question and accept a late answer.
     pub async fn expire(&self, request_id: &str) -> Option<PendingQuestionInfo> {
         let info = self
             .pending
@@ -217,11 +301,14 @@ impl QuestionState {
         if let Some(repo) = &self.repo {
             match repo.expire_all_pending().await {
                 Ok(count) if count > 0 => {
-                    info!("Expired {} stale pending questions on startup", count);
+                    info!(
+                        "Marked {} stale pending questions as wait-expired on startup",
+                        count
+                    );
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    error!("Failed to expire stale pending questions: {}", e);
+                    error!("Failed to mark stale pending questions wait-expired: {}", e);
                 }
             }
         }
