@@ -286,6 +286,44 @@ fn live_preview_payloads_handle_json_fallback_and_char_limit() {
 }
 
 #[test]
+fn live_preview_payloads_mark_oversized_objects_and_fallbacks() {
+    let capped_object = json!((0..85)
+        .map(|index| (format!("field_{index:03}"), json!("value")))
+        .collect::<serde_json::Map<String, serde_json::Value>>());
+    let capped_preview = build_live_tool_result_preview(Some("bash"), &capped_object, None);
+
+    assert!(capped_preview.is_previewed());
+    assert_eq!(
+        capped_preview.result["__ralphx_preview_truncated"],
+        json!(true)
+    );
+    assert_eq!(capped_preview.result["__ralphx_preview_omitted_fields"], 5);
+    assert_eq!(
+        capped_preview.preview.as_ref().unwrap().paths,
+        vec!["$.*".to_string()]
+    );
+
+    let shallow_object = json!((0..20)
+        .map(|index| (format!("field_{index:03}"), json!(index)))
+        .collect::<serde_json::Map<String, serde_json::Value>>());
+    let fallback_preview = build_live_tool_result_preview(Some("bash"), &shallow_object, None);
+
+    assert!(fallback_preview.is_previewed());
+    assert_eq!(
+        fallback_preview.result["__ralphx_preview_truncated"],
+        json!(true)
+    );
+    assert!(fallback_preview.result["preview_text"]
+        .as_str()
+        .unwrap()
+        .contains("field_000"));
+    assert_eq!(
+        fallback_preview.preview.as_ref().unwrap().paths,
+        vec!["$".to_string()]
+    );
+}
+
+#[test]
 fn preview_helpers_cover_fallback_and_skip_edges() {
     let nested_content = json!({
         "content": [

@@ -181,4 +181,41 @@ describe("AgentTaskWidget", () => {
 
     expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(expectedText);
   });
+
+  it("renders task identity from object text preview payloads", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__claim_agent_task",
+          resultPreviewTruncated: true,
+          result: {
+            text: String.raw`{"success":true,"task":{"task_number":8,"title":"Bad\q title"}}`,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(
+      String.raw`Agent task claimed #8 Bad\q title`,
+    );
+  });
+
+  it("falls back to the requested ref when a preview result has no task text", () => {
+    render(
+      <AgentTaskWidget
+        toolCall={makeToolCall({
+          name: "mcp__ralphx_internal__claim_agent_task",
+          arguments: {
+            task_ref: "9",
+          },
+          resultPreviewTruncated: true,
+          result: 7,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId("agent-task-widget-inline")).toHaveTextContent(
+      "Claim agent task #9",
+    );
+  });
 });

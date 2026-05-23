@@ -232,26 +232,13 @@ fn preview_value(value: &JsonValue, path: &str) -> Option<StructuredToolResultPr
     }
 }
 
-fn fallback_preview_value(
-    value: &JsonValue,
-    preview: &ToolResultPreview,
-) -> StructuredToolResultPreview {
-    match value {
-        JsonValue::String(_) => StructuredToolResultPreview {
-            value: JsonValue::String(preview.text.clone()),
-            paths: vec!["$".to_string()],
-        },
-        JsonValue::Array(_) | JsonValue::Object(_) => StructuredToolResultPreview {
-            value: serde_json::json!({
-                TOOL_RESULT_PREVIEW_MARKER: true,
-                "preview_text": preview.text,
-            }),
-            paths: vec!["$".to_string()],
-        },
-        _ => StructuredToolResultPreview {
-            value: value.clone(),
-            paths: Vec::new(),
-        },
+fn fallback_preview_value(preview: &ToolResultPreview) -> StructuredToolResultPreview {
+    StructuredToolResultPreview {
+        value: serde_json::json!({
+            TOOL_RESULT_PREVIEW_MARKER: true,
+            "preview_text": preview.text,
+        }),
+        paths: vec!["$".to_string()],
     }
 }
 
@@ -289,7 +276,7 @@ pub(crate) fn build_tool_result_preview_payload(
     }
     let preview = build_tool_result_preview(result)?;
     let structured_preview =
-        preview_value(result, "$").unwrap_or_else(|| fallback_preview_value(result, &preview));
+        preview_value(result, "$").unwrap_or_else(|| fallback_preview_value(&preview));
     Some(ToolResultPreviewPayload {
         result: structured_preview.value,
         original_bytes: preview.original_bytes,
