@@ -69,6 +69,14 @@ impl ChatAttachmentRepository for MockChatAttachmentRepository {
         Ok(())
     }
 
+    async fn reparent_pending_attachments(
+        &self,
+        _from_conversation_id: &ChatConversationId,
+        _to_conversation_id: &ChatConversationId,
+    ) -> AppResult<usize> {
+        Ok(0)
+    }
+
     async fn delete(&self, _id: &ChatAttachmentId) -> AppResult<()> {
         Ok(())
     }
