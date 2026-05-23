@@ -456,6 +456,26 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(indicators.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("passes structured preview path metadata from content blocks into tool calls", () => {
+    const contentBlocks = [
+      {
+        type: "tool_use" as const,
+        id: "custom-preview-paths",
+        name: "custom_tool",
+        arguments: { file_path: "/src/big.log" },
+        result: { output: "preview" },
+        resultPreviewTruncated: true,
+        resultPreviewPaths: ["$.output"],
+      },
+    ];
+
+    const { container } = renderMessageItem(
+      <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />
+    );
+
+    expect(container.querySelector('[data-testid="tool-call-preview-card"]')).toBeInTheDocument();
+  });
+
   it("collects both tool_use and tool_result IDs from Agent result for suppression", () => {
     // Verify that both the tool_use ID and tool_result's tool_use_id are suppressed
     const childId = "child-abc";

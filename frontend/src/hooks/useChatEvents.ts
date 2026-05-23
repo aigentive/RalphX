@@ -144,6 +144,8 @@ type ToolResultPreviewMetadata = {
   resultPreviewLineCount?: unknown;
   result_preview_omitted_lines?: unknown;
   resultPreviewOmittedLines?: unknown;
+  result_preview_paths?: unknown;
+  resultPreviewPaths?: unknown;
   detail_ref?: unknown;
   detailRef?: unknown;
 };
@@ -155,6 +157,17 @@ function getNumberMetadata(
 ): number | undefined {
   const value = metadata[snakeKey] ?? metadata[camelKey];
   return typeof value === "number" ? value : undefined;
+}
+
+function getStringArrayMetadata(
+  metadata: ToolResultPreviewMetadata,
+  snakeKey: keyof ToolResultPreviewMetadata,
+  camelKey: keyof ToolResultPreviewMetadata,
+): string[] | undefined {
+  const value = metadata[snakeKey] ?? metadata[camelKey];
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : undefined;
 }
 
 function normalizeStreamingToolDetailRef(raw: unknown): ToolCall["detailRef"] | undefined {
@@ -204,6 +217,16 @@ function applyBackendToolResultPreviewMetadata(
   if (originalBytes != null) toolCall.resultPreviewOriginalBytes = originalBytes;
   if (lineCount != null) toolCall.resultPreviewLineCount = lineCount;
   if (omittedLines != null) toolCall.resultPreviewOmittedLines = omittedLines;
+  const previewPaths = getStringArrayMetadata(
+    metadata,
+    "result_preview_paths",
+    "resultPreviewPaths",
+  );
+  if (previewPaths != null) {
+    toolCall.resultPreviewPaths = previewPaths;
+  } else {
+    delete toolCall.resultPreviewPaths;
+  }
 
   const detailRef = normalizeStreamingToolDetailRef(metadata.detail_ref ?? metadata.detailRef);
   if (detailRef) {
@@ -234,6 +257,7 @@ function applyToolCallResultPreview(
     toolCall.resultPreviewOriginalBytes = preview.resultPreviewOriginalBytes;
     toolCall.resultPreviewLineCount = preview.resultPreviewLineCount;
     toolCall.resultPreviewOmittedLines = preview.resultPreviewOmittedLines;
+    delete toolCall.resultPreviewPaths;
     delete toolCall.detailRef;
     return;
   }
@@ -243,6 +267,7 @@ function applyToolCallResultPreview(
   delete toolCall.resultPreviewOriginalBytes;
   delete toolCall.resultPreviewLineCount;
   delete toolCall.resultPreviewOmittedLines;
+  delete toolCall.resultPreviewPaths;
   delete toolCall.detailRef;
 }
 

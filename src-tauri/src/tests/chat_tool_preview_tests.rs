@@ -48,6 +48,7 @@ fn preview_tool_payloads_truncates_large_tool_results() {
     assert_eq!(tool_call["result_preview_truncated"], true);
     assert_eq!(tool_call["result_preview_line_count"], 14);
     assert_eq!(tool_call["result_preview_omitted_lines"], 4);
+    assert_eq!(tool_call["result_preview_paths"], json!(["$"]));
     assert_eq!(tool_call["detail_ref"]["conversation_id"], "conv-1");
     assert_eq!(tool_call["detail_ref"]["message_id"], "msg-1");
     assert_eq!(tool_call["detail_ref"]["tool_call_id"], "tool-1");
@@ -137,6 +138,7 @@ fn live_preview_payloads_include_detail_refs() {
     assert_eq!(preview.result.as_str().unwrap().lines().count(), 10);
     assert_eq!(preview.line_count, 12);
     assert_eq!(preview.omitted_lines, 2);
+    assert_eq!(preview.paths, vec!["$".to_string()]);
     assert_eq!(preview.detail_ref.unwrap()["tool_call_id"], "tool-live-1");
 }
 
@@ -221,10 +223,31 @@ fn live_preview_payloads_extract_text_from_result_shapes() {
         let preview = build_tool_result_preview_payload(Some("bash"), &result, None).unwrap();
         assert!(preview
             .result
-            .as_str()
+            .get(key)
+            .and_then(serde_json::Value::as_str)
             .unwrap()
             .contains(&format!("{key} 10")));
+        assert_eq!(preview.paths, vec![format!("$.{key}")]);
     }
+
+    let task_result = json!({
+        "success": true,
+        "task": {
+            "task_number": 7,
+            "title": "Validate ledger labels",
+            "details": (1..=600).map(|index| format!("detail {index}")).collect::<Vec<_>>().join("\n")
+        }
+    });
+    let preview =
+        build_tool_result_preview_payload(Some("ralphx::complete_agent_task"), &task_result, None)
+            .unwrap();
+    assert_eq!(preview.result["task"]["task_number"], 7);
+    assert_eq!(preview.result["task"]["title"], "Validate ledger labels");
+    assert!(preview.result["task"]["details"]
+        .as_str()
+        .unwrap()
+        .contains("detail 10"));
+    assert_eq!(preview.paths, vec!["$.task.details".to_string()]);
 
     let nested_content = json!({
         "content": [
@@ -233,7 +256,11 @@ fn live_preview_payloads_extract_text_from_result_shapes() {
         ]
     });
     let preview = build_tool_result_preview_payload(Some("bash"), &nested_content, None).unwrap();
-    assert!(preview.result.as_str().unwrap().contains("nested 10"));
+    assert!(preview.result["content"][1]["text"]
+        .as_str()
+        .unwrap()
+        .contains("nested 10"));
+    assert_eq!(preview.paths, vec!["$.content[1].text".to_string()]);
 }
 
 #[test]
@@ -244,11 +271,56 @@ fn live_preview_payloads_handle_json_fallback_and_char_limit() {
     let preview = build_live_tool_result_preview(Some("bash"), &long_value, None);
 
     assert!(preview.is_previewed());
-    assert!(preview.result.as_str().unwrap().chars().count() <= 4_000);
+    let preview_items = preview.result["items"].as_array().unwrap();
+    assert_eq!(preview_items.len(), 51);
+    assert_eq!(preview_items[50]["__ralphx_preview_truncated"], true);
+    assert_eq!(preview_items[50]["__ralphx_preview_omitted_items"], 450);
+    assert_eq!(
+        preview.preview.as_ref().unwrap().paths,
+        vec!["$.items[50:]".to_string()]
+    );
 
     let non_text_value = json!(["plain", "array", 1, true]);
     assert!(!build_live_tool_result_preview(Some("bash"), &non_text_value, None).is_previewed());
     assert!(!build_live_tool_result_preview(None, &long_value, None).is_previewed());
+}
+
+#[test]
+fn live_preview_payloads_mark_oversized_objects_and_fallbacks() {
+    let capped_object = json!((0..85)
+        .map(|index| (format!("field_{index:03}"), json!("value")))
+        .collect::<serde_json::Map<String, serde_json::Value>>());
+    let capped_preview = build_live_tool_result_preview(Some("bash"), &capped_object, None);
+
+    assert!(capped_preview.is_previewed());
+    assert_eq!(
+        capped_preview.result["__ralphx_preview_truncated"],
+        json!(true)
+    );
+    assert_eq!(capped_preview.result["__ralphx_preview_omitted_fields"], 5);
+    assert_eq!(
+        capped_preview.preview.as_ref().unwrap().paths,
+        vec!["$.*".to_string()]
+    );
+
+    let shallow_object = json!((0..20)
+        .map(|index| (format!("field_{index:03}"), json!(index)))
+        .collect::<serde_json::Map<String, serde_json::Value>>());
+    let fallback_preview = build_live_tool_result_preview(Some("bash"), &shallow_object, None);
+
+    assert!(fallback_preview.is_previewed());
+    assert_eq!(
+        fallback_preview.result["__ralphx_preview_truncated"],
+        json!(true)
+    );
+    assert!(fallback_preview.result["preview_text"]
+        .as_str()
+        .unwrap()
+        .contains("field_000"));
+    assert_eq!(
+        fallback_preview.preview.as_ref().unwrap().paths,
+        vec!["$".to_string()]
+    );
 }
 
 #[test]
@@ -261,8 +333,7 @@ fn preview_helpers_cover_fallback_and_skip_edges() {
     });
     let nested_preview =
         build_tool_result_preview_payload(Some("bash"), &nested_content, None).unwrap();
-    assert!(nested_preview
-        .result
+    assert!(nested_preview.result["content"][1]["text"]
         .as_str()
         .unwrap()
         .contains("nested 10"));
@@ -316,6 +387,7 @@ fn live_preview_fields_flatten_into_agent_tool_call_payload_json() {
     assert_eq!(value["result_preview_truncated"], true);
     assert_eq!(value["result_preview_line_count"], 12);
     assert_eq!(value["result_preview_omitted_lines"], 2);
+    assert_eq!(value["result_preview_paths"], json!(["$"]));
     assert_eq!(value["detail_ref"]["tool_call_id"], "tool-1");
     assert!(value.get("preview").is_none());
 }
