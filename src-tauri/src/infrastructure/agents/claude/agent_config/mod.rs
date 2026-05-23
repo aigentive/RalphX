@@ -12,9 +12,10 @@ use crate::domain::agents::{
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, list_canonical_prompt_backed_agents, load_canonical_agent_definition,
+    load_canonical_agent_definition_for_profile,
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata,
-    AgentPromptHarness, CanonicalClaudeToolSpec,
+    try_load_canonical_claude_metadata_for_profile, AgentPromptHarness, CanonicalClaudeToolSpec,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -351,6 +352,7 @@ fn default_file_logging() -> bool {
 struct LoadedConfig {
     agents: Vec<AgentConfig>,
     claude: ClaudeRuntimeConfig,
+    tool_sets: HashMap<String, Vec<String>>,
     process_mapping: ProcessMapping,
     team_constraints: TeamConstraintsConfig,
     defer_merge_enabled: bool,
@@ -1178,6 +1180,7 @@ fn resolve_loaded_config_with_lookup(
     Some(LoadedConfig {
         agents: resolved,
         claude,
+        tool_sets: parsed.tool_sets,
         process_mapping,
         team_constraints,
         defer_merge_enabled: parsed.defer_merge_enabled,
@@ -1623,6 +1626,7 @@ fn load_config() -> LoadedConfig {
                     settings: None,
                     default_effort: "medium".to_string(),
                 },
+                tool_sets: canonical_claude_tool_sets().clone(),
                 process_mapping: ProcessMapping::default(),
                 team_constraints: TeamConstraintsConfig::default(),
                 defer_merge_enabled: true,
@@ -1660,6 +1664,49 @@ pub fn get_agent_config(agent_name: &str) -> Option<&'static AgentConfig> {
     agent_configs().iter().find(|c| c.name == lookup_name)
 }
 
+pub fn get_agent_config_for_profile(
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<AgentConfig> {
+    let loaded = LOADED_CONFIG_CELL.get_or_init(load_config);
+    let lookup_name = super::canonical_short_agent_name(agent_name);
+    let mut config = loaded
+        .agents
+        .iter()
+        .find(|c| c.name == lookup_name)?
+        .clone();
+    let Some(profile_name) = profile_name else {
+        return Some(config);
+    };
+    let project_root = canonical_agent_project_root();
+    let definition =
+        load_canonical_agent_definition_for_profile(&project_root, lookup_name, Some(profile_name))?;
+    let metadata =
+        try_load_canonical_claude_metadata_for_profile(&project_root, lookup_name, Some(profile_name))
+            .ok()?;
+
+    if !definition.capabilities.mcp_tools.is_empty() {
+        config.allowed_mcp_tools = definition.capabilities.mcp_tools;
+    }
+    if let Some(spec) = metadata.tools.as_ref() {
+        let tools = runtime_tools_spec_from_canonical(spec);
+        config.mcp_only = tools.mcp_only;
+        config.resolved_cli_tools =
+            resolve_tools_from_spec(lookup_name, &tools, &loaded.tool_sets);
+    }
+    config.preapproved_cli_tools = metadata.preapproved_cli_tools;
+    if metadata.model.is_some() {
+        config.model = metadata.model;
+    }
+    if metadata.effort.is_some() {
+        config.effort = metadata.effort;
+    }
+    if metadata.permission_mode.is_some() {
+        config.permission_mode = metadata.permission_mode;
+    }
+    Some(config)
+}
+
 pub fn get_effective_settings(agent_name: Option<&str>) -> Option<&'static serde_json::Value> {
     let loaded = LOADED_CONFIG_CELL.get_or_init(load_config);
     if let Some(name) = agent_name {
@@ -1683,7 +1730,14 @@ pub fn get_effective_settings_profile(agent_name: Option<&str>) -> Option<&'stat
 }
 
 pub fn get_allowed_tools(agent_name: &str) -> Option<String> {
-    get_agent_config(agent_name).map(|c| {
+    get_allowed_tools_for_profile(agent_name, None)
+}
+
+pub fn get_allowed_tools_for_profile(
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    get_agent_config_for_profile(agent_name, profile_name).map(|c| {
         if c.mcp_only {
             String::new()
         } else {
@@ -1790,11 +1844,23 @@ pub fn ideation_activity_threshold_secs() -> u64 {
 }
 
 pub fn get_preapproved_tools(agent_name: &str) -> Option<String> {
-    get_agent_config(agent_name).and_then(|c| {
+    get_preapproved_tools_for_profile(agent_name, None)
+}
+
+pub fn get_preapproved_tools_for_profile(
+    agent_name: &str,
+    profile_name: Option<&str>,
+) -> Option<String> {
+    get_agent_config_for_profile(agent_name, profile_name).and_then(|c| {
         let mut tools: Vec<String> = Vec::new();
         let mcp_server = &claude_runtime_config().mcp_server_name;
         let lookup_name = super::canonical_short_agent_name(agent_name);
-        let metadata = try_load_canonical_claude_metadata(&canonical_agent_project_root(), lookup_name).ok();
+        let metadata = try_load_canonical_claude_metadata_for_profile(
+            &canonical_agent_project_root(),
+            lookup_name,
+            profile_name,
+        )
+        .ok();
         let uses_external_transport = metadata
             .as_ref()
             .and_then(|metadata| metadata.mcp_transport.as_deref())

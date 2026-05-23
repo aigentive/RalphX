@@ -27,8 +27,8 @@ use crate::infrastructure::agents::claude::{
     mcp_agent_type, ContentBlockItem, SpawnableCommand, ToolCall,
 };
 use crate::infrastructure::agents::{
-    build_codex_mcp_overrides, build_spawnable_codex_exec_command,
-    build_spawnable_codex_resume_command, compose_codex_prompt, CodexCliCapabilities,
+    build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
+    build_spawnable_codex_resume_command, compose_codex_prompt_for_profile, CodexCliCapabilities,
     CodexExecCliConfig, McpRuntimeContext,
 };
 use crate::utils::truncate_str;
@@ -124,7 +124,7 @@ fn build_claude_spawnable_interactive_command(
     plugin_dir: &Path,
     prompt: &str,
     agent: Option<&str>,
-    mcp_agent: Option<&str>,
+    agent_profile: Option<&str>,
     resume_session: Option<&str>,
     working_directory: &Path,
     is_external_mcp: bool,
@@ -134,12 +134,12 @@ fn build_claude_spawnable_interactive_command(
 ) -> Result<SpawnableCommand, String> {
     #[cfg(test)]
     {
-        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent_for_test(
+        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
             cli_path,
             plugin_dir,
             prompt,
             agent,
-            mcp_agent,
+            agent_profile,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -150,12 +150,12 @@ fn build_claude_spawnable_interactive_command(
     }
     #[cfg(not(test))]
     {
-        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_mcp_agent(
+        crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
             cli_path,
             plugin_dir,
             prompt,
             agent,
-            mcp_agent,
+            agent_profile,
             resume_session,
             working_directory,
             is_external_mcp,
@@ -218,7 +218,7 @@ struct BuildHarnessLaunchRequest<'a> {
     conversation: &'a ChatConversation,
     user_message: &'a str,
     agent_name_override: Option<&'a str>,
-    mcp_agent_name_override: Option<&'a str>,
+    agent_profile: Option<&'a str>,
     context_type: ChatContextType,
     context_id: &'a str,
     working_directory: &'a Path,
@@ -467,7 +467,7 @@ impl ResolvedChatHarnessCli {
                     request.conversation,
                     request.user_message,
                     request.agent_name_override,
-                    request.mcp_agent_name_override,
+                    request.agent_profile,
                     request.working_directory,
                     request.entity_status,
                     request.project_id,
@@ -503,7 +503,7 @@ impl ResolvedChatHarnessCli {
                             request.context_id,
                             request.user_message,
                             request.agent_name_override,
-                            request.mcp_agent_name_override,
+                            request.agent_profile,
                             request.working_directory,
                             session_id,
                             request.project_id,
@@ -534,7 +534,7 @@ impl ResolvedChatHarnessCli {
                             request.conversation,
                             request.user_message,
                             request.agent_name_override,
-                            request.mcp_agent_name_override,
+                            request.agent_profile,
                             request.working_directory,
                             request.entity_status,
                             request.project_id,
@@ -2154,7 +2154,7 @@ pub async fn build_codex_command(
     conversation: &ChatConversation,
     user_message: &str,
     agent_name_override: Option<&str>,
-    mcp_agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2247,10 +2247,11 @@ pub async fn build_codex_command(
         "chat_service.build_codex_command phase completed"
     );
     let prompt_compose_started = Instant::now();
-    let prompt = compose_codex_prompt(
+    let prompt = compose_codex_prompt_for_profile(
         &format!("{}{}", initial_prompt, attachment_context),
         Some(plugin_dir),
         Some(agent_name),
+        agent_profile,
     );
     tracing::info!(
         context_type = %conversation.context_type,
@@ -2276,9 +2277,10 @@ pub async fn build_codex_command(
             None
         },
     );
-    let config_overrides = build_codex_mcp_overrides(
+    let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
-        mcp_agent_name_override.unwrap_or(agent_name),
+        agent_name,
+        agent_profile,
         is_external_mcp,
         Some(&runtime_context),
     )?;
@@ -2384,7 +2386,7 @@ pub(crate) async fn build_launch_plan_for_harness(
     conversation: &ChatConversation,
     user_message: &str,
     agent_name_override: Option<&str>,
-    mcp_agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
     working_directory: &Path,
@@ -2412,7 +2414,7 @@ pub(crate) async fn build_launch_plan_for_harness(
             conversation,
             user_message,
             agent_name_override,
-            mcp_agent_name_override,
+            agent_profile,
             context_type,
             context_id,
             working_directory,
@@ -2501,7 +2503,7 @@ pub async fn build_interactive_command(
     conversation: &ChatConversation,
     user_message: &str,
     agent_name_override: Option<&str>,
-    mcp_agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2623,7 +2625,7 @@ pub async fn build_interactive_command(
         plugin_dir,
         &prompt,
         Some(agent_name),
-        mcp_agent_name_override,
+        agent_profile,
         resume_session,
         working_directory,
         is_external_mcp,
@@ -2899,7 +2901,7 @@ pub async fn build_codex_resume_command(
     context_id: &str,
     message: &str,
     agent_name_override: Option<&str>,
-    mcp_agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
     working_directory: &Path,
     session_id: &str,
     project_id: Option<&str>,
@@ -2938,9 +2940,10 @@ pub async fn build_codex_resume_command(
         None,
         parent_conversation_id,
     );
-    let config_overrides = build_codex_mcp_overrides(
+    let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
-        mcp_agent_name_override.unwrap_or(agent_name),
+        agent_name,
+        agent_profile,
         is_external_mcp,
         Some(&runtime_context),
     )?;
@@ -2960,7 +2963,12 @@ pub async fn build_codex_resume_command(
                 resume_prompt,
                 attachment_context_override.unwrap_or_default()
             );
-            let prompt = compose_codex_prompt(&resume_prompt, Some(plugin_dir), Some(agent_name));
+            let prompt = compose_codex_prompt_for_profile(
+                &resume_prompt,
+                Some(plugin_dir),
+                Some(agent_name),
+                agent_profile,
+            );
 
             let mut spawnable = build_spawnable_codex_resume_command(
                 cli_path,
@@ -3005,7 +3013,12 @@ pub async fn build_codex_resume_command(
                 attachment_context_override.unwrap_or_default()
             );
 
-            let prompt = compose_codex_prompt(&recovery_prompt, Some(plugin_dir), Some(agent_name));
+            let prompt = compose_codex_prompt_for_profile(
+                &recovery_prompt,
+                Some(plugin_dir),
+                Some(agent_name),
+                agent_profile,
+            );
             let mut spawnable =
                 build_spawnable_codex_exec_command(cli_path, &prompt, capabilities, &codex_config)?;
 
@@ -3442,7 +3455,7 @@ exit 0
         working_directory: &Path,
         project_id: &ProjectId,
         agent_name: &str,
-        mcp_agent_name_override: Option<&str>,
+        agent_profile: Option<&str>,
     ) -> ResolvedChatHarnessLaunch {
         let conversation = ChatConversation::new_project(project_id.clone());
         let resolved_spawn_settings =
@@ -3464,7 +3477,7 @@ exit 0
             &conversation,
             "hello from agents view",
             Some(agent_name),
-            mcp_agent_name_override,
+            agent_profile,
             ChatContextType::Project,
             project_id.as_str(),
             working_directory,
@@ -4503,7 +4516,7 @@ exit 0
             (
                 AgentConversationWorkspaceMode::Plan,
                 agent_names::AGENT_ORCHESTRATOR_IDEATION,
-                Some(agent_names::AGENT_CHAT_PLAN),
+                Some("plan"),
             ),
             (
                 AgentConversationWorkspaceMode::Ideation,
@@ -4521,7 +4534,7 @@ exit 0
         ];
 
         for (harness, cli_path, harness_label) in harness_clis {
-            for (mode, expected_agent_name, mcp_agent_name_override) in mode_agents {
+            for (mode, expected_agent_name, agent_profile) in mode_agents {
                 let launch_plan = build_project_agent_launch_plan(
                     harness,
                     &cli_path,
@@ -4529,7 +4542,7 @@ exit 0
                     temp.path(),
                     &project_id,
                     expected_agent_name,
-                    mcp_agent_name_override,
+                    agent_profile,
                 )
                 .await;
                 let spawnable = launch_spawnable(&launch_plan);
@@ -4549,8 +4562,15 @@ exit 0
                             .collect::<Vec<_>>()
                             .join("\n"),
                     };
+                    let removed_agent_id = ["ralphx", "chat", "plan"].join("-");
                     assert!(
-                        mcp_args.contains("ralphx-chat-plan"),
+                        !mcp_args.contains(&removed_agent_id)
+                            && mcp_args.contains("ralphx-ideation"),
+                        "{harness_label} Plan launch should use the ideation agent with a profile, not a separate Plan agent"
+                    );
+                    assert!(
+                        mcp_args.contains("ask_user_question")
+                            && mcp_args.contains("get_session_plan"),
                         "{harness_label} Plan launch should keep the constrained Plan MCP surface"
                     );
                     assert!(
@@ -4583,7 +4603,7 @@ exit 0
             (
                 AgentConversationWorkspaceMode::Plan,
                 agent_names::AGENT_ORCHESTRATOR_IDEATION,
-                Some(agent_names::AGENT_CHAT_PLAN),
+                Some("plan"),
             ),
             (
                 AgentConversationWorkspaceMode::Ideation,
@@ -4592,7 +4612,7 @@ exit 0
             ),
         ];
 
-        for (mode, expected_agent_name, mcp_agent_name_override) in mode_agents {
+        for (mode, expected_agent_name, agent_profile) in mode_agents {
             let launch_plan = build_project_agent_launch_plan(
                 AgentHarnessKind::Codex,
                 &cli_path,
@@ -4600,7 +4620,7 @@ exit 0
                 temp.path(),
                 &project_id,
                 expected_agent_name,
-                mcp_agent_name_override,
+                agent_profile,
             )
             .await;
             let args = launch_spawnable(&launch_plan)

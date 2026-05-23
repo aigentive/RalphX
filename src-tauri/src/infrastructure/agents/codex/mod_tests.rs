@@ -1,8 +1,8 @@
 use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
-    build_spawnable_codex_exec_command, compose_codex_prompt, configure_spawn, probe_codex_cli,
-    resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
-    CodexMcpRuntimeContext,
+    build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
+    compose_codex_prompt, configure_spawn, probe_codex_cli, resolve_codex_cli_from_candidates,
+    CodexCliCapabilities, CodexExecCliConfig, CodexMcpRuntimeContext,
 };
 use crate::domain::agents::LogicalEffort;
 use std::ffi::{OsStr, OsString};
@@ -75,6 +75,19 @@ fn codex_mcp_args_override(overrides: &[String]) -> &str {
         .iter()
         .find_map(|entry| entry.strip_prefix("mcp_servers.ralphx.args="))
         .expect("Codex MCP args override")
+}
+
+fn seed_live_agent_yaml(root: &Path, agent_name: &str) {
+    let agent_dir = root.join("agents").join(agent_name);
+    std::fs::create_dir_all(&agent_dir).expect("create agent fixture dir");
+    std::fs::copy(
+        project_root()
+            .join("agents")
+            .join(agent_name)
+            .join("agent.yaml"),
+        agent_dir.join("agent.yaml"),
+    )
+    .expect("copy live agent fixture");
 }
 
 fn project_root() -> PathBuf {
@@ -860,10 +873,18 @@ harnesses:
 #[test]
 fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let plugin_dir = create_plugin_dir(temp_dir.path());
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+    seed_live_agent_yaml(root, "ralphx-ideation");
 
-    let overrides =
-        build_codex_mcp_overrides(&plugin_dir, "ralphx-chat-plan", false, None).expect("overrides");
+    let overrides = build_codex_mcp_overrides_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        false,
+        None,
+    )
+    .expect("overrides");
     let args = codex_mcp_args_override(&overrides);
 
     assert!(
@@ -875,10 +896,18 @@ fn build_codex_mcp_overrides_keeps_plan_question_tool_for_interactive_runs() {
 #[test]
 fn build_codex_mcp_overrides_filters_plan_question_tool_for_external_runs() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let plugin_dir = create_plugin_dir(temp_dir.path());
+    let root = temp_dir.path();
+    let plugin_dir = create_plugin_dir(root);
+    seed_live_agent_yaml(root, "ralphx-ideation");
 
-    let overrides =
-        build_codex_mcp_overrides(&plugin_dir, "ralphx-chat-plan", true, None).expect("overrides");
+    let overrides = build_codex_mcp_overrides_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        true,
+        None,
+    )
+    .expect("overrides");
     let args = codex_mcp_args_override(&overrides);
 
     assert!(

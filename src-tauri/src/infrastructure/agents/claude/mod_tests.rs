@@ -67,6 +67,19 @@ fn allowed_tools_arg_from_mcp_config(config_path: &Path) -> Option<String> {
         })
 }
 
+fn seed_live_agent_yaml(root: &Path, agent_name: &str) {
+    let agent_dir = root.join("agents").join(agent_name);
+    std::fs::create_dir_all(&agent_dir).expect("create agent fixture dir");
+    std::fs::copy(
+        repo_project_root()
+            .join("agents")
+            .join(agent_name)
+            .join("agent.yaml"),
+        agent_dir.join("agent.yaml"),
+    )
+    .expect("copy live agent fixture");
+}
+
 fn seed_runnable_mcp_runtime(plugin_dir: &Path, runtime_marker: &str) {
     std::fs::create_dir_all(plugin_dir.join("ralphx-mcp-server/build")).unwrap();
     std::fs::create_dir_all(
@@ -640,10 +653,17 @@ fn test_create_mcp_config_non_external_mcp_keeps_ask_user_question() {
 }
 
 #[test]
-fn test_plan_chat_mcp_config_non_external_keeps_ask_user_question() {
-    let (dir, plugin_dir) = make_temp_plugin_dir();
-    let config_path =
-        create_mcp_config(&plugin_dir, "ralphx-chat-plan", false).expect("should succeed");
+fn test_plan_profile_mcp_config_non_external_keeps_ask_user_question() {
+    let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-ideation");
+    let config_path = create_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        false,
+        None,
+    )
+    .expect("should succeed");
     let allowed_tools_arg =
         allowed_tools_arg_from_mcp_config(&config_path).expect("allowed tools arg");
 
@@ -655,10 +675,17 @@ fn test_plan_chat_mcp_config_non_external_keeps_ask_user_question() {
 }
 
 #[test]
-fn test_plan_chat_mcp_config_external_filters_ask_user_question() {
-    let (dir, plugin_dir) = make_temp_plugin_dir();
-    let config_path =
-        create_mcp_config(&plugin_dir, "ralphx-chat-plan", true).expect("should succeed");
+fn test_plan_profile_mcp_config_external_filters_ask_user_question() {
+    let (dir, root, plugin_dir) = make_temp_project_plugin_dir();
+    seed_live_agent_yaml(&root, "ralphx-ideation");
+    let config_path = create_mcp_config_with_runtime_context_for_profile(
+        &plugin_dir,
+        "ralphx-ideation",
+        Some("plan"),
+        true,
+        None,
+    )
+    .expect("should succeed");
     let allowed_tools_arg =
         allowed_tools_arg_from_mcp_config(&config_path).expect("allowed tools arg");
 

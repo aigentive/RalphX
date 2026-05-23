@@ -69,8 +69,7 @@ use crate::domain::services::{
     MessageQueue, QueuedMessage, RunningAgentInfo, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PLAN, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
-    AGENT_ORCHESTRATOR_IDEATION,
+    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
 };
 use crate::utils::truncate_str;
 use async_trait::async_trait;
@@ -380,11 +379,9 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
     }
 }
 
-fn mcp_agent_name_for_conversation_mode(
-    mode: AgentConversationWorkspaceMode,
-) -> Option<&'static str> {
+fn agent_profile_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> Option<&'static str> {
     match mode {
-        AgentConversationWorkspaceMode::Plan => Some(AGENT_CHAT_PLAN),
+        AgentConversationWorkspaceMode::Plan => Some("plan"),
         _ => None,
     }
 }
@@ -1926,7 +1923,7 @@ impl<R: Runtime> AppChatService<R> {
         conversation: &ChatConversation,
         message: &str,
         agent_name_override: Option<&str>,
-        mcp_agent_name_override: Option<&str>,
+        agent_profile: Option<&str>,
         context_type: ChatContextType,
         context_id: &str,
         runtime_context_id: &str,
@@ -2005,7 +2002,7 @@ impl<R: Runtime> AppChatService<R> {
             conversation,
             message,
             agent_name_override,
-            mcp_agent_name_override,
+            agent_profile,
             context_type,
             context_id,
             working_directory,
@@ -2768,8 +2765,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             options.agent_name_override.as_deref(),
             agent_conversation_mode,
         );
-        let mcp_agent_name_override =
-            agent_conversation_mode.and_then(mcp_agent_name_for_conversation_mode);
+        let agent_profile = agent_conversation_mode.and_then(agent_profile_for_conversation_mode);
         if matches!(
             agent_conversation_mode,
             Some(
@@ -3640,7 +3636,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 &conversation,
                 &runtime_message,
                 Some(resolved_agent_name.as_str()),
-                mcp_agent_name_override,
+                agent_profile,
                 context_type,
                 context_id,
                 &runtime_context_id,

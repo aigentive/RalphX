@@ -136,7 +136,7 @@ fn edit_mode_plan_handoff_runtime_message_injects_linked_plan_context() {
         "Plan Mode Implementation Plan",
         ArtifactType::Specification,
         "# Plan\n\nImplement the composer Plan mode.",
-        "ralphx-chat-plan",
+        "ralphx-ideation",
     );
     artifact.id = ArtifactId::from_string("plan-artifact-1".to_string());
     artifact.metadata.version = 3;

@@ -1,10 +1,15 @@
 use super::{
     list_canonical_prompt_backed_agents, load_canonical_agent_definition,
-    load_canonical_claude_metadata, load_canonical_codex_metadata, load_harness_agent_prompt,
+    load_canonical_agent_definition_for_profile, load_canonical_claude_metadata,
+    load_canonical_claude_metadata_for_profile, load_canonical_codex_metadata,
+    load_canonical_codex_metadata_for_profile, load_harness_agent_prompt,
+    load_harness_agent_prompt_for_profile,
     resolve_harness_agent_prompt_path, resolve_project_root_from_catalog_path,
     resolve_project_root_from_plugin_dir, try_load_canonical_claude_metadata, AgentPromptHarness,
 };
-use crate::infrastructure::agents::claude::get_agent_config;
+use crate::infrastructure::agents::claude::{
+    get_agent_config, get_agent_config_for_profile, get_preapproved_tools_for_profile,
+};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -149,7 +154,6 @@ const CROSS_HARNESS_WORKFLOW_AGENTS: &[(&str, &str, &str)] = &[
 const CROSS_HARNESS_CHAT_AGENTS: &[(&str, &str, &str)] = &[
     ("ralphx-chat-task", "task_chat", "ralphx-chat-task"),
     ("ralphx-chat-project", "project_chat", "ralphx-chat-project"),
-    ("ralphx-chat-plan", "plan_chat", "ralphx-chat-plan"),
 ];
 
 const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
@@ -232,7 +236,6 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-pr-describer",
     "ralphx-chat-task",
     "ralphx-chat-project",
-    "ralphx-chat-plan",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
@@ -256,7 +259,6 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
-    "ralphx-chat-plan",
     "ralphx-utility-pr-describer",
     "ralphx-plan-verifier",
     "ralphx-plan-critic-completeness",
@@ -278,10 +280,6 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
     (
         "ralphx-general-explorer",
         &["Write", "Edit", "NotebookEdit", "Bash"],
-    ),
-    (
-        "ralphx-chat-plan",
-        &["Write", "Edit", "NotebookEdit", "Bash", "Task"],
     ),
     (
         "ralphx-ideation",
@@ -360,7 +358,6 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-chat-task",
     "ralphx-chat-project",
-    "ralphx-chat-plan",
     "ralphx-review-chat",
     "ralphx-review-history",
     "ralphx-execution-orchestrator",
@@ -410,7 +407,6 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-chat-task", "sonnet"),
     ("ralphx-chat-project", "sonnet"),
-    ("ralphx-chat-plan", "opus"),
     ("ralphx-review-chat", "sonnet"),
     ("ralphx-review-history", "sonnet"),
     ("ralphx-execution-orchestrator", "opus"),
@@ -468,7 +464,6 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
-    ("ralphx-chat-plan", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
     ("ralphx-review-history", "base_tools", &["Task"], false),
     (
@@ -799,21 +794,50 @@ fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
 #[test]
 fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
     let root = project_root();
-    let definition = load_canonical_agent_definition(&root, "ralphx-chat-plan")
-        .expect("missing definition for ralphx-chat-plan");
-    let runtime_config =
-        get_agent_config("ralphx-chat-plan").expect("missing runtime config for ralphx-chat-plan");
-    let claude_prompt =
-        load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Claude)
-            .expect("missing claude prompt for ralphx-ideation");
-    let codex_prompt =
-        load_harness_agent_prompt(&root, "ralphx-ideation", AgentPromptHarness::Codex)
-            .expect("missing codex prompt for ralphx-ideation");
+    let definition = load_canonical_agent_definition_for_profile(
+        &root,
+        "ralphx-ideation",
+        Some("plan"),
+    )
+    .expect("missing plan profile for ralphx-ideation");
+    let runtime_config = get_agent_config_for_profile("ralphx-ideation", Some("plan"))
+        .expect("missing runtime plan profile for ralphx-ideation");
+    let preapproved_tools = get_preapproved_tools_for_profile("ralphx-ideation", Some("plan"))
+        .expect("missing preapproved tools for ralphx-ideation plan profile");
+    let claude_metadata =
+        load_canonical_claude_metadata_for_profile(&root, "ralphx-ideation", Some("plan"));
+    let codex_metadata =
+        load_canonical_codex_metadata_for_profile(&root, "ralphx-ideation", Some("plan"));
+    let claude_prompt = load_harness_agent_prompt_for_profile(
+        &root,
+        "ralphx-ideation",
+        AgentPromptHarness::Claude,
+        Some("plan"),
+    )
+    .expect("missing claude prompt for ralphx-ideation plan profile");
+    let codex_prompt = load_harness_agent_prompt_for_profile(
+        &root,
+        "ralphx-ideation",
+        AgentPromptHarness::Codex,
+        Some("plan"),
+    )
+    .expect("missing codex prompt for ralphx-ideation plan profile");
 
     assert_eq!(
         definition.capabilities.mcp_tools, runtime_config.allowed_mcp_tools,
-        "Plan chat runtime MCP grants should be sourced from canonical capabilities"
+        "Plan profile runtime MCP grants should be sourced from canonical capabilities"
     );
+    assert_eq!(definition.role, "plan_chat");
+    assert_eq!(definition.delegation.allowed_targets, Vec::<String>::new());
+    assert_eq!(
+        claude_metadata.tools.and_then(|tools| tools.extends),
+        Some("readonly_tools".to_string())
+    );
+    assert!(
+        !preapproved_tools.contains("Task(Plan)"),
+        "Plan profile should clear the base ideation Task preapproval"
+    );
+    assert_eq!(codex_metadata.runtime_features.get("shell_tool"), Some(&false));
 
     for required_tool in [
         "ask_user_question",
@@ -830,14 +854,14 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
                 .mcp_tools
                 .iter()
                 .any(|tool| tool == required_tool),
-            "Plan chat canonical surface should include {required_tool}"
+            "Plan profile canonical surface should include {required_tool}"
         );
         assert!(
             runtime_config
                 .allowed_mcp_tools
                 .iter()
                 .any(|tool| tool == required_tool),
-            "Plan chat runtime surface should include {required_tool}"
+            "Plan profile runtime surface should include {required_tool}"
         );
     }
 
@@ -853,14 +877,14 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
                 .mcp_tools
                 .iter()
                 .any(|tool| tool == forbidden_tool),
-            "Plan chat canonical surface must not expose {forbidden_tool}"
+            "Plan profile canonical surface must not expose {forbidden_tool}"
         );
         assert!(
             !runtime_config
                 .allowed_mcp_tools
                 .iter()
                 .any(|tool| tool == forbidden_tool),
-            "Plan chat runtime surface must not expose {forbidden_tool}"
+            "Plan profile runtime surface must not expose {forbidden_tool}"
         );
     }
 
@@ -887,6 +911,8 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("do not park blocking user-owned decisions there"));
         assert!(prompt.contains("Do not create task proposals"));
         assert!(prompt.contains("Implement Plan action"));
+        assert!(!prompt.contains("<agent_task_ledger_contract>"));
+        assert!(!prompt.contains("## RalphX Delegation Policy"));
     }
 }
 

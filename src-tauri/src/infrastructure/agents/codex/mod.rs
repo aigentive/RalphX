@@ -12,14 +12,15 @@ use crate::domain::agents::{
 use crate::infrastructure::agents::claude::SpawnableCommand;
 use crate::infrastructure::agents::claude::{
     claude_runtime_config, external_mcp_config, filter_interactive_tools,
-    format_allowed_tools_arg_value, get_agent_config, mcp_agent_type, node_utils,
+    format_allowed_tools_arg_value, get_agent_config_for_profile, mcp_agent_type, node_utils,
     validate_mcp_tool_name,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    internal_mcp_server_name, load_canonical_codex_metadata, load_harness_agent_prompt,
-    resolve_project_root_from_plugin_dir, AgentPromptHarness, CanonicalCodexAgentMetadata,
+    internal_mcp_server_name, load_harness_agent_prompt_for_profile,
+    resolve_project_root_from_plugin_dir, try_load_canonical_codex_metadata_for_profile,
+    AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
-use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt;
+use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt_for_profile;
 use crate::infrastructure::agents::mcp_runtime_context::{
     append_mcp_runtime_args, append_mcp_runtime_query, McpRuntimeContext,
 };
@@ -134,10 +135,27 @@ pub fn build_codex_mcp_overrides(
     is_external_mcp: bool,
     runtime_context: Option<&CodexMcpRuntimeContext>,
 ) -> Result<Vec<String>, String> {
+    build_codex_mcp_overrides_for_profile(
+        plugin_dir,
+        agent_name,
+        None,
+        is_external_mcp,
+        runtime_context,
+    )
+}
+
+pub fn build_codex_mcp_overrides_for_profile(
+    plugin_dir: &Path,
+    agent_name: &str,
+    agent_profile: Option<&str>,
+    is_external_mcp: bool,
+    runtime_context: Option<&CodexMcpRuntimeContext>,
+) -> Result<Vec<String>, String> {
     let mcp_server_name = claude_runtime_config().mcp_server_name.clone();
     let short_name = mcp_agent_type(agent_name);
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
-    let codex_metadata = load_canonical_codex_metadata(&project_root, short_name);
+    let codex_metadata =
+        try_load_canonical_codex_metadata_for_profile(&project_root, short_name, agent_profile)?;
     if codex_metadata.mcp_transport.as_deref() == Some("external") {
         let mut overrides = build_codex_external_mcp_overrides(
             &mcp_server_name,
@@ -149,6 +167,7 @@ pub fn build_codex_mcp_overrides(
                 &internal_mcp_server_name(&mcp_server_name),
                 plugin_dir,
                 short_name,
+                agent_profile,
                 is_external_mcp,
                 runtime_context,
                 Some(&codex_metadata.internal_mcp_tools),
@@ -161,6 +180,7 @@ pub fn build_codex_mcp_overrides(
         &mcp_server_name,
         plugin_dir,
         short_name,
+        agent_profile,
         is_external_mcp,
         runtime_context,
         None,
@@ -177,6 +197,7 @@ fn build_codex_internal_mcp_overrides(
     mcp_server_name: &str,
     plugin_dir: &Path,
     short_name: &str,
+    agent_profile: Option<&str>,
     is_external_mcp: bool,
     runtime_context: Option<&CodexMcpRuntimeContext>,
     explicit_allowed_tools: Option<&[String]>,
@@ -204,8 +225,14 @@ fn build_codex_internal_mcp_overrides(
     let enabled_tools = if let Some(tools) = explicit_allowed_tools {
         Some(valid_codex_mcp_tools(tools, is_external_mcp))
     } else {
-        get_agent_config(short_name)
-            .map(|config| valid_codex_mcp_tools(&config.allowed_mcp_tools, is_external_mcp))
+        match get_agent_config_for_profile(short_name, agent_profile) {
+            Some(config) => Some(valid_codex_mcp_tools(
+                &config.allowed_mcp_tools,
+                is_external_mcp,
+            )),
+            None if agent_profile.is_some() => Some(Vec::new()),
+            None => None,
+        }
     };
 
     if let Some(arg_value) = format_allowed_tools_arg_value(enabled_tools.as_deref()) {
@@ -287,6 +314,15 @@ pub fn compose_codex_prompt(
     plugin_dir: Option<&Path>,
     agent_name: Option<&str>,
 ) -> String {
+    compose_codex_prompt_for_profile(prompt, plugin_dir, agent_name, None)
+}
+
+pub fn compose_codex_prompt_for_profile(
+    prompt: &str,
+    plugin_dir: Option<&Path>,
+    agent_name: Option<&str>,
+    agent_profile: Option<&str>,
+) -> String {
     let Some(plugin_dir) = plugin_dir else {
         return prompt.to_string();
     };
@@ -295,14 +331,19 @@ pub fn compose_codex_prompt(
     };
 
     let project_root = resolve_project_root_from_plugin_dir(plugin_dir);
-    let system_prompt =
-        load_harness_agent_prompt(&project_root, agent_name, AgentPromptHarness::Codex);
+    let system_prompt = load_harness_agent_prompt_for_profile(
+        &project_root,
+        agent_name,
+        AgentPromptHarness::Codex,
+        agent_profile,
+    );
     let Some(system_prompt) = system_prompt else {
         return prompt.to_string();
     };
-    let system_prompt = match inject_internal_skills_into_system_prompt(
+    let system_prompt = match inject_internal_skills_into_system_prompt_for_profile(
         &project_root,
         agent_name,
+        agent_profile,
         &system_prompt,
         prompt,
     ) {
