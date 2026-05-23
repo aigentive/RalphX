@@ -10,8 +10,8 @@ use uuid::Uuid;
 use super::DbConnection;
 use crate::domain::entities::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
-    AgentTaskListId, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
-    AgentTaskStateChange, AgentTaskSummary, ProjectId,
+    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
+    AgentTaskState, AgentTaskStateChange, AgentTaskSummary, ProjectId,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
@@ -155,28 +155,59 @@ impl AgentTaskRepository for SqliteAgentTaskRepository {
                 let Some(list) = find_list(conn, &scope)? else {
                     return Ok(Vec::new());
                 };
-                let sql = if options.include_done {
-                    "SELECT id, task_list_id, task_number, title, details, active_label,
-                            owner_agent, state, metadata_json, version,
-                            created_at, updated_at, completed_at
-                     FROM agent_tasks
-                     WHERE task_list_id = ?1
-                     ORDER BY task_number ASC"
-                } else {
-                    "SELECT id, task_list_id, task_number, title, details, active_label,
-                            owner_agent, state, metadata_json, version,
-                            created_at, updated_at, completed_at
-                     FROM agent_tasks
-                     WHERE task_list_id = ?1 AND state NOT IN ('done', 'dropped')
-                     ORDER BY task_number ASC"
+                list_tasks_for_list_id(conn, &list.id, options)
+            })
+            .await
+    }
+
+    async fn list_task_lists(
+        &self,
+        scope: &AgentTaskScope,
+    ) -> AppResult<Vec<AgentTaskListSummary>> {
+        let scope = scope.clone();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT
+                        l.id,
+                        l.list_sequence,
+                        COUNT(t.id) AS task_count,
+                        COALESCE(SUM(CASE WHEN t.state = 'open' THEN 1 ELSE 0 END), 0) AS open_count,
+                        COALESCE(SUM(CASE WHEN t.state = 'active' THEN 1 ELSE 0 END), 0) AS active_count,
+                        COALESCE(SUM(CASE WHEN t.state = 'done' THEN 1 ELSE 0 END), 0) AS done_count,
+                        COALESCE(SUM(CASE WHEN t.state = 'dropped' THEN 1 ELSE 0 END), 0) AS dropped_count,
+                        l.created_at,
+                        l.updated_at
+                     FROM agent_task_lists l
+                     LEFT JOIN agent_tasks t ON t.task_list_id = l.id
+                     WHERE l.scope_type = ?1 AND l.scope_id = ?2
+                     GROUP BY l.id, l.list_sequence, l.created_at, l.updated_at
+                     ORDER BY l.list_sequence DESC",
+                )?;
+                let rows = stmt.query_map(
+                    params![scope.scope_type.as_str(), scope.scope_id.as_str()],
+                    row_to_list_summary,
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        scope: &AgentTaskScope,
+        list_id: &AgentTaskListId,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        let scope = scope.clone();
+        let list_id = list_id.clone();
+        self.db
+            .run(move |conn| {
+                let Some(list) = find_list_by_id(conn, &scope, &list_id)? else {
+                    return Ok(Vec::new());
                 };
-                let mut stmt = conn.prepare(sql)?;
-                let rows = stmt
-                    .query_map([list.id.as_str()], row_to_task)?
-                    .collect::<Result<Vec<_>, _>>()?;
-                rows.into_iter()
-                    .map(|row| summary_for_row(conn, &row))
-                    .collect()
+                list_tasks_for_list_id(conn, &list.id, options)
             })
             .await
     }
@@ -397,13 +428,31 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTaskRow> {
     })
 }
 
+fn row_to_list_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentTaskListSummary> {
+    let created_at: String = row.get("created_at")?;
+    let updated_at: String = row.get("updated_at")?;
+    Ok(AgentTaskListSummary {
+        list_id: AgentTaskListId::from_string(row.get::<_, String>("id")?),
+        list_sequence: row.get("list_sequence")?,
+        task_count: row.get("task_count")?,
+        open_count: row.get("open_count")?,
+        active_count: row.get("active_count")?,
+        done_count: row.get("done_count")?,
+        dropped_count: row.get("dropped_count")?,
+        created_at: parse_datetime(&created_at),
+        updated_at: parse_datetime(&updated_at),
+    })
+}
+
 fn find_list(conn: &Connection, scope: &AgentTaskScope) -> AppResult<Option<AgentTaskList>> {
     let result = conn
         .query_row(
             "SELECT id, project_id, scope_type, scope_id, name, created_by_agent,
-                    next_task_number, created_at, updated_at
+                    list_sequence, next_task_number, created_at, updated_at
              FROM agent_task_lists
-             WHERE scope_type = ?1 AND scope_id = ?2",
+             WHERE scope_type = ?1 AND scope_id = ?2
+             ORDER BY list_sequence DESC
+             LIMIT 1",
             params![scope.scope_type.as_str(), scope.scope_id.as_str()],
             |row| {
                 let created_at: String = row.get("created_at")?;
@@ -415,6 +464,46 @@ fn find_list(conn: &Connection, scope: &AgentTaskScope) -> AppResult<Option<Agen
                         .map(ProjectId::from_string),
                     scope_type: row.get("scope_type")?,
                     scope_id: row.get("scope_id")?,
+                    list_sequence: row.get("list_sequence")?,
+                    name: row.get("name")?,
+                    created_by_agent: row.get("created_by_agent")?,
+                    next_task_number: row.get("next_task_number")?,
+                    created_at: parse_datetime(&created_at),
+                    updated_at: parse_datetime(&updated_at),
+                })
+            },
+        )
+        .optional()?;
+    Ok(result)
+}
+
+fn find_list_by_id(
+    conn: &Connection,
+    scope: &AgentTaskScope,
+    list_id: &AgentTaskListId,
+) -> AppResult<Option<AgentTaskList>> {
+    let result = conn
+        .query_row(
+            "SELECT id, project_id, scope_type, scope_id, name, created_by_agent,
+                    list_sequence, next_task_number, created_at, updated_at
+             FROM agent_task_lists
+             WHERE id = ?1 AND scope_type = ?2 AND scope_id = ?3",
+            params![
+                list_id.as_str(),
+                scope.scope_type.as_str(),
+                scope.scope_id.as_str()
+            ],
+            |row| {
+                let created_at: String = row.get("created_at")?;
+                let updated_at: String = row.get("updated_at")?;
+                Ok(AgentTaskList {
+                    id: AgentTaskListId::from_string(row.get::<_, String>("id")?),
+                    project_id: row
+                        .get::<_, Option<String>>("project_id")?
+                        .map(ProjectId::from_string),
+                    scope_type: row.get("scope_type")?,
+                    scope_id: row.get("scope_id")?,
+                    list_sequence: row.get("list_sequence")?,
                     name: row.get("name")?,
                     created_by_agent: row.get("created_by_agent")?,
                     next_task_number: row.get("next_task_number")?,
@@ -429,14 +518,26 @@ fn find_list(conn: &Connection, scope: &AgentTaskScope) -> AppResult<Option<Agen
 
 fn ensure_list(conn: &Connection, scope: &AgentTaskScope) -> AppResult<AgentTaskList> {
     if let Some(list) = find_list(conn, scope)? {
+        if list_should_roll_over(conn, &list.id)? {
+            return create_list(conn, scope, list.list_sequence + 1);
+        }
         return Ok(list);
     }
+    create_list(conn, scope, 1)
+}
+
+fn create_list(
+    conn: &Connection,
+    scope: &AgentTaskScope,
+    list_sequence: i64,
+) -> AppResult<AgentTaskList> {
     let now = Utc::now();
     let list = AgentTaskList {
         id: AgentTaskListId::new(),
         project_id: scope.project_id.clone(),
         scope_type: scope.scope_type.clone(),
         scope_id: scope.scope_id.clone(),
+        list_sequence,
         name: None,
         created_by_agent: scope.actor_agent.clone(),
         next_task_number: 1,
@@ -445,14 +546,15 @@ fn ensure_list(conn: &Connection, scope: &AgentTaskScope) -> AppResult<AgentTask
     };
     conn.execute(
         "INSERT INTO agent_task_lists (
-            id, project_id, scope_type, scope_id, name, created_by_agent,
+            id, project_id, scope_type, scope_id, list_sequence, name, created_by_agent,
             next_task_number, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             list.id.as_str(),
             list.project_id.as_ref().map(|id| id.as_str()),
             list.scope_type.as_str(),
             list.scope_id.as_str(),
+            list.list_sequence,
             list.name.as_deref(),
             list.created_by_agent.as_deref(),
             list.next_task_number,
@@ -466,9 +568,54 @@ fn ensure_list(conn: &Connection, scope: &AgentTaskScope) -> AppResult<AgentTask
         "agent_task_list.created",
         scope.actor_agent.as_deref(),
         None,
-        json!({"scope_type": scope.scope_type.as_str(), "scope_id": scope.scope_id.as_str()}),
+        json!({
+            "scope_type": scope.scope_type.as_str(),
+            "scope_id": scope.scope_id.as_str(),
+            "list_sequence": list.list_sequence
+        }),
     )?;
     Ok(list)
+}
+
+fn list_should_roll_over(conn: &Connection, list_id: &AgentTaskListId) -> AppResult<bool> {
+    let (total, actionable): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN state NOT IN ('done', 'dropped') THEN 1 ELSE 0 END), 0)
+         FROM agent_tasks
+         WHERE task_list_id = ?1",
+        [list_id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(total > 0 && actionable == 0)
+}
+
+fn list_tasks_for_list_id(
+    conn: &Connection,
+    list_id: &AgentTaskListId,
+    options: AgentTaskListOptions,
+) -> AppResult<Vec<AgentTaskSummary>> {
+    let sql = if options.include_done {
+        "SELECT id, task_list_id, task_number, title, details, active_label,
+                owner_agent, state, metadata_json, version,
+                created_at, updated_at, completed_at
+         FROM agent_tasks
+         WHERE task_list_id = ?1
+         ORDER BY task_number ASC"
+    } else {
+        "SELECT id, task_list_id, task_number, title, details, active_label,
+                owner_agent, state, metadata_json, version,
+                created_at, updated_at, completed_at
+         FROM agent_tasks
+         WHERE task_list_id = ?1 AND state NOT IN ('done', 'dropped')
+         ORDER BY task_number ASC"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map([list_id.as_str()], row_to_task)?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|row| summary_for_row(conn, &row))
+        .collect()
 }
 
 fn find_task(

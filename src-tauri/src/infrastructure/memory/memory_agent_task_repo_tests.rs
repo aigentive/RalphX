@@ -32,6 +32,80 @@ async fn create_assigns_monotonic_task_numbers() {
 }
 
 #[tokio::test]
+async fn create_rolls_over_after_current_list_is_terminal() {
+    let repo = MemoryAgentTaskRepository::new();
+    let scope = scope();
+
+    repo.create_task(&scope, create("First slice"))
+        .await
+        .unwrap();
+    repo.update_task(
+        &scope,
+        "1",
+        AgentTaskPatch {
+            state: Some(AgentTaskState::Done),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let second_slice = repo
+        .create_task(&scope, create("Second slice"))
+        .await
+        .unwrap();
+    assert_eq!(second_slice.task.task_number, 1);
+
+    let current_tasks = repo
+        .list_tasks(&scope, AgentTaskListOptions { include_done: true })
+        .await
+        .unwrap();
+    assert_eq!(current_tasks.len(), 1);
+    assert_eq!(current_tasks[0].title, "Second slice");
+}
+
+#[tokio::test]
+async fn list_task_lists_and_fetch_previous_list_tasks() {
+    let repo = MemoryAgentTaskRepository::new();
+    let scope = scope();
+
+    repo.create_task(&scope, create("First slice"))
+        .await
+        .unwrap();
+    repo.update_task(
+        &scope,
+        "1",
+        AgentTaskPatch {
+            state: Some(AgentTaskState::Done),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    repo.create_task(&scope, create("Second slice"))
+        .await
+        .unwrap();
+
+    let lists = repo.list_task_lists(&scope).await.unwrap();
+    assert_eq!(lists.len(), 2);
+    assert_eq!(lists[0].list_sequence, 2);
+    assert_eq!(lists[0].open_count, 1);
+    assert_eq!(lists[1].list_sequence, 1);
+    assert_eq!(lists[1].done_count, 1);
+
+    let previous_tasks = repo
+        .list_tasks_for_list(
+            &scope,
+            &lists[1].list_id,
+            AgentTaskListOptions { include_done: true },
+        )
+        .await
+        .unwrap();
+    assert_eq!(previous_tasks.len(), 1);
+    assert_eq!(previous_tasks[0].title, "First slice");
+}
+
+#[tokio::test]
 async fn list_hides_resolved_blockers_but_get_keeps_full_dependencies() {
     let repo = MemoryAgentTaskRepository::new();
     let scope = scope();

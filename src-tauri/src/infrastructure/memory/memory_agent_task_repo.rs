@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::domain::entities::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
-    AgentTaskListId, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope, AgentTaskState,
-    AgentTaskStateChange, AgentTaskSummary,
+    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
+    AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
 };
 use crate::domain::repositories::{AgentTaskListOptions, AgentTaskRepository};
 use crate::error::{AppError, AppResult};
@@ -130,17 +130,35 @@ impl AgentTaskRepository for MemoryAgentTaskRepository {
         let Some(list) = find_list(&state, scope) else {
             return Ok(Vec::new());
         };
-        let mut rows = state
-            .tasks
+        Ok(list_task_summaries_for_list(&state, &list.id, options))
+    }
+
+    async fn list_task_lists(
+        &self,
+        scope: &AgentTaskScope,
+    ) -> AppResult<Vec<AgentTaskListSummary>> {
+        let state = self.state.read().unwrap();
+        let mut lists = state
+            .lists
             .iter()
-            .filter(|row| row.task_list_id == list.id)
-            .filter(|row| options.include_done || !row.state.is_resolved())
+            .filter(|list| list.scope_type == scope.scope_type && list.scope_id == scope.scope_id)
+            .map(|list| list_summary_for_list(&state, list))
             .collect::<Vec<_>>();
-        rows.sort_by_key(|row| row.task_number);
-        Ok(rows
-            .into_iter()
-            .map(|row| summary_for_row(&state, row))
-            .collect())
+        lists.sort_by_key(|list| std::cmp::Reverse(list.list_sequence));
+        Ok(lists)
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        scope: &AgentTaskScope,
+        list_id: &AgentTaskListId,
+        options: AgentTaskListOptions,
+    ) -> AppResult<Vec<AgentTaskSummary>> {
+        let state = self.state.read().unwrap();
+        let Some(list) = find_list_by_id(&state, scope, list_id) else {
+            return Ok(Vec::new());
+        };
+        Ok(list_task_summaries_for_list(&state, &list.id, options))
     }
 
     async fn update_task(
@@ -272,14 +290,28 @@ fn validate_title_and_details(title: &str, details: &str) -> AppResult<()> {
 
 fn ensure_list(state: &mut MemoryAgentTaskState, scope: &AgentTaskScope) -> AgentTaskListId {
     if let Some(list) = find_list(state, scope) {
-        return list.id.clone();
+        let list_id = list.id.clone();
+        let next_sequence = list.list_sequence + 1;
+        if list_should_roll_over(state, &list_id) {
+            return create_list(state, scope, next_sequence);
+        }
+        return list_id;
     }
+    create_list(state, scope, 1)
+}
+
+fn create_list(
+    state: &mut MemoryAgentTaskState,
+    scope: &AgentTaskScope,
+    list_sequence: i64,
+) -> AgentTaskListId {
     let now = Utc::now();
     let list = AgentTaskList {
         id: AgentTaskListId::new(),
         project_id: scope.project_id.clone(),
         scope_type: scope.scope_type.clone(),
         scope_id: scope.scope_id.clone(),
+        list_sequence,
         name: None,
         created_by_agent: scope.actor_agent.clone(),
         next_task_number: 1,
@@ -298,7 +330,85 @@ fn find_list<'a>(
     state
         .lists
         .iter()
-        .find(|list| list.scope_type == scope.scope_type && list.scope_id == scope.scope_id)
+        .filter(|list| list.scope_type == scope.scope_type && list.scope_id == scope.scope_id)
+        .max_by_key(|list| list.list_sequence)
+}
+
+fn find_list_by_id<'a>(
+    state: &'a MemoryAgentTaskState,
+    scope: &AgentTaskScope,
+    list_id: &AgentTaskListId,
+) -> Option<&'a AgentTaskList> {
+    state.lists.iter().find(|list| {
+        list.id == *list_id
+            && list.scope_type == scope.scope_type
+            && list.scope_id == scope.scope_id
+    })
+}
+
+fn list_should_roll_over(state: &MemoryAgentTaskState, list_id: &AgentTaskListId) -> bool {
+    let mut has_tasks = false;
+    let mut has_actionable = false;
+    for task in state
+        .tasks
+        .iter()
+        .filter(|task| task.task_list_id == *list_id)
+    {
+        has_tasks = true;
+        if !task.state.is_resolved() {
+            has_actionable = true;
+            break;
+        }
+    }
+    has_tasks && !has_actionable
+}
+
+fn list_summary_for_list(
+    state: &MemoryAgentTaskState,
+    list: &AgentTaskList,
+) -> AgentTaskListSummary {
+    let mut summary = AgentTaskListSummary {
+        list_id: list.id.clone(),
+        list_sequence: list.list_sequence,
+        task_count: 0,
+        open_count: 0,
+        active_count: 0,
+        done_count: 0,
+        dropped_count: 0,
+        created_at: list.created_at,
+        updated_at: list.updated_at,
+    };
+    for task in state
+        .tasks
+        .iter()
+        .filter(|task| task.task_list_id == list.id)
+    {
+        summary.task_count += 1;
+        match task.state {
+            AgentTaskState::Open => summary.open_count += 1,
+            AgentTaskState::Active => summary.active_count += 1,
+            AgentTaskState::Done => summary.done_count += 1,
+            AgentTaskState::Dropped => summary.dropped_count += 1,
+        }
+    }
+    summary
+}
+
+fn list_task_summaries_for_list(
+    state: &MemoryAgentTaskState,
+    list_id: &AgentTaskListId,
+    options: AgentTaskListOptions,
+) -> Vec<AgentTaskSummary> {
+    let mut rows = state
+        .tasks
+        .iter()
+        .filter(|row| row.task_list_id == *list_id)
+        .filter(|row| options.include_done || !row.state.is_resolved())
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.task_number);
+    rows.into_iter()
+        .map(|row| summary_for_row(state, row))
+        .collect()
 }
 
 fn next_task_number(state: &mut MemoryAgentTaskState, list_id: &AgentTaskListId) -> i64 {
