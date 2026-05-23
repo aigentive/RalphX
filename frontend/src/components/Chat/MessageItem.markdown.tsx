@@ -13,6 +13,8 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
+const PROSE_MAX_WIDTH = "min(85%, 620px)";
+
 // ============================================================================
 // Code Block with Copy Button
 // ============================================================================
@@ -59,7 +61,7 @@ export function CodeBlock({ children, language }: CodeBlockProps) {
             fontFamily: "var(--font-mono)",
             color: "var(--text-primary)",
             whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
+            overflowWrap: "break-word",
           }}
         >
           {children}
@@ -159,7 +161,7 @@ export const markdownComponents = {
     }
     return (
       <code
-        className="px-1 py-px rounded text-[0.75rem] break-all"
+        className="px-1 py-px rounded text-[0.75rem] break-words"
         style={{
           /* Soft inline code chip — distinguishable as code without
              dominating dense paragraphs that contain many spans. */
@@ -175,32 +177,32 @@ export const markdownComponents = {
   },
   pre: ({ children }: React.HTMLAttributes<HTMLPreElement>) => <>{children}</>,
   p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p className="leading-relaxed [&:not(:last-child)]:mb-2" {...props}>
+    <p className="leading-relaxed [&:not(:last-child)]:mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
     </p>
   ),
   h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h1 className="text-lg font-bold mb-2" {...props}>
+    <h1 className="text-lg font-bold mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
     </h1>
   ),
   h2: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h2 className="text-base font-bold mb-2" {...props}>
+    <h2 className="text-base font-bold mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
     </h2>
   ),
   h3: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
-    <h3 className="text-[0.9375rem] font-bold mb-2" {...props}>
+    <h3 className="text-[0.9375rem] font-bold mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
     </h3>
   ),
   ul: ({ children, ...props }: React.HTMLAttributes<HTMLUListElement>) => (
-    <ul className="list-disc pl-4 mb-2" {...props}>
+    <ul className="list-disc pl-4 mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
     </ul>
   ),
   ol: ({ children, ...props }: React.HTMLAttributes<HTMLOListElement>) => (
-    <ol className="list-decimal pl-4 mb-2" {...props}>
+    <ol className="list-decimal pl-4 mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
     </ol>
   ),
@@ -241,8 +243,7 @@ export const markdownComponents = {
       }}
     >
       <table
-        className="text-[0.75rem] border-collapse"
-        style={{ minWidth: "max-content" }} /* Prevent column shrinking */
+        className="w-full text-[0.75rem] border-collapse"
         {...props}
       >
         {children}
@@ -279,7 +280,6 @@ export const markdownComponents = {
       className="px-3 py-2 text-left font-medium text-[0.6875rem] uppercase tracking-wide"
       style={{
         color: "var(--text-secondary)",
-        whiteSpace: "nowrap", /* Prevent text wrapping */
       }}
       {...props}
     >
@@ -291,7 +291,6 @@ export const markdownComponents = {
       className="px-3 py-2"
       style={{
         color: "var(--text-primary)",
-        whiteSpace: "nowrap", /* Prevent text wrapping */
       }}
       {...props}
     >
