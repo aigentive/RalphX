@@ -196,6 +196,18 @@ export const ArtifactMetadataSchema = z.object({
 
 export type ArtifactMetadata = z.infer<typeof ArtifactMetadataSchema>;
 
+export const PlanApprovalStatusSchema = z.enum(["draft", "approved"]);
+export type PlanApprovalStatus = z.infer<typeof PlanApprovalStatusSchema>;
+
+export const PlanApprovalSchema = z.object({
+  status: PlanApprovalStatusSchema,
+  approvedArtifactId: z.string().optional(),
+  approvedVersion: z.number().int().positive().optional(),
+  approvedAt: z.string().optional(),
+});
+
+export type PlanApproval = z.infer<typeof PlanApprovalSchema>;
+
 // ============================================
 // Artifact
 // ============================================
@@ -218,6 +230,8 @@ export const ArtifactSchema = z.object({
   derivedFrom: z.array(z.string()).default([]),
   /** Optional bucket ID this artifact belongs to */
   bucketId: z.string().optional(),
+  /** Optional Plan-mode approval state for the artifact in its owning session */
+  planApproval: PlanApprovalSchema.optional(),
 });
 
 export type Artifact = z.infer<typeof ArtifactSchema>;

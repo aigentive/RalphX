@@ -30,6 +30,8 @@ const {
   switchAgentConversationModeMock,
   loadBranchBaseOptionsMock,
   getArtifactMock,
+  getSessionPlanMock,
+  approvePlanArtifactMock,
   getIdeationSessionMock,
   getIdeationChildrenMock,
   useConversationMock,
@@ -62,6 +64,8 @@ const {
   switchAgentConversationModeMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   getArtifactMock: vi.fn(),
+  getSessionPlanMock: vi.fn(),
+  approvePlanArtifactMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
   useConversationMock: vi.fn(),
@@ -191,6 +195,9 @@ vi.mock("@/api/artifact", async (importOriginal) => {
     artifactApi: {
       ...actual.artifactApi,
       get: (...args: unknown[]) => getArtifactMock(...args),
+      getSessionPlan: (...args: unknown[]) => getSessionPlanMock(...args),
+      approvePlanArtifact: (...args: unknown[]) =>
+        approvePlanArtifactMock(...args),
     },
   };
 });
@@ -495,6 +502,8 @@ describe("AgentsArtifactPane", () => {
       }),
     });
     getArtifactMock.mockResolvedValue(null);
+    getSessionPlanMock.mockResolvedValue(null);
+    approvePlanArtifactMock.mockResolvedValue(null);
     getIdeationSessionMock.mockResolvedValue(null);
     getIdeationChildrenMock.mockResolvedValue([]);
     useConversationMock.mockReturnValue({
@@ -974,7 +983,7 @@ describe("AgentsArtifactPane", () => {
       proposals: [],
       messages: [],
     });
-    getArtifactMock.mockResolvedValue({
+    getSessionPlanMock.mockResolvedValue({
       id: "artifact-1",
       type: "specification",
       name: "Implementation Plan",
@@ -989,6 +998,12 @@ describe("AgentsArtifactPane", () => {
       },
       derivedFrom: [],
       bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
     });
 
     renderPane(
@@ -1022,6 +1037,89 @@ describe("AgentsArtifactPane", () => {
     expect(
       sendAgentMessageMock.mock.invocationCallOrder[0]!,
     ).toBeGreaterThan(switchAgentConversationModeMock.mock.invocationCallOrder[0]!);
+  });
+
+  it("approves a draft Plan-mode artifact without requesting proposals", async () => {
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    const draftPlan = {
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "draft",
+      },
+    };
+    getSessionPlanMock.mockResolvedValue(draftPlan);
+    approvePlanArtifactMock.mockResolvedValue({
+      ...draftPlan,
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Approve Plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(approvePlanArtifactMock).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        artifactId: "artifact-1",
+      }),
+    );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
   it("uses the focused ideation session as the artifact data source", async () => {

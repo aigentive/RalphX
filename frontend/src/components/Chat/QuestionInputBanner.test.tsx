@@ -115,6 +115,29 @@ describe("QuestionInputBanner", () => {
 
       expect(screen.getByTestId("question-input-banner")).toBeInTheDocument();
     });
+
+    it("renders an Approve Plan action without replacing answer controls", async () => {
+      const user = userEvent.setup();
+      const onApprovePlan = vi.fn();
+      const onChipClick = vi.fn();
+
+      render(
+        <QuestionInputBanner
+          {...defaultProps}
+          onChipClick={onChipClick}
+          planApprovalAction={{
+            label: "Approve Plan",
+            onClick: onApprovePlan,
+          }}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Approve Plan" }));
+      await user.click(screen.getByRole("button", { name: "1 React" }));
+
+      expect(onApprovePlan).toHaveBeenCalledTimes(1);
+      expect(onChipClick).toHaveBeenCalledWith(0);
+    });
   });
 
   describe("Answered/Collapsed State", () => {

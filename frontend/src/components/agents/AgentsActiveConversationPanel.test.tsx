@@ -13,18 +13,44 @@ import {
 import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
 
+const {
+  getSessionPlanMock,
+  approvePlanArtifactMock,
+} = vi.hoisted(() => ({
+  getSessionPlanMock: vi.fn(),
+  approvePlanArtifactMock: vi.fn(),
+}));
+
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
+    planApprovalAction,
     renderComposer,
   }: {
     additionalQuestionSessionIds?: string[];
+    planApprovalAction?: {
+      label: string;
+      onClick: () => void;
+      disabled?: boolean;
+      isPending?: boolean;
+    };
     renderComposer: (props: Record<string, unknown>) => ReactNode;
   }) => (
     <div
       data-testid="integrated-chat-panel"
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
     >
+      {planApprovalAction && (
+        <button
+          type="button"
+          data-testid="question-plan-approval-action"
+          disabled={planApprovalAction.disabled}
+          data-pending={String(planApprovalAction.isPending ?? false)}
+          onClick={planApprovalAction.onClick}
+        >
+          {planApprovalAction.label}
+        </button>
+      )}
       {renderComposer({
         onSend: vi.fn(),
         onStop: vi.fn(),
@@ -42,6 +68,14 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       })}
     </div>
   ),
+}));
+
+vi.mock("@/api/artifact", () => ({
+  artifactApi: {
+    getSessionPlan: (...args: unknown[]) => getSessionPlanMock(...args),
+    approvePlanArtifact: (...args: unknown[]) =>
+      approvePlanArtifactMock(...args),
+  },
 }));
 
 vi.mock("@/api/chat", async (importOriginal) => {
@@ -312,6 +346,8 @@ function renderPanel(
 describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getSessionPlanMock.mockResolvedValue(null);
+    approvePlanArtifactMock.mockResolvedValue(null);
   });
 
   it("normalizes workspace runtime and forwards provider-supported efforts", () => {
@@ -354,6 +390,63 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
       "data-question-session-ids",
       "planning-session-1",
+    );
+  });
+
+  it("provides an Approve Plan action for draft Plan-mode sessions", async () => {
+    const user = userEvent.setup();
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: { type: "inline", text: "# Plan" },
+      metadata: {
+        createdAt: "2026-05-23T05:00:00Z",
+        createdBy: "ralphx-ideation",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: { status: "draft" },
+    });
+    approvePlanArtifactMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: { type: "inline", text: "# Plan" },
+      metadata: {
+        createdAt: "2026-05-23T05:00:00Z",
+        createdBy: "ralphx-ideation",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-05-23T05:01:00Z",
+      },
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+    });
+
+    await user.click(await screen.findByTestId("question-plan-approval-action"));
+
+    await waitFor(() =>
+      expect(approvePlanArtifactMock).toHaveBeenCalledWith({
+        sessionId: "planning-session-1",
+        artifactId: "artifact-1",
+      }),
     );
   });
 
