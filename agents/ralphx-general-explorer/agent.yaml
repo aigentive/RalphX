@@ -7,6 +7,7 @@ capabilities:
     - fs_list_dir
     - fs_grep
     - fs_glob
+    - get_artifact
     - get_agent_task
     - list_agent_tasks
     - search_memories

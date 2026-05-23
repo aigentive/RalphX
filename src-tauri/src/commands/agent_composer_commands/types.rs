@@ -26,6 +26,33 @@ pub struct SearchAgentComposerEntriesResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SearchAgentComposerPlanReferencesInput {
+    pub project_id: String,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentComposerPlanReferenceResponse {
+    pub session_id: String,
+    pub artifact_id: String,
+    pub title: Option<String>,
+    pub status: String,
+    pub artifact_version: u32,
+    pub updated_at: String,
+    pub approved_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchAgentComposerPlanReferencesResponse {
+    pub plans: Vec<AgentComposerPlanReferenceResponse>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListAgentComposerSkillsInput {
     pub project_id: String,
     pub conversation_id: Option<String>,

@@ -499,6 +499,29 @@ const commandHandlers: Record<
       truncated: false,
     };
   },
+  search_agent_composer_plan_references: async (args) => {
+    const input = args.input as { query?: string; limit?: number } | undefined;
+    const query = input?.query?.toLowerCase() ?? "";
+    const plans = [
+      {
+        sessionId: "mock-planning-session",
+        artifactId: "mock-plan-artifact",
+        title: "Mock Implementation Plan",
+        status: "approved",
+        artifactVersion: 1,
+        updatedAt: new Date().toISOString(),
+        approvedAt: new Date().toISOString(),
+      },
+    ].filter((plan) =>
+      `${plan.title} ${plan.sessionId} ${plan.artifactId} ${plan.status}`
+        .toLowerCase()
+        .includes(query),
+    );
+    return {
+      plans: plans.slice(0, input?.limit ?? 12),
+      truncated: false,
+    };
+  },
   list_agent_composer_skills: async () => ({
     skills: [
       {

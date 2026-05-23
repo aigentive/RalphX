@@ -99,6 +99,7 @@ fn queued_persisted_metadata(
     let metadata = queued_msg.metadata_override.clone();
     if queued_msg.composer_project_references.is_empty()
         && queued_msg.composer_integration_references.is_empty()
+        && queued_msg.composer_artifact_references.is_empty()
     {
         return metadata;
     }
@@ -121,6 +122,10 @@ fn queued_persisted_metadata(
     if !queued_msg.composer_integration_references.is_empty() {
         let references = serde_json::to_value(&queued_msg.composer_integration_references).ok()?;
         object.insert("composer_integration_references".to_string(), references);
+    }
+    if !queued_msg.composer_artifact_references.is_empty() {
+        let references = serde_json::to_value(&queued_msg.composer_artifact_references).ok()?;
+        object.insert("composer_artifact_references".to_string(), references);
     }
     Some(value.to_string())
 }
@@ -527,6 +532,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             } else {
                 runtime_content
             };
+            let runtime_content =
+                super::chat_service_composer_references::append_artifact_references_for_prompt(
+                    &runtime_content,
+                    &queued_msg.composer_artifact_references,
+                );
 
             // Build and spawn resume command
             let provider_spawnable = match chat_service_context::build_resume_command_for_harness(

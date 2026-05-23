@@ -347,6 +347,7 @@ export const MessageItem = React.memo(function MessageItem({
           <MessageReferences
             projectReferences={composerReferences.projectReferences}
             integrationReferences={composerReferences.integrationReferences}
+            artifactReferences={composerReferences.artifactReferences}
           />
         )}
 

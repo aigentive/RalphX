@@ -1876,6 +1876,9 @@ describe("chat api", () => {
       composerIntegrationReferences: [
         { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
       ],
+      composerArtifactReferences: [
+        { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
+      ],
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -1886,6 +1889,9 @@ describe("chat api", () => {
         composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
         composerIntegrationReferences: [
           { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+        ],
+        composerArtifactReferences: [
+          { kind: "plan", artifactId: "artifact-1", sessionId: "session-1" },
         ],
       },
     });

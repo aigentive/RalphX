@@ -63,9 +63,12 @@ pub use agent_model_commands::{
     UpsertCustomAgentModelInput,
 };
 pub use agent_composer_commands::{
-    list_agent_composer_skills, search_agent_composer_entries, AgentComposerEntryResponse,
-    AgentComposerSkillResponse, ListAgentComposerSkillsInput, ListAgentComposerSkillsResponse,
-    SearchAgentComposerEntriesInput, SearchAgentComposerEntriesResponse,
+    list_agent_composer_skills, search_agent_composer_entries,
+    search_agent_composer_plan_references, AgentComposerEntryResponse,
+    AgentComposerPlanReferenceResponse, AgentComposerSkillResponse, ListAgentComposerSkillsInput,
+    ListAgentComposerSkillsResponse, SearchAgentComposerEntriesInput,
+    SearchAgentComposerEntriesResponse, SearchAgentComposerPlanReferencesInput,
+    SearchAgentComposerPlanReferencesResponse,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,

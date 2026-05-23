@@ -7,6 +7,7 @@ import {
   type AgentConversationBaseSelection,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type ComposerArtifactReference,
   type ComposerIntegrationReference,
   type ComposerProjectReference,
   type ChatMessageResponse,
@@ -86,6 +87,7 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
     }: {
@@ -95,6 +97,7 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
@@ -197,6 +200,7 @@ export function useStartAgentConversation({
       const optimisticReferenceMetadata = serializeComposerReferencesMetadata({
         projectReferences: composerProjectReferences,
         integrationReferences: composerIntegrationReferences,
+        artifactReferences: composerArtifactReferences,
       });
       const initialConversation: ChatConversation = {
         id: createOptimisticConversationId(),
@@ -291,6 +295,9 @@ export function useStartAgentConversation({
             : {}),
           ...(composerIntegrationReferences?.length
             ? { composerIntegrationReferences }
+            : {}),
+          ...(composerArtifactReferences?.length
+            ? { composerArtifactReferences }
             : {}),
           ...(base ? { base } : {}),
         });

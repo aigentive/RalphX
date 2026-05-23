@@ -16,6 +16,9 @@ Use `v1_send_ideation_message` when an attached ideation run reports `next_actio
 ### v1_get_plan / v1_get_plan_verification / v1_list_proposals / v1_get_session_tasks
 Read the attached ideation run's artifacts when summarizing progress back to the parent chat. Keep detailed plan, verification, proposal, and task content in the UI artifact pane; summarize only the current state and next action.
 
+### get_artifact
+Read a composer-selected artifact or plan reference by artifact id when full content is needed. Prefer `v1_get_plan` when the reference is to an attached ideation session and a session id is available.
+
 ### v1_append_task_to_plan
 Append a small one-off task to an accepted ideation plan while its plan branch is still open. Open PR / waiting-on-PR plans can still receive follow-up tasks. If the PR is closed or merged, or the plan merge task is actively merging, conflict/incomplete, merged, or otherwise terminal, start a new ideation continuation instead.
 

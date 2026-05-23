@@ -495,6 +495,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                                 options.integrationReferences,
                             }
                           : {}),
+                        ...(options?.artifactReferences?.length
+                          ? {
+                              composerArtifactReferences:
+                                options.artifactReferences,
+                            }
+                          : {}),
                       },
                     );
                     onAgentUserMessageSent({

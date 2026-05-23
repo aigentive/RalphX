@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
+  extractComposerArtifactTokens,
   extractComposerIntegrationTokens,
   extractComposerPathTokens,
   extractComposerSkillTokens,
+  normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
   replaceAgentComposerTrigger,
@@ -64,6 +66,17 @@ describe("agentComposerCore", () => {
     });
   });
 
+  it("detects plan reference triggers under @", () => {
+    const text = "Use @plan:checkout";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "plan",
+      query: "checkout",
+      rangeStart: "Use ".length,
+      rangeEnd: text.length,
+    });
+  });
+
   it("replaces trigger ranges and consumes one trailing space", () => {
     const text = "Open @src then continue";
     const trigger = detectAgentComposerTrigger(text, "Open @src".length);
@@ -89,13 +102,17 @@ describe("agentComposerCore", () => {
   });
 
   it("extracts integration tokens separately from path tokens", () => {
-    const text = "Fix @jira:rx-42 with docs @confluence:123456 and @src/main.ts";
+    const text =
+      "Fix @jira:rx-42 with docs @confluence:123456 and @src/main.ts using @plan:artifact-1";
 
     expect(extractComposerIntegrationTokens(text)).toEqual([
       { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
       { provider: "atlassian", kind: "confluence", id: "123456" },
     ]);
     expect(extractComposerPathTokens(text)).toEqual([{ path: "src/main.ts" }]);
+    expect(extractComposerArtifactTokens(text)).toEqual([
+      { kind: "plan", artifactId: "artifact-1" },
+    ]);
   });
 
   it("appends internal skill directives with safe lowercase names only", () => {
@@ -131,6 +148,31 @@ describe("agentComposerCore", () => {
     ).toEqual([
       { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
       { provider: "atlassian", kind: "confluence", id: "123", title: "Spec" },
+    ]);
+  });
+
+  it("normalizes artifact references without prompt text expansion", () => {
+    expect(
+      normalizeComposerArtifactReferences([
+        {
+          kind: "plan",
+          artifactId: " artifact-1 ",
+          title: " Plan ",
+          sessionId: " session-1 ",
+          version: 2,
+          status: "approved",
+        },
+        { kind: "plan", artifactId: "artifact-1", version: 2 },
+      ]),
+    ).toEqual([
+      {
+        kind: "plan",
+        artifactId: "artifact-1",
+        title: "Plan",
+        sessionId: "session-1",
+        version: 2,
+        status: "approved",
+      },
     ]);
   });
 });

@@ -95,6 +95,7 @@ fn test_queued_message_to_send_options_preserves_references_and_attachments() {
         Some(crate::domain::agents::AgentHarnessKind::Codex),
         vec![project_reference.clone()],
         vec![integration_reference.clone()],
+        Vec::new(),
         vec![attachment_id],
     );
 

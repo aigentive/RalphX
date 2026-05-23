@@ -150,9 +150,11 @@ fn edit_mode_plan_handoff_runtime_message_injects_linked_plan_context() {
     assert!(message.contains("<plan_execution_context>"));
     assert!(message.contains("<workspace_mode>edit</workspace_mode>"));
     assert!(message.contains("<planning_session_id>planning-session-1</planning_session_id>"));
-    assert!(message.contains("<plan_artifact_id>plan-artifact-1</plan_artifact_id>"));
-    assert!(message.contains("<plan_artifact_version>3</plan_artifact_version>"));
-    assert!(message.contains("Implement the composer Plan mode."));
+    assert!(message.contains("<plan_artifact_reference kind=\"plan\""));
+    assert!(message.contains("artifact_id=\"plan-artifact-1\""));
+    assert!(message.contains("session_id=\"planning-session-1\""));
+    assert!(message.contains("version=\"3\""));
+    assert!(message.contains("Fetch the referenced plan artifact with get_artifact"));
     assert!(message.contains("edit the workspace branch directly"));
     assert!(message.contains("<user_request>execute the plan</user_request>"));
 }

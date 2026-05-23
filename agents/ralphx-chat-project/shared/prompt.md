@@ -21,6 +21,9 @@ Read project memory when it helps answer the user or prepare an ideation prompt.
 ### get_conversation_transcript
 Read relevant prior chat context when needed.
 
+### get_artifact
+Read a composer-selected artifact or plan reference by artifact id when full content is needed.
+
 ### delegate_start / delegate_wait / delegate_cancel
 Delegate bounded read-only investigation to approved specialist agents when a question needs more context.
 

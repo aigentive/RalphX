@@ -82,17 +82,16 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ChatAttachmentId,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus,
-    Project, ProjectId, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ChatAttachmentId, ChatContextType,
+    ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem,
+    DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus, Project, ProjectId,
+    TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
-    AgentWorkspacePrPublisher, ComposerIntegrationReference, ComposerProjectReference,
-    QueuedMessage, RunningAgentKey, RunningAgentRegistry,
+    AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
+    ComposerProjectReference, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -131,6 +130,9 @@ pub struct SendAgentMessageInput {
     /// Structured external integration references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Structured artifact references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Attachment IDs selected by the composer for this message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
@@ -240,6 +242,9 @@ pub struct StartAgentConversationInput {
     /// Structured external integration references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_integration_references: Vec<ComposerIntegrationReference>,
+    /// Structured artifact references for runtime-only prompt expansion.
+    #[serde(default)]
+    pub composer_artifact_references: Vec<ComposerArtifactReference>,
 }
 
 /// Response for an agent conversation workspace.
@@ -1621,7 +1626,8 @@ pub(crate) async fn agent_conversation_response_for_state(
 ) -> Result<AgentConversationResponse, String> {
     let conversation_id = conversation.id;
     let mut response = AgentConversationResponse::from(conversation);
-    if let Some(attribution) = latest_conversation_runtime_attribution(state, &conversation_id).await?
+    if let Some(attribution) =
+        latest_conversation_runtime_attribution(state, &conversation_id).await?
     {
         response.apply_runtime_attribution(attribution);
     }
@@ -2979,6 +2985,7 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
                 working_directory_override,
                 composer_project_references: input.composer_project_references.clone(),
                 composer_integration_references: input.composer_integration_references.clone(),
+                composer_artifact_references: input.composer_artifact_references.clone(),
                 ..Default::default()
             },
         )
@@ -3410,6 +3417,7 @@ pub async fn send_agent_message(
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
+                composer_artifact_references: input.composer_artifact_references,
                 attachment_ids,
                 ..Default::default()
             },
@@ -3563,11 +3571,8 @@ pub async fn list_agent_conversations_page(
     let has_more = page.has_more();
 
     Ok(AgentConversationListPageResponse {
-        conversations: agent_conversation_responses_for_state(
-            state.inner(),
-            page.conversations,
-        )
-        .await?,
+        conversations: agent_conversation_responses_for_state(state.inner(), page.conversations)
+            .await?,
         total: page.total_count,
         limit: page.limit,
         offset: page.offset,
@@ -6907,19 +6912,20 @@ async fn primary_jira_key_for_conversation(
 #[cfg(test)]
 mod tests {
     use super::{
+        agent_conversation_response_for_state, agent_conversation_responses_for_state,
         agent_workspace_freshness_cache, agent_workspace_freshness_cache_key,
         agent_workspace_post_repair_action_from_events, agent_workspace_response_for_state,
-        apply_base_resolution_to_publish_target,
+        apply_base_resolution_to_publish_target, archive_agent_conversation,
         build_agent_workspace_publish_repair_message_for_target,
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
-        existing_pr_retarget_block_reason, get_agent_conversation_timeline_page_for_app_state,
+        create_agent_conversation, emit_agent_conversation_fork_events,
+        existing_pr_retarget_block_reason, fork_agent_conversation,
+        fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
+        get_agent_conversation_summary_for_app_state,
+        get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state,
-        invalidate_agent_workspace_freshness_cache, agent_conversation_response_for_state,
-        agent_conversation_responses_for_state, archive_agent_conversation,
-        create_agent_conversation, emit_agent_conversation_fork_events, fork_agent_conversation,
-        fork_agent_conversation_response_for_state, fork_terminal_agent_conversation_for_send,
-        get_agent_conversation_summary_for_app_state, list_agent_conversations_page,
+        invalidate_agent_workspace_freshness_cache, list_agent_conversations_page,
         mark_agent_workspace_failure_with_routing_and_action, merge_delegated_snapshot_into_result,
         normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
         normalize_explicit_publish_base_selection, normalized_effort_for_supported,
@@ -6927,9 +6933,8 @@ mod tests {
         precompute_agent_conversation_workspace_pr_description_for_app_state,
         project_plan_branch_publication_into_workspace_response,
         publication_event_status_for_push_status, publication_event_summary_for_push_status,
-        publish_agent_conversation_workspace_for_app_state,
+        publish_agent_conversation_workspace_for_app_state, restore_agent_conversation,
         retarget_existing_workspace_pr_base_if_needed,
-        restore_agent_conversation,
         schedule_external_pr_reconciliation_for_conversation_id,
         schedule_external_pr_reconciliation_for_workspace,
         schedule_pr_supervision_recovery_for_conversation_id,
@@ -6943,12 +6948,12 @@ mod tests {
         AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
         AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
         AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
-        CreateAgentConversationInput, ForkAgentConversationInput, ForkAgentConversationResponse,
         AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
         AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
         AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
         AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        AgentWorkspaceSourcePullRequestInput, DelegatedToolRuntimeSnapshot,
+        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput,
+        DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
         SwitchAgentConversationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
@@ -6970,14 +6975,14 @@ mod tests {
     };
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
-        AgentConversationWorkspacePublicationEvent, AgentWorkspacePrDescription, ArtifactId,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
-        ExecutionPlan,
-        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-        IdeationSessionId, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-        ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode,
+        AgentConversationWorkspacePublicationEvent, AgentRun, AgentWorkspacePrDescription,
+        ArtifactId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+        ChatMessageId, ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind,
+        ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+        IdeationSession, IdeationSessionFlow, IdeationSessionId, MessageRole, PlanBranch,
+        PlanBranchId, PlanBranchStatus, Project, ProjectId,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::services::github_service::PrHealth;
@@ -10204,10 +10209,7 @@ mod tests {
             Some("claude-sonnet-4")
         );
         assert_eq!(second_response.logical_effort.as_deref(), Some("medium"));
-        assert_eq!(
-            second_response.effective_effort.as_deref(),
-            Some("medium")
-        );
+        assert_eq!(second_response.effective_effort.as_deref(), Some("medium"));
     }
 
     #[tokio::test]
@@ -10275,18 +10277,30 @@ mod tests {
             response.conversation.parent_conversation_id.as_deref(),
             Some(parent_id.as_str())
         );
-        assert_eq!(response.conversation.provider_harness.as_deref(), Some("codex"));
+        assert_eq!(
+            response.conversation.provider_harness.as_deref(),
+            Some("codex")
+        );
         assert_eq!(
             response.conversation.provider_session_id.as_deref(),
             Some("child-thread")
         );
-        assert_eq!(response.conversation.logical_model.as_deref(), Some("gpt-5.5"));
-        assert_eq!(response.conversation.logical_effort.as_deref(), Some("high"));
+        assert_eq!(
+            response.conversation.logical_model.as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            response.conversation.logical_effort.as_deref(),
+            Some("high")
+        );
         assert!(response.provider_session_forked);
         assert_eq!(response.copied_message_count, 2);
         assert_eq!(response.copied_timeline_item_count, 3);
         assert_eq!(
-            response.workspace.as_ref().map(|workspace| workspace.mode.as_str()),
+            response
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.mode.as_str()),
             Some("edit")
         );
     }
@@ -10294,9 +10308,8 @@ mod tests {
     #[test]
     fn emit_agent_conversation_fork_events_accepts_response_payload() {
         let project_id = ProjectId::from_string("project-fork-events".to_string());
-        let parent = AgentConversationResponse::from(ChatConversation::new_project(
-            project_id.clone(),
-        ));
+        let parent =
+            AgentConversationResponse::from(ChatConversation::new_project(project_id.clone()));
         let mut child_conversation = ChatConversation::new_project(project_id);
         child_conversation.parent_conversation_id = Some(parent.id.clone());
         let child = AgentConversationResponse::from(child_conversation);
@@ -10344,12 +10357,14 @@ mod tests {
             .create(ChatConversation::new_project(project_id.clone()))
             .await
             .expect("conversation should be created");
-        assert!(
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&conversation.id))
-                .await
-                .expect("missing workspace should be ignored")
-                .is_none()
-        );
+        assert!(fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&conversation.id)
+        )
+        .await
+        .expect("missing workspace should be ignored")
+        .is_none());
 
         let workspace = AgentConversationWorkspace::new(
             conversation.id,
@@ -10368,12 +10383,14 @@ mod tests {
             .await
             .expect("workspace should be created");
 
-        assert!(
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&conversation.id))
-                .await
-                .expect("non-terminal workspace should be ignored")
-                .is_none()
-        );
+        assert!(fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&conversation.id)
+        )
+        .await
+        .expect("non-terminal workspace should be ignored")
+        .is_none());
     }
 
     #[tokio::test]
@@ -10417,14 +10434,11 @@ mod tests {
             .await
             .expect("workspace should be created");
 
-        let child_id = fork_terminal_agent_conversation_for_send(
-            &state,
-            app.handle(),
-            Some(&parent.id),
-        )
-        .await
-        .expect("terminal workspace should fork")
-        .expect("forked conversation id should be returned");
+        let child_id =
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&parent.id))
+                .await
+                .expect("terminal workspace should fork")
+                .expect("forked conversation id should be returned");
         let child = state
             .chat_conversation_repo
             .get_by_id(&child_id)
@@ -10437,14 +10451,12 @@ mod tests {
             Some(parent_id.as_str())
         );
         assert_eq!(child.agent_mode, Some(AgentConversationWorkspaceMode::Chat));
-        assert!(
-            state
-                .agent_conversation_workspace_repo
-                .get_by_conversation_id(&child_id)
-                .await
-                .expect("workspace lookup should succeed")
-                .is_none()
-        );
+        assert!(state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&child_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .is_none());
     }
 
     #[tokio::test]
@@ -10508,8 +10520,14 @@ mod tests {
         assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
         assert_eq!(response.copied_message_count, 1);
         assert!(response.workspace.is_none());
-        assert_eq!(response.conversation.logical_model.as_deref(), Some("gpt-5.4"));
-        assert_eq!(response.conversation.logical_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            response.conversation.logical_model.as_deref(),
+            Some("gpt-5.4")
+        );
+        assert_eq!(
+            response.conversation.logical_effort.as_deref(),
+            Some("medium")
+        );
     }
 
     #[tokio::test]
@@ -10887,7 +10905,10 @@ mod tests {
             .expect("planning session should exist");
         let conversation_id_string = conversation_id.as_str();
         assert_eq!(session.session_flow, IdeationSessionFlow::Planning);
-        assert_eq!(session.source_context_type.as_deref(), Some("agent_conversation"));
+        assert_eq!(
+            session.source_context_type.as_deref(),
+            Some("agent_conversation")
+        );
         assert_eq!(
             session.source_context_id.as_deref(),
             Some(conversation_id_string.as_str())

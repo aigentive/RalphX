@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   agentComposerApi,
   type AgentComposerEntry,
+  type AgentComposerPlanReference,
   type AgentComposerSkill,
 } from "@/api/agent-composer";
 import {
@@ -23,6 +24,8 @@ export const agentComposerKeys = {
       "entries",
       { projectId, conversationId: conversationId ?? null, query },
     ] as const,
+  planReferences: (projectId: string, query: string) =>
+    [...agentComposerKeys.all, "plan-references", { projectId, query }] as const,
   skills: (
     projectId: string,
     conversationId: string | null | undefined,
@@ -68,6 +71,34 @@ export function useAgentComposerEntries({
     staleTime: 15_000,
     gcTime: 60_000,
     placeholderData: { entries: [] satisfies AgentComposerEntry[], truncated: false },
+  });
+}
+
+export function useAgentComposerPlanReferences({
+  projectId,
+  query,
+  enabled,
+}: {
+  projectId: string;
+  query: string;
+  enabled: boolean;
+}) {
+  const normalizedQuery = query.trim();
+  return useQuery({
+    queryKey: agentComposerKeys.planReferences(projectId, normalizedQuery),
+    queryFn: () =>
+      agentComposerApi.searchPlanReferences({
+        projectId,
+        query: normalizedQuery,
+        limit: 12,
+      }),
+    enabled: enabled && projectId.length > 0,
+    staleTime: 10_000,
+    gcTime: 60_000,
+    placeholderData: {
+      plans: [] satisfies AgentComposerPlanReference[],
+      truncated: false,
+    },
   });
 }
 

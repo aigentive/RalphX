@@ -19,6 +19,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           url: "https://example.atlassian.net/browse/RX-42",
         },
       ],
+      composer_artifact_references: [
+        {
+          kind: "plan",
+          artifact_id: "artifact-1",
+          title: "Implementation Plan",
+          session_id: "session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
     });
 
     expect(parsed).toEqual({
@@ -31,6 +41,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           key: "RX-42",
           title: "Fix composer references",
           url: "https://example.atlassian.net/browse/RX-42",
+        },
+      ],
+      artifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Implementation Plan",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
         },
       ],
     });
@@ -48,6 +68,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           url: "https://example.atlassian.net/wiki/spaces/ENG/pages/123",
         },
       ],
+      artifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-2",
+          title: "Approved Plan",
+          sessionId: "session-2",
+          version: 3,
+          status: "approved",
+        },
+      ],
     });
 
     expect(metadata).toBeTruthy();
@@ -60,6 +90,16 @@ describe("parseComposerReferencesFromMetadata", () => {
           id: "123",
           title: "Implementation Notes",
           url: "https://example.atlassian.net/wiki/spaces/ENG/pages/123",
+        },
+      ],
+      artifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-2",
+          title: "Approved Plan",
+          sessionId: "session-2",
+          version: 3,
+          status: "approved",
         },
       ],
     });
