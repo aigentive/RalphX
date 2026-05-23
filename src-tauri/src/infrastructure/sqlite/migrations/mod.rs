@@ -375,9 +375,12 @@ mod v20260523070000_plan_artifact_approvals_tests;
 mod v20260523145711_plan_complexity_assessments;
 #[cfg(test)]
 mod v20260523145711_plan_complexity_assessments_tests;
+mod v20260523152748_agent_task_list_slices;
+#[cfg(test)]
+mod v20260523152748_agent_task_list_slices_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260523145711;
+pub const SCHEMA_VERSION: i64 = 20260523152748;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1061,6 +1064,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260523145711,
         name: "plan_complexity_assessments",
         migrate: v20260523145711_plan_complexity_assessments::migrate,
+    },
+    Migration {
+        version: 20260523152748,
+        name: "agent_task_list_slices",
+        migrate: v20260523152748_agent_task_list_slices::migrate,
     },
 ];
 

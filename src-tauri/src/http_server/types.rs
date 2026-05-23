@@ -188,6 +188,21 @@ pub struct ListAgentTasksRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ListAgentTaskListsRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListAgentTasksForListRequest {
+    #[serde(flatten)]
+    pub context: AgentTaskContextFields,
+    pub list_id: String,
+    #[serde(default)]
+    pub include_done: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct UpdateAgentTaskRequest {
     #[serde(flatten)]
     pub context: AgentTaskContextFields,
@@ -268,6 +283,19 @@ pub struct AgentTaskSummaryDto {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentTaskListSummaryDto {
+    pub list_id: String,
+    pub list_sequence: i64,
+    pub task_count: i64,
+    pub open_count: i64,
+    pub active_count: i64,
+    pub done_count: i64,
+    pub dropped_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AgentTaskMutationResponse {
     pub success: bool,
@@ -288,6 +316,13 @@ pub struct AgentTaskGetResponse {
 pub struct AgentTaskListResponse {
     pub success: bool,
     pub tasks: Vec<AgentTaskSummaryDto>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentTaskListsResponse {
+    pub success: bool,
+    pub lists: Vec<AgentTaskListSummaryDto>,
     pub error: Option<String>,
 }
 
