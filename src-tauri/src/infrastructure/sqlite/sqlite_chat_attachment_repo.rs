@@ -246,11 +246,11 @@ impl ChatAttachmentRepository for SqliteChatAttachmentRepository {
         let to_str = to_conversation_id.as_str().to_string();
         self.db
             .run(move |conn| {
-                let count = conn.execute(
-                    "UPDATE chat_attachments SET conversation_id = ?1 WHERE conversation_id = ?2 AND message_id IS NULL",
+                Ok(conn.execute(
+                    "UPDATE chat_attachments SET conversation_id = ?1 \
+                     WHERE conversation_id = ?2 AND message_id IS NULL",
                     rusqlite::params![to_str, from_str],
-                )?;
-                Ok(count)
+                )?)
             })
             .await
     }
