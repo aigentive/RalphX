@@ -15,13 +15,13 @@ import { Button } from "@/components/ui/button";
 
 const PROSE_MAX_WIDTH = "min(85%, 620px)";
 
-const BOX_DRAWING_RE = /[─-╿▀-▟═-╬]/;
-const ASCII_ART_RE = /[+\-|=]{3,}|[┌┐└┘├┤┬┴┼─│]{2,}/;
+const ASCII_ART_RE =
+  /[+\-|=]{3,}|[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]{2,}/;
 
 function looksLikeAsciiArt(children: React.ReactNode): boolean {
   const text = extractText(children);
   if (!text) return false;
-  return BOX_DRAWING_RE.test(text) || ASCII_ART_RE.test(text);
+  return ASCII_ART_RE.test(text);
 }
 
 function extractText(node: React.ReactNode): string {
