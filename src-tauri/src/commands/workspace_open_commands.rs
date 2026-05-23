@@ -427,12 +427,7 @@ fn build_workspace_open_args(
             WorkspaceOpenPathKind::File,
             "linux",
         ) => {
-            args.push(
-                path.parent()
-                    .unwrap_or(path)
-                    .as_os_str()
-                    .to_os_string(),
-            );
+            args.push(path.parent().unwrap_or(path).as_os_str().to_os_string());
         }
         (WorkspaceOpenLaunchStyle::Path, _, _, _) => {
             args.push(path.as_os_str().to_os_string());
@@ -991,10 +986,36 @@ mod tests {
         .expect("launch should build");
 
         assert_eq!(launch.command, PathBuf::from("/tools/cursor"));
-        assert_eq!(
-            launch.args,
-            vec![file_path.as_os_str().to_os_string()]
-        );
+        assert_eq!(launch.args, vec![file_path.as_os_str().to_os_string()]);
+    }
+
+    #[test]
+    fn build_item_launch_opens_directories_with_file_manager_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src_dir = temp.path().join("src");
+        std::fs::create_dir(&src_dir).expect("create src dir");
+
+        let launch =
+            build_workspace_open_item_launch("file-manager", &src_dir, "macos", |command| {
+                (command.name == "open").then(|| fake_command_path(command))
+            })
+            .expect("launch should build");
+
+        assert_eq!(launch.command, PathBuf::from("/tools/open"));
+        assert_eq!(launch.args, vec![src_dir.as_os_str().to_os_string()]);
+    }
+
+    #[test]
+    fn build_item_launch_rejects_missing_item_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_path = temp.path().join("missing.rs");
+
+        let error = build_workspace_open_item_launch("cursor", &missing_path, "macos", |command| {
+            (command.name == "cursor").then(|| fake_command_path(command))
+        })
+        .expect_err("missing item should be rejected");
+
+        assert!(error.to_string().contains("existing file or directory"));
     }
 
     #[test]
@@ -1029,10 +1050,7 @@ mod tests {
             .expect("launch should build");
 
         assert_eq!(launch.command, PathBuf::from("/tools/xdg-open"));
-        assert_eq!(
-            launch.args,
-            vec![temp.path().as_os_str().to_os_string()]
-        );
+        assert_eq!(launch.args, vec![temp.path().as_os_str().to_os_string()]);
     }
 
     #[test]
@@ -1077,7 +1095,9 @@ mod tests {
         let error = resolve_workspace_open_item_path(workspace.path(), &file_path)
             .expect_err("outside path should be rejected");
 
-        assert!(error.to_string().contains("outside the conversation workspace"));
+        assert!(error
+            .to_string()
+            .contains("outside the conversation workspace"));
     }
 
     #[cfg(unix)]
@@ -1093,7 +1113,9 @@ mod tests {
         let error = resolve_workspace_open_item_path(workspace.path(), Path::new("linked.rs"))
             .expect_err("symlink escape should be rejected");
 
-        assert!(error.to_string().contains("outside the conversation workspace"));
+        assert!(error
+            .to_string()
+            .contains("outside the conversation workspace"));
     }
 
     #[test]
@@ -1265,5 +1287,67 @@ mod tests {
         let _path = EnvGuard::set_os("PATH", &bin_dir);
 
         launch_workspace_open_target("cursor", temp.path()).expect("launch should spawn");
+    }
+
+    #[test]
+    fn launch_workspace_open_item_target_accepts_immediate_success() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        let file_path = temp.path().join("src.rs");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        write_fake_cursor(
+            &bin_dir,
+            r#"if [ "$1" != "$RALPHX_EXPECTED_ITEM" ]; then exit 42; fi
+exit 0"#,
+        );
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+        let _expected_item = EnvGuard::set_os("RALPHX_EXPECTED_ITEM", &file_path);
+
+        launch_workspace_open_item_target("cursor", &file_path).expect("launch should succeed");
+    }
+
+    #[test]
+    fn launch_workspace_open_item_target_reports_spawn_failures() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        let file_path = temp.path().join("src.rs");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        let cursor = bin_dir.join("cursor");
+        std::fs::write(&cursor, "#!/definitely/missing/ralphx-shell\n").expect("write fake cursor");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&cursor)
+                .expect("fake cursor metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&cursor, permissions).expect("mark fake cursor executable");
+        }
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        let error = launch_workspace_open_item_target("cursor", &file_path)
+            .expect_err("spawn failure should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("Failed to launch workspace open path target"));
+    }
+
+    #[test]
+    fn launch_workspace_open_item_target_accepts_background_process() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        let file_path = temp.path().join("src.rs");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        write_fake_cursor(&bin_dir, "sleep 1\nexit 0");
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        launch_workspace_open_item_target("cursor", &file_path).expect("launch should spawn");
     }
 }
