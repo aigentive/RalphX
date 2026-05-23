@@ -38,6 +38,16 @@ fn classifies_commit_hook_policy_failures_as_agent_fixable() {
 }
 
 #[test]
+fn classifies_unknown_pre_commit_failures_as_agent_fixable() {
+    let error = "Failed to commit changes: pre-commit hook exited with status 1";
+
+    assert_eq!(
+        classify_publish_failure(error),
+        PublishFailureClass::AgentFixable
+    );
+}
+
+#[test]
 fn classifies_branch_conflicts_as_agent_fixable() {
     let error = "failed to update branch: merge conflict in frontend/src/App.tsx";
 
