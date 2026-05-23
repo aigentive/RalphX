@@ -214,6 +214,40 @@ describe("MessageItem.markdown", () => {
     expect(anchor).toHaveAttribute("target", "_blank");
   });
 
+  it("renders ASCII art paragraphs as monospace pre elements", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+      className?: string;
+      style?: React.CSSProperties;
+    }>;
+    const { container } = render(<P>{"┌──────┐\n│ box  │\n└──────┘"}</P>);
+    const pre = container.querySelector("pre");
+    expect(pre).toBeInTheDocument();
+    expect(pre).toHaveStyle({ fontFamily: "var(--font-mono)" });
+  });
+
+  it("renders normal paragraphs with prose width", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+    }>;
+    const { container } = render(<P>Just a normal paragraph.</P>);
+    expect(container.querySelector("p")).toBeInTheDocument();
+    expect(container.querySelector("pre")).not.toBeInTheDocument();
+  });
+
+  it("extractText handles nested React elements for ASCII art detection", () => {
+    const P = markdownComponents.p as React.ComponentType<{
+      children: React.ReactNode;
+    }>;
+    const { container } = render(
+      <P>
+        <strong>{"╔═══╗"}</strong>
+      </P>,
+    );
+    const pre = container.querySelector("pre");
+    expect(pre).toBeInTheDocument();
+  });
+
   it("renders all block-level markdownComponents", () => {
     const Components = markdownComponents as Record<
       string,
