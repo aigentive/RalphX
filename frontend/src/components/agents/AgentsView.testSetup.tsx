@@ -35,6 +35,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
   listWorkspaceOpenTargetsMock: vi.fn(),
+  openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
@@ -136,6 +137,7 @@ const {
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
   listWorkspaceOpenTargetsMock,
+  openAgentConversationWorkspacePathMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
   setAgentConversationWorkspacePrSupervisionMock,
@@ -555,6 +557,8 @@ vi.mock("@/api/chat", () => ({
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
     listWorkspaceOpenTargets: (...args: unknown[]) =>
       listWorkspaceOpenTargetsMock(...args),
+    openAgentConversationWorkspacePath: (...args: unknown[]) =>
+      openAgentConversationWorkspacePathMock(...args),
     getBulkWorkspacePublicationStates: vi.fn().mockResolvedValue({}),
   },
 }));
@@ -1050,6 +1054,7 @@ export function setupAgentsViewTest() {
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
   listWorkspaceOpenTargetsMock.mockReset();
+  openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
@@ -1115,6 +1120,7 @@ export function setupAgentsViewTest() {
   });
   listAgentConversationWorkspacesByProjectMock.mockResolvedValue([]);
   listWorkspaceOpenTargetsMock.mockResolvedValue([]);
+  openAgentConversationWorkspacePathMock.mockResolvedValue(undefined);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
   listIdeationSessionsMock.mockResolvedValue([]);
