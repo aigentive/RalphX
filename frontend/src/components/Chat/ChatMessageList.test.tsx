@@ -18,10 +18,14 @@ import {
   ChatMessageList,
   type ChatMessageData,
 } from "./ChatMessageList";
+import {
+  buildStreamingTranscriptWindow,
+  getNextStreamingTranscriptWindow,
+} from "./ChatMessageList.streamingWindow";
 import { isTranscriptRootReadyForReveal } from "./ChatMessageList.readiness";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { ToolCall } from "./ToolCallIndicator";
-import type { StreamingContentBlock } from "@/types/streaming-task";
+import type { StreamingContentBlock, StreamingTask } from "@/types/streaming-task";
 import type { ReactElement, ReactNode } from "react";
 
 // Mock scrollIntoView before tests run — should NEVER be called for auto-scroll
@@ -2064,7 +2068,7 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(screen.getByText(/Based on the results/)).toBeInTheDocument();
     });
 
-    it("compacts older live text blocks so long Codex streams do not render hundreds of bubbles", () => {
+    it("windows older live text blocks so long Codex streams do not render hundreds of bubbles", () => {
       const blocks: StreamingContentBlock[] = Array.from({ length: 65 }, (_, index) => ({
         type: "text",
         text: `Codex live update ${index + 1}`,
@@ -2079,28 +2083,23 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      expect(screen.getByText(/Codex live update 1/)).toBeInTheDocument();
+      expect(screen.queryByText(/Codex live update 1/)).not.toBeInTheDocument();
       expect(screen.getByText(/Codex live update 65/)).toBeInTheDocument();
-      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(41);
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(40);
     });
 
-    it("preserves short text runs and tool separators inside long live streams", () => {
-      const blocks: StreamingContentBlock[] = [
+    it("bounds interleaved live text and tool blocks instead of only compacting text runs", () => {
+      const blocks: StreamingContentBlock[] = Array.from({ length: 60 }, (_, index): StreamingContentBlock[] => [
+        { type: "text", text: `Interleaved live update ${index + 1}` },
         {
           type: "tool_use",
-          toolCall: { id: "tc-start", name: "Read", arguments: { file_path: "/start.ts" } },
+          toolCall: {
+            id: `tc-${index + 1}`,
+            name: "webfetch",
+            arguments: { url: `https://example.com/${index + 1}` },
+          },
         },
-        { type: "text", text: "Short pre-tool update 1" },
-        { type: "text", text: "Short pre-tool update 2" },
-        {
-          type: "tool_use",
-          toolCall: { id: "tc-middle", name: "Grep", arguments: { pattern: "streaming" } },
-        },
-        ...Array.from({ length: 45 }, (_, index): StreamingContentBlock => ({
-          type: "text",
-          text: `Long run update ${index + 1}`,
-        })),
-      ];
+      ]).flat();
 
       render(
         <ChatMessageList
@@ -2111,9 +2110,65 @@ describe("ChatMessageList - Scroll Behavior", () => {
         />
       );
 
-      expect(screen.getByText(/Short pre-tool update 1/)).toBeInTheDocument();
-      expect(screen.getByText(/Long run update 45/)).toBeInTheDocument();
-      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(43);
+      expect(screen.queryByText(/Interleaved live update 1/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Interleaved live update 60/)).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(20);
+      expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(20);
+    });
+
+    it("preserves a running task card even when its marker is older than the live tail", () => {
+      const runningTask: StreamingTask = {
+        toolUseId: "task-old",
+        toolName: "Task",
+        description: "Long running subagent",
+        subagentType: "Explore",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [],
+      };
+      const blocks: StreamingContentBlock[] = [
+        { type: "task", toolUseId: runningTask.toolUseId },
+        ...Array.from({ length: 65 }, (_, index): StreamingContentBlock => ({
+          type: "text",
+          text: `Post-task live update ${index + 1}`,
+        })),
+      ];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={[]}
+          isSending={true}
+          streamingTasks={new Map([[runningTask.toolUseId, runningTask]])}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      expect(screen.getByTestId("task-subagent-card-task-old")).toBeInTheDocument();
+      expect(screen.queryByText(/Post-task live update 1/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Post-task live update 65/)).toBeInTheDocument();
+      expect(screen.getAllByTestId("text-bubble-assistant")).toHaveLength(40);
+    });
+
+    it("freezes the rendered live transcript window while the user is away from bottom", () => {
+      const previous = buildStreamingTranscriptWindow(
+        Array.from({ length: 45 }, (_, index): StreamingContentBlock => ({
+          type: "text",
+          text: `Previous live update ${index + 1}`,
+        })),
+        new Map(),
+      );
+      const live = buildStreamingTranscriptWindow(
+        Array.from({ length: 80 }, (_, index): StreamingContentBlock => ({
+          type: "text",
+          text: `Latest live update ${index + 1}`,
+        })),
+        new Map(),
+      );
+
+      expect(getNextStreamingTranscriptWindow(previous, live, false)).toBe(previous);
+      expect(getNextStreamingTranscriptWindow(previous, live, true)).toBe(live);
     });
 
     it("drops empty compacted older text while keeping recent live text visible", () => {
