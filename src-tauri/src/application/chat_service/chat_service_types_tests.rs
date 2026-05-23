@@ -1,7 +1,12 @@
 use crate::application::chat_service::{
-    AgentErrorPayload, AgentRunCompletedPayload, AgentRunStartedPayload,
+    AgentErrorPayload, AgentMessageRenderReadyPayload, AgentRunCompletedPayload,
+    AgentRunStartedPayload,
 };
 use crate::domain::agents::AgentHarnessKind;
+use crate::domain::entities::{
+    ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemKind,
+    ChatTimelineItemStatus, MessageRole, ProjectId,
+};
 
 #[test]
 fn agent_run_started_payload_serde_snake_case() {
@@ -152,4 +157,72 @@ fn agent_error_payload_serializes_agent_run_id_for_terminal_correlation() {
 
     assert_eq!(value["agent_run_id"], "run-1");
     assert!(value.get("agentRunId").is_none());
+}
+
+#[test]
+fn message_render_ready_payload_serializes_canonical_message_and_timeline() {
+    let conversation_id = ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
+    let message_id = ChatMessageId::from_string("msg-1");
+    let content_blocks = serde_json::json!([
+        { "type": "text", "text": "Done" },
+        {
+            "type": "tool_use",
+            "id": "toolu-1",
+            "name": "Read",
+            "arguments": { "file_path": "src/app.ts" },
+            "result": "ok"
+        }
+    ]);
+    let tool_calls = serde_json::json!([
+        {
+            "id": "toolu-1",
+            "name": "Read",
+            "arguments": { "file_path": "src/app.ts" },
+            "result": "ok"
+        }
+    ]);
+    let mut message =
+        ChatMessage::user_in_project(ProjectId::from_string("project-1".to_string()), "Done");
+    message.id = message_id.clone();
+    message.conversation_id = Some(conversation_id.clone());
+    message.role = MessageRole::Orchestrator;
+    message.tool_calls = Some(tool_calls.to_string());
+    message.content_blocks = Some(content_blocks.to_string());
+    message.provider_harness = Some(AgentHarnessKind::Codex);
+    message.provider_session_id = Some("thread-1".to_string());
+
+    let mut item = ChatTimelineItem::for_message_block(
+        message_id,
+        conversation_id,
+        1,
+        MessageRole::Orchestrator,
+        ChatTimelineItemKind::ToolUse,
+    );
+    item.sequence = 42;
+    item.status = ChatTimelineItemStatus::Finalized;
+    item.tool_call_id = Some("toolu-1".to_string());
+    item.tool_name = Some("Read".to_string());
+    item.input_json = Some(serde_json::json!({ "file_path": "src/app.ts" }).to_string());
+    item.result_json = Some(serde_json::json!("ok").to_string());
+    item.finalized_at = Some(item.updated_at);
+
+    let payload =
+        AgentMessageRenderReadyPayload::from_message_and_timeline_items(&message, vec![item])
+            .expect("payload");
+    let value = serde_json::to_value(payload).expect("serialization failed");
+
+    assert_eq!(value["message"]["id"], "msg-1");
+    assert_eq!(
+        value["message"]["conversation_id"],
+        "11111111-1111-1111-1111-111111111111"
+    );
+    assert_eq!(value["message"]["provider_harness"], "codex");
+    assert_eq!(value["message"]["content_blocks"][0]["text"], "Done");
+    assert_eq!(value["timeline_items"][0]["message_id"], "msg-1");
+    assert_eq!(value["timeline_items"][0]["sequence"], 42);
+    assert_eq!(value["timeline_items"][0]["tool_call"]["id"], "toolu-1");
+    assert_eq!(
+        value["timeline_items"][0]["tool_call"]["detail_ref"]["timeline_item_id"],
+        "block:msg-1:1"
+    );
 }

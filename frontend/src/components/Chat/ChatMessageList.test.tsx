@@ -39,8 +39,9 @@ Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
 // callbacks in the Virtuoso production path don't throw. Leave scrollBy alone:
 // the existing wheel-scroll test relies on the fallback path that increments
 // scrollTop directly when scrollBy is not a function.
+const scrollToMock = vi.fn();
 Object.defineProperty(HTMLElement.prototype, "scrollTo", {
-  value: vi.fn(),
+  value: scrollToMock,
   writable: true,
 });
 
@@ -179,6 +180,25 @@ const defaultProps = {
   streamingContentBlocks: undefined,
   scrollToTimestamp: null,
 };
+
+function setMockScrollerGeometry(
+  element: HTMLElement,
+  {
+    clientHeight,
+    scrollHeight,
+    scrollTop,
+  }: {
+    clientHeight: number;
+    scrollHeight: number;
+    scrollTop: number;
+  },
+) {
+  Object.defineProperties(element, {
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollHeight: { configurable: true, value: scrollHeight },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+  });
+}
 
 function TooltipTestProvider({ children }: { children: ReactNode }) {
   return <TooltipProvider delayDuration={0}>{children}</TooltipProvider>;
@@ -2365,6 +2385,126 @@ describe("ChatMessageList - Scroll Behavior", () => {
       // Tool result content doesn't inflate the text bucket
       // (bucket computed from text.length only, not tool result)
       expect(screen.getByText(/Short response/)).toBeInTheDocument();
+    });
+  });
+
+  describe("streaming result bottom pinning", () => {
+    beforeEach(() => {
+      vi.stubEnv("VITEST", "");
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+      scrollToMock.mockClear();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      mockIsAtBottom = true;
+      mockIsAtBottomRef.current = true;
+    });
+
+    it("pins to true bottom when a parent tool result arrives while near bottom", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+      const pendingTool: ToolCall = {
+        id: "toolu-read-1",
+        name: "Read",
+        arguments: { file_path: "src/app.ts" },
+      };
+      const completedTool: ToolCall = {
+        ...pendingTool,
+        result: "     1→const app = true;",
+      };
+
+      try {
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            isAgentRunning={true}
+            streamingToolCalls={[pendingTool]}
+            streamingContentBlocks={[{ type: "tool_use", toolCall: pendingTool }]}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 480,
+        });
+        act(() => {
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        scrollToMock.mockClear();
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            isAgentRunning={true}
+            streamingToolCalls={[completedTool]}
+            streamingContentBlocks={[{ type: "tool_use", toolCall: completedTool }]}
+          />
+        );
+
+        await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
+    it("pins to true bottom when an existing child task tool receives a result", async () => {
+      const childTool: ToolCall = {
+        id: "toolu-child-read",
+        name: "Read",
+        arguments: { file_path: "src/child.ts" },
+      };
+      const task: StreamingTask = {
+        toolUseId: "toolu-task-1",
+        toolName: "Task",
+        description: "Inspect child files",
+        subagentType: "Explore",
+        model: "sonnet",
+        status: "running",
+        startedAt: Date.now(),
+        childToolCalls: [childTool],
+      };
+      const completedTask: StreamingTask = {
+        ...task,
+        childToolCalls: [
+          {
+            ...childTool,
+            result: "     1→export const child = true;",
+          },
+        ],
+      };
+      const blocks: StreamingContentBlock[] = [
+        { type: "task", toolUseId: task.toolUseId },
+      ];
+
+      const { rerender } = render(
+        <ChatMessageList
+          {...defaultProps}
+          isAgentRunning={true}
+          streamingTasks={new Map([[task.toolUseId, task]])}
+          streamingContentBlocks={blocks}
+        />
+      );
+      await screen.findByTestId("mock-virtuoso");
+      scrollToMock.mockClear();
+
+      rerender(
+        <ChatMessageList
+          {...defaultProps}
+          isAgentRunning={true}
+          streamingTasks={new Map([[completedTask.toolUseId, completedTask]])}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     });
   });
 
