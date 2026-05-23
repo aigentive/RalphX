@@ -122,3 +122,43 @@ async fn test_delete_by_conversation_id() {
         .unwrap();
     assert_eq!(attachments.len(), 0);
 }
+
+#[tokio::test]
+async fn test_reparent_pending_attachments_moves_only_unsent() {
+    let repo = MemoryChatAttachmentRepository::new();
+    let from_conversation = ChatConversationId::new();
+    let to_conversation = ChatConversationId::new();
+
+    let pending = ChatAttachment::new(
+        from_conversation,
+        "pending.txt",
+        "/path/to/pending.txt",
+        100,
+        None,
+    );
+    let mut sent = ChatAttachment::new(
+        from_conversation,
+        "sent.txt",
+        "/path/to/sent.txt",
+        200,
+        None,
+    );
+    sent.set_message_id(ChatMessageId::new());
+
+    let pending_id = pending.id;
+    let sent_id = sent.id;
+    repo.create(pending).await.unwrap();
+    repo.create(sent).await.unwrap();
+
+    let count = repo
+        .reparent_pending_attachments(&from_conversation, &to_conversation)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let moved = repo.get_by_id(&pending_id).await.unwrap().unwrap();
+    assert_eq!(moved.conversation_id, to_conversation);
+
+    let stayed = repo.get_by_id(&sent_id).await.unwrap().unwrap();
+    assert_eq!(stayed.conversation_id, from_conversation);
+}
