@@ -41,6 +41,7 @@ import {
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
+import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
 import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
@@ -423,40 +424,44 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       data-testid="agents-active-conversation-panel"
     >
       <div className="min-h-0 flex-1">
-        <IntegratedChatPanel
-          key={`${selectedConversationId}:${chatFocus.type}:${focusedChatSessionId ?? "workspace"}`}
-          projectId={activeProjectId}
-          {...(panelIdeationSessionId
-            ? { ideationSessionId: panelIdeationSessionId }
-            : {})}
-          {...(!isFocusedChildChat
-            ? { conversationIdOverride: selectedConversationId }
-            : {})}
-          selectedTaskIdOverride={null}
-          storeContextKeyOverride={panelStoreKeyOverride}
-          {...(!isFocusedChildChat && activeConversation.contextType === "project"
-            ? { agentProcessContextIdOverride: selectedConversationId }
-            : {})}
-          {...(!isFocusedChildChat
-            ? {
-                sendOptions: {
-                  conversationId: selectedConversationId,
-                  providerHarness: normalizedActiveRuntime.provider,
-                  modelId: normalizedActiveRuntime.modelId,
-                  logicalEffort: normalizedActiveRuntime.effort,
-                },
-              }
-            : {})}
-          onUserMessageSent={onAgentUserMessageSent}
-          onChildSessionNavigate={onFocusIdeationSession}
-          hideHeaderSessionControls
-          hideSessionToolbar
-          surfaceBackground="transparent"
-          contentWidthClassName={AGENTS_CHAT_CONTENT_WIDTH_CLASS}
-          {...{
-            inputContainerClassName:
-              "shrink-0 bg-transparent px-4 pb-4 pt-3",
-            renderComposer: (composerProps: IntegratedChatComposerRenderProps) => {
+        <AgentWorkspaceFileLinkProvider
+          conversationId={selectedConversationId}
+          workspace={isFocusedChildChat ? null : activeWorkspace}
+        >
+          <IntegratedChatPanel
+            key={`${selectedConversationId}:${chatFocus.type}:${focusedChatSessionId ?? "workspace"}`}
+            projectId={activeProjectId}
+            {...(panelIdeationSessionId
+              ? { ideationSessionId: panelIdeationSessionId }
+              : {})}
+            {...(!isFocusedChildChat
+              ? { conversationIdOverride: selectedConversationId }
+              : {})}
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride={panelStoreKeyOverride}
+            {...(!isFocusedChildChat && activeConversation.contextType === "project"
+              ? { agentProcessContextIdOverride: selectedConversationId }
+              : {})}
+            {...(!isFocusedChildChat
+              ? {
+                  sendOptions: {
+                    conversationId: selectedConversationId,
+                    providerHarness: normalizedActiveRuntime.provider,
+                    modelId: normalizedActiveRuntime.modelId,
+                    logicalEffort: normalizedActiveRuntime.effort,
+                  },
+                }
+              : {})}
+            onUserMessageSent={onAgentUserMessageSent}
+            onChildSessionNavigate={onFocusIdeationSession}
+            hideHeaderSessionControls
+            hideSessionToolbar
+            surfaceBackground="transparent"
+            contentWidthClassName={AGENTS_CHAT_CONTENT_WIDTH_CLASS}
+            {...{
+              inputContainerClassName:
+                "shrink-0 bg-transparent px-4 pb-4 pt-3",
+              renderComposer: (composerProps: IntegratedChatComposerRenderProps) => {
               const runForkCommand = async (
                 followup: string,
                 options?: AgentComposerSendOptions,
@@ -757,37 +762,38 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   </div>
                 </>
               );
-            },
-          }}
-          {...(!isFocusedChildChat && activeConversation.contextType === "project" && attachedIdeationSessionId
-            ? { additionalQuestionSessionIds: [attachedIdeationSessionId] }
-            : {})}
-          {...(planApprovalAction !== undefined ? { planApprovalAction } : {})}
-          headerContent={
-            <AgentsChatHeaderController
-              conversation={activeConversation}
-              workspace={isFocusedChildChat ? null : activeWorkspace}
-              chatFocus={chatFocus}
-              availableArtifactTabs={availableArtifactTabs}
-              modelDisplay={{
-                id: normalizedActiveRuntime.modelId,
-                label: normalizedActiveRuntime.modelId,
-              }}
-              hasAutoOpenArtifacts={hasAutoOpenArtifacts}
-              terminalUnavailableReason={terminalUnavailableReason}
-              onRenameConversation={onRenameConversation}
-              onPublishWorkspace={onPublishWorkspace}
-              onOpenPublishPane={onOpenPublishPane}
-              onPreloadArtifacts={onPreloadArtifacts}
-              publishShortcutLabel={publishShortcutLabel}
-              isPublishingWorkspace={publishingConversationId === selectedConversationId}
-              onToggleArtifacts={onToggleArtifacts}
-              onSelectArtifact={onSelectArtifact}
-              showTitle={false}
-            />
-          }
-          emptyState={emptyState}
-        />
+              },
+            }}
+            {...(!isFocusedChildChat && activeConversation.contextType === "project" && attachedIdeationSessionId
+              ? { additionalQuestionSessionIds: [attachedIdeationSessionId] }
+              : {})}
+            {...(planApprovalAction !== undefined ? { planApprovalAction } : {})}
+            headerContent={
+              <AgentsChatHeaderController
+                conversation={activeConversation}
+                workspace={isFocusedChildChat ? null : activeWorkspace}
+                chatFocus={chatFocus}
+                availableArtifactTabs={availableArtifactTabs}
+                modelDisplay={{
+                  id: normalizedActiveRuntime.modelId,
+                  label: normalizedActiveRuntime.modelId,
+                }}
+                hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+                terminalUnavailableReason={terminalUnavailableReason}
+                onRenameConversation={onRenameConversation}
+                onPublishWorkspace={onPublishWorkspace}
+                onOpenPublishPane={onOpenPublishPane}
+                onPreloadArtifacts={onPreloadArtifacts}
+                publishShortcutLabel={publishShortcutLabel}
+                isPublishingWorkspace={publishingConversationId === selectedConversationId}
+                onToggleArtifacts={onToggleArtifacts}
+                onSelectArtifact={onSelectArtifact}
+                showTitle={false}
+              />
+            }
+            emptyState={emptyState}
+          />
+        </AgentWorkspaceFileLinkProvider>
       </div>
       <AgentsTerminalDockHost
         dock="chat"

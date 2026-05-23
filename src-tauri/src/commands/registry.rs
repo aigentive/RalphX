@@ -385,6 +385,7 @@ macro_rules! register_tauri_commands {
             // Workspace open commands
             commands::workspace_open_commands::list_workspace_open_targets,
             commands::workspace_open_commands::open_agent_conversation_workspace,
+            commands::workspace_open_commands::open_agent_conversation_workspace_path,
             // External MCP config commands
             commands::external_mcp_commands::get_external_mcp_config,
             commands::external_mcp_commands::update_external_mcp_config,

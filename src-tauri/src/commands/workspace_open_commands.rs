@@ -37,6 +37,12 @@ enum WorkspaceOpenLaunchStyle {
     Path,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceOpenPathKind {
+    Directory,
+    File,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WorkspaceOpenCommandDefinition {
     name: &'static str,
@@ -337,13 +343,106 @@ fn validate_workspace_open_path(path: &Path) -> AppResult<PathBuf> {
     Ok(safe_path)
 }
 
-fn build_workspace_open_launch(
-    target_id: &str,
+fn validate_workspace_open_item_path(path: &Path) -> AppResult<(PathBuf, WorkspaceOpenPathKind)> {
+    let safe_path = validate_absolute_non_root_path(path, "workspace open path target")?;
+    if safe_path.is_dir() {
+        return Ok((safe_path, WorkspaceOpenPathKind::Directory));
+    }
+    if safe_path.is_file() {
+        return Ok((safe_path, WorkspaceOpenPathKind::File));
+    }
+    Err(AppError::Validation(format!(
+        "Workspace open path target must be an existing file or directory: {}",
+        safe_path.display()
+    )))
+}
+
+fn resolve_workspace_open_item_path(
     workspace_path: &Path,
+    requested_path: &Path,
+) -> AppResult<PathBuf> {
+    let safe_workspace = validate_workspace_open_path(workspace_path)?;
+    let canonical_workspace = safe_workspace.canonicalize().map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to canonicalize workspace open root {}: {error}",
+            safe_workspace.display()
+        ))
+    })?;
+    let candidate = if requested_path.is_absolute() {
+        requested_path.to_path_buf()
+    } else {
+        safe_workspace.join(requested_path)
+    };
+    let safe_candidate = validate_absolute_non_root_path(&candidate, "workspace open path target")?;
+    let canonical_candidate = safe_candidate.canonicalize().map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to canonicalize workspace open path target {}: {error}",
+            safe_candidate.display()
+        ))
+    })?;
+    if !canonical_candidate.starts_with(&canonical_workspace) {
+        return Err(AppError::Validation(format!(
+            "Workspace open path target is outside the conversation workspace: {}",
+            requested_path.display()
+        )));
+    }
+    Ok(canonical_candidate)
+}
+
+fn build_workspace_open_args(
+    target: WorkspaceOpenTargetDefinition,
+    command: &WorkspaceOpenCommandDefinition,
+    path: &Path,
+    path_kind: WorkspaceOpenPathKind,
+    platform: &str,
+) -> Vec<OsString> {
+    let mut args = command
+        .base_args
+        .iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    match (target.launch_style, target.kind, path_kind, platform) {
+        (
+            WorkspaceOpenLaunchStyle::Path,
+            WorkspaceOpenTargetKind::FileManager,
+            WorkspaceOpenPathKind::File,
+            "macos",
+        ) => {
+            args.push(OsString::from("-R"));
+            args.push(path.as_os_str().to_os_string());
+        }
+        (
+            WorkspaceOpenLaunchStyle::Path,
+            WorkspaceOpenTargetKind::FileManager,
+            WorkspaceOpenPathKind::File,
+            "windows",
+        ) => {
+            let mut select_arg = OsString::from("/select,");
+            select_arg.push(path.as_os_str());
+            args.push(select_arg);
+        }
+        (
+            WorkspaceOpenLaunchStyle::Path,
+            WorkspaceOpenTargetKind::FileManager,
+            WorkspaceOpenPathKind::File,
+            "linux",
+        ) => {
+            args.push(path.parent().unwrap_or(path).as_os_str().to_os_string());
+        }
+        (WorkspaceOpenLaunchStyle::Path, _, _, _) => {
+            args.push(path.as_os_str().to_os_string());
+        }
+    }
+    args
+}
+
+fn build_workspace_open_launch_for_valid_path(
+    target_id: &str,
+    safe_path: &Path,
+    path_kind: WorkspaceOpenPathKind,
     platform: &str,
     mut resolve_command: impl FnMut(&WorkspaceOpenCommandDefinition) -> Option<PathBuf>,
 ) -> AppResult<WorkspaceOpenLaunch> {
-    let safe_path = validate_workspace_open_path(workspace_path)?;
     let target = find_target(target_id, platform).ok_or_else(|| {
         AppError::Validation(format!("Unknown workspace open target: {target_id}"))
     })?;
@@ -354,20 +453,44 @@ fn build_workspace_open_launch(
                 target.label
             ))
         })?;
-
-    let mut args = command
-        .base_args
-        .iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>();
-    match target.launch_style {
-        WorkspaceOpenLaunchStyle::Path => args.push(safe_path.into_os_string()),
-    }
+    let args = build_workspace_open_args(target, command, safe_path, path_kind, platform);
 
     Ok(WorkspaceOpenLaunch {
         command: command_path,
         args,
     })
+}
+
+fn build_workspace_open_launch(
+    target_id: &str,
+    workspace_path: &Path,
+    platform: &str,
+    mut resolve_command: impl FnMut(&WorkspaceOpenCommandDefinition) -> Option<PathBuf>,
+) -> AppResult<WorkspaceOpenLaunch> {
+    let safe_path = validate_workspace_open_path(workspace_path)?;
+    build_workspace_open_launch_for_valid_path(
+        target_id,
+        &safe_path,
+        WorkspaceOpenPathKind::Directory,
+        platform,
+        &mut resolve_command,
+    )
+}
+
+fn build_workspace_open_item_launch(
+    target_id: &str,
+    item_path: &Path,
+    platform: &str,
+    mut resolve_command: impl FnMut(&WorkspaceOpenCommandDefinition) -> Option<PathBuf>,
+) -> AppResult<WorkspaceOpenLaunch> {
+    let (safe_path, path_kind) = validate_workspace_open_item_path(item_path)?;
+    build_workspace_open_launch_for_valid_path(
+        target_id,
+        &safe_path,
+        path_kind,
+        platform,
+        &mut resolve_command,
+    )
 }
 
 fn probe_workspace_open_targets(
@@ -560,6 +683,84 @@ fn launch_workspace_open_target(target_id: &str, workspace_path: &Path) -> AppRe
     Ok(())
 }
 
+fn launch_workspace_open_item_target(target_id: &str, item_path: &Path) -> AppResult<()> {
+    let launch =
+        build_workspace_open_item_launch(target_id, item_path, current_platform(), |command| {
+            find_launchable_cli_path(command.name, command.fixed_candidates)
+        })?;
+
+    tracing::info!(
+        target_id,
+        command = %launch.command.display(),
+        item_path = %item_path.display(),
+        "Launching workspace open path target"
+    );
+
+    // Command path is produced by `find_launchable_cli_path`, which accepts only safe absolute
+    // launchable files from fixed candidates, validated user tool dirs, or login-shell `command -v`.
+    // codeql[rust/path-injection]
+    let mut child = Command::new(&launch.command)
+        .args(&launch.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            tracing::warn!(
+                target_id,
+                command = %launch.command.display(),
+                item_path = %item_path.display(),
+                %error,
+                "Failed to launch workspace open path target"
+            );
+            AppError::Infrastructure(format!(
+                "Failed to launch workspace open path target {}: {error}",
+                target_id
+            ))
+        })?;
+
+    match child.try_wait() {
+        Ok(Some(status)) if !status.success() => {
+            tracing::warn!(
+                target_id,
+                command = %launch.command.display(),
+                item_path = %item_path.display(),
+                exit_status = %status,
+                "Workspace open path target exited immediately with failure"
+            );
+            return Err(AppError::Infrastructure(format!(
+                "Workspace open path target {} exited immediately with {status}",
+                target_id
+            )));
+        }
+        Ok(Some(status)) => {
+            tracing::info!(
+                target_id,
+                command = %launch.command.display(),
+                exit_status = %status,
+                "Workspace open path target completed immediately"
+            );
+        }
+        Ok(None) => {
+            tracing::info!(
+                target_id,
+                command = %launch.command.display(),
+                pid = child.id(),
+                "Workspace open path target launched"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                target_id,
+                command = %launch.command.display(),
+                %error,
+                "Unable to inspect workspace open path target status after launch"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn list_workspace_open_targets() -> Vec<WorkspaceOpenTargetResponse> {
     if let Some(targets) = cached_workspace_open_targets() {
@@ -601,6 +802,34 @@ pub async fn open_agent_conversation_workspace(
         .map_err(|error| error.to_string())?;
 
     launch_workspace_open_target(&target_id, &workspace_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn open_agent_conversation_workspace_path(
+    conversation_id: String,
+    target_id: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Agent conversation workspace not found".to_string())?;
+    let project = state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Workspace project not found".to_string())?;
+    let workspace_path = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
+        .map_err(|error| error.to_string())?;
+    let item_path = resolve_workspace_open_item_path(&workspace_path, Path::new(&path))
+        .map_err(|error| error.to_string())?;
+
+    launch_workspace_open_item_target(&target_id, &item_path).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -743,6 +972,150 @@ mod tests {
                 temp.path().as_os_str().to_os_string(),
             ]
         );
+    }
+
+    #[test]
+    fn build_item_launch_opens_files_with_editor_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("src.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+
+        let launch = build_workspace_open_item_launch("cursor", &file_path, "macos", |command| {
+            (command.name == "cursor").then(|| fake_command_path(command))
+        })
+        .expect("launch should build");
+
+        assert_eq!(launch.command, PathBuf::from("/tools/cursor"));
+        assert_eq!(launch.args, vec![file_path.as_os_str().to_os_string()]);
+    }
+
+    #[test]
+    fn build_item_launch_opens_directories_with_file_manager_targets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src_dir = temp.path().join("src");
+        std::fs::create_dir(&src_dir).expect("create src dir");
+
+        let launch =
+            build_workspace_open_item_launch("file-manager", &src_dir, "macos", |command| {
+                (command.name == "open").then(|| fake_command_path(command))
+            })
+            .expect("launch should build");
+
+        assert_eq!(launch.command, PathBuf::from("/tools/open"));
+        assert_eq!(launch.args, vec![src_dir.as_os_str().to_os_string()]);
+    }
+
+    #[test]
+    fn build_item_launch_rejects_missing_item_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_path = temp.path().join("missing.rs");
+
+        let error = build_workspace_open_item_launch("cursor", &missing_path, "macos", |command| {
+            (command.name == "cursor").then(|| fake_command_path(command))
+        })
+        .expect_err("missing item should be rejected");
+
+        assert!(error.to_string().contains("existing file or directory"));
+    }
+
+    #[test]
+    fn build_item_launch_reveals_files_with_macos_file_manager() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("src.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+
+        let launch =
+            build_workspace_open_item_launch("file-manager", &file_path, "macos", |command| {
+                (command.name == "open").then(|| fake_command_path(command))
+            })
+            .expect("launch should build");
+
+        assert_eq!(launch.command, PathBuf::from("/tools/open"));
+        assert_eq!(
+            launch.args,
+            vec![OsString::from("-R"), file_path.as_os_str().to_os_string()]
+        );
+    }
+
+    #[test]
+    fn build_item_launch_opens_parent_for_linux_file_manager_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("src.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+
+        let launch =
+            build_workspace_open_item_launch("file-manager", &file_path, "linux", |command| {
+                (command.name == "xdg-open").then(|| fake_command_path(command))
+            })
+            .expect("launch should build");
+
+        assert_eq!(launch.command, PathBuf::from("/tools/xdg-open"));
+        assert_eq!(launch.args, vec![temp.path().as_os_str().to_os_string()]);
+    }
+
+    #[test]
+    fn build_item_launch_selects_files_with_windows_file_manager() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("src.rs");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        let mut select_arg = OsString::from("/select,");
+        select_arg.push(file_path.as_os_str());
+
+        let launch =
+            build_workspace_open_item_launch("file-manager", &file_path, "windows", |command| {
+                (command.name == "explorer.exe").then(|| fake_command_path(command))
+            })
+            .expect("launch should build");
+
+        assert_eq!(launch.command, PathBuf::from("/tools/explorer.exe"));
+        assert_eq!(launch.args, vec![select_arg]);
+    }
+
+    #[test]
+    fn resolve_workspace_open_item_accepts_relative_paths_inside_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src_dir = temp.path().join("src");
+        std::fs::create_dir(&src_dir).expect("create src dir");
+        let file_path = src_dir.join("lib.rs");
+        std::fs::write(&file_path, "pub fn f() {}\n").expect("write file");
+
+        let resolved = resolve_workspace_open_item_path(temp.path(), Path::new("src/lib.rs"))
+            .expect("relative path should resolve");
+
+        assert_eq!(resolved, file_path.canonicalize().expect("canonical file"));
+    }
+
+    #[test]
+    fn resolve_workspace_open_item_rejects_absolute_paths_outside_workspace() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let file_path = outside.path().join("lib.rs");
+        std::fs::write(&file_path, "pub fn f() {}\n").expect("write file");
+
+        let error = resolve_workspace_open_item_path(workspace.path(), &file_path)
+            .expect_err("outside path should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("outside the conversation workspace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_workspace_open_item_rejects_symlink_escape() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside.path().join("lib.rs");
+        std::fs::write(&outside_file, "pub fn f() {}\n").expect("write file");
+        let symlink_path = workspace.path().join("linked.rs");
+        std::os::unix::fs::symlink(&outside_file, &symlink_path).expect("create symlink");
+
+        let error = resolve_workspace_open_item_path(workspace.path(), Path::new("linked.rs"))
+            .expect_err("symlink escape should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("outside the conversation workspace"));
     }
 
     #[test]
@@ -914,5 +1287,67 @@ mod tests {
         let _path = EnvGuard::set_os("PATH", &bin_dir);
 
         launch_workspace_open_target("cursor", temp.path()).expect("launch should spawn");
+    }
+
+    #[test]
+    fn launch_workspace_open_item_target_accepts_immediate_success() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        let file_path = temp.path().join("src.rs");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        write_fake_cursor(
+            &bin_dir,
+            r#"if [ "$1" != "$RALPHX_EXPECTED_ITEM" ]; then exit 42; fi
+exit 0"#,
+        );
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+        let _expected_item = EnvGuard::set_os("RALPHX_EXPECTED_ITEM", &file_path);
+
+        launch_workspace_open_item_target("cursor", &file_path).expect("launch should succeed");
+    }
+
+    #[test]
+    fn launch_workspace_open_item_target_reports_spawn_failures() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        let file_path = temp.path().join("src.rs");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        let cursor = bin_dir.join("cursor");
+        std::fs::write(&cursor, "#!/definitely/missing/ralphx-shell\n").expect("write fake cursor");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&cursor)
+                .expect("fake cursor metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&cursor, permissions).expect("mark fake cursor executable");
+        }
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        let error = launch_workspace_open_item_target("cursor", &file_path)
+            .expect_err("spawn failure should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("Failed to launch workspace open path target"));
+    }
+
+    #[test]
+    fn launch_workspace_open_item_target_accepts_background_process() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("bin");
+        let file_path = temp.path().join("src.rs");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&file_path, "fn main() {}\n").expect("write file");
+        write_fake_cursor(&bin_dir, "sleep 1\nexit 0");
+        let _path = EnvGuard::set_os("PATH", &bin_dir);
+
+        launch_workspace_open_item_target("cursor", &file_path).expect("launch should spawn");
     }
 }

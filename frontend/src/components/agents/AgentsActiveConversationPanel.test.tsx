@@ -84,6 +84,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
     ...actual,
     chatApi: {
       ...actual.chatApi,
+      listWorkspaceOpenTargets: vi.fn().mockResolvedValue([]),
+      openAgentConversationWorkspacePath: vi.fn().mockResolvedValue(undefined),
       sendAgentMessage: vi.fn().mockResolvedValue({
         conversationId: "conversation-fork",
         agentRunId: "run-fork",

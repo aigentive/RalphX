@@ -1482,6 +1482,7 @@ export const chatApi = {
   getAgentConversationWorkspace,
   listWorkspaceOpenTargets,
   openAgentConversationWorkspace,
+  openAgentConversationWorkspacePath,
   listAgentConversationWorkspacesByProject,
   listAgentSidebarConversations,
   listAgentConversationWorkspacePublicationEvents,
@@ -2130,6 +2131,18 @@ export async function openAgentConversationWorkspace(
   await typedInvoke(
     "open_agent_conversation_workspace",
     { conversationId, targetId },
+    z.null()
+  );
+}
+
+export async function openAgentConversationWorkspacePath(
+  conversationId: string,
+  targetId: string,
+  path: string
+): Promise<void> {
+  await typedInvoke(
+    "open_agent_conversation_workspace_path",
+    { conversationId, targetId, path },
     z.null()
   );
 }
