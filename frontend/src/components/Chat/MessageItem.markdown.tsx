@@ -15,6 +15,26 @@ import { Button } from "@/components/ui/button";
 
 const PROSE_MAX_WIDTH = "min(85%, 620px)";
 
+const ASCII_ART_RE =
+  /[+\-|=]{3,}|[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║░▓█▒╮╰╯╭]{2,}/;
+
+function looksLikeAsciiArt(children: React.ReactNode): boolean {
+  const text = extractText(children);
+  if (!text) return false;
+  return ASCII_ART_RE.test(text);
+}
+
+function extractText(node: React.ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    const el = node as React.ReactElement<{ children?: React.ReactNode }>;
+    return extractText(el.props.children);
+  }
+  return "";
+}
+
 // ============================================================================
 // Code Block with Copy Button
 // ============================================================================
@@ -60,8 +80,7 @@ export function CodeBlock({ children, language }: CodeBlockProps) {
           style={{
             fontFamily: "var(--font-mono)",
             color: "var(--text-primary)",
-            whiteSpace: "pre-wrap",
-            overflowWrap: "break-word",
+            whiteSpace: "pre",
           }}
         >
           {children}
@@ -153,18 +172,18 @@ export const markdownComponents = {
     ...props
   }: React.HTMLAttributes<HTMLElement>) => {
     const match = /language-(\w+)/.exec(className || "");
+    const content = String(children);
     const isBlock = Boolean(match);
-    if (isBlock) {
+    const isMultiline = content.includes("\n");
+    if (isBlock || isMultiline) {
       return (
-        <CodeBlock language={match?.[1]}>{String(children).trim()}</CodeBlock>
+        <CodeBlock language={match?.[1]}>{content.trim()}</CodeBlock>
       );
     }
     return (
       <code
         className="px-1 py-px rounded text-[0.75rem] break-words"
         style={{
-          /* Soft inline code chip — distinguishable as code without
-             dominating dense paragraphs that contain many spans. */
           backgroundColor: "var(--overlay-faint)",
           color: "var(--text-primary)",
           fontFamily: "var(--font-mono)",
@@ -176,11 +195,25 @@ export const markdownComponents = {
     );
   },
   pre: ({ children }: React.HTMLAttributes<HTMLPreElement>) => <>{children}</>,
-  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p className="leading-relaxed [&:not(:last-child)]:mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
-      {children}
-    </p>
-  ),
+  p: ({ children, ...props }: React.HTMLAttributes<HTMLParagraphElement>) => {
+    if (looksLikeAsciiArt(children)) {
+      const { className: _cls, style: _sty, ...rest } = props;
+      return (
+        <pre
+          className="leading-relaxed [&:not(:last-child)]:mb-2 text-[0.75rem] overflow-x-auto"
+          style={{ fontFamily: "var(--font-mono)", color: "var(--text-primary)" }}
+          {...(rest as React.HTMLAttributes<HTMLPreElement>)}
+        >
+          {children}
+        </pre>
+      );
+    }
+    return (
+      <p className="leading-relaxed [&:not(:last-child)]:mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
+        {children}
+      </p>
+    );
+  },
   h1: ({ children, ...props }: React.HTMLAttributes<HTMLHeadingElement>) => (
     <h1 className="text-lg font-bold mb-2" style={{ maxWidth: PROSE_MAX_WIDTH }} {...props}>
       {children}
