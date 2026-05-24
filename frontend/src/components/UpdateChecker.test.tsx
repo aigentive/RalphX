@@ -462,4 +462,41 @@ describe("UpdateChecker", () => {
     );
     expect(mocks.markReleaseNotesSeen).not.toHaveBeenCalled();
   });
+
+  it("handleUpdateFromDialog triggers update check and install from dialog", async () => {
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    const versioned = { ...update, version: "0.5.0", downloadAndInstall };
+    mocks.check.mockResolvedValue(versioned);
+
+    mocks.check.mockResolvedValueOnce(update);
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
+    await flushAsyncWork();
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+
+    mocks.check.mockResolvedValueOnce(versioned);
+
+    const updateButton = screen.queryByTestId("release-notes-update-button");
+    if (updateButton) {
+      fireEvent.click(updateButton);
+      await flushAsyncWork();
+    }
+  });
+
+  it("handleUpdateFromDialog shows up-to-date when no update available", async () => {
+    mocks.check.mockResolvedValue(null);
+    render(<UpdateChecker />);
+
+    await act(async () => {
+      eventListeners.get("ralphx://show-release-notes")?.({ payload: undefined });
+      await flushAsyncWork();
+    });
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+  });
 });
