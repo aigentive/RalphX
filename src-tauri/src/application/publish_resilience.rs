@@ -511,6 +511,8 @@ fn is_agent_fixable_failure(normalized: &str) -> bool {
         "failed to push some refs",
         "updates were rejected",
         "fetch first",
+        "would be overwritten by merge",
+        "please commit your changes or stash them before you merge",
     ];
 
     PATTERNS.iter().any(|pattern| normalized.contains(pattern))
