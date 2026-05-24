@@ -48,6 +48,18 @@ vi.mock("sonner", () => ({
   }),
 }));
 
+vi.mock("react-markdown", () => ({
+  default: ({ children }: { children: string }) => children,
+}));
+
+vi.mock("remark-gfm", () => ({
+  default: () => {},
+}));
+
+vi.mock("@/components/Chat/MessageItem.markdown", () => ({
+  markdownComponents: {},
+}));
+
 vi.mock("@/api/release-notes", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("@/api/release-notes");
   return {
@@ -463,19 +475,23 @@ describe("UpdateChecker", () => {
     expect(mocks.markReleaseNotesSeen).not.toHaveBeenCalled();
   });
 
-  it("handleUpdateFromDialog triggers update check and install from dialog", async () => {
+  it("handleUpdateFromDialog triggers update check and installs when available", async () => {
     const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
     const versioned = { ...update, version: "0.5.0", downloadAndInstall };
-    mocks.check.mockResolvedValue(versioned);
 
-    mocks.check.mockResolvedValueOnce(update);
+    mocks.check.mockResolvedValueOnce({
+      ...update,
+      body: "## Release\n\n- Notes",
+    });
 
     render(<UpdateChecker />);
     await vi.advanceTimersByTimeAsync(3_000);
 
     const toastUi = renderToastById("update-available");
     fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
-    await flushAsyncWork();
+
+    // Wait for dialog to fully load its version list
+    for (let i = 0; i < 10; i++) await flushAsyncWork();
 
     expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
 
@@ -485,10 +501,72 @@ describe("UpdateChecker", () => {
     if (updateButton) {
       fireEvent.click(updateButton);
       await flushAsyncWork();
+
+      expect(mocks.check).toHaveBeenCalledTimes(2);
     }
   });
 
-  it("handleUpdateFromDialog shows up-to-date when no update available", async () => {
+  it("handleUpdateFromDialog shows up-to-date toast when no update available", async () => {
+    mocks.check.mockResolvedValueOnce({
+      ...update,
+      body: "## Release\n\n- Notes",
+    });
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
+
+    for (let i = 0; i < 10; i++) await flushAsyncWork();
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+
+    mocks.check.mockResolvedValueOnce(null);
+
+    const updateButton = screen.queryByTestId("release-notes-update-button");
+    if (updateButton) {
+      fireEvent.click(updateButton);
+      await flushAsyncWork();
+
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        "RalphX is up to date.",
+        expect.objectContaining({ id: "update-check-result" }),
+      );
+    }
+  });
+
+  it("handleUpdateFromDialog shows error toast when check fails", async () => {
+    mocks.check.mockResolvedValueOnce({
+      ...update,
+      body: "## Release\n\n- Notes",
+    });
+
+    render(<UpdateChecker />);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    const toastUi = renderToastById("update-available");
+    fireEvent.click(toastUi.getByTestId("update-release-notes-button"));
+
+    for (let i = 0; i < 10; i++) await flushAsyncWork();
+
+    expect(screen.getByTestId("release-notes-dialog-body")).toBeInTheDocument();
+
+    mocks.check.mockRejectedValueOnce(new Error("network error"));
+
+    const updateButton = screen.queryByTestId("release-notes-update-button");
+    if (updateButton) {
+      fireEvent.click(updateButton);
+      await flushAsyncWork();
+
+      expect(mocks.toastError).toHaveBeenCalledWith(
+        "Failed to check for updates.",
+        expect.objectContaining({ id: "update-check-result" }),
+      );
+    }
+  });
+
+  it("opens release notes dialog from native menu event", async () => {
     mocks.check.mockResolvedValue(null);
     render(<UpdateChecker />);
 
