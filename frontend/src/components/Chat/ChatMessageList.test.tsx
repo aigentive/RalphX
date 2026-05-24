@@ -310,6 +310,17 @@ describe("ChatMessageList - Scroll Behavior", () => {
         });
 
         expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
+        act(() => {
+          vi.advanceTimersByTime(120);
+        });
+        scroller.scrollTop = 60;
+        scrollToMock.mockClear();
+
+        act(() => {
+          vi.advanceTimersByTime(380);
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 120, behavior: "auto" });
       } finally {
         rafSpy.mockRestore();
         cancelSpy.mockRestore();

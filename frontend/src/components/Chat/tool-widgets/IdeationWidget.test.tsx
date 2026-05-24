@@ -53,6 +53,26 @@ describe("IdeationWidget", () => {
     });
   });
 
+  describe("AskUserQuestion (ask_user_question)", () => {
+    it("uses stable non-compact row geometry for snapshots", () => {
+      const toolCall = makeToolCall("ask_user_question", {
+        arguments: { header: "Preferred default for automatic PR creation?" },
+      });
+
+      render(<IdeationWidget toolCall={toolCall} />);
+
+      const widget = screen.getByTestId("ideation-widget-ask-question");
+      expect(widget).toHaveStyle({ display: "flow-root" });
+      expect(widget.firstElementChild).toHaveStyle({
+        display: "flex",
+        height: "26px",
+        boxSizing: "border-box",
+      });
+      expect(screen.getByText("Preferred default for automatic PR creation?")).toBeInTheDocument();
+      expect(screen.getByText("Question")).toBeInTheDocument();
+    });
+  });
+
   describe("GetProposal (get_proposal)", () => {
     it("extracts title and category from MCP-wrapped result", () => {
       const toolCall = makeToolCall("get_proposal", {
